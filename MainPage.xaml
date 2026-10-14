@@ -1,0 +1,91 @@
+﻿<?xml version="1.0" encoding="utf-8"?>
+<Page
+    x:Class="GameLocker.MainPage"
+    NavigationCacheMode="Required"
+    xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+    xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+    xmlns:ctl="using:GameLocker.Controls">
+
+    <Grid Background="Transparent" RequestedTheme="Dark"
+          AllowDrop="True" DragOver="OnDragOver" Drop="OnDrop">
+
+        <Grid.RowDefinitions>
+            <RowDefinition Height="Auto"/>
+            <RowDefinition Height="*"/>
+            <RowDefinition Height="Auto"/>
+        </Grid.RowDefinitions>
+
+        <!-- 顶栏：时钟 + 手柄状态 -->
+        <Grid Grid.Row="0" Padding="20,12">
+            <StackPanel x:Name="ClockPanel" VerticalAlignment="Center" Spacing="0">
+                <TextBlock x:Name="ClockText" Text="00:00" FontSize="30" FontWeight="SemiBold"
+                           FontFamily="Segoe UI Variable Display, Segoe UI"/>
+                <TextBlock x:Name="DateText" Text="" FontSize="13" Opacity="0.7"/>
+                <!-- 编辑模式：进入 L3 排列时替换整个时钟+日期模块，白色大字；高度与时钟+日期两行一致，顶栏不跳动 -->
+                <TextBlock x:Name="EditModeText" Text="编辑模式" FontSize="34" FontWeight="Bold"
+                           Foreground="White" Height="58" VerticalAlignment="Center" Visibility="Collapsed"/>
+            </StackPanel>
+            <!-- 临时提示条（关闭反馈/拖入结果 toast）：顶栏水平居中，与时间同高 -->
+            <Border x:Name="MoveHintBar" HorizontalAlignment="Center" VerticalAlignment="Center"
+                    Padding="14,6" CornerRadius="4" Background="#CC000000" Visibility="Collapsed">
+                <TextBlock x:Name="MoveHintText" Text="" FontSize="13"/>
+            </Border>
+            <StackPanel HorizontalAlignment="Right" Orientation="Horizontal" Spacing="8" VerticalAlignment="Center">
+                <FontIcon x:Name="WifiIcon" Glyph="&#xE701;" FontSize="14"/>
+                <FontIcon x:Name="BluetoothIcon" Glyph="&#xE702;" FontSize="14"/>
+                <FontIcon x:Name="BatteryIcon" Glyph="&#xE850;" FontSize="22"/>
+                <StackPanel x:Name="GamepadPanel" Orientation="Horizontal" Spacing="8">
+                    <FontIcon x:Name="GamepadIcon" Glyph="&#xE7FC;" FontSize="16"/>
+                </StackPanel>
+            </StackPanel>
+        </Grid>
+
+        <!-- 磁贴画布：ScrollViewer + Canvas 手动布局（靠上排布，从上往下） -->
+        <ScrollViewer x:Name="TileScroll" Grid.Row="1" Padding="12,10"
+                      VerticalAlignment="Top" HorizontalAlignment="Stretch"
+                      HorizontalContentAlignment="Left" VerticalContentAlignment="Top"
+                      VerticalScrollMode="Auto" HorizontalScrollMode="Disabled"
+                      VerticalScrollBarVisibility="Hidden">
+            <!-- MinWidth/MinHeight 绑定撑满视口：WinUI3 ScrollViewer 会把小于视口的内容居中，撑满后磁贴靠左靠上 -->
+            <Canvas x:Name="TileHost"
+                    MinWidth="{Binding ActualWidth, ElementName=TileScroll}"
+                    MinHeight="{Binding ActualHeight, ElementName=TileScroll}"/>
+        </ScrollViewer>
+
+        <!-- 底部按键提示：手柄图标徽章，单行，透明背景 -->
+        <ctl:GamepadHintBar x:Name="HintBar" Grid.Row="2" Margin="0,8,0,12"/>
+
+        <!-- 添加方式选择遮罩：X 键弹出，二选一（自定义 / 小组件），手柄可操作 -->
+        <Grid x:Name="ChoiceOverlay" Grid.Row="0" Grid.RowSpan="3" Visibility="Collapsed"
+              Background="#B2000000">
+            <StackPanel VerticalAlignment="Center" HorizontalAlignment="Center" Spacing="14" Width="300">
+                <TextBlock Text="添加" FontSize="22" FontWeight="SemiBold" HorizontalAlignment="Center" Margin="0,0,0,6"/>
+
+                <Border x:Name="ChoiceCustom" CornerRadius="8" Background="#1FFFFFFF"
+                        BorderBrush="Transparent" BorderThickness="3" Padding="16,14">
+                    <StackPanel Orientation="Horizontal" Spacing="14">
+                        <FontIcon Glyph="&#xE70F;" FontSize="22" VerticalAlignment="Center"/>
+                        <StackPanel VerticalAlignment="Center" Spacing="2">
+                            <TextBlock Text="自定义" FontSize="17" FontWeight="SemiBold"/>
+                            <TextBlock Text="快捷方式 / 程序 / 网站 / 文件夹" FontSize="12" Opacity="0.7"/>
+                        </StackPanel>
+                    </StackPanel>
+                </Border>
+
+                <Border x:Name="ChoiceWidget" CornerRadius="8" Background="#1FFFFFFF"
+                        BorderBrush="Transparent" BorderThickness="3" Padding="16,14">
+                    <StackPanel Orientation="Horizontal" Spacing="14">
+                        <FontIcon Glyph="&#xE71D;" FontSize="22" VerticalAlignment="Center"/>
+                        <StackPanel VerticalAlignment="Center" Spacing="2">
+                            <TextBlock Text="小组件" FontSize="17" FontWeight="SemiBold"/>
+                            <TextBlock Text="音乐播放器等可交互磁贴" FontSize="12" Opacity="0.7"/>
+                        </StackPanel>
+                    </StackPanel>
+                </Border>
+
+                <ctl:GamepadHintBar HorizontalAlignment="Center" Margin="0,6,0,0"
+                                    Hints="DPAD:选择|A:确认|B:取消"/>
+            </StackPanel>
+        </Grid>
+    </Grid>
+</Page>

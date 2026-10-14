@@ -1,0 +1,9 @@
+<?xml version="1.0" encoding="utf-8"?>
+<UserControl x:Class="GameLocker.Controls.GamepadHintBar"
+    xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+    xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+    Background="Transparent">
+    <!-- 手柄按键提示条：按键=图标徽章，说明=小字，单行居中，背景透明 -->
+    <StackPanel x:Name="RootPanel" Orientation="Horizontal"
+                HorizontalAlignment="Center" VerticalAlignment="Center" Spacing="9"/>
+</UserControl>

@@ -1,0 +1,13 @@
+<?xml version="1.0" encoding="utf-8"?>
+<Window
+    x:Class="GameLocker.MainWindow"
+    xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+    xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml">
+
+    <!-- 页面容器：MainPage（快捷项网格）与 SettingsPage（设置）之间导航 -->
+    <!-- BackgroundRect：用户可选的背景色层，页面背景透明后透出 -->
+    <Grid>
+        <Rectangle x:Name="BackgroundRect" IsHitTestVisible="False" Fill="#202020"/>
+        <Frame x:Name="Root" Background="Transparent"/>
+    </Grid>
+</Window>

@@ -1,0 +1,75 @@
+﻿<?xml version="1.0" encoding="utf-8"?>
+<Page
+    x:Class="GameLocker.TopbarPage"
+    xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+    xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+    xmlns:ctl="using:GameLocker.Controls">
+
+    <Grid Background="Transparent"
+          RequestedTheme="Dark" XYFocusKeyboardNavigation="Enabled">
+
+        <Grid.RowDefinitions>
+            <RowDefinition Height="Auto"/>
+            <RowDefinition Height="*"/>
+            <RowDefinition Height="Auto"/>
+        </Grid.RowDefinitions>
+
+        <Grid Grid.Row="0" Padding="20,16">
+            <StackPanel Orientation="Horizontal" Spacing="10" VerticalAlignment="Center">
+                <Button x:Name="BackButton" Background="Transparent" BorderThickness="0" Click="OnBackClick" IsTabStop="False">
+                    <FontIcon Glyph="&#xE72B;" FontSize="16"/>
+                </Button>
+                <TextBlock Text="顶栏" FontSize="22" FontWeight="SemiBold" VerticalAlignment="Center"/>
+            </StackPanel>
+        </Grid>
+
+        <!-- 内容区可滚动：窄窗口下控件不被遮盖 -->
+        <ScrollViewer x:Name="ContentScroll" Grid.Row="1" Padding="24,8" VerticalScrollBarVisibility="Hidden">
+            <StackPanel Spacing="20">
+                <ToggleSwitch x:Name="ClockToggle" Padding="14,10" Toggled="OnToggleChanged">
+                    <ToggleSwitch.Header>
+                        <StackPanel Spacing="2">
+                            <TextBlock Text="时钟" FontSize="16"/>
+                            <TextBlock Text="在顶栏左侧显示当前时间与日期" FontSize="12" Opacity="0.6"/>
+                        </StackPanel>
+                    </ToggleSwitch.Header>
+                </ToggleSwitch>
+                <ToggleSwitch x:Name="BatteryToggle" Padding="14,10" Toggled="OnToggleChanged">
+                    <ToggleSwitch.Header>
+                        <StackPanel Spacing="2">
+                            <TextBlock Text="电池" FontSize="16"/>
+                            <TextBlock Text="在顶栏右侧按格显示设备电量，颜色随电量变化" FontSize="12" Opacity="0.6"/>
+                        </StackPanel>
+                    </ToggleSwitch.Header>
+                </ToggleSwitch>
+                <ToggleSwitch x:Name="WifiToggle" Padding="14,10" Toggled="OnToggleChanged">
+                    <ToggleSwitch.Header>
+                        <StackPanel Spacing="2">
+                            <TextBlock Text="无线网络" FontSize="16"/>
+                            <TextBlock Text="在顶栏右侧显示 Wi-Fi 状态，绿=已连接，白=未连接" FontSize="12" Opacity="0.6"/>
+                        </StackPanel>
+                    </ToggleSwitch.Header>
+                </ToggleSwitch>
+                <ToggleSwitch x:Name="BluetoothToggle" Padding="14,10" Toggled="OnToggleChanged">
+                    <ToggleSwitch.Header>
+                        <StackPanel Spacing="2">
+                            <TextBlock Text="蓝牙" FontSize="16"/>
+                            <TextBlock Text="在顶栏右侧显示蓝牙状态，绿=已连接，白=未连接" FontSize="12" Opacity="0.6"/>
+                        </StackPanel>
+                    </ToggleSwitch.Header>
+                </ToggleSwitch>
+                <ToggleSwitch x:Name="GamepadIconToggle" Padding="14,10" Toggled="OnToggleChanged">
+                    <ToggleSwitch.Header>
+                        <StackPanel Spacing="2">
+                            <TextBlock Text="手柄" FontSize="16"/>
+                            <TextBlock Text="在顶栏右侧显示手柄连接状态，绿=已连接，红=未连接" FontSize="12" Opacity="0.6"/>
+                        </StackPanel>
+                    </ToggleSwitch.Header>
+                </ToggleSwitch>
+            </StackPanel>
+        </ScrollViewer>
+
+        <ctl:GamepadHintBar Grid.Row="2" Margin="0,8,0,12"
+                            Hints="DPAD:选择|A:切换|B:返回"/>
+    </Grid>
+</Page>

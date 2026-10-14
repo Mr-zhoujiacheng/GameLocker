@@ -1,0 +1,34 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <OutputType>WinExe</OutputType>
+    <TargetFramework>net8.0-windows10.0.19041.0</TargetFramework>
+    <RuntimeIdentifier>win-x64</RuntimeIdentifier>
+    <SelfContained>true</SelfContained>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <UseWinUI>true</UseWinUI>
+    <WindowsPackageType>None</WindowsPackageType>
+    <WindowsAppSDKSelfContained>true</WindowsAppSDKSelfContained>
+    <EnableMsixTooling>false</EnableMsixTooling>
+    <ApplicationManifest>app.manifest</ApplicationManifest>
+    <AssemblyName>GameLocker</AssemblyName>
+    <ApplicationIcon>Assets\GameLocker.ico</ApplicationIcon>
+    <NoWarn>$(NoWarn);CA1416</NoWarn>
+    <!-- dotnet CLI 构建时指向 VS BuildTools 的 AppxPackage 任务目录（生成 PRI 所需） -->
+    <AppxMSBuildToolsPath Condition="Exists('C:\Program Files (x86)\Microsoft Visual Studio\2022\BuildTools\MSBuild\Microsoft\VisualStudio\v17.0\AppxPackage\Microsoft.Build.AppxPackage.dll')">C:\Program Files (x86)\Microsoft Visual Studio\2022\BuildTools\MSBuild\Microsoft\VisualStudio\v17.0\AppxPackage\</AppxMSBuildToolsPath>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <PackageReference Include="Microsoft.WindowsAppSDK" Version="1.6.*" />
+    <PackageReference Include="Microsoft.Windows.SDK.BuildTools" Version="10.0.26100.422" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <!-- 运行时加载托盘/窗口图标所需 -->
+    <Content Include="Assets\GameLocker.ico" CopyToOutputDirectory="PreserveNewest" />
+    <!-- 关于页展示的软件图标（ms-appx:///Assets/GameLocker-256.png） -->
+    <Content Include="Assets\GameLocker-256.png" CopyToOutputDirectory="PreserveNewest" />
+  </ItemGroup>
+
+</Project>

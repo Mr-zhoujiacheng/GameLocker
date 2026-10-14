@@ -1,0 +1,17 @@
+# 构建产物
+bin/
+obj/
+.vs/
+
+# 用户/IDE 本地文件
+*.user
+*.suo
+*.rsuser
+*.nupkg
+*.snupkg
+
+# 打包发布产物
+*.zip
+
+# 日志
+*.log

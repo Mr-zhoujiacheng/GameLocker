@@ -1,0 +1,88 @@
+<?xml version="1.0" encoding="utf-8"?>
+<Page
+    x:Class="GameLocker.AboutPage"
+    xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+    xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+    xmlns:ctl="using:GameLocker.Controls">
+
+    <Grid Background="Transparent"
+          RequestedTheme="Dark" XYFocusKeyboardNavigation="Enabled">
+
+        <Grid.RowDefinitions>
+            <RowDefinition Height="Auto"/>
+            <RowDefinition Height="*"/>
+            <!-- 贴底说明行（不随上面内容滚动） -->
+            <RowDefinition Height="Auto"/>
+            <RowDefinition Height="Auto"/>
+        </Grid.RowDefinitions>
+
+        <!-- 顶栏：返回 + 标题 -->
+        <Grid Grid.Row="0" Padding="20,16">
+            <StackPanel Orientation="Horizontal" Spacing="10" VerticalAlignment="Center">
+                <Button x:Name="BackButton" Background="Transparent" BorderThickness="0" Click="OnBackClick" IsTabStop="False">
+                    <FontIcon Glyph="&#xE72B;" FontSize="16"/>
+                </Button>
+                <TextBlock Text="关于" FontSize="22" FontWeight="SemiBold" VerticalAlignment="Center"/>
+            </StackPanel>
+        </Grid>
+
+        <ScrollViewer Grid.Row="1" Padding="24,8" VerticalScrollBarVisibility="Hidden">
+            <StackPanel Spacing="18">
+
+                <!-- 软件标识 -->
+                <StackPanel Orientation="Horizontal" Spacing="16">
+                    <Image x:Name="AppIconImage" Width="64" Height="64" VerticalAlignment="Top"/>
+                    <StackPanel Spacing="4" VerticalAlignment="Center">
+                        <TextBlock Text="Game Locker" FontSize="20" FontWeight="SemiBold"/>
+                        <TextBlock x:Name="VersionText" FontSize="13" Opacity="0.65"/>
+                        <TextBlock Text="专注于 Win 掌机 / 平板的快捷体验" FontSize="12" Opacity="0.5"/>
+                    </StackPanel>
+                </StackPanel>
+
+                <!-- 作者信息入口：点条目或手柄 A 打开 -->
+                <ListView x:Name="LinkList" SelectionMode="Single" IsTabStop="False">
+                    <ListViewItem Tapped="OnLinkTapped">
+                        <StackPanel Orientation="Horizontal" Spacing="14" Padding="0,10">
+                            <FontIcon Glyph="&#xE774;" FontSize="20" VerticalAlignment="Center"/>
+                            <StackPanel Spacing="2">
+                                <TextBlock Text="GitHub 仓库" FontSize="17"/>
+                                <TextBlock x:Name="GithubSub" FontSize="12" Opacity="0.6"/>
+                            </StackPanel>
+                        </StackPanel>
+                    </ListViewItem>
+                    <ListViewItem Tapped="OnLinkTapped">
+                        <StackPanel Orientation="Horizontal" Spacing="14" Padding="0,10">
+                            <FontIcon Glyph="&#xE8BD;" FontSize="20" VerticalAlignment="Center"/>
+                            <StackPanel Spacing="2">
+                                <TextBlock Text="QQ 群聊" FontSize="17"/>
+                                <TextBlock x:Name="QqSub" FontSize="12" Opacity="0.6"/>
+                            </StackPanel>
+                        </StackPanel>
+                    </ListViewItem>
+                    <ListViewItem Tapped="OnLinkTapped">
+                        <StackPanel Orientation="Horizontal" Spacing="14" Padding="0,10">
+                            <FontIcon Glyph="&#xEB51;" FontSize="20" VerticalAlignment="Center"/>
+                            <StackPanel Spacing="2">
+                                <TextBlock Text="打赏支持" FontSize="17"/>
+                                <TextBlock x:Name="DonateSub" FontSize="12" Opacity="0.6"/>
+                            </StackPanel>
+                        </StackPanel>
+                    </ListViewItem>
+                </ListView>
+
+                <TextBlock x:Name="CopyrightText" FontSize="12" Opacity="0.45"/>
+            </StackPanel>
+        </ScrollViewer>
+
+        <!-- 页面底部说明：仅展示，不可点击（艺术字体，缺字体时逐级回退）。
+             独立行 + 贴底对齐，固定在提示条正上方，不随上方内容滚动 -->
+        <TextBlock Grid.Row="2" Text="永久开源免费，谢谢支持：）！"
+                   FontFamily="华文行楷, 幼圆"
+                   FontSize="18" FontWeight="Bold" Opacity="0.62"
+                   TextWrapping="Wrap" TextAlignment="Center" HorizontalAlignment="Stretch"
+                   Margin="24,0,24,4"/>
+
+        <ctl:GamepadHintBar Grid.Row="3" Margin="0,8,0,12"
+                            Hints="DPAD:选择|A:打开|B:返回"/>
+    </Grid>
+</Page>

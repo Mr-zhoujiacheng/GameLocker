@@ -1,0 +1,253 @@
+﻿<?xml version="1.0" encoding="utf-8"?>
+<Page
+    x:Class="GameLocker.AppearancePage"
+    xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+    xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+    xmlns:ctl="using:GameLocker.Controls">
+
+    <Grid Background="Transparent"
+          RequestedTheme="Dark" XYFocusKeyboardNavigation="Enabled">
+
+        <Grid.RowDefinitions>
+            <RowDefinition Height="Auto"/>
+            <RowDefinition Height="*"/>
+            <RowDefinition Height="Auto"/>
+        </Grid.RowDefinitions>
+
+        <Grid Grid.Row="0" Padding="20,16">
+            <StackPanel Orientation="Horizontal" Spacing="10" VerticalAlignment="Center">
+                <Button x:Name="BackButton" Background="Transparent" BorderThickness="0" Click="OnBackClick" IsTabStop="False">
+                    <FontIcon Glyph="&#xE72B;" FontSize="16"/>
+                </Button>
+                <TextBlock Text="外观" FontSize="22" FontWeight="SemiBold" VerticalAlignment="Center"/>
+            </StackPanel>
+        </Grid>
+
+        <!-- 内容区可滚动：窄窗口下控件不被遮盖 -->
+        <ScrollViewer x:Name="ContentScroll" Grid.Row="1" Padding="24,8" VerticalScrollBarVisibility="Hidden">
+            <StackPanel Spacing="16">
+
+                <!-- ========== 窗口 ========== -->
+                <Grid Margin="0,8,0,0">
+                    <Grid.ColumnDefinitions>
+                        <ColumnDefinition Width="Auto"/>
+                        <ColumnDefinition Width="*"/>
+                    </Grid.ColumnDefinitions>
+                    <TextBlock Grid.Column="0" Text="窗口" FontSize="24" FontWeight="Bold"
+                               VerticalAlignment="Center"/>
+                    <Rectangle Grid.Column="1" Height="2" Margin="14,0,4,0" VerticalAlignment="Center">
+                        <Rectangle.Fill>
+                            <LinearGradientBrush StartPoint="0,0" EndPoint="1,0">
+                                <GradientStop Color="#664CC2FF" Offset="0"/>
+                                <GradientStop Color="#00FFFFFF" Offset="1"/>
+                            </LinearGradientBrush>
+                        </Rectangle.Fill>
+                    </Rectangle>
+                </Grid>
+
+                <ToggleSwitch x:Name="GlassToggle" Padding="14,10" Toggled="OnGlassChanged">
+                    <ToggleSwitch.Header>
+                        <StackPanel Spacing="2">
+                            <TextBlock Text="玻璃效果" FontSize="16"/>
+                            <TextBlock Text="窗口背景磨砂半透明，可与颜色叠加" FontSize="12" Opacity="0.6"/>
+                        </StackPanel>
+                    </ToggleSwitch.Header>
+                </ToggleSwitch>
+
+                <TextBlock Text="窗口背景颜色" FontSize="15" Opacity="0.9"/>
+                <!-- 3 列 × 2 行显式 Grid：每个 RadioButton 是 Grid 直接子元素，
+                     中心坐标可靠，手柄四方向临近选择才能命中颜色行（勿用 RadioButtons 容器） -->
+                <Grid>
+                    <Grid.ColumnDefinitions>
+                        <ColumnDefinition Width="*"/>
+                        <ColumnDefinition Width="*"/>
+                        <ColumnDefinition Width="*"/>
+                    </Grid.ColumnDefinitions>
+                    <Grid.RowDefinitions>
+                        <RowDefinition Height="Auto"/>
+                        <RowDefinition Height="Auto"/>
+                    </Grid.RowDefinitions>
+                    <RadioButton x:Name="DarkGrayRadio" Grid.Row="0" Grid.Column="0" GroupName="BgColor"
+                                 Padding="14,10" Margin="2" Checked="OnColorChanged">
+                        <StackPanel Orientation="Horizontal" Spacing="8">
+                            <Border Width="16" Height="16" CornerRadius="4" Background="#202020"/>
+                            <TextBlock Text="深灰"/>
+                        </StackPanel>
+                    </RadioButton>
+                    <RadioButton x:Name="BlackRadio" Grid.Row="0" Grid.Column="1" GroupName="BgColor"
+                                 Padding="14,10" Margin="2" Checked="OnColorChanged">
+                        <StackPanel Orientation="Horizontal" Spacing="8">
+                            <Border Width="16" Height="16" CornerRadius="4" Background="#000000"/>
+                            <TextBlock Text="黑色"/>
+                        </StackPanel>
+                    </RadioButton>
+                    <RadioButton x:Name="BlueRadio" Grid.Row="0" Grid.Column="2" GroupName="BgColor"
+                                 Padding="14,10" Margin="2" Checked="OnColorChanged">
+                        <StackPanel Orientation="Horizontal" Spacing="8">
+                            <Border Width="16" Height="16" CornerRadius="4" Background="#102A43"/>
+                            <TextBlock Text="深蓝"/>
+                        </StackPanel>
+                    </RadioButton>
+                    <RadioButton x:Name="PurpleRadio" Grid.Row="1" Grid.Column="0" GroupName="BgColor"
+                                 Padding="14,10" Margin="2" Checked="OnColorChanged">
+                        <StackPanel Orientation="Horizontal" Spacing="8">
+                            <Border Width="16" Height="16" CornerRadius="4" Background="#2D1B4E"/>
+                            <TextBlock Text="深紫"/>
+                        </StackPanel>
+                    </RadioButton>
+                    <RadioButton x:Name="GreenRadio" Grid.Row="1" Grid.Column="1" GroupName="BgColor"
+                                 Padding="14,10" Margin="2" Checked="OnColorChanged">
+                        <StackPanel Orientation="Horizontal" Spacing="8">
+                            <Border Width="16" Height="16" CornerRadius="4" Background="#1B3A2A"/>
+                            <TextBlock Text="墨绿"/>
+                        </StackPanel>
+                    </RadioButton>
+                    <RadioButton x:Name="BrownRadio" Grid.Row="1" Grid.Column="2" GroupName="BgColor"
+                                 Padding="14,10" Margin="2" Checked="OnColorChanged">
+                        <StackPanel Orientation="Horizontal" Spacing="8">
+                            <Border Width="16" Height="16" CornerRadius="4" Background="#3E2723"/>
+                            <TextBlock Text="棕褐"/>
+                        </StackPanel>
+                    </RadioButton>
+                </Grid>
+
+            <TextBlock Text="窗口透明度" FontSize="15" Opacity="0.9"/>
+            <Grid>
+                <Grid.ColumnDefinitions>
+                    <ColumnDefinition Width="Auto"/>
+                    <ColumnDefinition Width="*"/>
+                    <ColumnDefinition Width="Auto"/>
+                </Grid.ColumnDefinitions>
+                <Button x:Name="OpacityDownButton" Grid.Column="0" Padding="18,10" Click="OnOpacityDown">
+                    <FontIcon Glyph="&#xE738;" FontSize="14"/>
+                </Button>
+                <Border Grid.Column="1" Background="#1FFFFFFF" CornerRadius="10" Margin="10,0"
+                        BorderBrush="#22FFFFFF" BorderThickness="1">
+                    <TextBlock x:Name="OpacityText" FontSize="16"
+                               HorizontalAlignment="Center" VerticalAlignment="Center"/>
+                </Border>
+                <Button x:Name="OpacityUpButton" Grid.Column="2" Padding="18,10" Click="OnOpacityUp">
+                    <FontIcon Glyph="&#xE710;" FontSize="14"/>
+                </Button>
+            </Grid>
+
+            <TextBlock Text="侧边栏宽度（占屏幕百分比）" FontSize="15" Opacity="0.9"/>
+            <Grid>
+                <Grid.ColumnDefinitions>
+                    <ColumnDefinition Width="Auto"/>
+                    <ColumnDefinition Width="*"/>
+                    <ColumnDefinition Width="Auto"/>
+                </Grid.ColumnDefinitions>
+                <Button x:Name="WidthDownButton" Grid.Column="0" Padding="18,10" Click="OnWidthDown">
+                    <FontIcon Glyph="&#xE738;" FontSize="14"/>
+                </Button>
+                <Border Grid.Column="1" Background="#1FFFFFFF" CornerRadius="10" Margin="10,0"
+                        BorderBrush="#22FFFFFF" BorderThickness="1">
+                    <TextBlock x:Name="WidthText" Text="38%" FontSize="16"
+                               HorizontalAlignment="Center" VerticalAlignment="Center"/>
+                </Border>
+                <Button x:Name="WidthUpButton" Grid.Column="2" Padding="18,10" Click="OnWidthUp">
+                    <FontIcon Glyph="&#xE710;" FontSize="14"/>
+                </Button>
+            </Grid>
+
+                <!-- ========== 磁贴 ========== -->
+                <Grid Margin="0,16,0,0">
+                    <Grid.ColumnDefinitions>
+                        <ColumnDefinition Width="Auto"/>
+                        <ColumnDefinition Width="*"/>
+                    </Grid.ColumnDefinitions>
+                    <TextBlock Grid.Column="0" Text="磁贴" FontSize="24" FontWeight="Bold"
+                               VerticalAlignment="Center"/>
+                    <Rectangle Grid.Column="1" Height="2" Margin="14,0,4,0" VerticalAlignment="Center">
+                        <Rectangle.Fill>
+                            <LinearGradientBrush StartPoint="0,0" EndPoint="1,0">
+                                <GradientStop Color="#664CC2FF" Offset="0"/>
+                                <GradientStop Color="#00FFFFFF" Offset="1"/>
+                            </LinearGradientBrush>
+                        </Rectangle.Fill>
+                    </Rectangle>
+                </Grid>
+
+                <ToggleSwitch x:Name="Tile3DToggle" Padding="14,10" Toggled="OnTile3DChanged">
+                    <ToggleSwitch.Header>
+                        <StackPanel Spacing="2">
+                            <TextBlock Text="立体效果" FontSize="16"/>
+                            <TextBlock Text="磁贴高光阴影渐变，呈现立体感" FontSize="12" Opacity="0.6"/>
+                        </StackPanel>
+                    </ToggleSwitch.Header>
+                </ToggleSwitch>
+
+                <ToggleSwitch x:Name="TileNameToggle" Padding="14,10" Toggled="OnTileNameChanged">
+                    <ToggleSwitch.Header>
+                        <StackPanel Spacing="2">
+                            <TextBlock Text="显示标题" FontSize="16"/>
+                            <TextBlock Text="在磁贴左下角显示快捷项名称" FontSize="12" Opacity="0.6"/>
+                        </StackPanel>
+                    </ToggleSwitch.Header>
+                </ToggleSwitch>
+
+                <ToggleSwitch x:Name="GroupAnimToggle" Padding="14,10" Toggled="OnGroupAnimChanged">
+                    <ToggleSwitch.Header>
+                        <StackPanel Spacing="2">
+                            <TextBlock Text="展开动画" FontSize="16"/>
+                            <TextBlock Text="磁贴组展开/收起时成员交错浮现" FontSize="12" Opacity="0.6"/>
+                        </StackPanel>
+                    </ToggleSwitch.Header>
+                </ToggleSwitch>
+
+                <ToggleSwitch x:Name="RandomColorToggle" Padding="14,10" Toggled="OnRandomColorChanged">
+                    <ToggleSwitch.Header>
+                        <StackPanel Spacing="2">
+                            <TextBlock Text="随机颜色" FontSize="16"/>
+                            <TextBlock Text="未指定颜色的磁贴随机配色，关闭则无底色" FontSize="12" Opacity="0.6"/>
+                        </StackPanel>
+                    </ToggleSwitch.Header>
+                </ToggleSwitch>
+
+            <TextBlock Text="磁贴透明度" FontSize="15" Opacity="0.9"/>
+            <Grid>
+                <Grid.ColumnDefinitions>
+                    <ColumnDefinition Width="Auto"/>
+                    <ColumnDefinition Width="*"/>
+                    <ColumnDefinition Width="Auto"/>
+                </Grid.ColumnDefinitions>
+                <Button x:Name="TileOpacityDownButton" Grid.Column="0" Padding="18,10" Click="OnTileOpacityDown">
+                    <FontIcon Glyph="&#xE738;" FontSize="14"/>
+                </Button>
+                <Border Grid.Column="1" Background="#1FFFFFFF" CornerRadius="10" Margin="10,0"
+                        BorderBrush="#22FFFFFF" BorderThickness="1">
+                    <TextBlock x:Name="TileOpacityText" FontSize="16"
+                               HorizontalAlignment="Center" VerticalAlignment="Center"/>
+                </Border>
+                <Button x:Name="TileOpacityUpButton" Grid.Column="2" Padding="18,10" Click="OnTileOpacityUp">
+                    <FontIcon Glyph="&#xE710;" FontSize="14"/>
+                </Button>
+            </Grid>
+
+            <TextBlock Text="磁贴间距" FontSize="15" Opacity="0.9"/>
+            <Grid>
+                <Grid.ColumnDefinitions>
+                    <ColumnDefinition Width="Auto"/>
+                    <ColumnDefinition Width="*"/>
+                    <ColumnDefinition Width="Auto"/>
+                </Grid.ColumnDefinitions>
+                <Button x:Name="SpacingDownButton" Grid.Column="0" Padding="18,10" Click="OnSpacingDown">
+                    <FontIcon Glyph="&#xE738;" FontSize="14"/>
+                </Button>
+                <Border Grid.Column="1" Background="#1FFFFFFF" CornerRadius="10" Margin="10,0"
+                        BorderBrush="#22FFFFFF" BorderThickness="1">
+                    <TextBlock x:Name="SpacingText" FontSize="16"
+                               HorizontalAlignment="Center" VerticalAlignment="Center"/>
+                </Border>
+                <Button x:Name="SpacingUpButton" Grid.Column="2" Padding="18,10" Click="OnSpacingUp">
+                    <FontIcon Glyph="&#xE710;" FontSize="14"/>
+                </Button>
+            </Grid>
+            </StackPanel>
+        </ScrollViewer>
+
+        <ctl:GamepadHintBar Grid.Row="2" Margin="0,8,0,12"
+                            Hints="DPAD:选择|A:切换|B:返回"/>
+    </Grid>
+</Page>

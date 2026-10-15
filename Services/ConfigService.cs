@@ -66,12 +66,20 @@ public static class ConfigService
         File.WriteAllText(FilePath, JsonSerializer.Serialize(items, Options));
     }
 
-    /// <summary>首次运行的示例项，便于立刻用手柄验证</summary>
-    private static List<LaunchItem> CreateDefaults() =>
-    [
-        new LaunchItem { Name = "记事本", Target = "notepad.exe", Kind = LaunchKind.App },
-        new LaunchItem { Name = "计算器", Target = "calc.exe", Kind = LaunchKind.App },
-        new LaunchItem { Name = "Bing", Target = "https://www.bing.com", Kind = LaunchKind.Url },
-        new LaunchItem { Name = "GitHub", Target = "https://github.com", Kind = LaunchKind.Url }
-    ];
+    /// <summary>首次运行的示例项（便于立刻用手柄验证）。尺寸每次安装随机分配，
+    /// 因此每台机器首次打开的磁贴排布都不一样</summary>
+    private static List<LaunchItem> CreateDefaults()
+    {
+        // 三种尺寸先随机打乱依次分配，保证前三个示例项尺寸互不相同；第四项再随机取一种
+        var sizes = new[] { TileSize.Small, TileSize.Wide, TileSize.Large }
+            .OrderBy(_ => Random.Shared.Next()).ToArray();
+        return
+        [
+            new LaunchItem { Name = "记事本", Target = "notepad.exe", Kind = LaunchKind.App, Size = sizes[0] },
+            new LaunchItem { Name = "计算器", Target = "calc.exe", Kind = LaunchKind.App, Size = sizes[1] },
+            new LaunchItem { Name = "Bing", Target = "https://www.bing.com", Kind = LaunchKind.Url, Size = sizes[2] },
+            new LaunchItem { Name = "GitHub", Target = "https://github.com", Kind = LaunchKind.Url,
+                             Size = sizes[Random.Shared.Next(sizes.Length)] }
+        ];
+    }
 }

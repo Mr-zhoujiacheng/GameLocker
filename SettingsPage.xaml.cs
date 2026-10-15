@@ -87,10 +87,6 @@ public sealed partial class SettingsPage : Page, ISettingsGamepad
         App.Main?.NavigateSettings(page);
     }
 
-    /// <summary>鼠标点击返回：回到进入设置前的页面（磁贴集副本页/主页）</summary>
-    private void OnBackClick(object sender, Microsoft.UI.Xaml.RoutedEventArgs e) =>
-        App.Main?.SettingsBack();
-
     // 分类主页无按键捕获
     public bool IsCapturing => false;
     public void CaptureButtons(GamepadButtons pressed) { }

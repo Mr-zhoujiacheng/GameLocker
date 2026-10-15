@@ -76,7 +76,7 @@
 
         <!-- 页面底部说明：仅展示，不可点击（艺术字体，缺字体时逐级回退）。
              独立行 + 贴底对齐，固定在提示条正上方，不随上方内容滚动 -->
-        <TextBlock Grid.Row="2" Text="永久开源免费，谢谢支持：）！"
+        <TextBlock Grid.Row="2" Text="开源免费，谢谢支持：）！"
                    FontFamily="华文行楷, 幼圆"
                    FontSize="18" FontWeight="Bold" Opacity="0.62"
                    TextWrapping="Wrap" TextAlignment="Center" HorizontalAlignment="Stretch"

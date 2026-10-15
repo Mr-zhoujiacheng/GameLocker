@@ -2,7 +2,10 @@ using GameLocker.Models;
 using GameLocker.Services;
 using Microsoft.UI.Xaml;
 using Microsoft.UI.Xaml.Controls;
+using Microsoft.UI.Xaml.Hosting;
+using Microsoft.UI.Xaml.Input;
 using Microsoft.UI.Xaml.Media;
+using Microsoft.UI.Xaml.Media.Animation;
 using Microsoft.UI.Xaml.Navigation;
 
 namespace GameLocker;
@@ -31,6 +34,27 @@ public sealed partial class TileSetPage : Page
     private bool _moving;
     private readonly List<LaunchItem> _marked = [];
     private LaunchItem? _grabbed;
+
+    // ---- 长按设置磁贴进入编辑模式 + 指针拖拽磁贴（与主页 MainPage 同款手势层，改动需两页同步） ----
+    private LaunchItem? _dragItem;      // 正在拖拽的顶层磁贴
+    private Border? _dragTile;
+    private Windows.Foundation.Point _dragStart;  // 按下点（相对 TileHost）
+    private uint _dragPointerId;
+    private bool _dragMoved;            // 超过阈值=进入拖拽（否则视为轻点）
+    private bool _suppressTap;          // 长按/拖拽完成后吞掉随后的 Tapped
+    private Microsoft.UI.Xaml.DispatcherTimer? _lpTimer;  // 长按计时器
+    private Border? _lpTile;
+    private LaunchItem? _lpCloseItem;  // 长按目标=可关闭磁贴时记录（null=设置磁贴进编辑）
+    private Windows.Foundation.Point _lpStart;
+    private uint _lpPointerId;
+
+    // 设置磁贴徽章：拖拽悬停=垃圾桶；标记≥2=加号（点击组合）（与主页 MainPage 同款）
+    private Border? _settingsTile;      // 当前设置磁贴元素（每次 LayoutTiles 重建时更新）
+    private enum SettingsBadge { None, Trash, Plus }
+    private SettingsBadge _badge;
+    private FontIcon? _badgeIcon;
+    private string? _badgeOrigGlyph;
+    private bool _dragOverTrash;        // 拖拽中指针悬停在设置磁贴上
 
     /// <summary>本副本页展示的磁贴集（按 Target 从配置定位，编辑保存返回后重新加载）</summary>
     private LaunchItem? _set;
@@ -100,6 +124,10 @@ public sealed partial class TileSetPage : Page
     protected override void OnNavigatedFrom(NavigationEventArgs e)
     {
         base.OnNavigatedFrom(e);
+        // 双保险：任何导航离开都取消未决长按，避免计时器在后台触发关闭程序/进入编辑模式（与主页同款）
+        _lpTimer?.Stop();
+        _lpTile = null;
+        _lpCloseItem = null;
         SystemMediaService.StateChanged -= OnMusicStateChanged;
         SlideshowService.CurrentChanged -= OnSlideshowChanged;
     }
@@ -144,6 +172,11 @@ public sealed partial class TileSetPage : Page
         _tiles.Clear();
         _musicRefs.Clear();
         _photoRefs.Clear();
+        // 磁贴重建：旧的徽章引用失效（与主页同款）
+        _settingsTile = null;
+        _badge = SettingsBadge.None;
+        _badgeIcon = null;
+        _badgeOrigGlyph = null;
 
         var availW = TileScroll.ViewportWidth > 0 ? TileScroll.ViewportWidth : TileHost.ActualWidth;
         if (availW <= 0) return;
@@ -189,6 +222,7 @@ public sealed partial class TileSetPage : Page
         TileHost.Height = Math.Max(200, (maxRow + 1) * (Unit + Gap));
 
         UpdateSelection();
+        RefreshSettingsBadge();
     }
 
     private static bool Fits(HashSet<(int, int)> occ, int c, int r, int w, int h)
@@ -214,7 +248,10 @@ public sealed partial class TileSetPage : Page
                 SystemMediaService.Prev, SystemMediaService.TogglePlay, SystemMediaService.Next);
             musicTile.Tag = index;
             _musicRefs[refs] = index;
-            musicTile.Tapped += (_, _) => { _selected = index; UpdateSelection(); };
+            // 单击=延迟到系统双击时长后选中（保留副页原有语义：音乐磁贴不切歌，切歌走 LB/RB）
+            musicTile.Tapped += (_, _) => OnTileTapped(index, null);
+            musicTile.DoubleTapped += (_, _) => HandleDoubleTap(index);
+            AttachEditGestures(musicTile, item, group, index, false);
             return musicTile;
         }
 
@@ -231,20 +268,445 @@ public sealed partial class TileSetPage : Page
             var (photoTile, refs) = TileStyle.BuildPhotoTile(item, width, height, img, placeholder);
             photoTile.Tag = index;
             _photoRefs[refs] = (index, folder, item);
-            photoTile.Tapped += (_, _) =>
-            {
-                _selected = index;
-                UpdateSelection();
-                SlideshowService.Skip(folder, 1);
-            };
+            // 单击=延迟到系统双击时长后选中并切到下一张（保留副页原有语义）
+            photoTile.Tapped += (_, _) => OnTileTapped(index, () => SlideshowService.Skip(folder, 1));
+            photoTile.DoubleTapped += (_, _) => HandleDoubleTap(index);
+            AttachEditGestures(photoTile, item, group, index, false);
             return photoTile;
         }
 
         // 标准磁贴（与主页共用构建）
         var tile = TileStyle.BuildStandardTile(item, group, width, height, accent, noColor);
         tile.Tag = index;
-        tile.Tapped += (_, _) => { _selected = index; UpdateSelection(); ActivateAt(index); };
+
+        // 移动模式已标记：青色描边提示；已抓取：黄色描边提示（与主页一致）
+        if (_moving && _marked.Contains(item))
+        {
+            tile.BorderBrush = new SolidColorBrush(Windows.UI.Color.FromArgb(0xFF, 0x4C, 0xC2, 0xFF));
+            tile.BorderThickness = new Thickness(3);
+        }
+        else if (_moving && ReferenceEquals(_grabbed, item))
+        {
+            tile.BorderBrush = new SolidColorBrush(Windows.UI.Color.FromArgb(0xFF, 0xFF, 0xD3, 0x4D));
+            tile.BorderThickness = new Thickness(3);
+        }
+
+        tile.Tapped += (_, _) => OnTileTapped(index, () => ActivateAt(index));
+        tile.DoubleTapped += (_, _) => HandleDoubleTap(index);
+        var isSettings = item.Kind == LaunchKind.Widget && item.WidgetKind == WidgetKind.Settings;
+        if (isSettings) _settingsTile = tile;
+        AttachEditGestures(tile, item, group, index, isSettings);
         return tile;
+    }
+
+    /// <summary>按当前状态刷新设置磁贴徽章：拖拽悬停=垃圾桶；选中≥2=加号（点击组合）；否则恢复原图标（与主页 RefreshSettingsBadge 同款，改动需两页同步）</summary>
+    private void RefreshSettingsBadge()
+    {
+        var want = SettingsBadge.None;
+        if (_moving && _settingsTile is not null)
+            want = _dragOverTrash ? SettingsBadge.Trash
+                   : _marked.Count >= 2 ? SettingsBadge.Plus
+                   : SettingsBadge.None;
+        if (_badge == want) return;
+        if (_badgeIcon is not null && _badgeOrigGlyph is not null) _badgeIcon.Glyph = _badgeOrigGlyph;
+        _badgeIcon = null;
+        _badgeOrigGlyph = null;
+        _badge = want;
+        if (_settingsTile is null) return;
+        if (want == SettingsBadge.None)
+        {
+            _settingsTile.BorderBrush = new SolidColorBrush(Windows.UI.Color.FromArgb(0x40, 0xFF, 0xFF, 0xFF));
+            _settingsTile.BorderThickness = new Thickness(1);
+            UpdateSelection(); // 若设置磁贴正被选中，重绘选中描边
+            return;
+        }
+        _settingsTile.BorderBrush = new SolidColorBrush(want == SettingsBadge.Trash
+            ? Windows.UI.Color.FromArgb(0xFF, 0xE8, 0x50, 0x4A)
+            : Windows.UI.Color.FromArgb(0xFF, 0x3F, 0xC0, 0x5B));
+        _settingsTile.BorderThickness = new Thickness(3);
+        _badgeIcon = FindIcon(_settingsTile);
+        if (_badgeIcon is not null)
+        {
+            _badgeOrigGlyph = _badgeIcon.Glyph;
+            _badgeIcon.Glyph = want == SettingsBadge.Trash ? "\uE74D" : "\uE710"; // 删除 / 加号
+        }
+    }
+
+    // ---- 磁贴轻点/双击：单击延迟"系统双击时长"（默认 500ms）执行（启动/切图/仅选中），
+    // 窗口内再点同一磁贴或事件 TapCount≥2 = 双击进编辑（等同 R3）----（与主页同款，改动需两页同步）
+    private Microsoft.UI.Xaml.DispatcherTimer? _tapTimer;
+    private int _pendingTapIndex = -1;
+    private Action? _pendingAction;
+
+    [System.Runtime.InteropServices.DllImport("user32.dll")]
+    private static extern uint GetDoubleClickTime();
+
+    private DateTime _lastDoubleAt = DateTime.MinValue;
+
+    private void OnTileTapped(int index, Action? singleAction)
+    {
+        if (_suppressTap) { _suppressTap = false; return; }
+        if (_moving) return; // 编辑模式：选择/拖拽由指针手势处理
+        _selected = index;
+        UpdateSelection();
+
+        // 双击的伴随事件（Tapped/DoubleTapped 先后顺序不定）：已处理则不再排程单击动作
+        if ((DateTime.Now - _lastDoubleAt).TotalMilliseconds < 100) return;
+
+        // 窗口内再点同一磁贴 = 双击：取消待执行的单击动作，进入编辑页
+        if (_tapTimer is { IsEnabled: true } && _pendingTapIndex == index)
+        {
+            HandleDoubleTap(index);
+            return;
+        }
+
+        _pendingTapIndex = index;
+        _pendingAction = singleAction;
+        if (_tapTimer == null)
+        {
+            // 与系统"双击速度"一致（用户可在鼠标设置里调整），兜底不低于 400ms
+            var ms = Math.Max(400, (int)GetDoubleClickTime());
+            _tapTimer = new Microsoft.UI.Xaml.DispatcherTimer { Interval = TimeSpan.FromMilliseconds(ms) };
+            _tapTimer.Tick += (_, _) =>
+            {
+                _tapTimer!.Stop();
+                _pendingTapIndex = -1;
+                var act = _pendingAction;
+                _pendingAction = null;
+                act?.Invoke();
+            };
+        }
+        _tapTimer.Stop();
+        _tapTimer.Start();
+    }
+
+    /// <summary>双击磁贴处理：取消待执行的单击动作并进编辑页；Tapped 与 DoubleTapped 双通道触发，100ms 内去重（与主页同款）</summary>
+    private void HandleDoubleTap(int index)
+    {
+        if (_moving) return;
+        if ((DateTime.Now - _lastDoubleAt).TotalMilliseconds < 100) return;
+        _lastDoubleAt = DateTime.Now;
+        _tapTimer?.Stop();
+        _pendingTapIndex = -1;
+        _pendingAction = null;
+        // 双击的第二次"按下"已启动 600ms 长按计时并 CapturePointer；切页后磁贴脱离可视树，
+        // 第二次 PointerReleased 不再送达 → 计时器不会被取消，会在后台误触发。导航前先取消。
+        _lpTimer?.Stop();
+        _lpTile = null;
+        _lpCloseItem = null;
+        OpenEditorAt(index);
+    }
+
+    /// <summary>双击磁贴：进入编辑快捷项页（等同 R3）；组成员不支持直接编辑（与 R3 一致）</summary>
+    private void OpenEditorAt(int index)
+    {
+        if (index < 0 || index >= _display.Count) return;
+        var (item, group) = _display[index];
+        if (group is not null) return;
+        App.Main?.NavigateEditItem(item);
+    }
+
+    /// <summary>给磁贴挂编辑手势（与主页 AttachEditGestures 同款，改动需两页同步）：普通模式下长按设置磁贴=进入编辑模式、
+    /// 长按程序/网站/文件夹=关闭；编辑模式内按住拖动=移动磁贴（放到别的磁贴/空位=交换位置，放到设置磁贴（垃圾桶）上=删除）；
+    /// 编辑模式内轻点磁贴=标记选中，轻点设置磁贴：标记≥2=组合成磁贴组（加号），否则=退出编辑模式。</summary>
+    private void AttachEditGestures(Border tile, LaunchItem item, LaunchItem? group, int index, bool isSettings)
+    {
+        tile.AddHandler(UIElement.PointerPressedEvent, new PointerEventHandler((_, e) =>
+        {
+            _suppressTap = false;
+            var p = e.GetCurrentPoint(TileHost).Position;
+
+            // 普通模式长按：设置磁贴=进入编辑模式；程序/网站/文件夹磁贴=关闭其前台窗口（等同 Y 键）
+            if (!_moving && group is null &&
+                (isSettings || item.Kind is LaunchKind.App or LaunchKind.Url or LaunchKind.Folder))
+            {
+                _lpTimer ??= new Microsoft.UI.Xaml.DispatcherTimer { Interval = TimeSpan.FromMilliseconds(600) };
+                _lpTimer.Stop();
+                _lpTimer.Tick -= OnLongPressTick;
+                _lpTimer.Tick += OnLongPressTick;
+                _lpTile = tile;
+                _lpCloseItem = isSettings ? null : item;
+                _lpStart = p;
+                _lpPointerId = e.Pointer.PointerId;
+                tile.CapturePointer(e.Pointer);
+                _lpTimer.Start();
+                return;
+            }
+
+            if (!_moving || _dragItem is not null) return;
+            if (group is not null)
+            {
+                // 组成员不可拖拽：轻点仅选中（便于 Y 键移出组）
+                _selected = index;
+                UpdateSelection();
+                return;
+            }
+            _dragItem = item;
+            _dragTile = tile;
+            _dragStart = p;
+            _dragPointerId = e.Pointer.PointerId;
+            _dragMoved = false;
+            _selected = index;
+            tile.CapturePointer(e.Pointer);
+            e.Handled = true; // 吞掉按下事件：拖拽期间不触发 ScrollViewer 触摸滚动
+            UpdateSelection();
+        }), true);
+
+        tile.AddHandler(UIElement.PointerMovedEvent, new PointerEventHandler((_, e) =>
+        {
+            var p = e.GetCurrentPoint(TileHost).Position;
+            if (_lpTile is not null && e.Pointer.PointerId == _lpPointerId)
+            {
+                if (Dist(p, _lpStart) > 12) { _lpTimer?.Stop(); _lpTile = null; _lpCloseItem = null; } // 移走了=取消长按
+                return;
+            }
+            if (_dragTile is null || !ReferenceEquals(_dragTile, tile) || e.Pointer.PointerId != _dragPointerId) return;
+            if (!_dragMoved && Dist(p, _dragStart) < 10) return; // 未超过阈值仍是轻点
+            _dragMoved = true;
+            tile.RenderTransform = new TranslateTransform { X = p.X - _dragStart.X, Y = p.Y - _dragStart.Y };
+            Canvas.SetZIndex(tile, 10);
+            tile.BorderBrush = new SolidColorBrush(Windows.UI.Color.FromArgb(0xFF, 0xFF, 0xD3, 0x4D));
+            tile.BorderThickness = new Thickness(3);
+            // 悬停在设置磁贴上：变垃圾桶（松手即删除）；否则按标记数显示加号/普通
+            _dragOverTrash = _settingsTile is not null && !ReferenceEquals(_settingsTile, tile) &&
+                             PointInTile(p, _settingsTile);
+            RefreshSettingsBadge();
+        }), true);
+
+        tile.AddHandler(UIElement.PointerReleasedEvent, new PointerEventHandler((_, e) =>
+        {
+            if (_lpTile is not null && ReferenceEquals(_lpTile, tile) && e.Pointer.PointerId == _lpPointerId)
+            {
+                _lpTimer?.Stop();
+                _lpTile = null;
+                _lpCloseItem = null;
+                return;
+            }
+            if (_dragTile is null || !ReferenceEquals(_dragTile, tile) || e.Pointer.PointerId != _dragPointerId) return;
+            var p = e.GetCurrentPoint(TileHost).Position;
+            var dragged = _dragItem;
+            var dragTile = _dragTile;
+            _dragItem = null;
+            _dragTile = null;
+            var moved = _dragMoved;
+            _dragMoved = false;
+            if (moved)
+            {
+                _suppressTap = true;
+                if (dragged is not null) DropDragged(p, dragged, dragTile);
+            }
+            else if (isSettings)
+            {
+                _suppressTap = true;
+                // 编辑模式轻点设置磁贴：已选中≥2=组合成磁贴组（加号），否则=退出编辑
+                if (_marked.Count >= 2) CreateGroupFromMarked();
+                else EndMove();
+            }
+            else if (dragged is not null)
+            {
+                _selected = index;
+                // 编辑模式轻点组磁贴=展开/收起；轻点普通磁贴=标记/取消标记（≥2 后设置磁贴变加号）
+                if (dragged.Kind == LaunchKind.Group) ToggleGroup(dragged);
+                else ToggleMark();
+            }
+        }), true);
+
+        tile.AddHandler(UIElement.PointerCaptureLostEvent, new PointerEventHandler((_, _) =>
+        {
+            if (_dragTile is not null && ReferenceEquals(_dragTile, tile))
+            {
+                _dragItem = null;
+                _dragTile = null;
+                _dragMoved = false;
+            }
+            if (_lpTile is not null && ReferenceEquals(_lpTile, tile))
+            {
+                _lpTimer?.Stop();
+                _lpTile = null;
+            }
+        }), true);
+    }
+
+    private void OnLongPressTick(object sender, object args)
+    {
+        ((Microsoft.UI.Xaml.DispatcherTimer)sender).Stop();
+        _lpTile = null;
+        var closeItem = _lpCloseItem;
+        _lpCloseItem = null;
+        // 兜底守卫：若已切走（双击进编辑页等），绝不在后台执行关闭程序/进入编辑模式
+        if (App.Main?.IsCurrentPage(this) != true) return;
+        _suppressTap = true;
+        if (closeItem is not null) CloseItem(closeItem); // 长按可关闭磁贴=关程序/网站/文件夹
+        else EnterEditMode();                             // 长按设置磁贴=进入编辑模式
+    }
+
+    private static double Dist(Windows.Foundation.Point a, Windows.Foundation.Point b) =>
+        Math.Sqrt((a.X - b.X) * (a.X - b.X) + (a.Y - b.Y) * (a.Y - b.Y));
+
+    /// <summary>拖拽放下：命中设置磁贴（垃圾桶）=删除；命中其他磁贴或空位=交换位置移动（组合用轻点标记+加号）（与主页同款）</summary>
+    private void DropDragged(Windows.Foundation.Point p, LaunchItem dragged, Border? dragTile)
+    {
+        _dragOverTrash = false;
+        RefreshSettingsBadge();
+        var draggedIsSettings = dragged.Kind == LaunchKind.Widget && dragged.WidgetKind == WidgetKind.Settings;
+
+        LaunchItem? tItem = null;
+        LaunchItem? tGroup = null;
+        var hit = false;
+        for (var i = 0; i < _tiles.Count && i < _display.Count; i++)
+        {
+            var t = _tiles[i];
+            if (dragTile is not null && ReferenceEquals(t, dragTile)) continue;
+            if (!PointInTile(p, t)) continue;
+            (tItem, tGroup) = _display[i];
+            hit = true;
+            break;
+        }
+
+        if (hit && tItem is not null && !ReferenceEquals(tItem, dragged))
+        {
+            var targetIsSettings = tItem.Kind == LaunchKind.Widget && tItem.WidgetKind == WidgetKind.Settings;
+            if (targetIsSettings)
+            {
+                if (draggedIsSettings) return; // 设置磁贴拖到自身：不动
+                // 垃圾桶：组按展开状态区分（展开=仅删组本体，收起=整组删除）；普通磁贴=删除
+                DeleteItem(dragged, null);
+                ShowToast($"已删除 {dragged.Name}");
+                return;
+            }
+            // 拖到普通磁贴/组成员（成员算其组本体）上：交换位置=移动
+            var targetTop = tGroup ?? tItem;
+            if (!ReferenceEquals(targetTop, dragged)) SwapItems(dragged, targetTop);
+            return;
+        }
+        // 空位：与中心距落点最近的顶层磁贴交换
+        SwapToNearest(dragged, p);
+    }
+
+    private static FontIcon? FindIcon(Microsoft.UI.Xaml.DependencyObject root)
+    {
+        var n = Microsoft.UI.Xaml.Media.VisualTreeHelper.GetChildrenCount(root);
+        for (var i = 0; i < n; i++)
+        {
+            var c = Microsoft.UI.Xaml.Media.VisualTreeHelper.GetChild(root, i);
+            if (c is FontIcon fi) return fi;
+            var r = FindIcon(c);
+            if (r is not null) return r;
+        }
+        return null;
+    }
+
+    private static bool PointInTile(Windows.Foundation.Point p, Border t)
+    {
+        var x = Canvas.GetLeft(t);
+        var y = Canvas.GetTop(t);
+        return p.X >= x && p.X <= x + t.Width && p.Y >= y && p.Y <= y + t.Height;
+    }
+
+    /// <summary>放到空位：与中心距落点最近的顶层磁贴交换位置（与主页同款）</summary>
+    private void SwapToNearest(LaunchItem dragged, Windows.Foundation.Point p)
+    {
+        var gi = _display.IndexOf((dragged, null));
+        if (gi < 0) return;
+        int best = -1;
+        double bd = double.MaxValue;
+        for (var i = 0; i < _tiles.Count && i < _display.Count; i++)
+        {
+            if (i == gi) continue;
+            var (_, group) = _display[i];
+            if (group is not null) continue; // 组成员不参与
+            var (x, y) = Center(_tiles[i]);
+            var d = (x - p.X) * (x - p.X) + (y - p.Y) * (y - p.Y);
+            if (d < bd) { bd = d; best = i; }
+        }
+        if (best < 0) return;
+        var (itemT, _) = _display[best];
+        SwapItems(dragged, itemT);
+    }
+
+    /// <summary>两个顶层磁贴交换位置（拖拽移动），带 200ms 滑动换位动画；持久化走副本页的 PersistSnapshot（与主页同款动画，不改副页手柄重建式 SwapInDirection）</summary>
+    private void SwapItems(LaunchItem a, LaunchItem b)
+    {
+        var ia = _items.IndexOf(a);
+        var ib = _items.IndexOf(b);
+        if (ia < 0 || ib < 0) return;
+
+        // 交换前记录两磁贴当前画布坐标（旧位置）
+        var (ta, tb) = (TileOf(a), TileOf(b));
+        (double x, double y)? oldA = ta is null ? null : (Canvas.GetLeft(ta), Canvas.GetTop(ta));
+        (double x, double y)? oldB = tb is null ? null : (Canvas.GetLeft(tb), Canvas.GetTop(tb));
+
+        (_items[ia], _items[ib]) = (_items[ib], _items[ia]);
+        CommitLayout(a);
+
+        StopSwapAnim(); // 清理上一段未播完的动画
+        AnimateToNewPos(TileOf(a), oldA);
+        AnimateToNewPos(TileOf(b), oldB);
+        if (_swapTiles.Count > 0) StartSwapAnim();
+    }
+
+    private Border? TileOf(LaunchItem item)
+    {
+        var di = _display.IndexOf((item, null));
+        return di >= 0 && di < _tiles.Count ? _tiles[di] : null;
+    }
+
+    // 换位动画状态：磁贴先偏移到旧位置，再逐帧滑回新位置（与主页同款）
+    private readonly List<(Border tile, double dx, double dy)> _swapTiles = [];
+    private System.Diagnostics.Stopwatch? _swapSw;
+    private EventHandler<object>? _swapRender;
+    private const int SwapAnimMs = 200;
+
+    private void AnimateToNewPos(Border? newTile, (double x, double y)? oldPos)
+    {
+        if (newTile is null || oldPos is null) return;
+        var dx = oldPos.Value.x - Canvas.GetLeft(newTile);
+        var dy = oldPos.Value.y - Canvas.GetTop(newTile);
+        if (dx == 0 && dy == 0) return;
+        _swapTiles.Add((newTile, dx, dy));
+        newTile.RenderTransform = new TranslateTransform { X = dx, Y = dy };
+        Canvas.SetZIndex(newTile, 5);
+    }
+
+    private void StartSwapAnim()
+    {
+        _swapSw = System.Diagnostics.Stopwatch.StartNew();
+        _swapRender = (_, _) =>
+        {
+            var t = Math.Clamp(_swapSw!.ElapsedMilliseconds / (double)SwapAnimMs, 0, 1);
+            var k = 1 - Math.Pow(1 - t, 3); // ease-out
+            foreach (var (tile, dx, dy) in _swapTiles)
+                tile.RenderTransform = new TranslateTransform { X = dx * (1 - k), Y = dy * (1 - k) };
+            if (t >= 1) StopSwapAnim();
+        };
+        Microsoft.UI.Xaml.Media.CompositionTarget.Rendering += _swapRender;
+    }
+
+    private void StopSwapAnim()
+    {
+        if (_swapRender is not null)
+        {
+            Microsoft.UI.Xaml.Media.CompositionTarget.Rendering -= _swapRender;
+            _swapRender = null;
+        }
+        foreach (var (tile, _, _) in _swapTiles)
+        {
+            tile.RenderTransform = null;
+            Canvas.SetZIndex(tile, 0);
+        }
+        _swapTiles.Clear();
+    }
+
+    /// <summary>换位后重排并把选中跟随到 follow；持久化走副本页的 PersistSnapshot（对齐主页 CommitLayout，仅持久化方式不同）</summary>
+    private void CommitLayout(LaunchItem follow)
+    {
+        PersistSnapshot();
+        BuildDisplay();
+        LayoutTiles();
+        var ni = _display.IndexOf((follow, null));
+        if (ni >= 0) _selected = ni;
+        else _selected = Math.Clamp(_selected, 0, Math.Max(0, _display.Count - 1));
+        UpdateSelection();
     }
 
     // ---- 动作 ----
@@ -276,18 +738,42 @@ public sealed partial class TileSetPage : Page
         if (_selected < 0 || _selected >= _display.Count) return;
         var (item, group) = _display[_selected];
         if (group is not null || item.Kind is LaunchKind.Widget or LaunchKind.Group) return;
+        CloseItem(item);
+    }
+
+    /// <summary>关闭磁贴对应的前台窗口（Y 键与长按共用）：程序/网站/文件夹（与主页 CloseItem 同款，改动需两页同步）</summary>
+    private void CloseItem(LaunchItem item)
+    {
         var killed = LaunchService.Close(item);
-        ShowToast(killed > 0 ? $"已关闭 {item.Name}" : $"{item.Name} 未在运行");
+        ShowToast(killed > 0 ? $"已关闭 {item.Name}" : $"{item.Name} 未在运行",
+            killed > 0 ? ToastKind.Success : ToastKind.Warning);
         if (killed > 0) App.Main?.KeepForeground(); // 目标关闭后启动器保持前台不最小化
     }
 
-    /// <summary>临时提示条：2.5 秒后自动隐藏（关闭反馈等复用）</summary>
-    private Microsoft.UI.Xaml.DispatcherTimer? _toastTimer;
+    /// <summary>提示条语义：决定图标徽章与强调色</summary>
+    private enum ToastKind { Success, Warning }
 
-    private void ShowToast(string text)
+    /// <summary>临时提示条：玻璃质感药丸，2 秒后自动隐藏（与主页同款样式）。
+    /// 成功=青色对勾，警告=琥珀感叹号；首次出现时淡入 + 自上方归位。</summary>
+    private Microsoft.UI.Xaml.DispatcherTimer? _toastTimer;
+    private Storyboard? _toastIn;
+
+    private void ShowToast(string text, ToastKind kind = ToastKind.Success)
     {
+        var warn = kind == ToastKind.Warning;
+        var accent = warn ? Windows.UI.Color.FromArgb(0xFF, 0xFF, 0xB9, 0x00)
+                          : Windows.UI.Color.FromArgb(0xFF, 0x4C, 0xC2, 0xFF);
+        MoveHintIcon.Glyph = warn ? "\uE7BA" : "\uE73E"; // 感叹号 / 对勾
+        MoveHintIcon.Foreground = new SolidColorBrush(accent);
+        MoveHintBadge.Background = new SolidColorBrush(
+            Windows.UI.Color.FromArgb(0x2A, accent.R, accent.G, accent.B));
         MoveHintText.Text = text;
-        MoveHintBar.Visibility = Visibility.Visible;
+
+        if (MoveHintBar.Visibility != Visibility.Visible)
+        {
+            MoveHintBar.Visibility = Visibility.Visible;
+            PlayToastIn();
+        }
         if (_toastTimer == null)
         {
             _toastTimer = new Microsoft.UI.Xaml.DispatcherTimer { Interval = TimeSpan.FromMilliseconds(2000) };
@@ -299,6 +785,27 @@ public sealed partial class TileSetPage : Page
         }
         _toastTimer.Stop();
         _toastTimer.Start();
+    }
+
+    /// <summary>提示条入场：淡入 + 自上方 10px 归位</summary>
+    private void PlayToastIn()
+    {
+        var fade = new DoubleAnimation { From = 0, To = 1, Duration = TimeSpan.FromMilliseconds(150) };
+        Storyboard.SetTarget(fade, MoveHintBar);
+        Storyboard.SetTargetProperty(fade, "Opacity");
+        var slide = new DoubleAnimation
+        {
+            From = -10, To = 0, Duration = TimeSpan.FromMilliseconds(220),
+            EasingFunction = new CubicEase { EasingMode = EasingMode.EaseOut }
+        };
+        Storyboard.SetTarget(slide, MoveHintSlide);
+        Storyboard.SetTargetProperty(slide, "Y");
+        var sb = new Storyboard();
+        sb.Children.Add(fade);
+        sb.Children.Add(slide);
+        _toastIn?.Stop();
+        _toastIn = sb;
+        sb.Begin();
     }
 
     private void ToggleGroup(LaunchItem group)
@@ -543,16 +1050,23 @@ public sealed partial class TileSetPage : Page
         }
         if (buttons.HasFlag(GamepadButtons.LeftThumb))
         {
-            // 进入排列模式：标题替换为"编辑模式"，底部提示条换成排列操作提示
-            _moving = true;
-            SetTitle.Visibility = Visibility.Collapsed;
-            EditModeText.Visibility = Visibility.Visible;
-            UpdateHintBar();
-            LayoutTiles();
-            UpdateSelection();
+            EnterEditMode();
             return true;
         }
         return false;
+    }
+
+    /// <summary>进入编辑（排列）模式：标题换成"编辑模式"大字，提示条换成编辑操作提示。
+    /// L3 与长按设置磁贴共用（结构对齐主页 EnterEditMode）；重排一次给磁贴挂上拖拽手势，并抖一下作为过渡反馈。</summary>
+    private void EnterEditMode()
+    {
+        if (_moving) return;
+        _moving = true;
+        SetTitle.Visibility = Visibility.Collapsed;
+        EditModeText.Visibility = Visibility.Visible;
+        UpdateHintBar();
+        LayoutTiles();
+        ShakeTiles();
     }
 
     private void EndMove()
@@ -560,6 +1074,12 @@ public sealed partial class TileSetPage : Page
         _moving = false;
         _marked.Clear();
         _grabbed = null;
+        // 复位拖拽状态并还原设置磁贴徽章（与主页一致）
+        _dragItem = null;
+        _dragTile = null;
+        _dragMoved = false;
+        _dragOverTrash = false;
+        RefreshSettingsBadge();
         // 恢复标题与常规提示条
         EditModeText.Visibility = Visibility.Collapsed;
         SetTitle.Visibility = Visibility.Visible;
@@ -567,6 +1087,32 @@ public sealed partial class TileSetPage : Page
         PersistSnapshot();
         LayoutTiles();
         UpdateSelection();
+        ShakeTiles(); // 与主页一致：退出编辑模式同样抖一下，让"回到普通模式"也有明确反馈
+    }
+
+    /// <summary>进入/退出编辑模式的磁贴抖动：每个磁贴快速左右各摆几下后回正，按序号错开起播时间形成"波纹"。
+    /// 走 Composition 层的 RotationAngleInDegrees（不改 RenderTransform），因此与拖拽的 TranslateTransform、
+    /// 换位/展开动画互不干扰；动画收在 0°，结束后不留偏移。与主页 ShakeTiles 同款。</summary>
+    private void ShakeTiles()
+    {
+        for (var k = 0; k < _tiles.Count; k++)
+        {
+            var t = _tiles[k];
+            var visual = ElementCompositionPreview.GetElementVisual(t);
+            visual.CenterPoint = new System.Numerics.Vector3(
+                (float)t.ActualWidth / 2f, (float)t.ActualHeight / 2f, 0f);
+
+            var anim = visual.Compositor.CreateScalarKeyFrameAnimation();
+            anim.Duration = TimeSpan.FromMilliseconds(360);
+            anim.DelayTime = TimeSpan.FromMilliseconds(k * 22);
+            anim.InsertKeyFrame(0f, 0f);
+            anim.InsertKeyFrame(0.2f, -4.5f);
+            anim.InsertKeyFrame(0.4f, 4.5f);
+            anim.InsertKeyFrame(0.6f, -3f);
+            anim.InsertKeyFrame(0.8f, 2f);
+            anim.InsertKeyFrame(1f, 0f);
+            visual.StartAnimation("RotationAngleInDegrees", anim);
+        }
     }
 
     /// <summary>排列模式 A 键：抓取当前磁贴（此后方向键=移动它）/ 再按放下</summary>
@@ -585,12 +1131,13 @@ public sealed partial class TileSetPage : Page
         UpdateSelection();
     }
 
-    /// <summary>排列模式 X 键：标记/取消标记当前顶层磁贴（已标记青色描边）</summary>
+    /// <summary>排列模式 X 键：标记/取消标记当前顶层磁贴（已标记青色描边）（与主页 ToggleMark 同款）</summary>
     private void ToggleMark()
     {
         if (_selected < 0 || _selected >= _display.Count) return;
         var (item, group) = _display[_selected];
-        if (group is not null || item.Kind == LaunchKind.Group) return;
+        if (group is not null || item.Kind == LaunchKind.Group) return; // 组成员/组本体不参与
+        if (item.Kind == LaunchKind.Widget && item.WidgetKind == WidgetKind.Settings) return; // 设置磁贴不参与组合
         if (_marked.Contains(item)) _marked.Remove(item);
         else _marked.Add(item);
         UpdateHintBar();
@@ -664,16 +1211,24 @@ public sealed partial class TileSetPage : Page
         UpdateSelection();
     }
 
-    /// <summary>删除当前选中磁贴：组=拆分组；成员=移出组；普通=删除</summary>
+    /// <summary>删除当前选中磁贴：展开中的组=仅删组本体（成员回到顶层原位）；未展开的组=整组删除（含成员）；成员=移出组；普通=删除</summary>
     private void DeleteSelected()
     {
         if (_selected < 0 || _selected >= _display.Count) return;
         var (item, group) = _display[_selected];
+        DeleteItem(item, group);
+    }
+
+    /// <summary>删除指定磁贴（Y 键/拖到设置磁贴上共用）：组=拆分组；成员=移出组；普通=删除（与主页 DeleteItem 同款，仅持久化走 PersistSnapshot）</summary>
+    private void DeleteItem(LaunchItem item, LaunchItem? group)
+    {
+        if (item.Kind == LaunchKind.Widget && item.WidgetKind == WidgetKind.Settings) return; // 设置磁贴不可删除
         if (group is not null)
         {
             group.Members.Remove(item);
             if (group.Members.Count < 2)
             {
+                // 组只剩 1 个成员：解散，剩余成员回到组的位置
                 var gi = _items.IndexOf(group);
                 _items.Remove(group);
                 if (ReferenceEquals(_expanded, group)) _expanded = null;
@@ -683,17 +1238,21 @@ public sealed partial class TileSetPage : Page
         }
         else if (item.Kind == LaunchKind.Group)
         {
+            // 展开中的组：仅删除组本体，成员回到顶层原位；未展开的组：整组删除（含全部成员）
             var gi = _items.IndexOf(item);
             _items.Remove(item);
-            if (ReferenceEquals(_expanded, item)) _expanded = null;
-            for (var k = 0; k < item.Members.Count; k++)
-                _items.Insert(Math.Min(gi + k, _items.Count), item.Members[k]);
+            if (ReferenceEquals(_expanded, item))
+            {
+                _expanded = null;
+                for (var k = 0; k < item.Members.Count; k++)
+                    _items.Insert(Math.Min(gi + k, _items.Count), item.Members[k]);
+            }
             item.Members.Clear();
         }
         else
         {
             _marked.Remove(item);
-            if (ReferenceEquals(_grabbed, item)) _grabbed = null;
+            if (ReferenceEquals(_grabbed, item)) _grabbed = null; // 移动模式抓取中被删：复位抓取状态
             _items.Remove(item);
         }
 

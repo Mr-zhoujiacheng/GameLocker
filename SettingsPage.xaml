@@ -18,10 +18,6 @@
         <!-- 顶栏 -->
         <Grid Grid.Row="0" Padding="20,16">
             <TextBlock Text="设置" FontSize="22" FontWeight="SemiBold" VerticalAlignment="Center"/>
-            <Button x:Name="BackButton" HorizontalAlignment="Right" VerticalAlignment="Center" IsTabStop="False"
-                    Background="Transparent" BorderThickness="0" Click="OnBackClick">
-                <FontIcon Glyph="&#xE72C;" FontSize="16"/>
-            </Button>
         </Grid>
 
         <!-- 分类入口列表 -->

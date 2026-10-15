@@ -6,6 +6,7 @@ using Microsoft.UI.Xaml.Controls;
 using Microsoft.UI.Xaml.Input;
 using Microsoft.UI.Xaml.Media;
 using Microsoft.UI.Xaml.Media.Animation;
+using Microsoft.UI.Xaml.Hosting;
 using Microsoft.UI.Xaml.Navigation;
 
 namespace GameLocker;
@@ -50,6 +51,9 @@ public sealed partial class MainPage : Page
     private string? _badgeOrigGlyph;
     private bool _dragOverTrash;        // 拖拽中指针悬停在设置磁贴上
 
+    /// <summary>编辑模式专属"添加磁贴"（仅 _moving 时创建并追加到 _tiles 末位；不进 _display）</summary>
+    private Border? _addTile;
+
     /// <summary>当前显示的音乐小组件磁贴引用（重排时重建；key=磁贴元素引用，value=显示序列索引）</summary>
     private readonly Dictionary<TileStyle.MusicTileRefs, int> _musicRefs = [];
 
@@ -82,10 +86,10 @@ public sealed partial class MainPage : Page
             TileHost.SizeChanged += TileHost_SizeChanged;
         };
 
-        // 添加方式遮罩：鼠标点击选项/背景
+        // 添加方式遮罩：鼠标点击选项/面板外空白（遮罩层）
         ChoiceCustom.Tapped += (_, _) => { CloseChoice(); App.Main?.RootNavigateAddItem(); };
         ChoiceWidget.Tapped += (_, _) => { CloseChoice(); App.Main?.RootNavigateWidget(); };
-        ChoiceOverlay.Tapped += (_, _) => CloseChoice();
+        ChoiceMask.Tapped += (_, _) => CloseChoice();
     }
 
     private readonly DispatcherTimer _clockTimer;
@@ -219,6 +223,10 @@ public sealed partial class MainPage : Page
     protected override void OnNavigatedFrom(NavigationEventArgs e)
     {
         base.OnNavigatedFrom(e);
+        // 双保险：任何导航离开都取消未决长按，避免计时器在后台触发
+        _lpTimer?.Stop();
+        _lpTile = null;
+        _lpCloseItem = null;
         _clockTimer.Stop();
         SystemMediaService.StateChanged -= OnMusicStateChanged;
         SlideshowService.CurrentChanged -= OnSlideshowChanged;
@@ -292,13 +300,30 @@ public sealed partial class MainPage : Page
         ShowDropToast(added, skipped);
     }
 
-    /// <summary>临时提示条：2 秒后自动隐藏（拖入结果、关闭反馈、删除反馈等复用）</summary>
-    private Microsoft.UI.Xaml.DispatcherTimer? _dropToastTimer;
+    /// <summary>提示条语义：决定图标徽章与强调色</summary>
+    private enum ToastKind { Success, Warning }
 
-    private void ShowToast(string text)
+    /// <summary>临时提示条：玻璃质感药丸，2 秒后自动隐藏（关闭反馈、删除反馈、拖入结果等复用）。
+    /// 成功=青色对勾，警告=琥珀感叹号；首次出现时淡入 + 自上方归位。</summary>
+    private Microsoft.UI.Xaml.DispatcherTimer? _dropToastTimer;
+    private Storyboard? _toastIn;
+
+    private void ShowToast(string text, ToastKind kind = ToastKind.Success)
     {
+        var warn = kind == ToastKind.Warning;
+        var accent = warn ? Windows.UI.Color.FromArgb(0xFF, 0xFF, 0xB9, 0x00)
+                          : Windows.UI.Color.FromArgb(0xFF, 0x4C, 0xC2, 0xFF);
+        MoveHintIcon.Glyph = warn ? "\uE7BA" : "\uE73E"; // 感叹号 / 对勾
+        MoveHintIcon.Foreground = new SolidColorBrush(accent);
+        MoveHintBadge.Background = new SolidColorBrush(
+            Windows.UI.Color.FromArgb(0x2A, accent.R, accent.G, accent.B));
         MoveHintText.Text = text;
-        MoveHintBar.Visibility = Visibility.Visible;
+
+        if (MoveHintBar.Visibility != Visibility.Visible)
+        {
+            MoveHintBar.Visibility = Visibility.Visible;
+            PlayToastIn();
+        }
         if (_dropToastTimer == null)
         {
             _dropToastTimer = new Microsoft.UI.Xaml.DispatcherTimer { Interval = TimeSpan.FromMilliseconds(2000) };
@@ -313,13 +338,35 @@ public sealed partial class MainPage : Page
         _dropToastTimer.Start();
     }
 
+    /// <summary>提示条入场：淡入 + 自上方 10px 归位</summary>
+    private void PlayToastIn()
+    {
+        var fade = new DoubleAnimation { From = 0, To = 1, Duration = TimeSpan.FromMilliseconds(150) };
+        Storyboard.SetTarget(fade, MoveHintBar);
+        Storyboard.SetTargetProperty(fade, "Opacity");
+        var slide = new DoubleAnimation
+        {
+            From = -10, To = 0, Duration = TimeSpan.FromMilliseconds(220),
+            EasingFunction = new CubicEase { EasingMode = EasingMode.EaseOut }
+        };
+        Storyboard.SetTarget(slide, MoveHintSlide);
+        Storyboard.SetTargetProperty(slide, "Y");
+        var sb = new Storyboard();
+        sb.Children.Add(fade);
+        sb.Children.Add(slide);
+        _toastIn?.Stop();
+        _toastIn = sb;
+        sb.Begin();
+    }
+
     private void ShowDropToast(int added, int skipped)
     {
-        ShowToast(added switch
+        if (added == 0)
         {
-            0 => skipped > 0 ? "拖入项已存在或不支持，未添加" : "未识别到可添加项",
-            _ => skipped > 0 ? $"已添加 {added} 个磁贴（跳过 {skipped} 个重复/不支持）" : $"已添加 {added} 个磁贴"
-        });
+            ShowToast(skipped > 0 ? "拖入项已存在或不支持，未添加" : "未识别到可添加项", ToastKind.Warning);
+            return;
+        }
+        ShowToast(skipped > 0 ? $"已添加 {added} 个磁贴（跳过 {skipped} 个重复/不支持）" : $"已添加 {added} 个磁贴");
     }
 
     /// <summary>
@@ -340,6 +387,8 @@ public sealed partial class MainPage : Page
             if (buttons.HasFlag(GamepadButtons.Y)) { DeleteSelected(); return true; }
             if (buttons.HasFlag(GamepadButtons.A))
             {
+                // 选中"添加磁贴"（追加在显示序列之外的末位）：弹出添加方式选择
+                if (_addTile is not null && _selected == _display.Count) { OpenAddFromEdit(); return true; }
                 // 已标记 ≥2：组合为组；否则 A = 抓取/放下当前磁贴
                 if (_marked.Count >= 2) { CreateGroupFromMarked(); return true; }
                 ToggleGrab();
@@ -383,7 +432,8 @@ public sealed partial class MainPage : Page
     }
 
     /// <summary>进入编辑（移动）模式：时钟+日期换成"编辑模式"大字，提示条换成编辑操作提示。
-    /// L3 与长按设置磁贴共用；重排一次以给磁贴挂上拖拽手势。</summary>
+    /// L3 与长按设置磁贴共用；重排一次以给磁贴挂上拖拽手势。
+    /// 另加过渡反馈：大字弹出 + 所有磁贴错落抖动一下，让人明确感知已进入编辑模式。</summary>
     private void EnterEditMode()
     {
         if (_moving) return;
@@ -393,6 +443,69 @@ public sealed partial class MainPage : Page
         EditModeText.Visibility = Visibility.Visible;
         UpdateHintBar();
         LayoutTiles();
+        PopInEditModeText();
+        ShakeTiles();
+    }
+
+    /// <summary>"编辑模式"大字弹出：0.6 → 1 缩放 + 淡入，收尾时清掉 RenderTransform 免得留残影</summary>
+    private void PopInEditModeText()
+    {
+        EditModeText.RenderTransformOrigin = new Windows.Foundation.Point(0.5, 0.5);
+        EditModeText.RenderTransform = new ScaleTransform { ScaleX = 0.6, ScaleY = 0.6 };
+        EditModeText.Opacity = 0;
+
+        var dur = new Duration(TimeSpan.FromMilliseconds(220));
+        var ease = new CubicEase { EasingMode = EasingMode.EaseOut };
+        var sb = new Storyboard();
+
+        var o = new DoubleAnimation { From = 0, To = 1, Duration = dur, EasingFunction = ease };
+        Storyboard.SetTarget(o, EditModeText);
+        Storyboard.SetTargetProperty(o, "Opacity");
+        sb.Children.Add(o);
+
+        foreach (var path in new[]
+                 {
+                     "(UIElement.RenderTransform).(ScaleTransform.ScaleX)",
+                     "(UIElement.RenderTransform).(ScaleTransform.ScaleY)"
+                 })
+        {
+            var a = new DoubleAnimation { From = 0.6, To = 1, Duration = dur, EasingFunction = ease };
+            Storyboard.SetTarget(a, EditModeText);
+            Storyboard.SetTargetProperty(a, path);
+            sb.Children.Add(a);
+        }
+
+        sb.Completed += (_, _) =>
+        {
+            EditModeText.RenderTransform = null;
+            EditModeText.Opacity = 1;
+        };
+        sb.Begin();
+    }
+
+    /// <summary>进入编辑模式的磁贴抖动：每个磁贴快速左右各摆几下后回正，按序号错开起播时间形成"波纹"。
+    /// 走 Composition 层的 RotationAngleInDegrees（不改 RenderTransform），因此与拖拽的 TranslateTransform、
+    /// 换位/展开动画互不干扰；动画收在 0°，结束后不留偏移。</summary>
+    private void ShakeTiles()
+    {
+        for (var k = 0; k < _tiles.Count; k++)
+        {
+            var t = _tiles[k];
+            var visual = ElementCompositionPreview.GetElementVisual(t);
+            visual.CenterPoint = new System.Numerics.Vector3(
+                (float)t.ActualWidth / 2f, (float)t.ActualHeight / 2f, 0f);
+
+            var anim = visual.Compositor.CreateScalarKeyFrameAnimation();
+            anim.Duration = TimeSpan.FromMilliseconds(360);
+            anim.DelayTime = TimeSpan.FromMilliseconds(k * 22);
+            anim.InsertKeyFrame(0f, 0f);
+            anim.InsertKeyFrame(0.2f, -4.5f);
+            anim.InsertKeyFrame(0.4f, 4.5f);
+            anim.InsertKeyFrame(0.6f, -3f);
+            anim.InsertKeyFrame(0.8f, 2f);
+            anim.InsertKeyFrame(1f, 0f);
+            visual.StartAnimation("RotationAngleInDegrees", anim);
+        }
     }
 
     private void EndMove()
@@ -405,6 +518,8 @@ public sealed partial class MainPage : Page
         _dragMoved = false;
         _dragOverTrash = false;
         RefreshSettingsBadge();
+        // 选中项若停在"添加磁贴"（显示序列之外的末位），退出后回落到最后一个真实磁贴
+        if (_selected >= _display.Count) _selected = Math.Max(0, _display.Count - 1);
         // 恢复时钟+日期模块与底部常规提示条
         EditModeText.Visibility = Visibility.Collapsed;
         ClockText.Visibility = Visibility.Visible;
@@ -412,6 +527,7 @@ public sealed partial class MainPage : Page
         UpdateClock();
         LayoutTiles();
         UpdateSelection(); // 末尾按当前选中项恢复底部提示条（音乐磁贴=音乐提示）
+        ShakeTiles();      // 退出编辑模式同样抖一下，让"回到普通模式"也有明确反馈
     }
 
     /// <summary>移动模式 A 键：抓取当前磁贴（此后方向键=移动它）/ 再按放下</summary>
@@ -457,6 +573,7 @@ public sealed partial class MainPage : Page
         _badge = SettingsBadge.None;
         _badgeIcon = null;
         _badgeOrigGlyph = null;
+        _addTile = null;
 
         // 列数以可视区宽度为准（ViewportWidth 已扣除 Padding，保证最右列不被裁切）
         var availW = TileScroll.ViewportWidth > 0 ? TileScroll.ViewportWidth : TileHost.ActualWidth;
@@ -499,6 +616,28 @@ public sealed partial class MainPage : Page
             placed.Add((tile, spot.c, spot.r));
             TileHost.Children.Add(tile);
             _tiles.Add(tile);
+        }
+
+        // 编辑模式专属"添加磁贴"（1×1 小）：排在最后一个空位，点击=退出编辑并弹出添加方式选择（等同普通模式 X 键）。
+        // 只并入 _tiles（可手柄选中）而不进 _display——因此不参与标记/拖拽/删除，所有索引比对处均以 _display.Count 收口。
+        if (_moving)
+        {
+            (int c, int r) add = (-1, -1);
+            for (var r = 0; add.c < 0 && r < 1000; r++)
+                for (var c = 0; c < cols; c++)
+                    if (Fits(occupied, c, r, 1, 1)) { add = (c, r); break; }
+            if (add.c >= 0)
+            {
+                occupied.Add((add.c, add.r));
+                maxRow = Math.Max(maxRow, add.r);
+                maxCol = Math.Max(maxCol, add.c);
+
+                _addTile = CreateAddTile();
+                _addTile.Tapped += (_, _) => OpenAddFromEdit();
+                placed.Add((_addTile, add.c, add.r));
+                TileHost.Children.Add(_addTile);
+                _tiles.Add(_addTile);
+            }
         }
 
         // 水平居中：整块磁贴按实际占用宽度在可视区内居中（窗口大小改变时随 SizeChanged 重算）；垂直保持靠左上
@@ -628,6 +767,34 @@ public sealed partial class MainPage : Page
         return tile;
     }
 
+    /// <summary>编辑模式专属"添加磁贴"（1×1 小）：淡色底 + 强调色加号，只作为"去添加"的入口控件——
+    /// 无名称、不挂长按/拖拽/双击手势。点击（或手柄选中后按 A）等同普通模式 X 键。</summary>
+    private Border CreateAddTile() => new()
+    {
+        Width = Unit,
+        Height = Unit,
+        CornerRadius = new CornerRadius(TileStyle.Radius),
+        Background = new SolidColorBrush(Windows.UI.Color.FromArgb(0x1A, 0xFF, 0xFF, 0xFF)),
+        BorderBrush = new SolidColorBrush(Windows.UI.Color.FromArgb(0x66, 0x4C, 0xC2, 0xFF)),
+        BorderThickness = new Thickness(1.5),
+        Child = new FontIcon
+        {
+            Glyph = "\uE710", // 加号
+            FontSize = 28,
+            Foreground = new SolidColorBrush(Windows.UI.Color.FromArgb(0xFF, 0x4C, 0xC2, 0xFF)),
+            HorizontalAlignment = HorizontalAlignment.Center,
+            VerticalAlignment = VerticalAlignment.Center
+        }
+    };
+
+    /// <summary>"添加磁贴"点击/按 A：直接弹出添加方式选择遮罩（与普通模式 X 键一致），
+    /// 不退出编辑模式——加完返回主页仍停在编辑模式，方便继续调整</summary>
+    private void OpenAddFromEdit()
+    {
+        if (!_moving) return;
+        OpenAddChoice();
+    }
+
     // ---- 磁贴轻点/双击：单击延迟"系统双击时长"（默认 500ms）执行（启动/切图），
     // 窗口内再点同一磁贴或事件 TapCount≥2 = 双击进编辑（等同 R3）----
     private Microsoft.UI.Xaml.DispatcherTimer? _tapTimer;
@@ -685,6 +852,11 @@ public sealed partial class MainPage : Page
         _tapTimer?.Stop();
         _pendingTapIndex = -1;
         _pendingAction = null;
+        // 双击的第二次"按下"已启动 600ms 长按计时并 CapturePointer；切页后磁贴脱离可视树，
+        // 第二次 PointerReleased 不再送达 → 计时器不会被取消，会在后台误触发关闭/进入编辑。导航前先取消。
+        _lpTimer?.Stop();
+        _lpTile = null;
+        _lpCloseItem = null;
         OpenEditorAt(index);
     }
 
@@ -823,9 +995,11 @@ public sealed partial class MainPage : Page
     {
         ((Microsoft.UI.Xaml.DispatcherTimer)sender).Stop();
         _lpTile = null;
-        _suppressTap = true;
         var closeItem = _lpCloseItem;
         _lpCloseItem = null;
+        // 兜底守卫：若已切走（双击进编辑页等），绝不在后台执行关闭程序/进入编辑模式
+        if (App.Main?.IsCurrentPage(this) != true) return;
+        _suppressTap = true;
         if (closeItem is not null) CloseItem(closeItem); // 长按可关闭磁贴=关程序/网站/文件夹
         else EnterEditMode();                             // 长按设置磁贴=进入编辑模式
     }
@@ -838,6 +1012,8 @@ public sealed partial class MainPage : Page
     {
         _dragOverTrash = false;
         RefreshSettingsBadge();
+        // 拖到"添加磁贴"上无意义：不换位、不删除，直接原样收回
+        if (_addTile is not null && PointInTile(p, _addTile)) return;
         var draggedIsSettings = dragged.Kind == LaunchKind.Widget && dragged.WidgetKind == WidgetKind.Settings;
 
         LaunchItem? tItem = null;
@@ -1177,22 +1353,55 @@ public sealed partial class MainPage : Page
     // ---- 添加方式选择遮罩（X 键弹出：自定义 / 小组件） ----
 
     private bool _choiceOpen;
+    private Storyboard? _choiceIn; // 遮罩入场动画
     private int _choiceIndex; // 0=自定义 1=小组件
 
-    /// <summary>打开添加方式选择遮罩（MainWindow 的 X 键调用）</summary>
+    /// <summary>打开添加方式选择遮罩（MainWindow 的 X 键调用；编辑模式"添加磁贴"也复用此入口，故不再按 _moving 拦截）</summary>
     public void OpenAddChoice()
     {
-        if (_moving) return; // 移动模式下不弹
         _choiceOpen = true;
         _choiceIndex = 0;
         ChoiceOverlay.Visibility = Visibility.Visible;
         UpdateChoiceCursor();
+        PlayChoiceIn(); // 淡入 + 轻微放大，避免遮罩硬弹
     }
 
     private void CloseChoice()
     {
         _choiceOpen = false;
+        _choiceIn?.Stop(); // 打断入场动画，避免下次打开残留
         ChoiceOverlay.Visibility = Visibility.Collapsed;
+    }
+
+    /// <summary>遮罩入场：遮罩层淡入 + 面板由 0.94 缓动放大到 1</summary>
+    private void PlayChoiceIn()
+    {
+        var fade = new DoubleAnimation { From = 0, To = 1, Duration = TimeSpan.FromMilliseconds(140) };
+        Storyboard.SetTarget(fade, ChoiceMask);
+        Storyboard.SetTargetProperty(fade, "Opacity");
+
+        var scale = new DoubleAnimation
+        {
+            From = 0.94, To = 1, Duration = TimeSpan.FromMilliseconds(190),
+            EasingFunction = new CubicEase { EasingMode = EasingMode.EaseOut }
+        };
+        var scaleY = new DoubleAnimation
+        {
+            From = 0.94, To = 1, Duration = TimeSpan.FromMilliseconds(190),
+            EasingFunction = new CubicEase { EasingMode = EasingMode.EaseOut }
+        };
+        Storyboard.SetTarget(scale, ChoicePanelScale);
+        Storyboard.SetTargetProperty(scale, "ScaleX");
+        Storyboard.SetTarget(scaleY, ChoicePanelScale);
+        Storyboard.SetTargetProperty(scaleY, "ScaleY");
+
+        var sb = new Storyboard();
+        sb.Children.Add(fade);
+        sb.Children.Add(scale);
+        sb.Children.Add(scaleY);
+        _choiceIn?.Stop();
+        _choiceIn = sb;
+        sb.Begin();
     }
 
     /// <summary>遮罩内手柄按键：方向=切换，A=确认，B/View/X=取消</summary>
@@ -1216,10 +1425,20 @@ public sealed partial class MainPage : Page
 
     private void UpdateChoiceCursor()
     {
-        var white = new SolidColorBrush(Windows.UI.Color.FromArgb(0xFF, 0xFF, 0xFF, 0xFF));
-        var clear = new SolidColorBrush(Microsoft.UI.Colors.Transparent);
-        ChoiceCustom.BorderBrush = _choiceIndex == 0 ? white : clear;
-        ChoiceWidget.BorderBrush = _choiceIndex == 1 ? white : clear;
+        var accentBr = new SolidColorBrush(Windows.UI.Color.FromArgb(0xFF, 0x4C, 0xC2, 0xFF));
+        var idleBr = new SolidColorBrush(Windows.UI.Color.FromArgb(0x26, 0xFF, 0xFF, 0xFF));
+        var accentBg = new SolidColorBrush(Windows.UI.Color.FromArgb(0x20, 0x4C, 0xC2, 0xFF));
+        var idleBg = new SolidColorBrush(Windows.UI.Color.FromArgb(0x14, 0xFF, 0xFF, 0xFF));
+        Style(ChoiceCustom, _choiceIndex == 0);
+        Style(ChoiceWidget, _choiceIndex == 1);
+
+        // 选中项：强调色描边 + 底色高亮；未选中：淡描边 + 卡片底
+        void Style(Border card, bool on)
+        {
+            card.BorderBrush = on ? accentBr : idleBr;
+            card.BorderThickness = new Thickness(on ? 2 : 1.5);
+            card.Background = on ? accentBg : idleBg;
+        }
     }
 
     private void NavigateAddChoice(int index)
@@ -1401,7 +1620,7 @@ public sealed partial class MainPage : Page
 
         int best = -1;
         double bestScore = double.MaxValue;
-        for (var i = 0; i < _tiles.Count; i++)
+        for (var i = 0; i < _tiles.Count && i < _display.Count; i++)
         {
             if (i == gi) continue;
             var (itemB, groupB) = _display[i];
@@ -1554,7 +1773,8 @@ public sealed partial class MainPage : Page
     private void CloseItem(LaunchItem item)
     {
         var killed = LaunchService.Close(item);
-        ShowToast(killed > 0 ? $"已关闭 {item.Name}" : $"{item.Name} 未在运行");
+        ShowToast(killed > 0 ? $"已关闭 {item.Name}" : $"{item.Name} 未在运行",
+            killed > 0 ? ToastKind.Success : ToastKind.Warning);
         if (killed > 0) App.Main?.KeepForeground(); // 目标关闭后启动器保持前台不最小化
     }
 

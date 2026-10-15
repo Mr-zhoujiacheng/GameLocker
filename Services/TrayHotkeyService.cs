@@ -10,7 +10,9 @@ public sealed class TrayHotkeyService : IDisposable
 {
     // ---- Win32 常量 ----
     private const int WM_USER = 0x0400;
-    private const int WM_HOTKEY = 0x0400;
+    // 热键消息的真实值 0x0312；此前误写成 0x0400（= WM_USER），
+    // 导致 RegisterHotKey 注册成功但按键消息与任何 case 都不匹配，Ctrl+Alt+G 永远无响应。
+    private const int WM_HOTKEY = 0x0312;
     private const int TrayCallback = WM_USER + 1; // 托盘回调消息
     private const int WM_COMMAND = 0x0111;
     private const int WM_LBUTTONDBLCLK = 0x0203;

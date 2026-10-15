@@ -46,22 +46,21 @@ public static class LaunchService
 
         if (_records.TryRemove(item.Target, out var rec))
         {
-            // 1) 启动时捕获到的窗口仍在 → 直接关闭该窗口
+            // 1) 启动时捕获到的窗口仍在、且仍属于当初记录的进程 → 直接关闭该窗口
+            //    （校验所属进程防句柄复用误关别的窗口；外壳窗口由 TryPostWmClose 拒绝）
             if (rec!.Hwnd != 0 && IsWindow(rec.Hwnd))
             {
-                PostMessageW(rec.Hwnd, WM_CLOSE, IntPtr.Zero, IntPtr.Zero);
-                return 1;
+                GetWindowThreadProcessId(rec.Hwnd, out uint curPid);
+                if ((int)curPid == rec.Pid && TryPostWmClose(rec.Hwnd))
+                    return 1;
             }
             // 2) 只有 PID：取其主窗口关闭，否则结束进程树
             if (rec.Pid != 0 && rec.Pid != System.Environment.ProcessId
                 && TryGetProcess(rec.Pid, out var p)
                 && !string.Equals(p.ProcessName, "explorer", StringComparison.OrdinalIgnoreCase))
             {
-                if (p.MainWindowHandle != 0)
-                {
-                    PostMessageW(p.MainWindowHandle, WM_CLOSE, IntPtr.Zero, IntPtr.Zero);
+                if (p.MainWindowHandle != 0 && TryPostWmClose(p.MainWindowHandle))
                     return 1;
-                }
                 try { p.Kill(entireProcessTree: true); return 1; }
                 catch { /* 无权限/已退出 */ }
             }
@@ -89,8 +88,10 @@ public static class LaunchService
             await Task.Delay(100);
             var fg = GetForegroundWindow();
             if (fg == 0 || !IsWindowVisible(fg)) continue;
+            if (IsShellWindow(fg)) continue; // 桌面/任务栏：启动器隐藏后短暂切前台，记录后关闭会误触发"关闭 Windows"
             GetWindowThreadProcessId(fg, out uint pid);
             if ((int)pid == ownPid) continue; // 仍是启动器自己（未隐藏/未切前台）
+            if (IsShellProcess((int)pid)) continue; // 外壳进程 explorer：文件夹磁贴另有标题匹配关闭路径
             // 记录：优先匹配本次启动进程；否则记录当前前台窗口所属进程
             var rec = _records.TryGetValue(target, out var r) ? r : new LaunchRecord();
             rec.Hwnd = fg;
@@ -120,8 +121,7 @@ public static class LaunchService
             if (!TryGetProcess((int)pid, out var p)) continue;
             if (string.Equals(p.ProcessName, name, StringComparison.OrdinalIgnoreCase))
             {
-                PostMessageW(hwnd, WM_CLOSE, IntPtr.Zero, IntPtr.Zero);
-                count++;
+                if (TryPostWmClose(hwnd)) count++;
             }
         }
         return count;
@@ -154,8 +154,7 @@ public static class LaunchService
                   || (!string.IsNullOrEmpty(display) && title.Contains(display, StringComparison.OrdinalIgnoreCase));
             if (hit)
             {
-                PostMessageW(hwnd, WM_CLOSE, IntPtr.Zero, IntPtr.Zero);
-                count++;
+                if (TryPostWmClose(hwnd)) count++;
             }
         }
         return count;
@@ -169,11 +168,8 @@ public static class LaunchService
         foreach (var hwnd in EnumVisibleTopWindows())
         {
             var t = WindowText(hwnd);
-            if (t.Contains(sub, StringComparison.OrdinalIgnoreCase))
-            {
-                PostMessageW(hwnd, WM_CLOSE, IntPtr.Zero, IntPtr.Zero);
+            if (t.Contains(sub, StringComparison.OrdinalIgnoreCase) && TryPostWmClose(hwnd))
                 count++;
-            }
         }
         return count;
     }
@@ -256,12 +252,38 @@ public static class LaunchService
 
     private const uint WM_CLOSE = 0x0010;
 
+    /// <summary>向窗口发送 WM_CLOSE（优雅关闭）。系统外壳窗口一律拒绝：对桌面 Progman/WorkerW 发 WM_CLOSE
+    /// 会直接弹出"关闭 Windows"关机界面，这正是"关闭程序却出现系统关机"的根因。</summary>
+    private static bool TryPostWmClose(IntPtr hwnd)
+    {
+        if (hwnd == 0 || !IsWindow(hwnd) || IsShellWindow(hwnd)) return false;
+        return PostMessageW(hwnd, WM_CLOSE, IntPtr.Zero, IntPtr.Zero);
+    }
+
+    /// <summary>是否为系统外壳窗口（桌面 / 任务栏）：其 WM_CLOSE 会触发系统关机或退出外壳，必须排除</summary>
+    private static bool IsShellWindow(IntPtr hwnd)
+    {
+        var cls = WindowClass(hwnd);
+        return cls is "Progman" or "WorkerW" or "Shell_TrayWnd" or "Shell_SecondaryTrayWnd";
+    }
+
+    /// <summary>该 PID 是否为 Windows 外壳进程（explorer.exe）</summary>
+    private static bool IsShellProcess(int pid)
+        => TryGetProcess(pid, out var p) && string.Equals(p.ProcessName, "explorer", StringComparison.OrdinalIgnoreCase);
+
+    private static string WindowClass(IntPtr hwnd)
+    {
+        var sb = new System.Text.StringBuilder(256);
+        return GetClassNameW(hwnd, sb, sb.Capacity) <= 0 ? "" : sb.ToString();
+    }
+
     [DllImport("user32.dll")] private static extern IntPtr GetForegroundWindow();
     [DllImport("user32.dll")] private static extern uint GetWindowThreadProcessId(IntPtr hWnd, out uint lpdwProcessId);
     [DllImport("user32.dll")] private static extern bool IsWindow(IntPtr hWnd);
     [DllImport("user32.dll")] private static extern bool IsWindowVisible(IntPtr hWnd);
     [DllImport("user32.dll")] private static extern bool PostMessageW(IntPtr hWnd, uint Msg, IntPtr wParam, IntPtr lParam);
     [DllImport("user32.dll", CharSet = CharSet.Unicode)] private static extern int GetWindowTextLengthW(IntPtr hWnd);
+    [DllImport("user32.dll", CharSet = CharSet.Unicode)] private static extern int GetClassNameW(IntPtr hWnd, System.Text.StringBuilder lpClassName, int nMaxCount);
     [DllImport("user32.dll", CharSet = CharSet.Unicode)] private static extern int GetWindowTextW(IntPtr hWnd, System.Text.StringBuilder lpString, int nMaxCount);
     private delegate bool EnumWindowsProc(IntPtr hWnd, IntPtr lParam);
     [DllImport("user32.dll")] private static extern bool EnumWindows(EnumWindowsProc lpEnumFunc, IntPtr lParam);

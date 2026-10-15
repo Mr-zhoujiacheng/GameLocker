@@ -30,6 +30,8 @@ public sealed class EdgeGestureService : IDisposable
     private const int EdgeZone = 70;
     /// <summary>向内拖动触发呼出的最小距离</summary>
     private const int Threshold = 60;
+    /// <summary>朝边缘方向快滑触发收起的最小距离（比呼出更大：避免与列表滚动、磁贴拖拽混淆）</summary>
+    private const int DismissThreshold = 120;
 
     private Thread? _thread;
     private volatile uint _threadId;
@@ -40,7 +42,9 @@ public sealed class EdgeGestureService : IDisposable
     private IntPtr _hook = 0;
     private int _downX, _downY;
     private volatile bool _tracking;
+    private bool _downNearEdge;     // 本次按下起点是否在边缘感应带内（决定抬起时判呼出还是收起）
     private long _lastTrigger;
+    private long _lastDismiss;
 
     // ---- Raw Input 触摸 sink（屏外 1x1 窗口，仅接收 WM_INPUT）----
     private IntPtr _sink = 0;
@@ -57,9 +61,14 @@ public sealed class EdgeGestureService : IDisposable
     // HID 触摸手势状态（单指即可判定边缘滑动）
     private bool _tDown;
     private int _tStartX, _tStartY, _tLastX, _tLastY;
+    private long _tDownAt;
 
     /// <summary>边缘向内滑动被识别 → 请求呼出</summary>
     public event Action? SummonTriggered;
+
+    /// <summary>与呼出反向的滑动被识别（从窗口内部朝呼出边缘快滑，即手指反向离开边缘）→ 请求收起/返回。
+    /// 走 Raw Input 触摸通道：不受页面命中测试/列表框触摸捕获影响，任何页面都能触发</summary>
+    public event Action? DismissTriggered;
 
     public EdgeGestureService()
     {
@@ -267,13 +276,14 @@ public sealed class EdgeGestureService : IDisposable
             {
                 _tDown = true;
                 _tStartX = x; _tStartY = y;
+                _tDownAt = Environment.TickCount64;
                 Log($"touch down ({x},{y}) nearEdge={NearEdge(x, y)}");
             }
             _tLastX = x; _tLastY = y;
         }
         else if (_tDown)
         {
-            // 手指抬起：判定边缘向内滑动（与钩子通道共用 600ms 冷却去重）
+            // 手指抬起：判定手势。呼出=从边缘向中心内滑；收起=与呼出反向（从内部朝边缘快滑）
             _tDown = false;
             var inward = _edge switch
             {
@@ -281,13 +291,23 @@ public sealed class EdgeGestureService : IDisposable
                 SummonEdge.Right => _tStartX - _tLastX,
                 _ => _tLastY - _tStartY
             };
-            Log($"touch up ({_tLastX},{_tLastY}) inward={inward}");
-            if (NearEdge(_tStartX, _tStartY) && inward >= Threshold &&
+            var nearEdge = NearEdge(_tStartX, _tStartY);
+            var elapsed = Environment.TickCount64 - _tDownAt;
+            Log($"touch up ({_tLastX},{_tLastY}) inward={inward} nearEdge={nearEdge} ms={elapsed}");
+            if (nearEdge && inward >= Threshold &&
                 (Environment.TickCount64 - _lastTrigger) > 600)
             {
                 _lastTrigger = Environment.TickCount64;
                 try { SummonTriggered?.Invoke(); Log("touch summon dispatched"); }
                 catch (Exception ex) { Log($"summon invoke EX: {ex.GetType().Name}: {ex.Message}"); }
+            }
+            // 收起：起点在窗口内部（非边缘带）、朝边缘方向快滑且够快（慢速滚动不误触）
+            else if (!nearEdge && -inward >= DismissThreshold && elapsed < 500 &&
+                (Environment.TickCount64 - _lastDismiss) > 600)
+            {
+                _lastDismiss = Environment.TickCount64;
+                try { DismissTriggered?.Invoke(); Log("touch dismiss dispatched"); }
+                catch (Exception ex) { Log($"dismiss invoke EX: {ex.GetType().Name}: {ex.Message}"); }
             }
         }
     }
@@ -405,25 +425,32 @@ public sealed class EdgeGestureService : IDisposable
 
             if (msgId == WM_LBUTTONDOWN)
             {
-                if (NearEdge(info.ptX, info.ptY))
-                {
-                    _downX = info.ptX;
-                    _downY = info.ptY;
-                    _tracking = true;
-                    Log($"down near edge {_edge} at ({info.ptX},{info.ptY})");
-                }
+                // 每次都记起点：抬起时按起点是否在边缘带内，判呼出或收起
+                _downX = info.ptX; _downY = info.ptY;
+                _downNearEdge = NearEdge(info.ptX, info.ptY);
+                _tracking = true;
+                if (_downNearEdge) Log($"down near edge {_edge} at ({info.ptX},{info.ptY})");
             }
             else if (msgId == WM_LBUTTONUP && _tracking)
             {
                 _tracking = false;
                 var inward = Inward(info.ptX, info.ptY);
-                Log($"up at ({info.ptX},{info.ptY}) inward={inward}");
-                // 触摸会合成重复的鼠标消息，600ms 冷却去重，防双触发
-                if (inward >= Threshold && (Environment.TickCount64 - _lastTrigger) > 600)
+                if (_downNearEdge)
                 {
-                    _lastTrigger = Environment.TickCount64;
-                    try { SummonTriggered?.Invoke(); Log("summon dispatched"); }
-                    catch (Exception ex) { Log($"summon invoke EX: {ex.GetType().Name}: {ex.Message}"); }
+                    Log($"up at ({info.ptX},{info.ptY}) inward={inward}");
+                    // 触摸会合成重复的鼠标消息，600ms 冷却去重，防双触发
+                    if (inward >= Threshold && (Environment.TickCount64 - _lastTrigger) > 600)
+                    {
+                        _lastTrigger = Environment.TickCount64;
+                        try { SummonTriggered?.Invoke(); Log("summon dispatched"); }
+                        catch (Exception ex) { Log($"summon invoke EX: {ex.GetType().Name}: {ex.Message}"); }
+                    }
+                }
+                else if (-inward >= DismissThreshold && (Environment.TickCount64 - _lastDismiss) > 600)
+                {
+                    _lastDismiss = Environment.TickCount64;
+                    try { DismissTriggered?.Invoke(); Log("dismiss dispatched"); }
+                    catch (Exception ex) { Log($"dismiss invoke EX: {ex.GetType().Name}: {ex.Message}"); }
                 }
             }
         }
@@ -497,6 +524,9 @@ public sealed class EdgeGestureService : IDisposable
         }
         catch { }
     }
+
+    /// <summary>窗口层诊断写入：与手势日志同一文件，便于对照"窗口内指针通道"与"原始输入通道"</summary>
+    internal static void Trace(string text) => Log(text);
 
     /// <summary>高频解析诊断：每进程限 40 条，防 HID 帧刷屏</summary>
     private static int _diagCount;

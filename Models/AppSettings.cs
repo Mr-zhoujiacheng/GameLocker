@@ -25,7 +25,7 @@ public class AppSettings
     public bool SummonAnimation { get; set; } = true;
 
     /// <summary>平板边缘手势呼出：从任务栏对侧屏幕边缘向中心滑动唤起窗口（左/右停靠对应左/右边缘，全屏对应上边缘）</summary>
-    public bool EdgeGestureSummon { get; set; }
+    public bool EdgeGestureSummon { get; set; } = true;
 
     /// <summary>窗口停靠侧（左/右贴边，侧边栏样式）</summary>
     public DockSide SidebarSide { get; set; } = DockSide.Left;
@@ -34,10 +34,10 @@ public class AppSettings
     public double SidebarWidthPercent { get; set; } = 0.38;
 
     /// <summary>磁贴间距（像素，0~30）</summary>
-    public double TileSpacing { get; set; } = 10;
+    public double TileSpacing { get; set; } = 4;
 
     /// <summary>磁贴立体效果（渐变受光 + 投影）</summary>
-    public bool Tile3D { get; set; } = true;
+    public bool Tile3D { get; set; }
 
     /// <summary>磁贴透明度（0.3~1.0，1 为完全不透明）</summary>
     public double TileOpacity { get; set; } = 1.0;
@@ -61,16 +61,16 @@ public class AppSettings
     public bool ShowBattery { get; set; } = true;
 
     /// <summary>顶栏显示无线网络图标</summary>
-    public bool ShowWifi { get; set; } = true;
+    public bool ShowWifi { get; set; }
 
     /// <summary>顶栏显示蓝牙图标</summary>
-    public bool ShowBluetooth { get; set; } = true;
+    public bool ShowBluetooth { get; set; }
 
     /// <summary>窗口背景颜色（#RRGGBB 十六进制）</summary>
     public string BackgroundColor { get; set; } = "#202020";
 
     /// <summary>玻璃（Acrylic 磨砂）效果，可与背景颜色叠加</summary>
-    public bool GlassEffect { get; set; }
+    public bool GlassEffect { get; set; } = true;
 
     /// <summary>窗口不透明度（0.3~1.0，1 为完全不透明）</summary>
     public double WindowOpacity { get; set; } = 1.0;
@@ -82,7 +82,6 @@ public class AppSettings
     public GamepadButtons SummonCombo { get; set; } =
         GamepadButtons.LeftTrigger | GamepadButtons.RightTrigger;
 
-    /// <summary>全屏组合键（长按 1 秒切换全屏模式），默认 LB+RB</summary>
-    public GamepadButtons FullscreenCombo { get; set; } =
-        GamepadButtons.LeftShoulder | GamepadButtons.RightShoulder;
+    /// <summary>全屏组合键（长按 1 秒切换全屏模式），默认菜单键</summary>
+    public GamepadButtons FullscreenCombo { get; set; } = GamepadButtons.Menu;
 }

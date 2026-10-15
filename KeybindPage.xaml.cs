@@ -1,11 +1,15 @@
 using GameLocker.Services;
+using Microsoft.UI.Xaml;
 using Microsoft.UI.Xaml.Controls;
+using Microsoft.UI.Xaml.Input;
+using Microsoft.UI.Xaml.Media;
 using Microsoft.UI.Xaml.Navigation;
 
 namespace GameLocker;
 
-/// <summary>控制设置：呼出组合键捕获 + 手柄/触控操作对照说明。
-/// 手柄：A=进入捕获（按住目标组合键，全松手即保存生效），View(Select)/B=返回设置主页。</summary>
+/// <summary>控制设置：呼出/全屏组合键捕获 + 手柄 ↔ 触控操作对照。
+/// 手柄：方向键按"整张卡片"上下切换（每次只选中一张卡，卡内说明只读、不可单独选中，
+/// 往下移动即看下一张卡的全部内容），A=捕获当前卡片的组合键，View/B=返回设置主页。</summary>
 public sealed partial class KeybindPage : Page, ISettingsGamepad
 {
     private bool _ready;
@@ -14,30 +18,43 @@ public sealed partial class KeybindPage : Page, ISettingsGamepad
     public bool IsCapturing { get; private set; }
     private GamepadButtons _captured;
 
-    private ListView[] _lists = default!;
-
     /// <summary>捕获目标：呼出键 / 全屏键</summary>
     private enum CaptureTarget { Summon, Fullscreen }
     private CaptureTarget _target;
+
+    /// <summary>手柄焦点所在卡片序号：0=阅读提示 1=呼出键 2=全屏键 ≥3=说明卡片</summary>
+    private int _focus;
+
+    private Border[] _cards = default!;
+
+    private readonly SolidColorBrush _cardIdleBg = new(Windows.UI.Color.FromArgb(0x14, 0xFF, 0xFF, 0xFF));
+    private readonly SolidColorBrush _cardFocusBg = new(Windows.UI.Color.FromArgb(0x26, 0xFF, 0xFF, 0xFF));
+    private readonly SolidColorBrush _lineIdle = new(Windows.UI.Color.FromArgb(0x26, 0xFF, 0xFF, 0xFF));
+    private readonly SolidColorBrush _lineFocus = new(Windows.UI.Color.FromArgb(0xFF, 0x4C, 0xC2, 0xFF));
 
     public KeybindPage()
     {
         InitializeComponent();
         CaptureText.Text = GamepadService.Describe(SettingsService.Current.SummonCombo);
         FsCaptureText.Text = GamepadService.Describe(SettingsService.Current.FullscreenCombo);
-        // 说明行数据源：ListView 自带可见选中高亮，手柄方向键可逐行定位
+
+        // 说明数据源：按 ControlHelp 的分组顺序逐个卡片填充（含"关于"分组）
         LvHome.ItemsSource = ControlHelp.Sections[0].Rows;
         LvEdit.ItemsSource = ControlHelp.Sections[1].Rows;
         LvSettings.ItemsSource = ControlHelp.Sections[2].Rows;
-        LvGlobal.ItemsSource = ControlHelp.Sections[3].Rows;
-        _lists = [LvHome, LvEdit, LvSettings, LvGlobal];
+        LvAbout.ItemsSource = ControlHelp.Sections[3].Rows;
+        LvGlobal.ItemsSource = ControlHelp.Sections[4].Rows;
 
-        // 布局完成后再落焦点：OnNavigatedTo 时元素尚未排列，Focus() 会静默失败（光标"消失"的根因）
+        _cards = [CardLegend, CardSummon, CardFullscreen, CardHome, CardEdit, CardSettings, CardAbout, CardGlobal];
+        ApplyCardFocus();
+
+        // 布局完成后再复位：OnNavigatedTo 时元素尚未排列，滚动偏移不可用
         Loaded += (_, _) =>
         {
             _focus = 0;
+            ApplyCardFocus();
             PageScroller.ScrollToVerticalOffset(0);
-            CaptureButton.Focus(Microsoft.UI.Xaml.FocusState.Keyboard);
+            Focus(FocusState.Programmatic); // 键盘方向键等价于手柄方向键（整卡切换）
         };
     }
 
@@ -45,8 +62,8 @@ public sealed partial class KeybindPage : Page, ISettingsGamepad
     {
         base.OnNavigatedTo(e);
         _ready = true;
-        _focus = 0; // 默认焦点在捕获按钮（序列 0=捕获按钮 ≥1=说明行；返回箭头不可手柄选中，B 键返回）
-        CaptureButton.Focus(Microsoft.UI.Xaml.FocusState.Keyboard);
+        _focus = 0;
+        ApplyCardFocus();
     }
 
     protected override void OnNavigatedFrom(NavigationEventArgs e)
@@ -56,91 +73,87 @@ public sealed partial class KeybindPage : Page, ISettingsGamepad
         IsCapturing = false;
     }
 
-    /// <summary>手柄导航：方向键按视觉顺序在 呼出捕获→全屏捕获→各说明行（跨 4 张卡片展平）间移动，
-    /// 说明行仅选中查看；A=捕获焦点按钮对应组合键；返回箭头不可手柄选中（B 键返回）；捕获模式期间按键交给捕获逻辑</summary>
-    private int _focus; // 0=呼出捕获 1=全屏捕获 ≥2=说明行（展平索引）
-
     public void HandleGamepad(GamepadButtons buttons)
     {
         if (!_ready || IsCapturing) return;
 
         if (buttons.HasFlag(GamepadButtons.DPadUp) || buttons.HasFlag(GamepadButtons.DPadLeft)) Move(-1);
         else if (buttons.HasFlag(GamepadButtons.DPadDown) || buttons.HasFlag(GamepadButtons.DPadRight)) Move(1);
-        else if (buttons.HasFlag(GamepadButtons.A))
+        else if (buttons.HasFlag(GamepadButtons.A)) ActivateCapture();
+    }
+
+    /// <summary>键盘等价操作：方向键=整卡切换，Enter/空格=捕获当前卡片键位（旧版由 ListView 焦点导航提供，粒度改为整张卡片）</summary>
+    protected override void OnKeyDown(KeyRoutedEventArgs e)
+    {
+        if (!_ready || IsCapturing) return;
+        switch (e.Key)
         {
-            if (_focus == 0) StartCapture(CaptureTarget.Summon);
-            else if (_focus == 1) StartCapture(CaptureTarget.Fullscreen);
-            // 说明行：仅选中，A 无动作
+            case Windows.System.VirtualKey.Up:
+            case Windows.System.VirtualKey.Left:
+                Move(-1);
+                e.Handled = true;
+                break;
+            case Windows.System.VirtualKey.Down:
+            case Windows.System.VirtualKey.Right:
+                Move(1);
+                e.Handled = true;
+                break;
+            case Windows.System.VirtualKey.Enter:
+            case Windows.System.VirtualKey.Space:
+                ActivateCapture();
+                e.Handled = true;
+                break;
         }
     }
 
+    /// <summary>A 键：捕获当前选中卡片对应的组合键（阅读提示 / 说明卡片只读，无动作）</summary>
+    private void ActivateCapture()
+    {
+        if (_focus == 1) StartCapture(CaptureTarget.Summon);
+        else if (_focus == 2) StartCapture(CaptureTarget.Fullscreen);
+    }
+
+    /// <summary>整卡上下移动：每次只切换一张卡片，并把该卡滚到可视区顶部，方便直接读完卡内全部内容</summary>
     private void Move(int delta)
     {
-        var total = 2 + _lists.Sum(l => l.Items.Count);
-        var next = Math.Clamp(_focus + delta, 0, total - 1);
+        var next = Math.Clamp(_focus + delta, 0, _cards.Length - 1);
         if (next == _focus) return;
         _focus = next;
+        ApplyCardFocus();
+        ScrollCardToTop(_cards[_focus]);
+    }
 
-        if (next == 0)
+    /// <summary>刷新选中样式：只有当前卡片有高亮描边与加亮底色</summary>
+    private void ApplyCardFocus()
+    {
+        for (var i = 0; i < _cards.Length; i++)
         {
-            // 回到呼出捕获按钮：清除全部行选中高亮（避免"光标还在下面"的错觉），并整页滚回最顶
-            foreach (var lv in _lists) lv.SelectedIndex = -1;
-            CaptureButton.Focus(Microsoft.UI.Xaml.FocusState.Keyboard);
-            PageScroller.ScrollToVerticalOffset(0);
-            return;
-        }
-        if (next == 1)
-        {
-            foreach (var lv in _lists) lv.SelectedIndex = -1;
-            FsCaptureButton.Focus(Microsoft.UI.Xaml.FocusState.Keyboard);
-            PageScroller.ScrollToVerticalOffset(0);
-            return;
-        }
-
-        // 说明行：展平索引 → (列表, 项)；选中行项容器并聚焦，再把行手动滚入外层可视区
-        var i = next - 2;
-        foreach (var lv in _lists)
-        {
-            if (i < lv.Items.Count)
-            {
-                foreach (var other in _lists)
-                    if (!ReferenceEquals(other, lv)) other.SelectedIndex = -1; // 高亮只保留在当前列表
-                lv.SelectedIndex = i;
-                if (lv.ContainerFromIndex(i) is ListViewItem lvi)
-                {
-                    lvi.Focus(Microsoft.UI.Xaml.FocusState.Keyboard);
-                    EnsureVisible(lvi);
-                }
-                return;
-            }
-            i -= lv.Items.Count;
+            var on = i == _focus;
+            _cards[i].BorderBrush = on ? _lineFocus : _lineIdle;
+            _cards[i].Background = on ? _cardFocusBg : _cardIdleBg;
         }
     }
 
-    /// <summary>把元素滚动到外层 PageScroller 可视范围内（上下各留 6px 余量）</summary>
-    private void EnsureVisible(Microsoft.UI.Xaml.FrameworkElement el)
+    /// <summary>把卡片滚到外层 PageScroller 可视区顶部（留 8px 余量）</summary>
+    private void ScrollCardToTop(FrameworkElement card)
     {
         try
         {
-            var y = el.TransformToVisual(PageScroller)
+            var y = card.TransformToVisual(PageScroller)
                 .TransformPoint(new Windows.Foundation.Point(0, 0)).Y;
-            if (y < 6)
-                PageScroller.ScrollToVerticalOffset(PageScroller.VerticalOffset + y - 6);
-            else if (y + el.ActualHeight > PageScroller.ViewportHeight - 6)
-                PageScroller.ScrollToVerticalOffset(
-                    PageScroller.VerticalOffset + y + el.ActualHeight - PageScroller.ViewportHeight + 6);
+            PageScroller.ScrollToVerticalOffset(PageScroller.VerticalOffset + y - 8);
         }
         catch { /* 未连接视觉树时忽略 */ }
     }
 
-    private void OnBackClick(object sender, Microsoft.UI.Xaml.RoutedEventArgs e) =>
+    private void OnBackClick(object sender, RoutedEventArgs e) =>
         App.Main?.ShowSettingsHub();
 
     /// <summary>鼠标点击呼出键位按钮</summary>
-    private void OnCaptureClick(object sender, Microsoft.UI.Xaml.RoutedEventArgs e) => StartCapture(CaptureTarget.Summon);
+    private void OnCaptureClick(object sender, RoutedEventArgs e) => StartCapture(CaptureTarget.Summon);
 
     /// <summary>鼠标点击全屏键位按钮</summary>
-    private void OnFsCaptureClick(object sender, Microsoft.UI.Xaml.RoutedEventArgs e) => StartCapture(CaptureTarget.Fullscreen);
+    private void OnFsCaptureClick(object sender, RoutedEventArgs e) => StartCapture(CaptureTarget.Fullscreen);
 
     /// <summary>进入捕获模式：等待用户按下组合键并松开</summary>
     private void StartCapture(CaptureTarget target)

@@ -38,6 +38,10 @@ public sealed class GamepadService : IDisposable
 {
     private const int MaxUsers = 4;
     private const short StickDeadzone = 8000;
+    /// <summary>摇杆方向释放阈值（迟滞）：方向保持到摇杆回落到此值以内才松开</summary>
+    private const short StickReleaseDeadzone = 4000;
+    /// <summary>松杆过冲保护窗口：回中/换向后的这段时间内出现的反向摇杆输入判为回弹并忽略</summary>
+    private const long StickReversalGuardMs = 150;
     private const byte TriggerThreshold = 30;
     private const int ERROR_SUCCESS = 0;
 
@@ -54,6 +58,10 @@ public sealed class GamepadService : IDisposable
     private bool _fsFired;
     private static bool _useLegacyDll;
 
+    /// <summary>按键是否派发给页面：窗口隐藏到托盘/被其他应用（正在玩的游戏）盖住时置 false。
+    /// 此时仍继续轮询（呼出组合键、连接状态都依赖轮询），但不派发按键/方向/摇杆事件。</summary>
+    private volatile bool _routingEnabled;
+
     // 方向键长按连发（按住先走一格，延迟后按间隔连续走）
     private const long RepeatInitialDelayMs = 400;
     private const long RepeatIntervalMs = 130;
@@ -62,6 +70,10 @@ public sealed class GamepadService : IDisposable
         GamepadButtons.DPadLeft | GamepadButtons.DPadRight;
     private GamepadButtons _heldDirs;
     private long _repeatNextMs;
+
+    // 左摇杆方向迟滞状态（防松杆过冲触发反向，导致"下去又上来"）
+    private int _yDir, _yLastSign, _xDir, _xLastSign;
+    private long _yReleaseMs, _xReleaseMs;
 
     /// <summary>按钮按下（边沿触发，含扳机/摇杆等全部键）</summary>
     public event Action<GamepadButtons>? ButtonPressed;
@@ -78,6 +90,23 @@ public sealed class GamepadService : IDisposable
     /// <summary>当前帧完整按键状态（供按键捕获等场景查询）</summary>
     public GamepadButtons Current => _current;
 
+    /// <summary>手柄按键是否派发给页面（窗口可见且处于前台时为 true）。
+    /// 从 false 恢复为 true 时重置方向连发计时：隐藏期间一直按住的方向不该在恢复瞬间被判成新按下而连发。</summary>
+    public bool RoutingEnabled
+    {
+        get => _routingEnabled;
+        set
+        {
+            if (_routingEnabled == value) return;
+            _routingEnabled = value;
+            if (value)
+            {
+                _heldDirs = _current & DirectionMask;
+                _repeatNextMs = Environment.TickCount64 + RepeatInitialDelayMs;
+            }
+        }
+    }
+
     /// <summary>呼出组合键（默认 LT+RT 同时长按 1 秒）</summary>
     public GamepadButtons SummonCombo { get; set; } =
         GamepadButtons.LeftTrigger | GamepadButtons.RightTrigger;
@@ -90,9 +119,8 @@ public sealed class GamepadService : IDisposable
         _comboFired = false;
     }
 
-    /// <summary>全屏组合键（默认 LB+RB 同时长按 1 秒切换全屏）</summary>
-    public GamepadButtons FullscreenCombo { get; set; } =
-        GamepadButtons.LeftShoulder | GamepadButtons.RightShoulder;
+    /// <summary>全屏组合键（默认菜单键长按 1 秒切换全屏；实际值由设置页捕获后覆盖）</summary>
+    public GamepadButtons FullscreenCombo { get; set; } = GamepadButtons.Menu;
 
     /// <summary>设置全屏组合键并复位长按计时</summary>
     public void SetFullscreenCombo(GamepadButtons combo)
@@ -125,11 +153,13 @@ public sealed class GamepadService : IDisposable
             if (gp.LeftTrigger > TriggerThreshold) buttons |= GamepadButtons.LeftTrigger;
             if (gp.RightTrigger > TriggerThreshold) buttons |= GamepadButtons.RightTrigger;
 
-            // 左摇杆 → 十字键方向（带死区）
-            if (gp.ThumbLY > StickDeadzone) buttons |= GamepadButtons.DPadUp;
-            else if (gp.ThumbLY < -StickDeadzone) buttons |= GamepadButtons.DPadDown;
-            if (gp.ThumbLX < -StickDeadzone) buttons |= GamepadButtons.DPadLeft;
-            else if (gp.ThumbLX > StickDeadzone) buttons |= GamepadButtons.DPadRight;
+            // 左摇杆 → 十字键方向（死区 + 迟滞 + 松杆过冲保护）
+            var ly = ReadStickAxis(gp.ThumbLY, ref _yDir, ref _yLastSign, ref _yReleaseMs);
+            if (ly > 0) buttons |= GamepadButtons.DPadUp;
+            else if (ly < 0) buttons |= GamepadButtons.DPadDown;
+            var lx = ReadStickAxis(gp.ThumbLX, ref _xDir, ref _xLastSign, ref _xReleaseMs);
+            if (lx < 0) buttons |= GamepadButtons.DPadLeft;
+            else if (lx > 0) buttons |= GamepadButtons.DPadRight;
 
             current |= buttons;
         }
@@ -144,7 +174,7 @@ public sealed class GamepadService : IDisposable
 
         // 边沿：本帧按下且上一帧未按下
         var pressed = current & ~_last;
-        if (pressed != GamepadButtons.None)
+        if (pressed != GamepadButtons.None && _routingEnabled)
             ButtonPressed?.Invoke(pressed);
 
         // 方向键长按连发：按住持续超过起始延迟后，按固定间隔重复触发方向按下事件
@@ -161,7 +191,7 @@ public sealed class GamepadService : IDisposable
             else if (nowMs >= _repeatNextMs)
             {
                 _repeatNextMs = nowMs + RepeatIntervalMs;
-                ButtonPressed?.Invoke(heldDirs);
+                if (_routingEnabled) ButtonPressed?.Invoke(heldDirs);
             }
         }
         else
@@ -169,7 +199,7 @@ public sealed class GamepadService : IDisposable
             _heldDirs = GamepadButtons.None;
         }
 
-        if (_last != GamepadButtons.None && current == GamepadButtons.None)
+        if (_routingEnabled && _last != GamepadButtons.None && current == GamepadButtons.None)
             AllReleased?.Invoke();
 
         // 呼出组合键长按检测
@@ -209,6 +239,43 @@ public sealed class GamepadService : IDisposable
         }
 
         _last = current;
+    }
+
+    /// <summary>左摇杆单轴 → 方向（+1 正侧 / -1 负侧 / 0 中位）。
+    /// ① 迟滞：以 StickDeadzone 进入、StickReleaseDeadzone 退出，避免临界点抖动；
+    /// ② 松杆过冲保护：刚松开（或刚换向）后 StickReversalGuardMs 内出现的反向输入判为回弹，丢弃并归零。
+    /// 这是"往下摇一下光标下去又上来"的根因修复。</summary>
+    private static int ReadStickAxis(short v, ref int dir, ref int lastSign, ref long releaseMs)
+    {
+        var now = Environment.TickCount64;
+        var raw = v > StickDeadzone ? 1 : v < -StickDeadzone ? -1 : 0;
+
+        if (raw == 0)
+        {
+            // 迟滞：仍在释放阈值之外则保持当前方向；回落到阈值内才算松开
+            if (dir != 0 && Math.Abs((int)v) > StickReleaseDeadzone) return dir;
+            if (dir != 0)
+            {
+                lastSign = dir;
+                releaseMs = now;
+            }
+            dir = 0;
+            return 0;
+        }
+
+        if (raw == dir) return dir;
+
+        // 反向输入且刚松开/刚换向不久 → 松杆过冲：丢弃并让方向归零（同时停止连发）
+        if (raw == -lastSign && now - releaseMs < StickReversalGuardMs)
+        {
+            dir = 0;
+            return 0;
+        }
+
+        dir = raw;
+        lastSign = raw;
+        releaseMs = now;
+        return dir;
     }
 
     public void Dispose()

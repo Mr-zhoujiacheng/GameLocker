@@ -25,10 +25,23 @@
                 <TextBlock x:Name="EditModeText" Text="编辑模式" FontSize="34" FontWeight="Bold"
                            Foreground="White" Height="58" VerticalAlignment="Center" Visibility="Collapsed"/>
             </StackPanel>
-            <!-- 临时提示条（关闭反馈/拖入结果 toast）：顶栏水平居中，与时间同高 -->
+            <!-- 临时提示条（关闭反馈/删除反馈/拖入结果 toast）：玻璃质感药丸 + 状态图标徽章，顶栏居中，
+                 入场淡入下移；图标/强调色由 ShowToast 按消息语义（成功=青色对勾 / 警告=琥珀感叹号）切换 -->
             <Border x:Name="MoveHintBar" HorizontalAlignment="Center" VerticalAlignment="Center"
-                    Padding="14,6" CornerRadius="4" Background="#CC000000" Visibility="Collapsed">
-                <TextBlock x:Name="MoveHintText" Text="" FontSize="13"/>
+                    CornerRadius="12" Padding="12,7,16,7"
+                    Background="#E6242424" BorderBrush="#33FFFFFF" BorderThickness="1.5"
+                    Visibility="Collapsed">
+                <Border.RenderTransform>
+                    <TranslateTransform x:Name="MoveHintSlide"/>
+                </Border.RenderTransform>
+                <StackPanel Orientation="Horizontal" Spacing="9">
+                    <Border x:Name="MoveHintBadge" Width="22" Height="22" CornerRadius="6"
+                            Background="#2A4CC2FF" VerticalAlignment="Center">
+                        <FontIcon x:Name="MoveHintIcon" Glyph="&#xE73E;" FontSize="11" Foreground="#4CC2FF"/>
+                    </Border>
+                    <TextBlock x:Name="MoveHintText" Text="" FontSize="13" VerticalAlignment="Center"
+                               FontFamily="Segoe UI Variable Text, Segoe UI"/>
+                </StackPanel>
             </Border>
             <StackPanel HorizontalAlignment="Right" Orientation="Horizontal" Spacing="8" VerticalAlignment="Center">
                 <FontIcon x:Name="WifiIcon" Glyph="&#xE701;" FontSize="14"/>
@@ -55,37 +68,58 @@
         <!-- 底部按键提示：手柄图标徽章，单行，透明背景 -->
         <ctl:GamepadHintBar x:Name="HintBar" Grid.Row="2" Margin="0,8,0,12"/>
 
-        <!-- 添加方式选择遮罩：X 键弹出，二选一（自定义 / 小组件），手柄可操作 -->
-        <Grid x:Name="ChoiceOverlay" Grid.Row="0" Grid.RowSpan="3" Visibility="Collapsed"
-              Background="#B2000000">
-            <StackPanel VerticalAlignment="Center" HorizontalAlignment="Center" Spacing="14" Width="300">
-                <TextBlock Text="添加" FontSize="22" FontWeight="SemiBold" HorizontalAlignment="Center" Margin="0,0,0,6"/>
+        <!-- 添加方式选择遮罩：X 键 / 编辑模式"添加磁贴"弹出，二选一（自定义 / 小组件），手柄可操作。
+             玻璃质感面板 + 强调色图标徽章；选中项用强调色描边 + 底色高亮（见 UpdateChoiceCursor） -->
+        <Grid x:Name="ChoiceOverlay" Grid.Row="0" Grid.RowSpan="3" Visibility="Collapsed">
+            <!-- 遮罩层：点击空白处关闭 -->
+            <Border x:Name="ChoiceMask" Background="#C00A0C10"/>
 
-                <Border x:Name="ChoiceCustom" CornerRadius="8" Background="#1FFFFFFF"
-                        BorderBrush="Transparent" BorderThickness="3" Padding="16,14">
-                    <StackPanel Orientation="Horizontal" Spacing="14">
-                        <FontIcon Glyph="&#xE70F;" FontSize="22" VerticalAlignment="Center"/>
-                        <StackPanel VerticalAlignment="Center" Spacing="2">
-                            <TextBlock Text="自定义" FontSize="17" FontWeight="SemiBold"/>
-                            <TextBlock Text="快捷方式 / 程序 / 网站 / 文件夹" FontSize="12" Opacity="0.7"/>
-                        </StackPanel>
+            <Border x:Name="ChoicePanel" HorizontalAlignment="Center" VerticalAlignment="Center"
+                    CornerRadius="16" Padding="20,20,20,16"
+                    Background="#E6242424" BorderBrush="#33FFFFFF" BorderThickness="1.5"
+                    RenderTransformOrigin="0.5,0.5">
+                <Border.RenderTransform>
+                    <ScaleTransform x:Name="ChoicePanelScale" ScaleX="1" ScaleY="1"/>
+                </Border.RenderTransform>
+                <StackPanel Width="292" Spacing="12">
+                    <!-- 标题：加号徽章 + 标题（与主页编辑模式的"添加磁贴"入口同一视觉语言） -->
+                    <StackPanel Orientation="Horizontal" HorizontalAlignment="Center" Spacing="10" Margin="0,0,0,6">
+                        <Border Width="26" Height="26" CornerRadius="8" Background="#2A4CC2FF" VerticalAlignment="Center">
+                            <FontIcon Glyph="&#xE710;" FontSize="13" Foreground="#4CC2FF"/>
+                        </Border>
+                        <TextBlock Text="添加" FontSize="19" FontWeight="SemiBold" VerticalAlignment="Center"/>
                     </StackPanel>
-                </Border>
 
-                <Border x:Name="ChoiceWidget" CornerRadius="8" Background="#1FFFFFFF"
-                        BorderBrush="Transparent" BorderThickness="3" Padding="16,14">
-                    <StackPanel Orientation="Horizontal" Spacing="14">
-                        <FontIcon Glyph="&#xE71D;" FontSize="22" VerticalAlignment="Center"/>
-                        <StackPanel VerticalAlignment="Center" Spacing="2">
-                            <TextBlock Text="小组件" FontSize="17" FontWeight="SemiBold"/>
-                            <TextBlock Text="音乐播放器等可交互磁贴" FontSize="12" Opacity="0.7"/>
+                    <Border x:Name="ChoiceCustom" CornerRadius="12" Background="#14FFFFFF"
+                            BorderBrush="#26FFFFFF" BorderThickness="1.5" Padding="14,12">
+                        <StackPanel Orientation="Horizontal" Spacing="12">
+                            <Border Width="34" Height="34" CornerRadius="10" Background="#2A4CC2FF" VerticalAlignment="Center">
+                                <FontIcon Glyph="&#xE70F;" FontSize="16" Foreground="#4CC2FF"/>
+                            </Border>
+                            <StackPanel VerticalAlignment="Center" Spacing="1">
+                                <TextBlock Text="自定义" FontSize="16" FontWeight="SemiBold"/>
+                                <TextBlock Text="快捷方式 / 程序 / 网站 / 文件夹" FontSize="11.5" Opacity="0.65"/>
+                            </StackPanel>
                         </StackPanel>
-                    </StackPanel>
-                </Border>
+                    </Border>
 
-                <ctl:GamepadHintBar HorizontalAlignment="Center" Margin="0,6,0,0"
-                                    Hints="DPAD:选择|A:确认|B:取消"/>
-            </StackPanel>
+                    <Border x:Name="ChoiceWidget" CornerRadius="12" Background="#14FFFFFF"
+                            BorderBrush="#26FFFFFF" BorderThickness="1.5" Padding="14,12">
+                        <StackPanel Orientation="Horizontal" Spacing="12">
+                            <Border Width="34" Height="34" CornerRadius="10" Background="#2A4CC2FF" VerticalAlignment="Center">
+                                <FontIcon Glyph="&#xE71D;" FontSize="16" Foreground="#4CC2FF"/>
+                            </Border>
+                            <StackPanel VerticalAlignment="Center" Spacing="1">
+                                <TextBlock Text="小组件" FontSize="16" FontWeight="SemiBold"/>
+                                <TextBlock Text="音乐播放器等可交互磁贴" FontSize="11.5" Opacity="0.65"/>
+                            </StackPanel>
+                        </StackPanel>
+                    </Border>
+
+                    <ctl:GamepadHintBar HorizontalAlignment="Center" Margin="0,4,0,0"
+                                        Hints="DPAD:选择|A:确认|B:取消"/>
+                </StackPanel>
+            </Border>
         </Grid>
     </Grid>
 </Page>

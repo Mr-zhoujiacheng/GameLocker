@@ -1,45 +1,74 @@
 ﻿<?xml version="1.0" encoding="utf-8"?>
 <Page
     x:Class="GameLocker.KeybindPage"
+    IsTabStop="True"
     xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
     xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
     xmlns:ctl="using:GameLocker.Controls"
     xmlns:local="using:GameLocker">
 
     <Page.Resources>
-        <!-- 说明行模板：键帽徽章 + 触控说明 -->
+        <!-- 卡片：手柄焦点以"整张卡片"为一个选中框（代码里只改描边与底色），卡内内容只读 -->
+        <Style x:Key="CardStyle" TargetType="Border">
+            <Setter Property="Background" Value="#14FFFFFF"/>
+            <Setter Property="BorderBrush" Value="#26FFFFFF"/>
+            <Setter Property="BorderThickness" Value="2"/>
+            <Setter Property="CornerRadius" Value="12"/>
+            <Setter Property="Padding" Value="16,12,14,12"/>
+        </Style>
+
+        <!-- 场景标签：卡片左上角的小胶囊 -->
+        <Style x:Key="PillStyle" TargetType="Border">
+            <Setter Property="Background" Value="#2A4C9AFF"/>
+            <Setter Property="CornerRadius" Value="9"/>
+            <Setter Property="Padding" Value="10,3"/>
+            <Setter Property="HorizontalAlignment" Value="Left"/>
+        </Style>
+        <Style x:Key="PillTextStyle" TargetType="TextBlock">
+            <Setter Property="FontSize" Value="12.5"/>
+            <Setter Property="FontWeight" Value="SemiBold"/>
+            <Setter Property="Foreground" Value="#BBD8FF"/>
+        </Style>
+
+        <!-- 说明行：左=手柄操作键帽，右=触控 / 鼠标等价操作 -->
         <DataTemplate x:Key="RowTpl" x:DataType="local:ControlRow">
             <Grid ColumnSpacing="12">
                 <Grid.ColumnDefinitions>
-                    <ColumnDefinition Width="122"/>
+                    <ColumnDefinition Width="130"/>
                     <ColumnDefinition Width="*"/>
                 </Grid.ColumnDefinitions>
-                <Border Grid.Column="0" Background="#1FFFFFFF" BorderBrush="#38FFFFFF"
-                        BorderThickness="1,1,1,2" CornerRadius="6"
-                        Padding="8,3" HorizontalAlignment="Stretch">
-                    <TextBlock Text="{x:Bind Pad}" FontSize="12.5" FontWeight="SemiBold"
-                               Foreground="#9ECBFF" HorizontalAlignment="Center" TextWrapping="Wrap"/>
+                <Border Grid.Column="0" Background="#1FFFFFFF" BorderBrush="#3DFFFFFF"
+                        BorderThickness="1,1,1,2" CornerRadius="7" Padding="8,4"
+                        VerticalAlignment="Top">
+                    <TextBlock Text="{x:Bind Pad}" FontSize="13" FontWeight="SemiBold"
+                               Foreground="#9ECBFF" HorizontalAlignment="Center"
+                               TextAlignment="Center" TextWrapping="Wrap"/>
                 </Border>
-                <TextBlock Grid.Column="1" Text="{x:Bind Touch}"
-                           FontSize="13" Opacity="0.85" VerticalAlignment="Center" TextWrapping="Wrap"/>
+                <TextBlock Grid.Column="1" Text="{x:Bind Touch}" FontSize="13.5"
+                           Opacity="0.88" VerticalAlignment="Center" TextWrapping="Wrap"/>
             </Grid>
         </DataTemplate>
 
-        <!-- 说明列表样式：ListView 自带可见选中高亮，手柄/鼠标都能定位光标 -->
-        <Style x:Key="RowListStyle" TargetType="ListView">
-            <Setter Property="SelectionMode" Value="Single"/>
-            <Setter Property="Padding" Value="0"/>
-            <Setter Property="IsSwipeEnabled" Value="False"/>
+        <!-- 说明列表只展示内容，不产生"行级选中"（手柄按卡片整体选择） -->
+        <Style x:Key="RowListStyle" TargetType="ItemsControl">
             <Setter Property="ItemTemplate" Value="{StaticResource RowTpl}"/>
-            <Setter Property="ItemContainerStyle">
+            <Setter Property="ItemsPanel">
                 <Setter.Value>
-                    <Style TargetType="ListViewItem">
-                        <Setter Property="Padding" Value="2,4"/>
-                        <Setter Property="MinHeight" Value="0"/>
-                        <Setter Property="HorizontalContentAlignment" Value="Stretch"/>
-                    </Style>
+                    <ItemsPanelTemplate>
+                        <StackPanel Spacing="7"/>
+                    </ItemsPanelTemplate>
                 </Setter.Value>
             </Setter>
+        </Style>
+
+        <!-- 键位捕获按钮：外形像一枚键帽，可点可按 A -->
+        <Style x:Key="KeyCapStyle" TargetType="Button">
+            <Setter Property="Background" Value="#1FFFFFFF"/>
+            <Setter Property="BorderBrush" Value="#3DFFFFFF"/>
+            <Setter Property="BorderThickness" Value="1,1,1,2"/>
+            <Setter Property="CornerRadius" Value="8"/>
+            <Setter Property="Padding" Value="14,6"/>
+            <Setter Property="IsTabStop" Value="False"/>
         </Style>
     </Page.Resources>
 
@@ -52,7 +81,8 @@
             <RowDefinition Height="Auto"/>
         </Grid.RowDefinitions>
 
-        <Grid Grid.Row="0" Padding="20,16">
+        <!-- 顶栏：标题 -->
+        <Grid Grid.Row="0" Padding="20,16,20,10">
             <StackPanel Orientation="Horizontal" Spacing="10" VerticalAlignment="Center">
                 <Button x:Name="BackButton" Background="Transparent" BorderThickness="0" Click="OnBackClick" IsTabStop="False">
                     <FontIcon Glyph="&#xE72B;" FontSize="16"/>
@@ -61,77 +91,106 @@
             </StackPanel>
         </Grid>
 
+        <!-- 内容区：每张卡片就是一个手柄选中框，方向键整卡上下切换 -->
         <ScrollViewer x:Name="PageScroller" Grid.Row="1" Padding="20,4,20,12" VerticalScrollBarVisibility="Auto">
-            <StackPanel Spacing="14">
+            <StackPanel Spacing="12">
 
-                <!-- 呼出组合键 -->
-                <Border Background="#14FFFFFF" BorderBrush="#22FFFFFF" BorderThickness="1"
-                        CornerRadius="10" Padding="14,12">
-                    <StackPanel Spacing="8">
-                        <Border Background="#2A4C9AFF" CornerRadius="9" Padding="10,3" HorizontalAlignment="Left">
-                            <TextBlock Text="组合键" FontSize="12" FontWeight="SemiBold" Foreground="#BBD8FF"/>
+                <!-- 阅读提示：说明每张卡片内的左右两列各代表什么，放在最上方先讲读法 -->
+                <Border x:Name="CardLegend" Style="{StaticResource CardStyle}">
+                    <StackPanel Spacing="9">
+                        <Border Style="{StaticResource PillStyle}">
+                            <TextBlock Style="{StaticResource PillTextStyle}" Text="阅读提示"/>
+                        </Border>
+                        <TextBlock Text="左列 = 手柄操作，右列 = 对应的触控 / 鼠标操作"
+                                   FontSize="13.5" Opacity="0.88" TextWrapping="Wrap"/>
+                    </StackPanel>
+                </Border>
+
+                <!-- 呼出窗口组合键 -->
+                <Border x:Name="CardSummon" Style="{StaticResource CardStyle}">
+                    <StackPanel Spacing="9">
+                        <Border Style="{StaticResource PillStyle}">
+                            <TextBlock Style="{StaticResource PillTextStyle}" Text="呼出窗口组合键"/>
                         </Border>
                         <StackPanel Orientation="Horizontal" Spacing="12">
-                            <Button x:Name="CaptureButton" Click="OnCaptureClick">
-                                <TextBlock x:Name="CaptureText" FontSize="14"/>
+                            <Button x:Name="CaptureButton" Style="{StaticResource KeyCapStyle}" Click="OnCaptureClick">
+                                <TextBlock x:Name="CaptureText" FontSize="15" FontWeight="SemiBold" Foreground="#CFE2FF"/>
                             </Button>
-                            <TextBlock Text="呼出窗口 · 按 A 或点击后按住组合键，松开即保存"
-                                       FontSize="12" Opacity="0.55" VerticalAlignment="Center" TextWrapping="Wrap"/>
+                            <TextBlock Text="按 A 或点击后按住想要的组合键，全部松开即保存"
+                                       FontSize="12.5" Opacity="0.55" VerticalAlignment="Center" TextWrapping="Wrap"/>
                         </StackPanel>
+                    </StackPanel>
+                </Border>
+
+                <!-- 切换全屏组合键 -->
+                <Border x:Name="CardFullscreen" Style="{StaticResource CardStyle}">
+                    <StackPanel Spacing="9">
+                        <Border Style="{StaticResource PillStyle}">
+                            <TextBlock Style="{StaticResource PillTextStyle}" Text="切换全屏组合键"/>
+                        </Border>
                         <StackPanel Orientation="Horizontal" Spacing="12">
-                            <Button x:Name="FsCaptureButton" Click="OnFsCaptureClick">
-                                <TextBlock x:Name="FsCaptureText" FontSize="14"/>
+                            <Button x:Name="FsCaptureButton" Style="{StaticResource KeyCapStyle}" Click="OnFsCaptureClick">
+                                <TextBlock x:Name="FsCaptureText" FontSize="15" FontWeight="SemiBold" Foreground="#CFE2FF"/>
                             </Button>
-                            <TextBlock Text="切换全屏 · 按 A 或点击后按住组合键，松开即保存"
-                                       FontSize="12" Opacity="0.55" VerticalAlignment="Center" TextWrapping="Wrap"/>
+                            <TextBlock Text="按 A 或点击后按住想要的组合键，全部松开即保存"
+                                       FontSize="12.5" Opacity="0.55" VerticalAlignment="Center" TextWrapping="Wrap"/>
                         </StackPanel>
                     </StackPanel>
                 </Border>
 
-                <!-- 手柄 ↔ 触控对照：每个场景一张卡片，卡片内 ListView 提供可见选中高亮 -->
-                <Border Background="#14FFFFFF" BorderBrush="#22FFFFFF" BorderThickness="1"
-                        CornerRadius="10" Padding="14,12">
-                    <StackPanel Spacing="8">
-                        <Border Background="#2A4C9AFF" CornerRadius="9" Padding="10,3" HorizontalAlignment="Left">
-                            <TextBlock Text="主页 / 磁贴集" FontSize="12" FontWeight="SemiBold" Foreground="#BBD8FF"/>
+                <!-- 主页 / 磁贴集 -->
+                <Border x:Name="CardHome" Style="{StaticResource CardStyle}">
+                    <StackPanel Spacing="9">
+                        <Border Style="{StaticResource PillStyle}">
+                            <TextBlock Style="{StaticResource PillTextStyle}" Text="主页 / 磁贴集"/>
                         </Border>
-                        <ListView x:Name="LvHome" Style="{StaticResource RowListStyle}"/>
+                        <ItemsControl x:Name="LvHome" Style="{StaticResource RowListStyle}"/>
                     </StackPanel>
                 </Border>
 
-                <Border Background="#14FFFFFF" BorderBrush="#22FFFFFF" BorderThickness="1"
-                        CornerRadius="10" Padding="14,12">
-                    <StackPanel Spacing="8">
-                        <Border Background="#2A4C9AFF" CornerRadius="9" Padding="10,3" HorizontalAlignment="Left">
-                            <TextBlock Text="编辑模式" FontSize="12" FontWeight="SemiBold" Foreground="#BBD8FF"/>
+                <!-- 编辑模式 -->
+                <Border x:Name="CardEdit" Style="{StaticResource CardStyle}">
+                    <StackPanel Spacing="9">
+                        <Border Style="{StaticResource PillStyle}">
+                            <TextBlock Style="{StaticResource PillTextStyle}" Text="编辑模式"/>
                         </Border>
-                        <ListView x:Name="LvEdit" Style="{StaticResource RowListStyle}"/>
+                        <ItemsControl x:Name="LvEdit" Style="{StaticResource RowListStyle}"/>
                     </StackPanel>
                 </Border>
 
-                <Border Background="#14FFFFFF" BorderBrush="#22FFFFFF" BorderThickness="1"
-                        CornerRadius="10" Padding="14,12">
-                    <StackPanel Spacing="8">
-                        <Border Background="#2A4C9AFF" CornerRadius="9" Padding="10,3" HorizontalAlignment="Left">
-                            <TextBlock Text="设置" FontSize="12" FontWeight="SemiBold" Foreground="#BBD8FF"/>
+                <!-- 设置 -->
+                <Border x:Name="CardSettings" Style="{StaticResource CardStyle}">
+                    <StackPanel Spacing="9">
+                        <Border Style="{StaticResource PillStyle}">
+                            <TextBlock Style="{StaticResource PillTextStyle}" Text="设置"/>
                         </Border>
-                        <ListView x:Name="LvSettings" Style="{StaticResource RowListStyle}"/>
+                        <ItemsControl x:Name="LvSettings" Style="{StaticResource RowListStyle}"/>
                     </StackPanel>
                 </Border>
 
-                <Border Background="#14FFFFFF" BorderBrush="#22FFFFFF" BorderThickness="1"
-                        CornerRadius="10" Padding="14,12">
-                    <StackPanel Spacing="8">
-                        <Border Background="#2A4C9AFF" CornerRadius="9" Padding="10,3" HorizontalAlignment="Left">
-                            <TextBlock Text="全局呼出" FontSize="12" FontWeight="SemiBold" Foreground="#BBD8FF"/>
+                <!-- 关于 -->
+                <Border x:Name="CardAbout" Style="{StaticResource CardStyle}">
+                    <StackPanel Spacing="9">
+                        <Border Style="{StaticResource PillStyle}">
+                            <TextBlock Style="{StaticResource PillTextStyle}" Text="关于"/>
                         </Border>
-                        <ListView x:Name="LvGlobal" Style="{StaticResource RowListStyle}"/>
+                        <ItemsControl x:Name="LvAbout" Style="{StaticResource RowListStyle}"/>
+                    </StackPanel>
+                </Border>
+
+                <!-- 全局呼出 -->
+                <Border x:Name="CardGlobal" Style="{StaticResource CardStyle}">
+                    <StackPanel Spacing="9">
+                        <Border Style="{StaticResource PillStyle}">
+                            <TextBlock Style="{StaticResource PillTextStyle}" Text="全局呼出"/>
+                        </Border>
+                        <ItemsControl x:Name="LvGlobal" Style="{StaticResource RowListStyle}"/>
                     </StackPanel>
                 </Border>
             </StackPanel>
         </ScrollViewer>
 
         <ctl:GamepadHintBar Grid.Row="2" Margin="0,8,0,12"
-                            Hints="A:捕获键位|B:返回"/>
+                            Hints="DPAD:切换卡片|A:捕获键位|B:返回"/>
     </Grid>
 </Page>

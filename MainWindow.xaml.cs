@@ -22,6 +22,15 @@ public sealed partial class MainWindow : Window
     private bool _fullscreen;
     private EdgeGestureService? _edgeGesture;
 
+    /// <summary>手柄是否派发到页面（与 Gamepad.RoutingEnabled 同步；仅窗口已呼出显示时为 true）</summary>
+    private bool _routing;
+
+    /// <summary>窗口是否已呼出显示：由 ShowFromTray / HideToTray 维护。
+    /// 不用 Window.Visible——AppWindow.Hide() 后它不一定同步翻转；
+    /// 更不能用 GetForegroundWindow()——本进程在托盘期间拿不到前台权限，呼出后可能始终不是前台，
+    /// 那样门控会永久卡在关闭状态（表现为"呼出后手柄完全失效"）。</summary>
+    private bool _shown;
+
     /// <summary>
     /// 按当前设置同步边缘手势监听：开关开启则启动并把窄条定位到对应边缘
     /// （全屏=顶边，左/右停靠=左/右边缘），关闭则停止并恢复系统边缘手势。
@@ -68,7 +77,7 @@ public sealed partial class MainWindow : Window
         // 侧边栏样式：贴屏幕左/右边缘，高度占满工作区
         ApplySidebarLayout();
 
-        // 触摸下滑手势：子页=返回上一级，主页=收起启动器
+        // 触摸收起手势（方向与呼出手势相反）：子页=返回上一级，主页=收起启动器
         HookSwipeBack();
 
         Closed += (_, _) =>
@@ -109,6 +118,8 @@ public sealed partial class MainWindow : Window
             if (!Visible || GetForegroundWindow() != _hwnd)
                 ShowFromTray();
         });
+        // 收起手势（呼出的反方向）：走原始输入触摸通道，与页面内容无关，任何页面都生效
+        _edgeGesture.DismissTriggered += () => DispatcherQueue.TryEnqueue(OnDismissGesture);
         SyncEdgeGesture();
 
         Root.Navigate(typeof(MainPage));
@@ -123,6 +134,9 @@ public sealed partial class MainWindow : Window
             {
                 // 本窗口成为前台：隐藏边缘条（否则会吞掉本窗口边缘的触摸）
                 _edgeGesture?.SetStripVisible(false);
+                // 可见时重申手柄路由；失去前台（Deactivated）不动门控——
+                // 否则游戏抢回焦点时会把仍然显示在屏幕上的启动器手柄一并关掉
+                if (_shown) SetGamepadRouting(true);
             }
             else
             {
@@ -235,9 +249,22 @@ public sealed partial class MainWindow : Window
         _animating = false;
     }
 
+    /// <summary>
+    /// 手柄路由门控：只有窗口处于"已呼出显示"状态时才把按键派发给页面。
+    /// 隐藏到托盘后一律不派发——GamepadService 仍在轮询（呼出组合键、连接状态依赖轮询），
+    /// 但不派发按键/方向/摇杆事件，避免刚启动游戏后误触按键把 Y（关闭程序）、X（添加）、
+    /// B（隐藏）打到已经看不见的界面上。开关只跟着显示状态走，不受前台焦点影响。
+    /// </summary>
+    private void SetGamepadRouting(bool on)
+    {
+        _routing = on;
+        Gamepad.RoutingEnabled = on;
+    }
+
     /// <summary>托盘/热键唤起</summary>
     public void ShowFromTray()
     {
+        _shown = true;
         _edgeGesture?.SetStripVisible(false);
         PrepareSummon();
         Activate();
@@ -249,6 +276,9 @@ public sealed partial class MainWindow : Window
             AnimateMove(_summonStart, _summonTarget, 260, easeOut: true, null);
         }
         (Root.Content as MainPage)?.FocusGrid();
+        // 已呼出显示：恢复手柄对启动器的操作。只跟显示状态走，不依赖抢前台是否成功
+        // （抢前台失败时窗口照样显示，若不在这里打开门控，手柄就会永久失效）
+        SetGamepadRouting(true);
     }
 
     /// <summary>Y 关闭目标程序后调用：等待目标窗口销毁、系统焦点转移完成，再把启动器重新置顶聚焦（保持前台不最小化）</summary>
@@ -260,14 +290,13 @@ public sealed partial class MainWindow : Window
 
     /// <summary>
     /// 强制窗口置顶并聚焦：Activate() 不保证 Z 序，热键/手柄呼出时有几率被其他窗口遮盖。
-    /// 经典做法：短暂设 TOPMOST 再设回 NOTOPMOST，把窗口提到普通层最顶，再 SetForegroundWindow。
+    /// 窗口常驻 TOPMOST（要盖住同样置顶的任务栏），所以这里只重申一次 TOPMOST
+    /// 把它提到置顶带最上，不能再回落到 NOTOPMOST（否则任务栏又会压住窗口下沿），再抢前台焦点。
     /// </summary>
     private void BringToForeground()
     {
         if (_hwnd == IntPtr.Zero) return;
         SetWindowPos(_hwnd, HWND_TOPMOST, 0, 0, 0, 0,
-            SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE);
-        SetWindowPos(_hwnd, HWND_NOTOPMOST, 0, 0, 0, 0,
             SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE);
         SetForegroundWindow(_hwnd);
     }
@@ -284,6 +313,10 @@ public sealed partial class MainWindow : Window
     /// <summary>隐藏到托盘：动画开启时先播放反向滑出（真实窗口移出屏外）再隐藏；关闭时直接隐藏</summary>
     public void HideToTray()
     {
+        // 立刻停手柄路由：一旦决定隐藏，滑出动画期间就不该再响应手柄
+        // （否则刚启动游戏后晃动/误触按键会把启动器上的操作（如 Y 关闭程序）打到已经看不见的界面上）
+        _shown = false;
+        SetGamepadRouting(false);
         if (!SettingsService.Current.SummonAnimation || _animating)
         {
             AppWindow.Hide();
@@ -301,27 +334,34 @@ public sealed partial class MainWindow : Window
     }
 
     /// <summary>
-    /// 侧边栏布局：窗口贴屏幕左/右边缘，宽度约 30%、高度占满工作区。
+    /// 侧边栏布局：窗口贴屏幕左/右边缘，宽度约 30%、高度铺满整屏（含任务栏区域，盖住任务栏）。
     /// 设置页修改停靠侧后立即调用本方法生效；全屏模式下不干预。
     /// </summary>
     public void ApplySidebarLayout()
     {
         if (AppWindow == null || _fullscreen) return;
-        if (AppWindow.Presenter is OverlappedPresenter p)
+        var presenter = AppWindow.Presenter as OverlappedPresenter;
+        if (presenter != null)
         {
-            p.IsMaximizable = false;
-            p.Restore();
+            presenter.IsMaximizable = false;
+            presenter.Restore();
         }
 
-        var work = Microsoft.UI.Windowing.DisplayArea.Primary.WorkArea;
+        // OuterBounds 是整屏（含任务栏占用的下沿）；WorkArea 会少掉任务栏那条，
+        // 导致窗口上下铺不满且下沿露出任务栏。
+        var bounds = Microsoft.UI.Windowing.DisplayArea.Primary.OuterBounds;
         var pct = Math.Clamp(SettingsService.Current.SidebarWidthPercent, 0.38, 0.5);
-        var width = Math.Max(360, (int)(work.Width * pct));
-        AppWindow.Resize(new Windows.Graphics.SizeInt32(width, work.Height));
+        var width = Math.Max(360, (int)(bounds.Width * pct));
+        AppWindow.Resize(new Windows.Graphics.SizeInt32(width, bounds.Height));
         var x = SettingsService.Current.SidebarSide == Models.DockSide.Right
-            ? work.X + work.Width - width
-            : work.X;
-        AppWindow.Move(new Windows.Graphics.PointInt32(x, work.Y));
-        _homePos = new Windows.Graphics.PointInt32(x, work.Y);
+            ? bounds.X + bounds.Width - width
+            : bounds.X;
+        AppWindow.Move(new Windows.Graphics.PointInt32(x, bounds.Y));
+        _homePos = new Windows.Graphics.PointInt32(x, bounds.Y);
+
+        // 任务栏自身是 TOPMOST，窗口不置顶的话任务栏会压在窗口下沿之上（盖不住）。
+        // 放在 Resize/Move 之后设置，避免中途被窗口操作重置。
+        if (presenter != null) presenter.IsAlwaysOnTop = true;
 
         // presenter 状态操作可能恢复窗口样式，重新移除标题栏
         RemoveTitleBarStyle();
@@ -458,6 +498,9 @@ public sealed partial class MainWindow : Window
         else ShowMainPage();
     }
 
+    /// <summary>指定页面是否仍处于导航栈顶（供页面在后台回调里做自救守卫，避免已切走后误执行）</summary>
+    public bool IsCurrentPage(object page) => ReferenceEquals(Root.Content, page);
+
     /// <summary>顶栏显示开关变更后即时应用到主页（若已创建）</summary>
     public void ApplyTopbarVisibility()
     {
@@ -478,6 +521,10 @@ public sealed partial class MainWindow : Window
         // 轮询线程触发，marshal 回 UI 线程
         DispatcherQueue.TryEnqueue(() =>
         {
+            // 双保险：入队后窗口可能已经隐藏/失去前台，此时一律不处理手柄
+            // （否则"在游戏里按 Y"会命中启动器上一次选中的磁贴，把游戏关掉）
+            if (!_routing) return;
+
             // 添加页：方向/A/B 全交给页面（浏览状态 B 返回表单）
             if (Root.Content is AddItemPage add)
             {
@@ -560,12 +607,14 @@ public sealed partial class MainWindow : Window
             else
             {
                 _fullscreen = true;
-                // 伪全屏：不用 Maximize，而是 Resize 占满工作区 + Move 到左上角。
+                // 伪全屏：不用 Maximize，而是 Resize 占满整屏 + Move 到左上角。
                 // 最大化窗口无法被 AppWindow.Move 移动，伪全屏才能播放全屏弹出/隐藏滑入动画。
-                var work = Microsoft.UI.Windowing.DisplayArea.Primary.WorkArea;
-                AppWindow.Resize(new Windows.Graphics.SizeInt32(work.Width, work.Height));
-                AppWindow.Move(new Windows.Graphics.PointInt32(work.X, work.Y));
-                _homePos = new Windows.Graphics.PointInt32(work.X, work.Y);
+                // 用 OuterBounds（含任务栏）保证上下铺满并盖住任务栏。
+                var bounds = Microsoft.UI.Windowing.DisplayArea.Primary.OuterBounds;
+                AppWindow.Resize(new Windows.Graphics.SizeInt32(bounds.Width, bounds.Height));
+                AppWindow.Move(new Windows.Graphics.PointInt32(bounds.X, bounds.Y));
+                _homePos = new Windows.Graphics.PointInt32(bounds.X, bounds.Y);
+                if (AppWindow.Presenter is OverlappedPresenter p2) p2.IsAlwaysOnTop = true;
                 RemoveTitleBarStyle(); // 尺寸变化可能恢复标题栏样式
             }
         }
@@ -589,12 +638,18 @@ public sealed partial class MainWindow : Window
     [DllImport("user32.dll", CharSet = CharSet.Unicode)]
     private static extern IntPtr SendMessage(IntPtr hWnd, int msg, IntPtr wParam, IntPtr lParam);
 
-    // ---- 触摸下滑手势：返回上一级 / 主页收起 ----
+    // ---- 触摸收起手势：返回上一级 / 主页收起。方向与呼出手势相反：
+    // 呼出=从边缘向中心内滑（左停靠=向右、右停靠=向左、全屏=向下），
+    // 收起=同轴反向（左停靠=向左、右停靠=向右、全屏=向上）。
+    // 双通道：① 窗口内指针事件（主页磁贴区可靠）；② 原始输入触摸通道（子页被列表/滚动视图
+    // 捕获触摸时仍有效，见 EdgeGestureService.DismissTriggered）。两通道按 600ms 冷却互斥去重。----
 
     private Windows.Foundation.Point? _swipeStart;
     private DateTime _swipeStartAt;
     private uint _swipeId;
     private bool _swipeDone;
+    private bool _swipeMoveLogged;
+    private long _dismissAt;
 
     /// <summary>在窗口根面板监听指针（触摸）事件（handledEventsToo=true，ScrollViewer 消费后仍能收到）</summary>
     private void HookSwipeBack()
@@ -612,27 +667,64 @@ public sealed partial class MainWindow : Window
         _swipeStartAt = DateTime.UtcNow;
         _swipeId = e.Pointer.PointerId;
         _swipeDone = false;
+        _swipeMoveLogged = false;
+        EdgeGestureService.Trace($"win swipe down page={Root.Content?.GetType().Name}");
     }
 
     private void OnSwipePointerMove(object sender, PointerRoutedEventArgs e)
     {
         if (_swipeDone || _swipeStart is not { } s || e.Pointer.PointerId != _swipeId) return;
         var p = e.GetCurrentPoint(null).Position;
-        // 快速下滑：位移>120px、近垂直（横向<80px）、时长<500ms；慢速滚动不误触
-        if (p.Y - s.Y > 120 && Math.Abs(p.X - s.X) < 80 &&
+        // 收起方向 = 呼出手势的反向：左停靠=向左滑，右停靠=向右滑，全屏=向上滑
+        // 主轴位移>120px、正交偏移<80px、时长<500ms；慢速滚动不误触
+        var edge = CurrentSummonEdge();
+        var dx = p.X - s.X;
+        var dy = p.Y - s.Y;
+        var main = edge switch
+        {
+            SummonEdge.Left => -dx,
+            SummonEdge.Right => dx,
+            _ => -dy,
+        };
+        var cross = edge == SummonEdge.Top ? Math.Abs(dx) : Math.Abs(dy);
+        // 诊断：每次按下只记一条，用于确认子页是否还能收到 Moved 事件
+        if (!_swipeMoveLogged && Math.Abs(main) > 40)
+        {
+            _swipeMoveLogged = true;
+            EdgeGestureService.Trace($"win swipe moved page={Root.Content?.GetType().Name} main={main} cross={cross}");
+        }
+        if (main > 120 && cross < 80 &&
             (DateTime.UtcNow - _swipeStartAt).TotalMilliseconds < 500)
         {
             _swipeDone = true;
-            if (Root.Content is MainPage)
-                HideToTray(); // 收起启动器：与呼出动画对称地滑出屏外再隐藏（不再最小化到任务栏）
-            else if (Root.CanGoBack)
-                Root.GoBack();
+            _dismissAt = Environment.TickCount64; // 与原始输入通道去重
+            DismissCurrent();
         }
     }
 
     private void OnSwipePointerUp(object sender, PointerRoutedEventArgs e)
     {
         if (e.Pointer.PointerId == _swipeId) _swipeStart = null;
+    }
+
+    /// <summary>收起：子页=返回上一级，主页=收起启动器（滑出屏外再隐藏到托盘）</summary>
+    private void DismissCurrent()
+    {
+        if (Root.Content is MainPage)
+            HideToTray();
+        else if (Root.CanGoBack)
+            Root.GoBack();
+    }
+
+    /// <summary>原始输入触摸通道识别到"呼出反方向"快滑：仅在本窗口前台、且不在磁贴拖拽页时收起/返回。
+    /// 磁贴页（主页/磁贴集）有横向拖拽换位，交给窗口内指针通道判定，避免误收起。</summary>
+    private void OnDismissGesture()
+    {
+        if (!Visible || GetForegroundWindow() != _hwnd) return;
+        if (Root.Content is MainPage or TileSetPage) return;
+        if (Environment.TickCount64 - _dismissAt < 600) return; // 与指针通道去重
+        _dismissAt = Environment.TickCount64;
+        DismissCurrent();
     }
 
     // ---- 移除标题栏所需 Win32 样式操作 ----
@@ -656,7 +748,6 @@ public sealed partial class MainWindow : Window
     private const uint SWP_FRAMECHANGED = 0x0020;
 
     private static readonly IntPtr HWND_TOPMOST = new IntPtr(-1);
-    private static readonly IntPtr HWND_NOTOPMOST = new IntPtr(-2);
 
     [DllImport("user32.dll")]
     private static extern bool SetForegroundWindow(IntPtr hWnd);

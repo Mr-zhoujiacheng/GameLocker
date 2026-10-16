@@ -1,0 +1,101 @@
+﻿<?xml version="1.0" encoding="utf-8"?>
+<Page
+    x:Class="GameLocker.CloudPage"
+    xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+    xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+    xmlns:ctl="using:GameLocker.Controls">
+
+    <Grid Background="Transparent"
+          RequestedTheme="Dark" XYFocusKeyboardNavigation="Enabled">
+
+        <Grid.RowDefinitions>
+            <RowDefinition Height="Auto"/>
+            <RowDefinition Height="*"/>
+            <RowDefinition Height="Auto"/>
+        </Grid.RowDefinitions>
+
+        <!-- 顶栏：返回 + 标题 -->
+        <Grid Grid.Row="0" Padding="20,16">
+            <StackPanel Orientation="Horizontal" Spacing="10" VerticalAlignment="Center">
+                <Button x:Name="BackButton" Background="Transparent" BorderThickness="0" Click="OnBackClick" IsTabStop="False">
+                    <FontIcon Glyph="&#xE72B;" FontSize="16"/>
+                </Button>
+                <TextBlock Text="云端备份" FontSize="22" FontWeight="SemiBold" VerticalAlignment="Center"/>
+            </StackPanel>
+        </Grid>
+
+        <ScrollViewer x:Name="ContentScroll" Grid.Row="1" Padding="24,8" VerticalScrollBarVisibility="Hidden">
+            <StackPanel Spacing="20">
+
+                <TextBlock Text="存档会通过 WebDAV 上传到你的网盘。只要填「服务器地址 + 账号 + 应用密码」，不需要注册任何开发者应用。应用密码加密保存在本机，可随时改。"
+                           FontSize="12" Opacity="0.55" TextWrapping="Wrap"/>
+
+                <!-- 服务器地址 -->
+                <StackPanel Spacing="6">
+                    <TextBlock Text="WebDAV 服务器地址" FontSize="17" FontWeight="Bold" Opacity="0.95"/>
+                    <TextBox x:Name="UrlBox" PlaceholderText="https://dav.jianguoyun.com/dav/"/>
+                </StackPanel>
+
+                <!-- 账号 -->
+                <StackPanel Spacing="6">
+                    <TextBlock Text="账号" FontSize="17" FontWeight="Bold" Opacity="0.95"/>
+                    <TextBox x:Name="UserBox" PlaceholderText="坚果云填写注册邮箱"/>
+                </StackPanel>
+
+                <!-- 应用密码 -->
+                <StackPanel Spacing="6">
+                    <TextBlock Text="应用密码" FontSize="17" FontWeight="Bold" Opacity="0.95"/>
+                    <PasswordBox x:Name="PasswordInput" PlaceholderText="第三方应用密码（不是登录密码）"/>
+                    <TextBlock x:Name="PasswordStateText" FontSize="12" Opacity="0.6" Text="未设置"/>
+                </StackPanel>
+
+                <!-- 云端目录名 -->
+                <StackPanel Spacing="6">
+                    <TextBlock Text="云端目录名" FontSize="17" FontWeight="Bold" Opacity="0.95"/>
+                    <TextBlock Text="存档会存到 /该目录/游戏名/ 下。" FontSize="12" Opacity="0.55" TextWrapping="Wrap"/>
+                    <TextBox x:Name="RootBox" PlaceholderText="GameLocker"/>
+                </StackPanel>
+
+                <!-- 保存 / 测试连接 -->
+                <StackPanel Spacing="8">
+                    <StackPanel Orientation="Horizontal" Spacing="10">
+                        <Button x:Name="SaveButton" Click="OnSaveClick">
+                            <StackPanel Orientation="Horizontal" Spacing="6">
+                                <FontIcon Glyph="&#xE74E;" FontSize="14"/>
+                                <TextBlock Text="保存配置"/>
+                            </StackPanel>
+                        </Button>
+                        <Button x:Name="TestButton" Click="OnTestClick">
+                            <StackPanel Orientation="Horizontal" Spacing="6">
+                                <FontIcon Glyph="&#xE9D9;" FontSize="14"/>
+                                <TextBlock Text="测试连接"/>
+                            </StackPanel>
+                        </Button>
+                    </StackPanel>
+                    <TextBlock x:Name="StatusText" FontSize="12" Opacity="0.7" TextWrapping="Wrap"/>
+                </StackPanel>
+
+                <!-- 坚果云应用密码获取指引 -->
+                <StackPanel Spacing="6">
+                    <TextBlock Text="如何获取坚果云应用密码（约 1 分钟）" FontSize="17" FontWeight="Bold" Opacity="0.95"/>
+                    <Button x:Name="OpenNutstoreButton" HorizontalAlignment="Left" Click="OnOpenNutstoreClick">
+                        <StackPanel Orientation="Horizontal" Spacing="6">
+                            <FontIcon Glyph="&#xE774;" FontSize="14"/>
+                            <TextBlock Text="打开坚果云教程"/>
+                        </StackPanel>
+                    </Button>
+                    <StackPanel Spacing="4" Margin="0,4,0,0">
+                        <TextBlock Text="1. 浏览器登录坚果云网页，点右上角「账户信息」→「安全选项」。" FontSize="13" Opacity="0.75" TextWrapping="Wrap"/>
+                        <TextBlock Text="2. 在「第三方应用管理」里点「添加应用密码」，名字随便填（如 GameLocker）。" FontSize="13" Opacity="0.75" TextWrapping="Wrap"/>
+                        <TextBlock Text="3. 复制生成的 16 位密码，粘到上方「应用密码」框，点「保存配置」。这里填的不是登录密码。" FontSize="13" Opacity="0.75" TextWrapping="Wrap"/>
+                    </StackPanel>
+                    <TextBlock Text="其他支持 WebDAV 的网盘（群晖、Nextcloud 等）把服务器地址换成各自的 WebDAV 地址即可。"
+                               FontSize="12" Opacity="0.55" TextWrapping="Wrap" Margin="0,4,0,0"/>
+                </StackPanel>
+            </StackPanel>
+        </ScrollViewer>
+
+        <ctl:GamepadHintBar Grid.Row="2" Margin="0,8,0,12"
+                            Hints="DPAD:选择|A:确认/输入|B:返回"/>
+    </Grid>
+</Page>

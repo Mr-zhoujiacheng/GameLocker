@@ -13,7 +13,7 @@
     <EnableMsixTooling>false</EnableMsixTooling>
     <ApplicationManifest>app.manifest</ApplicationManifest>
     <AssemblyName>GameLocker</AssemblyName>
-    <Version>1.2.0</Version>
+    <Version>1.3.0</Version>
     <ApplicationIcon>Assets\GameLocker.ico</ApplicationIcon>
     <NoWarn>$(NoWarn);CA1416</NoWarn>
     <!-- dotnet CLI 构建时指向 VS BuildTools 的 AppxPackage 任务目录（生成 PRI 所需） -->
@@ -23,6 +23,10 @@
   <ItemGroup>
     <PackageReference Include="Microsoft.WindowsAppSDK" Version="1.6.*" />
     <PackageReference Include="Microsoft.Windows.SDK.BuildTools" Version="10.0.26100.422" />
+    <!-- 存档位置清单（ludusavi manifest）的流式 YAML 解析 -->
+    <PackageReference Include="YamlDotNet" Version="18.1.0" />
+    <!-- 非打包应用的凭据保护（DPAPI），用于加密保存云端备份的 WebDAV 应用密码 -->
+    <PackageReference Include="System.Security.Cryptography.ProtectedData" Version="8.0.0" />
   </ItemGroup>
 
   <ItemGroup>
@@ -30,6 +34,8 @@
     <Content Include="Assets\GameLocker.ico" CopyToOutputDirectory="PreserveNewest" />
     <!-- 关于页展示的软件图标（ms-appx:///Assets/GameLocker-256.png） -->
     <Content Include="Assets\GameLocker-256.png" CopyToOutputDirectory="PreserveNewest" />
+    <!-- 手柄映射编辑器的手柄底图（ms-appx:///Assets/gamepad-base.png） -->
+    <Content Include="Assets\gamepad-base.png" CopyToOutputDirectory="PreserveNewest" />
   </ItemGroup>
 
 </Project>

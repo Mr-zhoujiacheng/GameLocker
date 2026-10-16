@@ -6,13 +6,274 @@
     xmlns:local="using:GameLocker"
     xmlns:ctl="using:GameLocker.Controls">
 
+    <Page.Resources>
+        <!-- 页脚保存按钮：透明底 + 浅蓝强调色内容，悬停/按下/焦点只用极淡白叠加，
+             避免实心色块与半透明背景割裂（与本页其他控件、KeybindPage 卡片同款语言） -->
+        <Style x:Key="SaveButtonStyle" TargetType="Button">
+            <Setter Property="Background" Value="Transparent"/>
+            <Setter Property="Foreground" Value="#BBD8FF"/>
+            <Setter Property="BorderBrush" Value="#33FFFFFF"/>
+            <Setter Property="BorderThickness" Value="1"/>
+            <Setter Property="CornerRadius" Value="12"/>
+            <Setter Property="Padding" Value="12,0"/>
+            <Setter Property="MinHeight" Value="46"/>
+            <Setter Property="HorizontalAlignment" Value="Stretch"/>
+            <Setter Property="Template">
+                <Setter.Value>
+                    <ControlTemplate TargetType="Button">
+                        <Grid x:Name="Root" Background="{TemplateBinding Background}"
+                              CornerRadius="{TemplateBinding CornerRadius}">
+                            <Border x:Name="Overlay" Background="Transparent"
+                                    BorderBrush="{TemplateBinding BorderBrush}"
+                                    BorderThickness="{TemplateBinding BorderThickness}"
+                                    CornerRadius="{TemplateBinding CornerRadius}"/>
+                            <ContentPresenter x:Name="Presenter"
+                                              Content="{TemplateBinding Content}"
+                                              ContentTemplate="{TemplateBinding ContentTemplate}"
+                                              Foreground="{TemplateBinding Foreground}"
+                                              Padding="{TemplateBinding Padding}"
+                                              HorizontalAlignment="Center" VerticalAlignment="Center"/>
+                            <VisualStateManager.VisualStateGroups>
+                                <VisualStateGroup x:Name="CommonStates">
+                                    <VisualState x:Name="Normal"/>
+                                    <VisualState x:Name="PointerOver">
+                                        <VisualState.Setters>
+                                            <Setter Target="Overlay.Background" Value="#0FFFFFFF"/>
+                                            <Setter Target="Overlay.BorderBrush" Value="#4C9AFF"/>
+                                        </VisualState.Setters>
+                                    </VisualState>
+                                    <VisualState x:Name="Pressed">
+                                        <VisualState.Setters>
+                                            <Setter Target="Overlay.Background" Value="#1FFFFFFF"/>
+                                            <Setter Target="Overlay.BorderBrush" Value="#4C9AFF"/>
+                                        </VisualState.Setters>
+                                    </VisualState>
+                                    <VisualState x:Name="Disabled">
+                                        <VisualState.Setters>
+                                            <Setter Target="Root.Opacity" Value="0.4"/>
+                                        </VisualState.Setters>
+                                    </VisualState>
+                                </VisualStateGroup>
+                                <VisualStateGroup x:Name="FocusStates">
+                                    <VisualState x:Name="Unfocused"/>
+                                    <VisualState x:Name="PointerFocused"/>
+                                    <VisualState x:Name="Focused">
+                                        <VisualState.Setters>
+                                            <Setter Target="Overlay.BorderBrush" Value="#BBD8FF"/>
+                                        </VisualState.Setters>
+                                    </VisualState>
+                                </VisualStateGroup>
+                            </VisualStateManager.VisualStateGroups>
+                        </Grid>
+                    </ControlTemplate>
+                </Setter.Value>
+            </Setter>
+        </Style>
+
+        <!-- 手柄映射编辑面板·输出类型三选一：胶囊分段样式（未选=半透明白描边，选中=淡蓝底+浅蓝描边+白字）。
+             两个描边元素分工：CursorRing 绑定控件本地 BorderBrush（手柄光标白色高亮），
+             StateRing 表达选中/键盘焦点态——VisualState 的 Setter 优先级高于本地值，
+             若两者共用一个 Border，手柄光标就会被选中态覆盖而看不见（用户实测）。 -->
+        <Style x:Key="ChipRadioStyle" TargetType="RadioButton">
+            <Setter Property="Background" Value="#0FFFFFFF"/>
+            <Setter Property="Foreground" Value="#E6EEF9"/>
+            <Setter Property="BorderBrush" Value="#26FFFFFF"/>
+            <Setter Property="BorderThickness" Value="1.5"/>
+            <Setter Property="CornerRadius" Value="10"/>
+            <Setter Property="Padding" Value="18,8"/>
+            <Setter Property="MinWidth" Value="0"/>
+            <Setter Property="MinHeight" Value="0"/>
+            <Setter Property="Template">
+                <Setter.Value>
+                    <ControlTemplate TargetType="RadioButton">
+                        <Grid x:Name="Root" Background="{TemplateBinding Background}"
+                              CornerRadius="{TemplateBinding CornerRadius}">
+                            <!-- 选中/键盘焦点描边（淡蓝），与光标描边互不覆盖 -->
+                            <Border x:Name="StateRing" Background="Transparent"
+                                    BorderBrush="Transparent" BorderThickness="1.5"
+                                    CornerRadius="{TemplateBinding CornerRadius}"/>
+                            <ContentPresenter x:Name="Presenter"
+                                              Content="{TemplateBinding Content}"
+                                              ContentTemplate="{TemplateBinding ContentTemplate}"
+                                              Foreground="{TemplateBinding Foreground}"
+                                              Padding="{TemplateBinding Padding}"
+                                              HorizontalAlignment="Center" VerticalAlignment="Center"/>
+                            <!-- 光标描边：只跟控件本地 BorderBrush 走（任何 VisualState 都不改它），
+                                 且画在最上层，选中态也不会把光标白框盖掉 -->
+                            <Border x:Name="CursorRing"
+                                    BorderBrush="{TemplateBinding BorderBrush}"
+                                    BorderThickness="{TemplateBinding BorderThickness}"
+                                    CornerRadius="{TemplateBinding CornerRadius}"/>
+                            <VisualStateManager.VisualStateGroups>
+                                <VisualStateGroup x:Name="CommonStates">
+                                    <VisualState x:Name="Normal"/>
+                                    <VisualState x:Name="PointerOver">
+                                        <VisualState.Setters>
+                                            <Setter Target="Root.Background" Value="#1AFFFFFF"/>
+                                        </VisualState.Setters>
+                                    </VisualState>
+                                    <VisualState x:Name="Pressed">
+                                        <VisualState.Setters>
+                                            <Setter Target="Root.Background" Value="#26FFFFFF"/>
+                                        </VisualState.Setters>
+                                    </VisualState>
+                                    <VisualState x:Name="Disabled">
+                                        <VisualState.Setters>
+                                            <Setter Target="Root.Opacity" Value="0.4"/>
+                                        </VisualState.Setters>
+                                    </VisualState>
+                                </VisualStateGroup>
+                                <VisualStateGroup x:Name="CheckStates">
+                                    <VisualState x:Name="Unchecked"/>
+                                    <VisualState x:Name="Checked">
+                                        <VisualState.Setters>
+                                            <Setter Target="Root.Background" Value="#332E6BE6"/>
+                                            <Setter Target="StateRing.BorderBrush" Value="#BBD8FF"/>
+                                            <Setter Target="Presenter.Foreground" Value="#FFFFFF"/>
+                                        </VisualState.Setters>
+                                    </VisualState>
+                                    <VisualState x:Name="Indeterminate"/>
+                                </VisualStateGroup>
+                                <VisualStateGroup x:Name="FocusStates">
+                                    <VisualState x:Name="Unfocused"/>
+                                    <VisualState x:Name="PointerFocused"/>
+                                    <VisualState x:Name="Focused">
+                                        <VisualState.Setters>
+                                            <Setter Target="StateRing.BorderBrush" Value="#BBD8FF"/>
+                                        </VisualState.Setters>
+                                    </VisualState>
+                                </VisualStateGroup>
+                            </VisualStateManager.VisualStateGroups>
+                        </Grid>
+                    </ControlTemplate>
+                </Setter.Value>
+            </Setter>
+        </Style>
+
+        <!-- 手柄映射编辑面板·次操作（删除映射）：透明底 + 柔红描边 -->
+        <Style x:Key="ChipButtonStyle" TargetType="Button">
+            <Setter Property="Background" Value="Transparent"/>
+            <Setter Property="Foreground" Value="#FFC9BE"/>
+            <Setter Property="BorderBrush" Value="#3DFF8A7A"/>
+            <Setter Property="BorderThickness" Value="1"/>
+            <Setter Property="CornerRadius" Value="10"/>
+            <Setter Property="Padding" Value="16,0"/>
+            <Setter Property="MinHeight" Value="36"/>
+            <Setter Property="HorizontalAlignment" Value="Left"/>
+            <Setter Property="Template">
+                <Setter.Value>
+                    <ControlTemplate TargetType="Button">
+                        <Grid x:Name="Root" Background="{TemplateBinding Background}"
+                              CornerRadius="{TemplateBinding CornerRadius}">
+                            <Border x:Name="Overlay" Background="Transparent"
+                                    BorderBrush="{TemplateBinding BorderBrush}"
+                                    BorderThickness="{TemplateBinding BorderThickness}"
+                                    CornerRadius="{TemplateBinding CornerRadius}"/>
+                            <ContentPresenter Content="{TemplateBinding Content}"
+                                              ContentTemplate="{TemplateBinding ContentTemplate}"
+                                              Foreground="{TemplateBinding Foreground}"
+                                              Padding="{TemplateBinding Padding}"
+                                              HorizontalAlignment="Center" VerticalAlignment="Center"/>
+                            <VisualStateManager.VisualStateGroups>
+                                <VisualStateGroup x:Name="CommonStates">
+                                    <VisualState x:Name="Normal"/>
+                                    <VisualState x:Name="PointerOver">
+                                        <VisualState.Setters>
+                                            <Setter Target="Overlay.Background" Value="#14FFFFFF"/>
+                                            <Setter Target="Overlay.BorderBrush" Value="#BBD8FF"/>
+                                        </VisualState.Setters>
+                                    </VisualState>
+                                    <VisualState x:Name="Pressed">
+                                        <VisualState.Setters>
+                                            <Setter Target="Overlay.Background" Value="#22FFFFFF"/>
+                                        </VisualState.Setters>
+                                    </VisualState>
+                                    <VisualState x:Name="Disabled">
+                                        <VisualState.Setters>
+                                            <Setter Target="Root.Opacity" Value="0.35"/>
+                                        </VisualState.Setters>
+                                    </VisualState>
+                                </VisualStateGroup>
+                                <VisualStateGroup x:Name="FocusStates">
+                                    <VisualState x:Name="Unfocused"/>
+                                    <VisualState x:Name="PointerFocused"/>
+                                    <VisualState x:Name="Focused">
+                                        <VisualState.Setters>
+                                            <Setter Target="Overlay.BorderBrush" Value="#BBD8FF"/>
+                                        </VisualState.Setters>
+                                    </VisualState>
+                                </VisualStateGroup>
+                            </VisualStateManager.VisualStateGroups>
+                        </Grid>
+                    </ControlTemplate>
+                </Setter.Value>
+            </Setter>
+        </Style>
+
+        <!-- 手柄映射编辑面板·主操作（设置/切换输出目标）：实心强调蓝 -->
+        <Style x:Key="ChipPrimaryButtonStyle" TargetType="Button">
+            <Setter Property="Background" Value="#2E6BE6"/>
+            <Setter Property="Foreground" Value="#FFFFFF"/>
+            <Setter Property="BorderBrush" Value="Transparent"/>
+            <Setter Property="BorderThickness" Value="1"/>
+            <Setter Property="CornerRadius" Value="10"/>
+            <Setter Property="Padding" Value="18,0"/>
+            <Setter Property="MinHeight" Value="36"/>
+            <Setter Property="HorizontalAlignment" Value="Left"/>
+            <Setter Property="Template">
+                <Setter.Value>
+                    <ControlTemplate TargetType="Button">
+                        <Grid x:Name="Root" Background="{TemplateBinding Background}"
+                              CornerRadius="{TemplateBinding CornerRadius}">
+                            <ContentPresenter Content="{TemplateBinding Content}"
+                                              ContentTemplate="{TemplateBinding ContentTemplate}"
+                                              Foreground="{TemplateBinding Foreground}"
+                                              Padding="{TemplateBinding Padding}"
+                                              HorizontalAlignment="Center" VerticalAlignment="Center"/>
+                            <VisualStateManager.VisualStateGroups>
+                                <VisualStateGroup x:Name="CommonStates">
+                                    <VisualState x:Name="Normal"/>
+                                    <VisualState x:Name="PointerOver">
+                                        <VisualState.Setters>
+                                            <Setter Target="Root.Background" Value="#3D7BF2"/>
+                                        </VisualState.Setters>
+                                    </VisualState>
+                                    <VisualState x:Name="Pressed">
+                                        <VisualState.Setters>
+                                            <Setter Target="Root.Background" Value="#2459C4"/>
+                                        </VisualState.Setters>
+                                    </VisualState>
+                                    <VisualState x:Name="Disabled">
+                                        <VisualState.Setters>
+                                            <Setter Target="Root.Opacity" Value="0.35"/>
+                                        </VisualState.Setters>
+                                    </VisualState>
+                                </VisualStateGroup>
+                                <VisualStateGroup x:Name="FocusStates">
+                                    <VisualState x:Name="Unfocused"/>
+                                    <VisualState x:Name="PointerFocused"/>
+                                    <VisualState x:Name="Focused">
+                                        <VisualState.Setters>
+                                            <Setter Target="Root.Opacity" Value="0.85"/>
+                                        </VisualState.Setters>
+                                    </VisualState>
+                                </VisualStateGroup>
+                            </VisualStateManager.VisualStateGroups>
+                        </Grid>
+                    </ControlTemplate>
+                </Setter.Value>
+            </Setter>
+        </Style>
+    </Page.Resources>
+
     <Grid Background="Transparent"
           RequestedTheme="Dark">
 
         <Grid.RowDefinitions>
             <RowDefinition Height="Auto"/>
             <RowDefinition Height="*"/>
-            <RowDefinition Height="Auto"/>
+            <RowDefinition Height="Auto"/>  <!-- 页脚固定操作栏：保存 -->
+            <RowDefinition Height="Auto"/>  <!-- 底部按键提示 -->
         </Grid.RowDefinitions>
 
         <!-- 顶栏：标题 + 返回 -->
@@ -102,6 +363,178 @@
                             </StackPanel>
                         </Button>
                     </Grid>
+                </StackPanel>
+
+                <!-- 修改器小组件：已下载的修改器（仅修改器编辑时显示）——一键打开存放目录 -->
+                <StackPanel x:Name="TrainerRow" Spacing="4" Visibility="Collapsed">
+                    <TextBlock Text="已下载修改器" FontSize="15" Opacity="0.9"/>
+                    <Grid>
+                        <Grid.ColumnDefinitions>
+                            <ColumnDefinition Width="*"/>
+                            <ColumnDefinition Width="Auto"/>
+                        </Grid.ColumnDefinitions>
+                        <TextBlock x:Name="TrainerFolderText" Grid.Column="0" VerticalAlignment="Center"
+                                   FontSize="14" Opacity="0.8" TextTrimming="CharacterEllipsis"
+                                   Text="未下载"/>
+                        <Button x:Name="OpenTrainerFolderButton" Grid.Column="1" Margin="8,0,0,0"
+                                Click="OnOpenTrainerFolderClick">
+                            <StackPanel Orientation="Horizontal" Spacing="6">
+                                <FontIcon Glyph="&#xE8B7;" FontSize="14"/>
+                                <TextBlock Text="打开文件夹…"/>
+                            </StackPanel>
+                        </Button>
+                    </Grid>
+                </StackPanel>
+
+                <!-- 游戏存档小组件：备份方式（本地目录 / 云端 WebDAV 上传）/ 目标文件夹 / 保留份数（仅游戏存档编辑时显示） -->
+                <StackPanel x:Name="BackupRow" Spacing="14" Visibility="Collapsed">
+                    <StackPanel Spacing="4">
+                        <TextBlock Text="备份方式" FontSize="17" FontWeight="Bold" Opacity="0.95"/>
+                        <StackPanel Orientation="Horizontal" Spacing="8">
+                            <RadioButton x:Name="BackupLocalRadio" Content="本地" GroupName="BackupMode" Padding="14,10"
+                                         IsChecked="True" Checked="OnBackupModeChanged"/>
+                            <RadioButton x:Name="BackupCloudRadio" Content="云端" GroupName="BackupMode" Padding="14,10"
+                                         Checked="OnBackupModeChanged"/>
+                        </StackPanel>
+                    </StackPanel>
+
+                    <!-- 本地：备份文件夹 + 打开目录 -->
+                    <StackPanel x:Name="BackupLocalPanel" Spacing="14">
+                        <StackPanel Spacing="4">
+                            <TextBlock Text="备份文件夹" FontSize="15" Opacity="0.9"/>
+                            <Grid>
+                                <Grid.ColumnDefinitions>
+                                    <ColumnDefinition Width="*"/>
+                                    <ColumnDefinition Width="Auto"/>
+                                </Grid.ColumnDefinitions>
+                                <TextBlock x:Name="BackupFolderText" Grid.Column="0" VerticalAlignment="Center"
+                                           FontSize="14" Opacity="0.8" TextTrimming="CharacterEllipsis"
+                                           Text="默认目录"/>
+                                <Button x:Name="BackupFolderButton" Grid.Column="1" Margin="8,0,0,0"
+                                        Click="OnBackupFolderClick">
+                                    <StackPanel Orientation="Horizontal" Spacing="6">
+                                        <FontIcon Glyph="&#xE8B7;" FontSize="14"/>
+                                        <TextBlock Text="选择文件夹…"/>
+                                    </StackPanel>
+                                </Button>
+                            </Grid>
+                        </StackPanel>
+                        <Button x:Name="OpenBackupFolderButton" HorizontalAlignment="Left" Click="OnOpenBackupFolderClick">
+                            <StackPanel Orientation="Horizontal" Spacing="6">
+                                <FontIcon Glyph="&#xE8B7;" FontSize="14"/>
+                                <TextBlock Text="打开备份目录…"/>
+                            </StackPanel>
+                        </Button>
+                    </StackPanel>
+
+                    <!-- 云端：WebDAV 上传到网盘（默认坚果云），账号在「设置 → 云端备份」里配置（默认折叠，选「云端」时展开） -->
+                    <StackPanel x:Name="BackupCloudPanel" Spacing="8" Visibility="Collapsed">
+                        <TextBlock Text="云端存档" FontSize="15" Opacity="0.9"/>
+                        <TextBlock x:Name="CloudStateText" FontSize="14" Opacity="0.8" Text="未配置"/>
+                        <Button x:Name="CloudSettingsButton" HorizontalAlignment="Left" Click="OnCloudSettingsClick">
+                            <StackPanel Orientation="Horizontal" Spacing="6">
+                                <FontIcon Glyph="&#xE713;" FontSize="14"/>
+                                <TextBlock Text="打开云端备份设置"/>
+                            </StackPanel>
+                        </Button>
+                        <TextBlock x:Name="CloudHintText" FontSize="12" Opacity="0.55" TextWrapping="Wrap"
+                                   Text="备份会通过 WebDAV 上传到你的网盘；请先在「设置 → 云端备份」填写地址、账号与应用密码。"/>
+                    </StackPanel>
+
+                    <StackPanel Spacing="4">
+                        <TextBlock Text="保留份数" FontSize="15" Opacity="0.9"/>
+                        <StackPanel Orientation="Horizontal" Spacing="8">
+                            <RadioButton x:Name="Keep3Radio" Content="3 份" GroupName="BackupKeep" Padding="14,10"/>
+                            <RadioButton x:Name="Keep5Radio" Content="5 份" GroupName="BackupKeep" Padding="14,10" IsChecked="True"/>
+                            <RadioButton x:Name="Keep10Radio" Content="10 份" GroupName="BackupKeep" Padding="14,10"/>
+                        </StackPanel>
+                    </StackPanel>
+                </StackPanel>
+
+                <!-- 手柄映射小组件：可视化手柄（仅手柄映射编辑时显示）：点击图上按键 → 设置该键的输出（键盘/鼠标/手柄） -->
+                <StackPanel x:Name="GamepadMapRow" Spacing="10" Visibility="Collapsed">
+                    <StackPanel Orientation="Horizontal" Spacing="8">
+                        <FontIcon Glyph="&#xE7FC;" FontSize="16" Foreground="#BBD8FF" VerticalAlignment="Center"/>
+                        <TextBlock Text="手柄映射" FontSize="17" FontWeight="Bold" Opacity="0.95" VerticalAlignment="Center"/>
+                    </StackPanel>
+
+                    <!-- 用法说明：要点分行（小圆点导引），替代原先的一整段折行文字 -->
+                    <Border Background="#0FFFFFFF" BorderBrush="#1FFFFFFF" BorderThickness="1"
+                            CornerRadius="10" Padding="14,12">
+                        <StackPanel Spacing="7">
+                            <StackPanel Orientation="Horizontal" Spacing="9">
+                                <Border Width="4" Height="4" CornerRadius="2" Background="#8FA3BF" VerticalAlignment="Center"/>
+                                <TextBlock Text="点击手柄图上的按键，为它选择目标输出" FontSize="12" Opacity="0.85"/>
+                            </StackPanel>
+                            <StackPanel Orientation="Horizontal" Spacing="9">
+                                <Border Width="4" Height="4" CornerRadius="2" Background="#8FA3BF" VerticalAlignment="Center"/>
+                                <TextBlock Text="A / 点击磁贴 = 开启或关闭映射，长按 = 关闭" FontSize="12" Opacity="0.85"/>
+                            </StackPanel>
+                            <StackPanel Orientation="Horizontal" Spacing="9">
+                                <Border Width="4" Height="4" CornerRadius="2" Background="#8FA3BF" VerticalAlignment="Center"/>
+                                <TextBlock Text="手柄输出仅在本启动器内生效" FontSize="12" Opacity="0.6"/>
+                            </StackPanel>
+                        </StackPanel>
+                    </Border>
+
+                    <!-- 手柄图画布：尺寸与 Assets/gamepad-base.png（460×311.6）一致，热区坐标按同一比例换算 -->
+                    <Viewbox Stretch="Uniform" HorizontalAlignment="Center" MaxWidth="520">
+                        <Canvas x:Name="GamepadMapCanvas" Width="460" Height="311.6"/>
+                    </Viewbox>
+
+                    <!-- 已设置映射概要 -->
+                    <Border Background="#0FFFFFFF" BorderBrush="#1FFFFFFF" BorderThickness="1"
+                            CornerRadius="10" Padding="14,10">
+                        <StackPanel Orientation="Horizontal" Spacing="9">
+                            <FontIcon Glyph="&#xE73E;" FontSize="12" Foreground="#BBD8FF"
+                                      VerticalAlignment="Top" Margin="0,2,0,0"/>
+                            <TextBlock x:Name="GamepadMapSummary" FontSize="12" Opacity="0.85" TextWrapping="Wrap"/>
+                        </StackPanel>
+                    </Border>
+
+                    <!-- 选中某个手柄键后展开：输出类型（胶囊三选一）+ 目标按键 + 删除 -->
+                    <Border x:Name="GamepadMapEditor" Visibility="Collapsed"
+                            Background="#14FFFFFF" BorderBrush="#26FFFFFF" BorderThickness="1"
+                            CornerRadius="10" Padding="14,12">
+                        <StackPanel Spacing="12">
+                            <StackPanel Orientation="Horizontal" Spacing="8">
+                                <Border Width="6" Height="6" CornerRadius="3" Background="#BBD8FF" VerticalAlignment="Center"/>
+                                <TextBlock x:Name="GamepadMapEditorTitle" FontSize="14.5" FontWeight="SemiBold"
+                                           VerticalAlignment="Center"/>
+                            </StackPanel>
+                            <StackPanel Spacing="7">
+                                <TextBlock Text="输出类型" FontSize="12" Opacity="0.55"/>
+                                <StackPanel Orientation="Horizontal" Spacing="8">
+                                    <RadioButton x:Name="GamepadMapKeyRadio" Content="键盘" GroupName="GamepadMapKind"
+                                                 Style="{StaticResource ChipRadioStyle}" Click="OnGamepadMapKindClick"/>
+                                    <RadioButton x:Name="GamepadMapMouseRadio" Content="鼠标" GroupName="GamepadMapKind"
+                                                 Style="{StaticResource ChipRadioStyle}" Click="OnGamepadMapKindClick"/>
+                                    <RadioButton x:Name="GamepadMapPadRadio" Content="手柄" GroupName="GamepadMapKind"
+                                                 Style="{StaticResource ChipRadioStyle}" Click="OnGamepadMapKindClick"/>
+                                </StackPanel>
+                            </StackPanel>
+                            <StackPanel Orientation="Horizontal" Spacing="10">
+                                <Button x:Name="GamepadMapCaptureButton" Style="{StaticResource ChipPrimaryButtonStyle}"
+                                        Click="OnGamepadMapCaptureClick"/>
+                                <Button x:Name="GamepadMapDeleteButton" Style="{StaticResource ChipButtonStyle}"
+                                        Click="OnGamepadMapDeleteClick"
+                                        ToolTipService.ToolTip="删除该手柄键的映射">
+                                    <FontIcon Glyph="&#xE74D;" FontSize="16" Foreground="#FF7A6B"/>
+                                </Button>
+                            </StackPanel>
+                            <Border x:Name="GamepadMapHintBox" Visibility="Collapsed"
+                                    Background="#1FFFD166" BorderBrush="#40FFD166" BorderThickness="1"
+                                    CornerRadius="8" Padding="10,8">
+                                <TextBlock x:Name="GamepadMapHintText" FontSize="12" Foreground="#FFE3A9" TextWrapping="Wrap"/>
+                            </Border>
+                        </StackPanel>
+                    </Border>
+                </StackPanel>
+
+                <!-- 组件标题（仅手柄映射小组件）：独立一行，显示在下方类型/大小/颜色行的上方 -->
+                <StackPanel x:Name="TitleColumn" Spacing="4" Visibility="Collapsed">
+                    <TextBlock Text="组件标题" FontSize="17" FontWeight="Bold" Opacity="0.95"/>
+                    <TextBox x:Name="WidgetTitleBox" PlaceholderText="留空则显示「手柄映射」"/>
                 </StackPanel>
 
                 <!-- 类型 / 磁贴大小 / 磁贴颜色：三列并排，颜色为紧凑色块（无说明文字） -->
@@ -212,13 +645,6 @@
                         </StackPanel>
                     </Button>
                 </StackPanel>
-
-                <Button x:Name="SaveButton" Margin="0,6,0,12" HorizontalAlignment="Left" Click="OnSaveClick">
-                    <StackPanel Orientation="Horizontal" Spacing="6">
-                        <FontIcon Glyph="&#xE74E;" FontSize="14"/>
-                        <TextBlock Text="保存"/>
-                    </StackPanel>
-                </Button>
             </StackPanel>
         </ScrollViewer>
 
@@ -243,7 +669,18 @@
             </ListView>
         </Grid>
 
+        <!-- 页脚固定操作栏：保存按钮固定在页面最下方，不随表单滚动（文件浏览时收起） -->
+        <Border x:Name="FooterBar" Grid.Row="2" Padding="24,12,24,0"
+                BorderThickness="0,1,0,0" BorderBrush="#1AFFFFFF">
+            <Button x:Name="SaveButton" Style="{StaticResource SaveButtonStyle}" Click="OnSaveClick">
+                <StackPanel Orientation="Horizontal" Spacing="8">
+                    <FontIcon Glyph="&#xE74E;" FontSize="16"/>
+                    <TextBlock Text="保存" FontSize="16" FontWeight="SemiBold"/>
+                </StackPanel>
+            </Button>
+        </Border>
+
         <!-- 底部按键提示：手柄图标徽章，单行，透明背景 -->
-        <ctl:GamepadHintBar x:Name="HintBar" Grid.Row="2" Margin="0,8,0,12"/>
+        <ctl:GamepadHintBar x:Name="HintBar" Grid.Row="3" Margin="0,8,0,12"/>
     </Grid>
 </Page>

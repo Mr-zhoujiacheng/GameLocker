@@ -36,6 +36,7 @@
                 <Grid.RowDefinitions>
                     <RowDefinition Height="Auto"/>
                     <RowDefinition Height="Auto"/>
+                    <RowDefinition Height="Auto"/>
                 </Grid.RowDefinitions>
 
                 <!-- 音乐控制器组件卡片：缩小磁贴预览（样式与主页一致）+ 名称 + 简述 -->
@@ -111,8 +112,56 @@
                             <ContentPresenter x:Name="MappingPreviewHost"/>
                         </Viewbox>
                         <StackPanel Spacing="3">
-                            <TextBlock Text="映射" FontSize="14" FontWeight="Bold" HorizontalAlignment="Center"/>
+                            <TextBlock Text="磁贴映射" FontSize="14" FontWeight="Bold" HorizontalAlignment="Center"/>
                             <TextBlock Text="映射手柄或键盘按键"
+                                       FontSize="11" Opacity="0.7" TextWrapping="Wrap" TextAlignment="Center"/>
+                        </StackPanel>
+                    </StackPanel>
+                </Button>
+
+                <!-- 修改器组件卡片：缩小修改器磁贴预览（扳手图标）+ 名称 + 简述 -->
+                <Button x:Name="TrainerWidgetCard" Grid.Row="1" Grid.Column="2" Tag="trainer" Background="#14FFFFFF" BorderThickness="1"
+                        BorderBrush="Transparent" Margin="6" Height="204" VerticalAlignment="Top"
+                        HorizontalContentAlignment="Center" VerticalContentAlignment="Top" Padding="10" Click="OnAddClick">
+                    <StackPanel Spacing="8">
+                        <Viewbox MaxHeight="116" Stretch="Uniform" HorizontalAlignment="Center">
+                            <ContentPresenter x:Name="TrainerPreviewHost"/>
+                        </Viewbox>
+                        <StackPanel Spacing="3">
+                            <TextBlock Text="修改器" FontSize="14" FontWeight="Bold" HorizontalAlignment="Center"/>
+                            <TextBlock Text="自动下载并打开当前游戏修改器"
+                                       FontSize="11" Opacity="0.7" TextWrapping="Wrap" TextAlignment="Center"/>
+                        </StackPanel>
+                    </StackPanel>
+                </Button>
+
+                <!-- 游戏存档组件卡片：缩小游戏存档磁贴预览（保存图标）+ 名称 + 简述 -->
+                <Button x:Name="BackupWidgetCard" Grid.Row="2" Grid.Column="0" Tag="backup" Background="#14FFFFFF" BorderThickness="1"
+                        BorderBrush="Transparent" Margin="6" Height="204" VerticalAlignment="Top"
+                        HorizontalContentAlignment="Center" VerticalContentAlignment="Top" Padding="10" Click="OnAddClick">
+                    <StackPanel Spacing="8">
+                        <Viewbox MaxHeight="116" Stretch="Uniform" HorizontalAlignment="Center">
+                            <ContentPresenter x:Name="BackupPreviewHost"/>
+                        </Viewbox>
+                        <StackPanel Spacing="3">
+                            <TextBlock Text="游戏存档" FontSize="14" FontWeight="Bold" HorizontalAlignment="Center"/>
+                            <TextBlock Text="一键备份 · Y 键同步当前游戏存档"
+                                       FontSize="11" Opacity="0.7" TextWrapping="Wrap" TextAlignment="Center"/>
+                        </StackPanel>
+                    </StackPanel>
+                </Button>
+
+                <!-- 手柄映射组件卡片：缩小手柄映射磁贴预览（手柄图标 + 开关状态）+ 名称 + 简述 -->
+                <Button x:Name="GamepadMapWidgetCard" Grid.Row="2" Grid.Column="1" Tag="gamepadmap" Background="#14FFFFFF" BorderThickness="1"
+                        BorderBrush="Transparent" Margin="6" Height="204" VerticalAlignment="Top"
+                        HorizontalContentAlignment="Center" VerticalContentAlignment="Top" Padding="10" Click="OnAddClick">
+                    <StackPanel Spacing="8">
+                        <Viewbox MaxHeight="116" Stretch="Uniform" HorizontalAlignment="Center">
+                            <ContentPresenter x:Name="GamepadMapPreviewHost"/>
+                        </Viewbox>
+                        <StackPanel Spacing="3">
+                            <TextBlock Text="手柄映射" FontSize="14" FontWeight="Bold" HorizontalAlignment="Center"/>
+                            <TextBlock Text="把多个手柄键映射成键盘/鼠标/手柄键"
                                        FontSize="11" Opacity="0.7" TextWrapping="Wrap" TextAlignment="Center"/>
                         </StackPanel>
                     </StackPanel>

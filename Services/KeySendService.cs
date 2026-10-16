@@ -20,6 +20,28 @@ public static class KeySendService
     private const int VkAlt = 0x12;
     private const int VkWin = 0x5B;
 
+    // ---- 鼠标按键编码（存于 GamepadMapping.TargetMouse） ----
+    public const int MouseLeft = 1;
+    public const int MouseRight = 2;
+    public const int MouseMiddle = 3;
+    public const int MouseX1 = 4;      // 侧键 1（后退）
+    public const int MouseX2 = 5;      // 侧键 2（前进）
+    public const int MouseWheelUp = 6; // 滚轮上
+    public const int MouseWheelDown = 7; // 滚轮下
+
+    /// <summary>目标鼠标按键的显示名；未知返回"未设置"</summary>
+    public static string MouseLabel(int button) => button switch
+    {
+        MouseLeft => "鼠标左键",
+        MouseRight => "鼠标右键",
+        MouseMiddle => "鼠标中键",
+        MouseX1 => "鼠标侧键1",
+        MouseX2 => "鼠标侧键2",
+        MouseWheelUp => "滚轮上",
+        MouseWheelDown => "滚轮下",
+        _ => "未设置"
+    };
+
     /// <summary>该虚拟键是否为修饰键（Ctrl/Shift/Alt/Win 左右皆算）</summary>
     public static bool IsModifier(int vk) =>
         vk is VkShift or VkCtrl or VkAlt or VkWin or 0xA0 or 0xA1 or 0xA2 or 0xA3 or 0xA4 or 0xA5 or 0x5C;
@@ -160,11 +182,64 @@ public static class KeySendService
         SendInput((uint)arr.Length, arr, Marshal.SizeOf<INPUT>());
     }
 
+    /// <summary>
+    /// 把鼠标按键（左/右/中/侧键/滚轮）注入到当前前台窗口（SendInput）。
+    /// 与键盘一致：调用前应先把 GameLocker 窗口收起，否则事件会落在自己身上。
+    /// </summary>
+    public static void SendMouse(int button)
+    {
+        var inputs = new List<INPUT>(2);
+        void M(uint flags, uint data) => inputs.Add(new INPUT
+        {
+            type = INPUT_MOUSE,
+            U = new InputUnion
+            {
+                mi = new MOUSEINPUT
+                {
+                    dx = 0,
+                    dy = 0,
+                    mouseData = data,
+                    dwFlags = flags,
+                    time = 0,
+                    dwExtraInfo = IntPtr.Zero
+                }
+            }
+        });
+
+        switch (button)
+        {
+            case MouseLeft: M(MOUSEEVENTF_LEFTDOWN, 0); M(MOUSEEVENTF_LEFTUP, 0); break;
+            case MouseRight: M(MOUSEEVENTF_RIGHTDOWN, 0); M(MOUSEEVENTF_RIGHTUP, 0); break;
+            case MouseMiddle: M(MOUSEEVENTF_MIDDLEDOWN, 0); M(MOUSEEVENTF_MIDDLEUP, 0); break;
+            case MouseX1: M(MOUSEEVENTF_XDOWN, XBUTTON1); M(MOUSEEVENTF_XUP, XBUTTON1); break;
+            case MouseX2: M(MOUSEEVENTF_XDOWN, XBUTTON2); M(MOUSEEVENTF_XUP, XBUTTON2); break;
+            case MouseWheelUp: M(MOUSEEVENTF_WHEEL, WHEEL_DELTA); break;
+            case MouseWheelDown: M(MOUSEEVENTF_WHEEL, unchecked((uint)-WHEEL_DELTA)); break;
+            default: return;
+        }
+
+        var arr = inputs.ToArray();
+        SendInput((uint)arr.Length, arr, Marshal.SizeOf<INPUT>());
+    }
+
     // ---- SendInput P/Invoke ----
 
     private const uint INPUT_KEYBOARD = 1;
+    private const uint INPUT_MOUSE = 0;
     private const uint KEYEVENTF_EXTENDEDKEY = 0x0001;
     private const uint KEYEVENTF_KEYUP = 0x0002;
+    private const uint MOUSEEVENTF_LEFTDOWN = 0x0002;
+    private const uint MOUSEEVENTF_LEFTUP = 0x0004;
+    private const uint MOUSEEVENTF_RIGHTDOWN = 0x0008;
+    private const uint MOUSEEVENTF_RIGHTUP = 0x0010;
+    private const uint MOUSEEVENTF_MIDDLEDOWN = 0x0020;
+    private const uint MOUSEEVENTF_MIDDLEUP = 0x0040;
+    private const uint MOUSEEVENTF_XDOWN = 0x0080;
+    private const uint MOUSEEVENTF_XUP = 0x0100;
+    private const uint MOUSEEVENTF_WHEEL = 0x0800;
+    private const uint XBUTTON1 = 0x0001;
+    private const uint XBUTTON2 = 0x0002;
+    private const int WHEEL_DELTA = 120;
 
     [StructLayout(LayoutKind.Sequential)]
     private struct INPUT

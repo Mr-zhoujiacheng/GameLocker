@@ -90,4 +90,13 @@ public class AppSettings
 
     /// <summary>键盘呼出键的修饰键标志（Ctrl=1/Shift=2/Alt=4/Win=8，见 KeySendService.Mod*）</summary>
     public int KeyboardSummonMods { get; set; }
+
+    /// <summary>云端备份（WebDAV）：服务器地址，默认坚果云；也可改为群晖 / Nextcloud 等自建网盘地址</summary>
+    public string WebDavUrl { get; set; } = "https://dav.jianguoyun.com/dav/";
+
+    /// <summary>云端备份（WebDAV）：登录账号（坚果云为注册邮箱）</summary>
+    public string WebDavUser { get; set; } = "";
+
+    /// <summary>云端备份（WebDAV）：云端根目录名（存档位于 /{该目录}/{游戏名}/）</summary>
+    public string WebDavRootFolder { get; set; } = "GameLocker";
 }

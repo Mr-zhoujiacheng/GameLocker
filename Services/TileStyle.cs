@@ -594,7 +594,7 @@ public static class TileStyle
             };
             stack.Children.Add(new FontIcon
             {
-                Glyph = "\uE7FC",
+                Glyph = "\uE765",
                 FontSize = 24,
                 Foreground = white,
                 HorizontalAlignment = HorizontalAlignment.Center,
@@ -624,7 +624,7 @@ public static class TileStyle
             };
             row.Children.Add(new FontIcon
             {
-                Glyph = "\uE7FC",
+                Glyph = "\uE765",
                 FontSize = 30,
                 Foreground = white,
                 VerticalAlignment = VerticalAlignment.Center,
@@ -655,7 +655,7 @@ public static class TileStyle
             };
             stack.Children.Add(new FontIcon
             {
-                Glyph = "\uE7FC",
+                Glyph = "\uE765",
                 FontSize = 38,
                 Foreground = white,
                 HorizontalAlignment = HorizontalAlignment.Center,
@@ -697,5 +697,436 @@ public static class TileStyle
         if (SettingsService.Current.Tile3D && !noColor) Add3DEdge(grid);
         tile.Opacity = Opacity;
         return tile;
+    }
+
+    /// <summary>
+    /// 构建修改器小组件磁贴：外壳（圆角/描边/填充/透明度/立体边缘）与普通磁贴完全一致，
+    /// 内容按尺寸分档——小(1×1)=扳手图标+名称；长(2×1)=图标 + 名称（居中横排）；
+    /// 大(2×2)=图标 + 名称 + 提示"按 A 打开修改器"。内容仅随编辑变化，无需刷新引用。
+    /// </summary>
+    public static Border BuildTrainerTile(
+        LaunchItem item, double width, double height, Windows.UI.Color accent, bool noColor)
+    {
+        var white = new SolidColorBrush(Microsoft.UI.Colors.White);
+        var label = string.IsNullOrWhiteSpace(item.Name) ? "修改器" : item.Name;
+        const string glyph = "\uE90F"; // 扳手（Repair）
+
+        var grid = new Grid();
+        if (item.Size == TileSize.Small)
+        {
+            // 小：图标上下名称
+            var stack = new StackPanel
+            {
+                Spacing = 2,
+                HorizontalAlignment = HorizontalAlignment.Center,
+                VerticalAlignment = VerticalAlignment.Center
+            };
+            stack.Children.Add(new FontIcon
+            {
+                Glyph = glyph,
+                FontSize = 24,
+                Foreground = white,
+                HorizontalAlignment = HorizontalAlignment.Center,
+                IsHitTestVisible = false
+            });
+            stack.Children.Add(new TextBlock
+            {
+                Text = label,
+                FontSize = 11,
+                Foreground = white,
+                HorizontalAlignment = HorizontalAlignment.Center,
+                TextTrimming = TextTrimming.CharacterEllipsis,
+                MaxWidth = width - 12,
+                IsHitTestVisible = false
+            });
+            grid.Children.Add(stack);
+        }
+        else if (item.Size == TileSize.Wide)
+        {
+            // 长：左图标 + 右名称（居中横排）
+            var row = new StackPanel
+            {
+                Orientation = Orientation.Horizontal,
+                Spacing = 10,
+                HorizontalAlignment = HorizontalAlignment.Center,
+                VerticalAlignment = VerticalAlignment.Center
+            };
+            row.Children.Add(new FontIcon
+            {
+                Glyph = glyph,
+                FontSize = 30,
+                Foreground = white,
+                VerticalAlignment = VerticalAlignment.Center,
+                IsHitTestVisible = false
+            });
+            row.Children.Add(new TextBlock
+            {
+                Text = label,
+                FontSize = 16,
+                FontWeight = Microsoft.UI.Text.FontWeights.SemiBold,
+                Foreground = white,
+                VerticalAlignment = VerticalAlignment.Center,
+                TextTrimming = TextTrimming.CharacterEllipsis,
+                MaxWidth = width - 96,
+                IsHitTestVisible = false
+            });
+            grid.Children.Add(row);
+        }
+        else
+        {
+            // 大：居中竖排，图标 + 名称 + 提示
+            var stack = new StackPanel
+            {
+                Spacing = 6,
+                Margin = new Thickness(12, 10, 12, 10),
+                HorizontalAlignment = HorizontalAlignment.Center,
+                VerticalAlignment = VerticalAlignment.Center
+            };
+            stack.Children.Add(new FontIcon
+            {
+                Glyph = glyph,
+                FontSize = 38,
+                Foreground = white,
+                HorizontalAlignment = HorizontalAlignment.Center,
+                IsHitTestVisible = false
+            });
+            stack.Children.Add(new TextBlock
+            {
+                Text = label,
+                FontSize = 20,
+                FontWeight = Microsoft.UI.Text.FontWeights.SemiBold,
+                Foreground = white,
+                HorizontalAlignment = HorizontalAlignment.Center,
+                TextTrimming = TextTrimming.CharacterEllipsis,
+                MaxWidth = width - 28,
+                IsHitTestVisible = false
+            });
+            stack.Children.Add(new TextBlock
+            {
+                Text = "按 A 打开修改器",
+                FontSize = 12,
+                Opacity = 0.75,
+                Foreground = white,
+                HorizontalAlignment = HorizontalAlignment.Center,
+                IsHitTestVisible = false
+            });
+            grid.Children.Add(stack);
+        }
+
+        var tile = new Border
+        {
+            Width = width,
+            Height = height,
+            CornerRadius = new CornerRadius(Radius),
+            Background = noColor ? new SolidColorBrush(Windows.UI.Color.FromArgb(0, 0, 0, 0)) : TileFill(accent),
+            BorderBrush = new SolidColorBrush(Windows.UI.Color.FromArgb(0x40, 0xFF, 0xFF, 0xFF)),
+            BorderThickness = new Thickness(1),
+            Child = grid
+        };
+        if (SettingsService.Current.Tile3D && !noColor) Add3DEdge(grid);
+        tile.Opacity = Opacity;
+        return tile;
+    }
+
+    /// <summary>
+    /// 构建游戏存档小组件磁贴：外壳（圆角/描边/填充/透明度/立体边缘）与普通磁贴完全一致，
+    /// 内容按尺寸分档——小(1×1)=保存图标+名称；长(2×1)=图标 + 名称（居中横排）；
+    /// 大(2×2)=图标 + 名称 + 提示"按 A 备份 · Y 同步"。内容仅随编辑变化，无需刷新引用。
+    /// </summary>
+    public static Border BuildBackupTile(
+        LaunchItem item, double width, double height, Windows.UI.Color accent, bool noColor)
+    {
+        var white = new SolidColorBrush(Microsoft.UI.Colors.White);
+        var label = string.IsNullOrWhiteSpace(item.Name) ? "游戏存档" : item.Name;
+        const string glyph = "\uE74E"; // 保存（Save）
+
+        var grid = new Grid();
+        if (item.Size == TileSize.Small)
+        {
+            // 小：图标上下名称
+            var stack = new StackPanel
+            {
+                Spacing = 2,
+                HorizontalAlignment = HorizontalAlignment.Center,
+                VerticalAlignment = VerticalAlignment.Center
+            };
+            stack.Children.Add(new FontIcon
+            {
+                Glyph = glyph,
+                FontSize = 24,
+                Foreground = white,
+                HorizontalAlignment = HorizontalAlignment.Center,
+                IsHitTestVisible = false
+            });
+            stack.Children.Add(new TextBlock
+            {
+                Text = label,
+                FontSize = 11,
+                Foreground = white,
+                HorizontalAlignment = HorizontalAlignment.Center,
+                TextTrimming = TextTrimming.CharacterEllipsis,
+                MaxWidth = width - 12,
+                IsHitTestVisible = false
+            });
+            grid.Children.Add(stack);
+        }
+        else if (item.Size == TileSize.Wide)
+        {
+            // 长：左图标 + 右名称（居中横排）
+            var row = new StackPanel
+            {
+                Orientation = Orientation.Horizontal,
+                Spacing = 10,
+                HorizontalAlignment = HorizontalAlignment.Center,
+                VerticalAlignment = VerticalAlignment.Center
+            };
+            row.Children.Add(new FontIcon
+            {
+                Glyph = glyph,
+                FontSize = 30,
+                Foreground = white,
+                VerticalAlignment = VerticalAlignment.Center,
+                IsHitTestVisible = false
+            });
+            row.Children.Add(new TextBlock
+            {
+                Text = label,
+                FontSize = 16,
+                FontWeight = Microsoft.UI.Text.FontWeights.SemiBold,
+                Foreground = white,
+                VerticalAlignment = VerticalAlignment.Center,
+                TextTrimming = TextTrimming.CharacterEllipsis,
+                MaxWidth = width - 96,
+                IsHitTestVisible = false
+            });
+            grid.Children.Add(row);
+        }
+        else
+        {
+            // 大：居中竖排，图标 + 名称 + 提示
+            var stack = new StackPanel
+            {
+                Spacing = 6,
+                Margin = new Thickness(12, 10, 12, 10),
+                HorizontalAlignment = HorizontalAlignment.Center,
+                VerticalAlignment = VerticalAlignment.Center
+            };
+            stack.Children.Add(new FontIcon
+            {
+                Glyph = glyph,
+                FontSize = 38,
+                Foreground = white,
+                HorizontalAlignment = HorizontalAlignment.Center,
+                IsHitTestVisible = false
+            });
+            stack.Children.Add(new TextBlock
+            {
+                Text = label,
+                FontSize = 20,
+                FontWeight = Microsoft.UI.Text.FontWeights.SemiBold,
+                Foreground = white,
+                HorizontalAlignment = HorizontalAlignment.Center,
+                TextTrimming = TextTrimming.CharacterEllipsis,
+                MaxWidth = width - 28,
+                IsHitTestVisible = false
+            });
+            stack.Children.Add(new TextBlock
+            {
+                Text = "按 A 备份 · Y 同步",
+                FontSize = 12,
+                Opacity = 0.75,
+                Foreground = white,
+                HorizontalAlignment = HorizontalAlignment.Center,
+                IsHitTestVisible = false
+            });
+            grid.Children.Add(stack);
+        }
+
+        var tile = new Border
+        {
+            Width = width,
+            Height = height,
+            CornerRadius = new CornerRadius(Radius),
+            Background = noColor ? new SolidColorBrush(Windows.UI.Color.FromArgb(0, 0, 0, 0)) : TileFill(accent),
+            BorderBrush = new SolidColorBrush(Windows.UI.Color.FromArgb(0x40, 0xFF, 0xFF, 0xFF)),
+            BorderThickness = new Thickness(1),
+            Child = grid
+        };
+        if (SettingsService.Current.Tile3D && !noColor) Add3DEdge(grid);
+        tile.Opacity = Opacity;
+        return tile;
+    }
+
+    /// <summary>手柄映射磁贴的可刷新元素引用（开关状态变化时只改开关外观，不重建磁贴）</summary>
+    public sealed class GamepadMapTileRefs
+    {
+        public Border Tile = null!;               // 磁贴外壳
+        public Border Track = null!;              // 开关轨道
+        public Microsoft.UI.Xaml.Shapes.Ellipse Knob = null!; // 开关滑块
+    }
+
+    /// <summary>构建"开关"图标：轨道（Border）+ 滑块（Ellipse）。外观由 FillGamepadMapState 写入。</summary>
+    private static Grid BuildSwitchIcon(double trackWidth, double trackHeight, double knobSize,
+        out Border track, out Microsoft.UI.Xaml.Shapes.Ellipse knob)
+    {
+        track = new Border
+        {
+            Width = trackWidth,
+            Height = trackHeight,
+            CornerRadius = new CornerRadius(trackHeight / 2),
+            Background = new SolidColorBrush(Windows.UI.Color.FromArgb(0x40, 0xFF, 0xFF, 0xFF)),
+            IsHitTestVisible = false
+        };
+        knob = new Microsoft.UI.Xaml.Shapes.Ellipse
+        {
+            Width = knobSize,
+            Height = knobSize,
+            Fill = new SolidColorBrush(Microsoft.UI.Colors.White),
+            HorizontalAlignment = HorizontalAlignment.Left,
+            VerticalAlignment = VerticalAlignment.Center,
+            Margin = new Thickness(3, 0, 0, 0),
+            IsHitTestVisible = false
+        };
+        var host = new Grid { HorizontalAlignment = HorizontalAlignment.Center };
+        host.Children.Add(track);
+        host.Children.Add(knob);
+        return host;
+    }
+
+    /// <summary>
+    /// 构建手柄映射小组件磁贴：外壳（圆角/描边/填充/透明度/立体边缘）与普通磁贴完全一致，
+    /// 内容按尺寸分档——小(1×1)=手柄图标+开关图标；长(2×1)=图标 + 名称 + 开关图标（居中横排）；
+    /// 大(2×2)=图标 + 名称 + 开关图标 + 提示"A:开关映射 · 长按:关闭"。状态由 FillGamepadMapState 写入。
+    /// </summary>
+    public static (Border Tile, GamepadMapTileRefs Refs) BuildGamepadMapTile(
+        LaunchItem item, double width, double height, Windows.UI.Color accent, bool noColor)
+    {
+        var white = new SolidColorBrush(Microsoft.UI.Colors.White);
+        var label = string.IsNullOrWhiteSpace(item.Name) ? "手柄映射" : item.Name;
+        const string glyph = "\uE7FC"; // 手柄（Gamepad）
+
+        var refs = new GamepadMapTileRefs();
+
+        var grid = new Grid();
+        if (item.Size == TileSize.Small)
+        {
+            // 小：图标上下开关
+            var stack = new StackPanel
+            {
+                Spacing = 4,
+                HorizontalAlignment = HorizontalAlignment.Center,
+                VerticalAlignment = VerticalAlignment.Center
+            };
+            stack.Children.Add(new FontIcon
+            {
+                Glyph = glyph,
+                FontSize = 24,
+                Foreground = white,
+                HorizontalAlignment = HorizontalAlignment.Center,
+                IsHitTestVisible = false
+            });
+            stack.Children.Add(BuildSwitchIcon(26, 14, 8, out refs.Track, out refs.Knob));
+            grid.Children.Add(stack);
+        }
+        else if (item.Size == TileSize.Wide)
+        {
+            // 长：左图标 + 右（名称 + 开关）
+            var row = new StackPanel
+            {
+                Orientation = Orientation.Horizontal,
+                Spacing = 10,
+                HorizontalAlignment = HorizontalAlignment.Center,
+                VerticalAlignment = VerticalAlignment.Center
+            };
+            row.Children.Add(new FontIcon
+            {
+                Glyph = glyph,
+                FontSize = 30,
+                Foreground = white,
+                VerticalAlignment = VerticalAlignment.Center,
+                IsHitTestVisible = false
+            });
+            var col = new StackPanel { Spacing = 4, VerticalAlignment = VerticalAlignment.Center };
+            col.Children.Add(new TextBlock
+            {
+                Text = label,
+                FontSize = 16,
+                FontWeight = Microsoft.UI.Text.FontWeights.SemiBold,
+                Foreground = white,
+                TextTrimming = TextTrimming.CharacterEllipsis,
+                MaxWidth = width - 96,
+                IsHitTestVisible = false
+            });
+            col.Children.Add(BuildSwitchIcon(30, 16, 9, out refs.Track, out refs.Knob));
+            row.Children.Add(col);
+            grid.Children.Add(row);
+        }
+        else
+        {
+            // 大：居中竖排，图标 + 名称 + 开关 + 提示
+            var stack = new StackPanel
+            {
+                Spacing = 6,
+                Margin = new Thickness(12, 10, 12, 10),
+                HorizontalAlignment = HorizontalAlignment.Center,
+                VerticalAlignment = VerticalAlignment.Center
+            };
+            stack.Children.Add(new FontIcon
+            {
+                Glyph = glyph,
+                FontSize = 38,
+                Foreground = white,
+                HorizontalAlignment = HorizontalAlignment.Center,
+                IsHitTestVisible = false
+            });
+            stack.Children.Add(new TextBlock
+            {
+                Text = label,
+                FontSize = 20,
+                FontWeight = Microsoft.UI.Text.FontWeights.SemiBold,
+                Foreground = white,
+                HorizontalAlignment = HorizontalAlignment.Center,
+                TextTrimming = TextTrimming.CharacterEllipsis,
+                MaxWidth = width - 28,
+                IsHitTestVisible = false
+            });
+            stack.Children.Add(BuildSwitchIcon(34, 18, 10, out refs.Track, out refs.Knob));
+            stack.Children.Add(new TextBlock
+            {
+                Text = "A:开关映射 · 长按:关闭",
+                FontSize = 12,
+                Opacity = 0.75,
+                Foreground = white,
+                HorizontalAlignment = HorizontalAlignment.Center,
+                IsHitTestVisible = false
+            });
+            grid.Children.Add(stack);
+        }
+
+        var tile = new Border
+        {
+            Width = width,
+            Height = height,
+            CornerRadius = new CornerRadius(Radius),
+            Background = noColor ? new SolidColorBrush(Windows.UI.Color.FromArgb(0, 0, 0, 0)) : TileFill(accent),
+            BorderBrush = new SolidColorBrush(Windows.UI.Color.FromArgb(0x40, 0xFF, 0xFF, 0xFF)),
+            BorderThickness = new Thickness(1),
+            Child = grid
+        };
+        if (SettingsService.Current.Tile3D && !noColor) Add3DEdge(grid);
+        tile.Opacity = Opacity;
+        refs.Tile = tile;
+        return (tile, refs);
+    }
+
+    /// <summary>把当前开关状态写入磁贴引用：开=绿色轨道+滑块靠右，关=半透明白轨道+滑块靠左。</summary>
+    public static void FillGamepadMapState(GamepadMapTileRefs refs, LaunchItem item)
+    {
+        var on = GamepadRemapService.IsEnabled(item);
+        refs.Track.Background = new SolidColorBrush(on
+            ? Windows.UI.Color.FromArgb(0xFF, 0x66, 0xE0, 0x8A)    // 绿：已开启
+            : Windows.UI.Color.FromArgb(0x40, 0xFF, 0xFF, 0xFF)); // 半透明白：已关闭
+        refs.Knob.HorizontalAlignment = on ? HorizontalAlignment.Right : HorizontalAlignment.Left;
+        refs.Knob.Margin = on ? new Thickness(0, 0, 3, 0) : new Thickness(3, 0, 0, 0);
     }
 }

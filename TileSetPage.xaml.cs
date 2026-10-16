@@ -25,6 +25,8 @@ public sealed partial class TileSetPage : Page
     private readonly Dictionary<TileStyle.MusicTileRefs, int> _musicRefs = [];
     private readonly Dictionary<TileStyle.PhotoTileRefs, (int, string, LaunchItem)> _photoRefs = [];
     private readonly Dictionary<TileStyle.WeatherTileRefs, int> _weatherRefs = [];
+    /// <summary>当前显示的手柄映射磁贴引用（重排时重建；value=(显示序列索引, 磁贴项)）</summary>
+    private readonly Dictionary<TileStyle.GamepadMapTileRefs, (int index, LaunchItem item)> _remapRefs = [];
     private LaunchItem? _expanded;
     private bool _groupAnimating;
     private int _selected;
@@ -45,7 +47,9 @@ public sealed partial class TileSetPage : Page
     private bool _suppressTap;          // 长按/拖拽完成后吞掉随后的 Tapped
     private Microsoft.UI.Xaml.DispatcherTimer? _lpTimer;  // 长按计时器
     private Border? _lpTile;
-    private LaunchItem? _lpCloseItem;  // 长按目标=可关闭磁贴时记录（null=设置磁贴进编辑）
+    private LaunchItem? _lpCloseItem;  // 长按目标=可关闭磁贴时记录（null=设置磁贴进编辑 / 游戏存档磁贴走同步）
+    private LaunchItem? _lpSyncItem;   // 长按目标=游戏存档磁贴时记录（长按=同步存档）
+    private LaunchItem? _lpRemapItem;  // 长按目标=手柄映射磁贴时记录（长按=关闭映射）
     private Windows.Foundation.Point _lpStart;
     private uint _lpPointerId;
 
@@ -124,6 +128,13 @@ public sealed partial class TileSetPage : Page
         WeatherService.StateChanged += OnWeatherChanged;
         WeatherService.EnsureFresh();
         RefreshWeatherTiles();
+        // 修改器小组件：下载/搜索在后台线程执行，进度经提示条反馈
+        TrainerService.StatusChanged += OnTrainerStatus;
+        // 游戏存档小组件：定位/打包在后台线程执行，进度经提示条反馈
+        SaveBackupService.StatusChanged += OnBackupStatus;
+        // 手柄映射小组件：开关状态变化后刷新磁贴的"映射开/关"显示
+        GamepadRemapService.StateChanged += OnRemapStateChanged;
+        RefreshRemapTiles();
     }
 
     protected override void OnNavigatedFrom(NavigationEventArgs e)
@@ -133,14 +144,27 @@ public sealed partial class TileSetPage : Page
         _lpTimer?.Stop();
         _lpTile = null;
         _lpCloseItem = null;
+        _lpSyncItem = null;
+        _lpRemapItem = null;
         SystemMediaService.StateChanged -= OnMusicStateChanged;
         SlideshowService.CurrentChanged -= OnSlideshowChanged;
         WeatherService.StateChanged -= OnWeatherChanged;
+        TrainerService.StatusChanged -= OnTrainerStatus;
+        SaveBackupService.StatusChanged -= OnBackupStatus;
+        GamepadRemapService.StateChanged -= OnRemapStateChanged;
     }
 
     private void OnMusicStateChanged() => DispatcherQueue.TryEnqueue(RefreshMusicTiles);
     private void OnSlideshowChanged() => DispatcherQueue.TryEnqueue(RefreshPhotoTiles);
     private void OnWeatherChanged() => DispatcherQueue.TryEnqueue(RefreshWeatherTiles);
+
+    /// <summary>修改器取回进度：事件来自后台线程，marshal 回 UI 线程后用提示条反馈（失败用警告样式）</summary>
+    private void OnTrainerStatus(TrainerMessage m) =>
+        DispatcherQueue.TryEnqueue(() => ShowToast(m.Text, m.Error ? ToastKind.Warning : ToastKind.Success));
+
+    /// <summary>游戏存档进度：事件来自后台线程，marshal 回 UI 线程后用提示条反馈（失败用警告样式）</summary>
+    private void OnBackupStatus(BackupMessage m) =>
+        DispatcherQueue.TryEnqueue(() => ShowToast(m.Text, m.Error ? ToastKind.Warning : ToastKind.Success));
 
     private void TileHost_SizeChanged(object sender, SizeChangedEventArgs e)
     {
@@ -180,6 +204,7 @@ public sealed partial class TileSetPage : Page
         _musicRefs.Clear();
         _photoRefs.Clear();
         _weatherRefs.Clear();
+        _remapRefs.Clear();
         // 磁贴重建：旧的徽章引用失效（与主页同款）
         _settingsTile = null;
         _badge = SettingsBadge.None;
@@ -307,6 +332,41 @@ public sealed partial class TileSetPage : Page
             return mappingTile;
         }
 
+        // 修改器小组件磁贴（快照内照常工作）：A 键/点击 = 按当前游戏进程自动下载并打开最新修改器
+        if (item.Kind == LaunchKind.Widget && item.WidgetKind == WidgetKind.Trainer)
+        {
+            var trainerTile = TileStyle.BuildTrainerTile(item, width, height, accent, noColor);
+            trainerTile.Tag = index;
+            trainerTile.Tapped += (_, _) => OnTileTapped(index, () => ActivateAt(index));
+            trainerTile.DoubleTapped += (_, _) => HandleDoubleTap(index);
+            AttachEditGestures(trainerTile, item, group, index, false);
+            return trainerTile;
+        }
+
+        // 游戏存档小组件磁贴（快照内照常工作）：A 键/点击 = 备份当前正在玩的游戏的存档
+        if (item.Kind == LaunchKind.Widget && item.WidgetKind == WidgetKind.Backup)
+        {
+            var backupTile = TileStyle.BuildBackupTile(item, width, height, accent, noColor);
+            backupTile.Tag = index;
+            backupTile.Tapped += (_, _) => OnTileTapped(index, () => ActivateAt(index));
+            backupTile.DoubleTapped += (_, _) => HandleDoubleTap(index);
+            AttachEditGestures(backupTile, item, group, index, false);
+            return backupTile;
+        }
+
+        // 手柄映射小组件磁贴（快照内照常工作）：显示开关状态，A 键/点击 = 开/关映射，长按 = 关闭映射
+        if (item.Kind == LaunchKind.Widget && item.WidgetKind == WidgetKind.GamepadMap)
+        {
+            var (remapTile, remapRefs) = TileStyle.BuildGamepadMapTile(item, width, height, accent, noColor);
+            remapTile.Tag = index;
+            _remapRefs[remapRefs] = (index, item);
+            remapTile.Tapped += (_, _) => OnTileTapped(index, () => ActivateAt(index));
+            remapTile.DoubleTapped += (_, _) => HandleDoubleTap(index);
+            AttachEditGestures(remapTile, item, group, index, false);
+            TileStyle.FillGamepadMapState(remapRefs, item);
+            return remapTile;
+        }
+
         // 标准磁贴（与主页共用构建）
         var tile = TileStyle.BuildStandardTile(item, group, width, height, accent, noColor);
         tile.Tag = index;
@@ -426,6 +486,7 @@ public sealed partial class TileSetPage : Page
         _lpTimer?.Stop();
         _lpTile = null;
         _lpCloseItem = null;
+        _lpSyncItem = null;
         OpenEditorAt(index);
     }
 
@@ -448,16 +509,23 @@ public sealed partial class TileSetPage : Page
             _suppressTap = false;
             var p = e.GetCurrentPoint(TileHost).Position;
 
-            // 普通模式长按：设置磁贴=进入编辑模式；程序/网站/文件夹磁贴=关闭其前台窗口（等同 Y 键）
+            // 普通模式长按：设置磁贴=进入编辑模式；程序/网站/文件夹磁贴=关闭其前台窗口（等同 Y 键）；
+            // 修改器小组件磁贴=关闭正在运行的修改器（等同 Y 键）；游戏存档小组件磁贴=同步存档（等同 Y 键）；
+            // 手柄映射小组件磁贴=关闭映射（等同长按关闭）
             if (!_moving && group is null &&
-                (isSettings || item.Kind is LaunchKind.App or LaunchKind.Url or LaunchKind.Folder))
+                (isSettings || item.Kind is LaunchKind.App or LaunchKind.Url or LaunchKind.Folder
+                 || (item.Kind == LaunchKind.Widget && item.WidgetKind is WidgetKind.Trainer or WidgetKind.Backup or WidgetKind.GamepadMap)))
             {
                 _lpTimer ??= new Microsoft.UI.Xaml.DispatcherTimer { Interval = TimeSpan.FromMilliseconds(600) };
                 _lpTimer.Stop();
                 _lpTimer.Tick -= OnLongPressTick;
                 _lpTimer.Tick += OnLongPressTick;
                 _lpTile = tile;
-                _lpCloseItem = isSettings ? null : item;
+                var isBackup = item.Kind == LaunchKind.Widget && item.WidgetKind == WidgetKind.Backup;
+                var isRemap = item.Kind == LaunchKind.Widget && item.WidgetKind == WidgetKind.GamepadMap;
+                _lpCloseItem = isSettings || isBackup || isRemap ? null : item;
+                _lpSyncItem = isBackup ? item : null;
+                _lpRemapItem = isRemap ? item : null;
                 _lpStart = p;
                 _lpPointerId = e.Pointer.PointerId;
                 tile.CapturePointer(e.Pointer);
@@ -489,7 +557,7 @@ public sealed partial class TileSetPage : Page
             var p = e.GetCurrentPoint(TileHost).Position;
             if (_lpTile is not null && e.Pointer.PointerId == _lpPointerId)
             {
-                if (Dist(p, _lpStart) > 12) { _lpTimer?.Stop(); _lpTile = null; _lpCloseItem = null; } // 移走了=取消长按
+                if (Dist(p, _lpStart) > 12) { _lpTimer?.Stop(); _lpTile = null; _lpCloseItem = null; _lpSyncItem = null; _lpRemapItem = null; } // 移走了=取消长按
                 return;
             }
             if (_dragTile is null || !ReferenceEquals(_dragTile, tile) || e.Pointer.PointerId != _dragPointerId) return;
@@ -512,6 +580,8 @@ public sealed partial class TileSetPage : Page
                 _lpTimer?.Stop();
                 _lpTile = null;
                 _lpCloseItem = null;
+                _lpSyncItem = null;
+                _lpRemapItem = null;
                 return;
             }
             if (_dragTile is null || !ReferenceEquals(_dragTile, tile) || e.Pointer.PointerId != _dragPointerId) return;
@@ -555,6 +625,9 @@ public sealed partial class TileSetPage : Page
             {
                 _lpTimer?.Stop();
                 _lpTile = null;
+                _lpCloseItem = null;
+                _lpSyncItem = null;
+                _lpRemapItem = null;
             }
         }), true);
     }
@@ -564,12 +637,18 @@ public sealed partial class TileSetPage : Page
         ((Microsoft.UI.Xaml.DispatcherTimer)sender).Stop();
         _lpTile = null;
         var closeItem = _lpCloseItem;
+        var syncItem = _lpSyncItem;
+        var remapItem = _lpRemapItem;
         _lpCloseItem = null;
+        _lpSyncItem = null;
+        _lpRemapItem = null;
         // 兜底守卫：若已切走（双击进编辑页等），绝不在后台执行关闭程序/进入编辑模式
         if (App.Main?.IsCurrentPage(this) != true) return;
         _suppressTap = true;
-        if (closeItem is not null) CloseItem(closeItem); // 长按可关闭磁贴=关程序/网站/文件夹
-        else EnterEditMode();                             // 长按设置磁贴=进入编辑模式
+        if (syncItem is not null) SaveBackupService.Sync(syncItem);              // 长按游戏存档磁贴=同步存档
+        else if (remapItem is not null) { GamepadRemapService.Disable(remapItem); ShowToast("已关闭映射", ToastKind.Warning); } // 长按手柄映射磁贴=关闭映射
+        else if (closeItem is not null) CloseItem(closeItem);                      // 长按可关闭磁贴=关程序/网站/文件夹
+        else EnterEditMode();                                                     // 长按设置磁贴=进入编辑模式
     }
 
     private static double Dist(Windows.Foundation.Point a, Windows.Foundation.Point b) =>
@@ -753,6 +832,15 @@ public sealed partial class TileSetPage : Page
             else if (item.WidgetKind == WidgetKind.Settings) App.Main?.NavigateSettings(typeof(SettingsPage));
             else if (item.WidgetKind == WidgetKind.Weather) WeatherService.Refresh();
             else if (item.WidgetKind == WidgetKind.Mapping) TriggerMapping(item);
+            else if (item.WidgetKind == WidgetKind.Trainer) TrainerService.Activate();
+            else if (item.WidgetKind == WidgetKind.Backup) SaveBackupService.Activate(item);
+            else if (item.WidgetKind == WidgetKind.GamepadMap)
+            {
+                // 手柄映射小组件：A/点击 = 开/关映射（长按 = 关闭，见 OnLongPressTick）
+                GamepadRemapService.Toggle(item);
+                ShowToast(GamepadRemapService.IsEnabled(item) ? "映射已开启" : "映射已关闭",
+                    GamepadRemapService.IsEnabled(item) ? ToastKind.Success : ToastKind.Warning);
+            }
             else SystemMediaService.TogglePlay();
             return;
         }
@@ -798,18 +886,34 @@ public sealed partial class TileSetPage : Page
         KeySendService.Send(vk, mods);
     }
 
-    /// <summary>Y=关闭：结束选中磁贴对应的运行中程序；未运行则提示（小组件/组磁贴不响应）</summary>
+    /// <summary>Y=关闭：结束选中磁贴对应的运行中程序；未运行则提示（小组件/组磁贴不响应；修改器小组件=关闭修改器）</summary>
     private void CloseSelected()
     {
         if (_selected < 0 || _selected >= _display.Count) return;
         var (item, group) = _display[_selected];
-        if (group is not null || item.Kind is LaunchKind.Widget or LaunchKind.Group) return;
+        if (group is not null || item.Kind is LaunchKind.Widget or LaunchKind.Group)
+        {
+            // 修改器小组件例外：Y 键关闭正在运行的修改器
+            if (group is null && item.Kind == LaunchKind.Widget && item.WidgetKind == WidgetKind.Trainer)
+                CloseItem(item);
+            return;
+        }
         CloseItem(item);
     }
 
-    /// <summary>关闭磁贴对应的前台窗口（Y 键与长按共用）：程序/网站/文件夹（与主页 CloseItem 同款，改动需两页同步）</summary>
+    /// <summary>关闭磁贴对应的前台窗口（Y 键与长按共用）：程序/网站/文件夹；修改器小组件=关闭修改器
+    /// （与主页 CloseItem 同款，改动需两页同步）</summary>
     private void CloseItem(LaunchItem item)
     {
+        if (item.Kind == LaunchKind.Widget && item.WidgetKind == WidgetKind.Trainer)
+        {
+            var closed = TrainerService.CloseTrainer();
+            ShowToast(closed > 0 ? "已关闭修改器" : "修改器未在运行",
+                closed > 0 ? ToastKind.Success : ToastKind.Warning);
+            if (closed > 0) App.Main?.KeepForeground(); // 目标关闭后启动器保持前台不最小化
+            return;
+        }
+
         var killed = LaunchService.Close(item);
         ShowToast(killed > 0 ? $"已关闭 {item.Name}" : $"{item.Name} 未在运行",
             killed > 0 ? ToastKind.Success : ToastKind.Warning);
@@ -820,7 +924,7 @@ public sealed partial class TileSetPage : Page
     private enum ToastKind { Success, Warning }
 
     /// <summary>临时提示条：玻璃质感药丸，2 秒后自动隐藏（与主页同款样式）。
-    /// 成功=青色对勾，警告=琥珀感叹号；首次出现时淡入 + 自上方归位。</summary>
+    /// 成功=青色对勾，警告=琥珀感叹号；位置在磁贴画布底部（手柄提示条上方），首次出现时淡入 + 自下方归位。</summary>
     private Microsoft.UI.Xaml.DispatcherTimer? _toastTimer;
     private Storyboard? _toastIn;
 
@@ -853,7 +957,7 @@ public sealed partial class TileSetPage : Page
         _toastTimer.Start();
     }
 
-    /// <summary>提示条入场：淡入 + 自上方 10px 归位</summary>
+    /// <summary>提示条入场：淡入 + 自下方 10px 上移归位</summary>
     private void PlayToastIn()
     {
         var fade = new DoubleAnimation { From = 0, To = 1, Duration = TimeSpan.FromMilliseconds(150) };
@@ -861,7 +965,7 @@ public sealed partial class TileSetPage : Page
         Storyboard.SetTargetProperty(fade, "Opacity");
         var slide = new DoubleAnimation
         {
-            From = -10, To = 0, Duration = TimeSpan.FromMilliseconds(220),
+            From = 10, To = 0, Duration = TimeSpan.FromMilliseconds(220),
             EasingFunction = new CubicEase { EasingMode = EasingMode.EaseOut }
         };
         Storyboard.SetTarget(slide, MoveHintSlide);
@@ -951,6 +1055,30 @@ public sealed partial class TileSetPage : Page
         return group is null && item.Kind == LaunchKind.Widget && item.WidgetKind == WidgetKind.Mapping;
     }
 
+    /// <summary>当前选中的是否为顶层修改器小组件磁贴（决定 A 键是打开修改器还是启动）</summary>
+    private bool IsTrainerSelected()
+    {
+        if (_selected < 0 || _selected >= _display.Count) return false;
+        var (item, group) = _display[_selected];
+        return group is null && item.Kind == LaunchKind.Widget && item.WidgetKind == WidgetKind.Trainer;
+    }
+
+    /// <summary>当前选中的是否为顶层游戏存档小组件磁贴（决定 A 键是备份存档还是启动）</summary>
+    private bool IsBackupSelected()
+    {
+        if (_selected < 0 || _selected >= _display.Count) return false;
+        var (item, group) = _display[_selected];
+        return group is null && item.Kind == LaunchKind.Widget && item.WidgetKind == WidgetKind.Backup;
+    }
+
+    /// <summary>当前选中的是否为顶层手柄映射小组件磁贴（决定 A 键是开/关映射还是启动）</summary>
+    private bool IsGamepadMapSelected()
+    {
+        if (_selected < 0 || _selected >= _display.Count) return false;
+        var (item, group) = _display[_selected];
+        return group is null && item.Kind == LaunchKind.Widget && item.WidgetKind == WidgetKind.GamepadMap;
+    }
+
     /// <summary>按当前选中项替换底部提示条（与主页同款）：音乐/图片组磁贴=只显示对应操作提示，其他=恢复副本页常规提示（排列模式不处理，由 UpdateHintBar 负责）</summary>
     private void UpdateHintForSelection()
     {
@@ -963,6 +1091,12 @@ public sealed partial class TileSetPage : Page
             HintBar.SetHints("DPAD:切换选择|A:刷新天气|R3:编辑|L3:排列|B:返回");
         else if (IsMappingSelected())
             HintBar.SetHints("DPAD:切换选择|A:触发映射|R3:编辑|L3:排列|B:返回");
+        else if (IsTrainerSelected())
+            HintBar.SetHints("DPAD:切换选择|A:打开修改器|Y:关闭修改器|R3:编辑|L3:排列|B:返回");
+        else if (IsBackupSelected())
+            HintBar.SetHints("DPAD:切换选择|A:备份存档|Y:同步存档|R3:编辑|L3:排列|B:返回");
+        else if (IsGamepadMapSelected())
+            HintBar.SetHints("DPAD:切换选择|A:开启/关闭映射|长按:关闭映射|R3:编辑|L3:排列|B:返回");
         else
             HintBar.SetHints(NormalHints);
     }
@@ -1057,6 +1191,15 @@ public sealed partial class TileSetPage : Page
         foreach (var (refs, _) in _weatherRefs) TileStyle.FillWeatherTile(refs);
     }
 
+    /// <summary>手柄映射开关状态变化（在 UI 线程触发）：刷新各映射磁贴的"映射开/关"显示</summary>
+    private void OnRemapStateChanged() => RefreshRemapTiles();
+
+    /// <summary>刷新所有手柄映射磁贴的开关状态显示（只改状态文字不重建磁贴）</summary>
+    private void RefreshRemapTiles()
+    {
+        foreach (var (refs, (_, item)) in _remapRefs) TileStyle.FillGamepadMapState(refs, item);
+    }
+
     private void RefreshPhotoTiles()
     {
         foreach (var (refs, (index, folder, item)) in _photoRefs)
@@ -1126,8 +1269,13 @@ public sealed partial class TileSetPage : Page
         if (buttons.HasFlag(GamepadButtons.DPadLeft)) { MoveSelection(-1, 0); return true; }
         if (buttons.HasFlag(GamepadButtons.DPadRight)) { MoveSelection(1, 0); return true; }
         if (buttons.HasFlag(GamepadButtons.A)) { ActivateAt(_selected); return true; }
-        // 常规模式 Y=关闭：结束选中磁贴对应的运行中程序（排列模式内 Y 仍为删除）
-        if (buttons.HasFlag(GamepadButtons.Y)) { CloseSelected(); return true; }
+        // 常规模式 Y：选中游戏存档磁贴=同步存档（用最近一份备份覆盖回本地）；否则关闭选中磁贴对应的运行中程序
+        if (buttons.HasFlag(GamepadButtons.Y))
+        {
+            if (IsBackupSelected()) SaveBackupService.Sync(_display[_selected].item);
+            else CloseSelected();
+            return true;
+        }
         if (buttons.HasFlag(GamepadButtons.LeftShoulder))
         {
             if (IsMusicSelected()) { SystemMediaService.Prev(); return true; }

@@ -26,6 +26,11 @@ public sealed partial class MainWindow : Window
     private bool _fullscreen;
     private EdgeGestureService? _edgeGesture;
 
+    /// <summary>前台进程采样：修改器小组件据此判断"当前玩的是哪个游戏"。
+    /// 启动器是置顶侧边栏，点击磁贴时游戏往往不在前台，故需在后台持续记录最近的前台游戏进程。</summary>
+    private readonly Microsoft.UI.Xaml.DispatcherTimer _trainerTracker =
+        new() { Interval = TimeSpan.FromMilliseconds(1200) };
+
     /// <summary>手柄是否派发到页面（与 Gamepad.RoutingEnabled 同步；仅窗口已呼出显示时为 true）</summary>
     private bool _routing;
 
@@ -115,6 +120,7 @@ public sealed partial class MainWindow : Window
             else ToggleFullscreen();
         });
         Gamepad.Start();
+        GamepadRemapService.Init(); // 手柄映射：订阅原始手柄按下（不经路由门控，隐藏到托盘时也生效）
 
         // 键盘呼出键：命中即刻呼出（对比：手柄呼出键需长按 1 秒）
         SyncKeyboardHook();
@@ -131,6 +137,11 @@ public sealed partial class MainWindow : Window
         // 收起手势（呼出的反方向）：走原始输入触摸通道，与页面内容无关，任何页面都生效
         _edgeGesture.DismissTriggered += () => DispatcherQueue.TryEnqueue(OnDismissGesture);
         SyncEdgeGesture();
+
+        // 前台游戏进程采样（常驻运行：窗口隐藏期间也要能记录到正在玩的游戏）
+        _trainerTracker.Tick += (_, _) => TrainerService.CaptureForeground();
+        TrainerService.CaptureForeground();
+        _trainerTracker.Start();
 
         Root.Navigate(typeof(MainPage));
 
@@ -525,6 +536,14 @@ public sealed partial class MainWindow : Window
 
     /// <summary>指定页面是否仍处于导航栈顶（供页面在后台回调里做自救守卫，避免已切走后误执行）</summary>
     public bool IsCurrentPage(object page) => ReferenceEquals(Root.Content, page);
+
+    /// <summary>启动器窗口当前是否在前台（手柄映射注入按键前判断：在前台时键盘/鼠标注入会打到启动器自己，需跳过；
+    /// 手柄输出目标则相反，仅此时才有意义）</summary>
+    public bool IsLauncherForeground => GetForegroundWindow() == _hwnd;
+
+    /// <summary>外部（手柄映射服务）把目标手柄键派发到当前页面（手柄输出仅在本启动器内生效）</summary>
+    public void DispatchGamepad(GamepadButtons buttons) =>
+        DispatcherQueue.TryEnqueue(() => OnGamepadButton(buttons));
 
     /// <summary>顶栏显示开关变更后即时应用到主页（若已创建）</summary>
     public void ApplyTopbarVisibility()

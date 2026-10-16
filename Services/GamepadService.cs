@@ -77,6 +77,9 @@ public sealed class GamepadService : IDisposable
 
     /// <summary>按钮按下（边沿触发，含扳机/摇杆等全部键）</summary>
     public event Action<GamepadButtons>? ButtonPressed;
+    /// <summary>按钮按下的边沿事件（不经 RoutingEnabled 门控：窗口隐藏到托盘、游戏在前台时手柄映射仍需生效）。
+    /// 与 ButtonPressed 的区别：ButtonPressed 仅在按键派发给页面时触发，本事件始终触发（静态，供手柄映射服务订阅）。</summary>
+    public static event Action<GamepadButtons>? ButtonDown;
     /// <summary>手柄连接状态变化</summary>
     public event Action<bool>? ConnectionChanged;
     /// <summary>所有按键松开</summary>
@@ -174,8 +177,11 @@ public sealed class GamepadService : IDisposable
 
         // 边沿：本帧按下且上一帧未按下
         var pressed = current & ~_last;
-        if (pressed != GamepadButtons.None && _routingEnabled)
-            ButtonPressed?.Invoke(pressed);
+        if (pressed != GamepadButtons.None)
+        {
+            ButtonDown?.Invoke(pressed); // 始终触发（手柄映射后台常驻）
+            if (_routingEnabled) ButtonPressed?.Invoke(pressed);
+        }
 
         // 方向键长按连发：按住持续超过起始延迟后，按固定间隔重复触发方向按下事件
         var heldDirs = current & DirectionMask;

@@ -7,7 +7,7 @@ using Microsoft.UI.Xaml.Navigation;
 namespace GameLocker;
 
 /// <summary>
-/// 小组件页：列出可添加的小组件（音乐控制器 / 图片组 / 磁贴集 / 天气），磁贴预览完全复用主页磁贴样式。
+/// 小组件页：列出可添加的小组件（音乐控制器 / 图片组 / 磁贴集 / 天气 / 映射 / 修改器 / 游戏存档 / 手柄映射），磁贴预览完全复用主页磁贴样式。
 /// 手柄：方向=移动光标，A/X=添加到主页，B/View=返回主页。
 /// </summary>
 public sealed partial class WidgetPage : Page
@@ -65,13 +65,43 @@ public sealed partial class WidgetPage : Page
         Size = TileSize.Large
     };
 
+    /// <summary>预览用固定修改器项（扳手图标 + 名称，无实时状态；实际添加时为默认"长"尺寸）</summary>
+    private static readonly LaunchItem TrainerPreviewItem = new()
+    {
+        Name = "修改器",
+        Target = "widget:trainer",
+        Kind = LaunchKind.Widget,
+        WidgetKind = WidgetKind.Trainer,
+        Size = TileSize.Large
+    };
+
+    /// <summary>预览用固定游戏存档项（保存图标 + 名称，无实时状态；实际添加时为默认"长"尺寸）</summary>
+    private static readonly LaunchItem BackupPreviewItem = new()
+    {
+        Name = "游戏存档",
+        Target = "widget:backup",
+        Kind = LaunchKind.Widget,
+        WidgetKind = WidgetKind.Backup,
+        Size = TileSize.Large
+    };
+
+    /// <summary>预览用固定手柄映射项（手柄图标 + 开关状态，无实时状态；实际添加时为默认"长"尺寸）</summary>
+    private static readonly LaunchItem GamepadMapPreviewItem = new()
+    {
+        Name = "手柄映射",
+        Target = "widget:gamepadmap",
+        Kind = LaunchKind.Widget,
+        WidgetKind = WidgetKind.GamepadMap,
+        Size = TileSize.Large
+    };
+
     /// <summary>预览磁贴框架（订阅天气变化时刷新文字）</summary>
     private TileStyle.WeatherTileRefs? _weatherPreviewRefs;
 
     public WidgetPage()
     {
         InitializeComponent();
-        _formControls = [MusicWidgetCard, PhotoWidgetCard, TileSetWidgetCard, WeatherWidgetCard, MappingWidgetCard];
+        _formControls = [MusicWidgetCard, PhotoWidgetCard, TileSetWidgetCard, WeatherWidgetCard, MappingWidgetCard, TrainerWidgetCard, BackupWidgetCard, GamepadMapWidgetCard];
     }
 
     protected override void OnNavigatedTo(NavigationEventArgs e)
@@ -98,6 +128,20 @@ public sealed partial class WidgetPage : Page
         MappingPreviewHost.Content = TileStyle.BuildMappingTile(
             MappingPreviewItem, w, h, TileStyle.AccentFor(MappingPreviewItem),
             TileStyle.IsNoColor(MappingPreviewItem));
+        // 修改器预览：与主页同一构建（扳手图标 + 名称）
+        TrainerPreviewHost.Content = TileStyle.BuildTrainerTile(
+            TrainerPreviewItem, w, h, TileStyle.AccentFor(TrainerPreviewItem),
+            TileStyle.IsNoColor(TrainerPreviewItem));
+        // 游戏存档预览：与主页同一构建（保存图标 + 名称）
+        BackupPreviewHost.Content = TileStyle.BuildBackupTile(
+            BackupPreviewItem, w, h, TileStyle.AccentFor(BackupPreviewItem),
+            TileStyle.IsNoColor(BackupPreviewItem));
+        // 手柄映射预览：与主页同一构建（手柄图标 + 开关状态，预览显示"映射关"）
+        var (gamepadMapTile, gamepadMapRefs) = TileStyle.BuildGamepadMapTile(
+            GamepadMapPreviewItem, w, h, TileStyle.AccentFor(GamepadMapPreviewItem),
+            TileStyle.IsNoColor(GamepadMapPreviewItem));
+        TileStyle.FillGamepadMapState(gamepadMapRefs, GamepadMapPreviewItem);
+        GamepadMapPreviewHost.Content = gamepadMapTile;
         WeatherService.StateChanged += OnWeatherChanged;
         WeatherService.EnsureFresh();
 
@@ -138,6 +182,9 @@ public sealed partial class WidgetPage : Page
         else if (ReferenceEquals(c, TileSetWidgetCard)) AddTileSetWidget();
         else if (ReferenceEquals(c, WeatherWidgetCard)) AddWeatherWidget();
         else if (ReferenceEquals(c, MappingWidgetCard)) AddMappingWidget();
+        else if (ReferenceEquals(c, TrainerWidgetCard)) AddTrainerWidget();
+        else if (ReferenceEquals(c, BackupWidgetCard)) AddBackupWidget();
+        else if (ReferenceEquals(c, GamepadMapWidgetCard)) AddGamepadMapWidget();
         else AddMusicWidget();
     }
 
@@ -366,6 +413,67 @@ public sealed partial class WidgetPage : Page
         App.Main?.ShowMainPage();
     }
 
+    /// <summary>修改器组件：默认"长"尺寸（可后续编辑大小与颜色），只允许一个——
+    /// 其行为始终是"按当前游戏进程取最新修改器"，多份没有区别。</summary>
+    private void AddTrainerWidget()
+    {
+        var items = ConfigService.Load();
+        if (items.Any(it => it.Kind == LaunchKind.Widget && it.WidgetKind == WidgetKind.Trainer))
+        {
+            PageTitle.Text = "修改器已在主页";
+            return;
+        }
+        items.Add(new LaunchItem
+        {
+            Name = "修改器",
+            Target = "widget:trainer",
+            Kind = LaunchKind.Widget,
+            WidgetKind = WidgetKind.Trainer,
+            Size = TileSize.Wide
+        });
+        ConfigService.Save(items);
+        App.Main?.ShowMainPage();
+    }
+
+    /// <summary>游戏存档组件：默认"长"尺寸（可后续编辑大小、颜色、备份目标与保留份数），只允许一个——
+    /// 其行为始终是"备份当前正在玩的那款游戏的存档"（Y 键/长按=同步），多份没有区别。</summary>
+    private void AddBackupWidget()
+    {
+        var items = ConfigService.Load();
+        if (items.Any(it => it.Kind == LaunchKind.Widget && it.WidgetKind == WidgetKind.Backup))
+        {
+            PageTitle.Text = "游戏存档已在主页";
+            return;
+        }
+        items.Add(new LaunchItem
+        {
+            Name = "游戏存档",
+            Target = "widget:backup",
+            Kind = LaunchKind.Widget,
+            WidgetKind = WidgetKind.Backup,
+            Size = TileSize.Wide
+        });
+        ConfigService.Save(items);
+        App.Main?.ShowMainPage();
+    }
+
+    /// <summary>手柄映射组件：默认"长"尺寸（可后续编辑大小、颜色与映射列表），可添加多个
+    /// （各承载不同的映射集合）。设置好映射后，A/点击=开关映射，长按=关闭映射。</summary>
+    private void AddGamepadMapWidget()
+    {
+        var items = ConfigService.Load();
+        items.Add(new LaunchItem
+        {
+            Name = "手柄映射",
+            Target = "widget:gamepadmap:" + Guid.NewGuid().ToString("N"),
+            Kind = LaunchKind.Widget,
+            WidgetKind = WidgetKind.GamepadMap,
+            Size = TileSize.Wide
+        });
+        ConfigService.Save(items);
+        App.Main?.ShowMainPage();
+    }
+
     // ---- 鼠标 ----
 
     private void OnBackClick(object sender, RoutedEventArgs e) => App.Main?.ShowMainPage();
@@ -376,6 +484,9 @@ public sealed partial class WidgetPage : Page
         else if (sender is Button { Tag: "tileset" }) AddTileSetWidget();
         else if (sender is Button { Tag: "weather" }) AddWeatherWidget();
         else if (sender is Button { Tag: "mapping" }) AddMappingWidget();
+        else if (sender is Button { Tag: "trainer" }) AddTrainerWidget();
+        else if (sender is Button { Tag: "backup" }) AddBackupWidget();
+        else if (sender is Button { Tag: "gamepadmap" }) AddGamepadMapWidget();
         else AddMusicWidget();
     }
 }

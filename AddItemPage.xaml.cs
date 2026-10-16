@@ -64,8 +64,14 @@ public sealed partial class AddItemPage : Page, ISettingsGamepad
     /// <summary>图片组：本次会话选定的文件夹（null=未改动）</summary>
     private string? _pendingPhotoFolder;
 
+    /// <summary>游戏存档：本次会话选定的备份文件夹（null=未改动）</summary>
+    private string? _pendingBackupFolder;
+
     /// <summary>当前浏览是否为"图片组选文件夹"（区别于普通 Folder 类型项选路径）</summary>
     private bool _pickingPhotoFolder;
+
+    /// <summary>当前浏览是否为"游戏存档选文件夹"</summary>
+    private bool _pickingBackupFolder;
 
     // ---- 映射小组件的按键捕获状态（实现 ISettingsGamepad，MainWindow 据此转发原始手柄按键） ----
 
@@ -81,9 +87,100 @@ public sealed partial class AddItemPage : Page, ISettingsGamepad
     /// <summary>捕获过程中实时累积的修饰键状态（键盘按键按住期间）</summary>
     private int _liveMods;
 
+    // ---- 手柄映射小组件：可视化手柄编辑状态 ----
+
+    /// <summary>捕获模式：区分映射小组件捕获与手柄映射的目标捕获</summary>
+    private enum CaptureMode { Mapping, MapTargetKey, MapTargetPad }
+    private CaptureMode _captureMode = CaptureMode.Mapping;
+    /// <summary>当前正在捕获的映射（手柄映射捕获时用；映射小组件捕获为 null）</summary>
+    private GamepadMapping? _captureMapping;
+
+    /// <summary>本次会话编辑的映射列表（深拷贝；保存时写回 item.GamepadMappings）</summary>
+    private List<GamepadMapping>? _pendingGamepadMappings;
+
+    /// <summary>手柄图上当前选中的源手柄键（None=未选中，此时编辑面板收起）</summary>
+    private GamepadButtons _selectedMapSource = GamepadButtons.None;
+
+    /// <summary>手柄图上的一个可点击热区（对应一个手柄键，既可点击也可用手柄 A 键确认）</summary>
+    private sealed class MapZoneUi
+    {
+        public GamepadButtons Button;
+        public Button Hit = null!;
+        public Microsoft.UI.Xaml.Shapes.Shape Visual = null!;
+        public TextBlock Label = null!;
+    }
+
+    private readonly List<MapZoneUi> _mapZones = [];
+
+    /// <summary>手柄图底图在画布中的尺寸（Assets/gamepad-base.png 为 460×311.6，1:1 铺满画布）</summary>
+    private const double PadCanvasWidth = 460;
+
+    private const double PadCanvasHeight = 311.6;
+
+    /// <summary>手柄热区布局：键 / 相对画布的左边距 / 上边距 / 宽 / 高 / 标注文字 / 是否圆形。
+    /// 坐标是把参考实现（YeManCC）GamepadVisualizer 的手柄按键位置，经底图裁剪映射换算到 460×311.6 画布后得到，
+    /// 因此热区与底图上的按键轮廓一一对应。</summary>
+    private static readonly (GamepadButtons Btn, double X, double Y, double W, double H, string Text, bool Round)[] ZoneLayout =
+    [
+        // 顶部扳机（机身肩部凸起的上半）与肩键（其下方的弧带）
+        (GamepadButtons.LeftTrigger,   71.75, 3.60, 65.8, 30.0, "LT", false),
+        (GamepadButtons.RightTrigger,  324.35, 3.60, 65.8, 30.0, "RT", false),
+        (GamepadButtons.LeftShoulder,  58.31, 37.61, 86.8, 36.0, "LB", false),
+        (GamepadButtons.RightShoulder, 316.79, 37.61, 86.8, 36.0, "RB", false),
+        // 西瓜键：热区正好套住底图中心的 Xbox 标志，故不写字（标志本身即说明） / 视图 / 菜单
+        (GamepadButtons.Guide,         209.90, 60.10, 40.0, 40.0, "", true),
+        (GamepadButtons.View,          180.61, 123.75, 23.7, 23.4, "Select", true),
+        (GamepadButtons.Menu,          251.47, 123.75, 23.7, 23.4, "Start", true),
+        // 左摇杆按下 / 右摇杆按下
+        (GamepadButtons.LeftThumb,     74.13, 105.28, 61.1, 60.3, "L3", true),
+        (GamepadButtons.RightThumb,    257.42, 175.28, 67.2, 66.4, "R3", true),
+        // 十字键：四块按同一中心（168.57, 209.25）严丝合缝拼成一个十字，中间不留空洞
+        (GamepadButtons.DPadUp,        154.71, 170.44, 27.7, 38.81, "↑", false),
+        (GamepadButtons.DPadDown,      154.71, 209.25, 27.7, 38.76, "↓", false),
+        (GamepadButtons.DPadLeft,      125.03, 194.10, 43.54, 30.3, "←", false),
+        (GamepadButtons.DPadRight,     168.57, 194.10, 43.54, 30.3, "→", false),
+        // 右侧 ABXY（菱形排布，与真实手柄按键间距一致）
+        (GamepadButtons.Y,             342.20, 93.18, 33.2, 32.8, "Y", true),
+        (GamepadButtons.B,             373.00, 120.57, 33.2, 32.8, "B", true),
+        (GamepadButtons.A,             342.20, 151.01, 33.2, 32.8, "A", true),
+        (GamepadButtons.X,             311.39, 120.57, 33.2, 32.8, "X", true),
+    ];
+
+    /// <summary>热区外的额外命中留白（触及目标更大；顶部扳机/肩键用更小的值以免互相压盖）</summary>
+    private const double ZoneHitPadding = 10;
+
+    private const double ShoulderHitPadding = 4;
+
+    /// <summary>鼠标目标循环顺序（目标类型=鼠标时，点击"切换鼠标键"依次轮换）</summary>
+    private static readonly int[] MouseOrder =
+    [
+        KeySendService.MouseLeft, KeySendService.MouseRight, KeySendService.MouseMiddle,
+        KeySendService.MouseX1, KeySendService.MouseX2, KeySendService.MouseWheelUp, KeySendService.MouseWheelDown
+    ];
+
+    // 手柄图配色（底图浅灰线稿 + 按键半透明填充：未映射=淡蓝灰、映射=强调蓝、当前选中=琥珀描边）。
+    // 实例字段：保证画刷在 UI 线程构造时创建
+    private readonly Microsoft.UI.Xaml.Media.SolidColorBrush ZoneFillBrush = MakeBrush(0x66, 0x2A, 0x34, 0x46);
+    private readonly Microsoft.UI.Xaml.Media.SolidColorBrush ZoneStrokeBrush = MakeBrush(0x8F, 0xA3, 0xBF);
+    private readonly Microsoft.UI.Xaml.Media.SolidColorBrush MappedFillBrush = MakeBrush(0xE0, 0x2E, 0x6B, 0xE6);
+    private readonly Microsoft.UI.Xaml.Media.SolidColorBrush MappedStrokeBrush = MakeBrush(0xBB, 0xD8, 0xFF);
+    private readonly Microsoft.UI.Xaml.Media.SolidColorBrush SelectedStrokeBrush = MakeBrush(0xFF, 0xD1, 0x66);
+    private readonly Microsoft.UI.Xaml.Media.SolidColorBrush LabelBrush = MakeBrush(0xE6, 0xEE, 0xF9);
+    private readonly Microsoft.UI.Xaml.Media.SolidColorBrush LabelMappedBrush = MakeBrush(0xFF, 0xFF, 0xFF);
+
+    // 手柄导航光标描边（白色 0xCC，与全局卡片式控件的光标高亮一致）
+    private readonly Microsoft.UI.Xaml.Media.SolidColorBrush CursorBrush = MakeBrush(0xCC, 0xFF, 0xFF, 0xFF);
+
+    private static Microsoft.UI.Xaml.Media.SolidColorBrush MakeBrush(byte r, byte g, byte b)
+        => new(Windows.UI.Color.FromArgb(255, r, g, b));
+
+    private static Microsoft.UI.Xaml.Media.SolidColorBrush MakeBrush(byte a, byte r, byte g, byte b)
+        => new(Windows.UI.Color.FromArgb(a, r, g, b));
+
     public AddItemPage()
     {
         InitializeComponent();
+        BuildGamepadMapDiagram();
         RebuildFormControls();
     }
 
@@ -95,34 +192,82 @@ public sealed partial class AddItemPage : Page, ISettingsGamepad
         ColorYellowRadio, ColorPinkRadio, ColorIndigoRadio
     ];
 
-    /// <summary>表单导航序列（清除图片按钮仅在有背景图时参与）</summary>
+    /// <summary>表单导航序列：只纳入"有效可见"的控件（自身与所属分组容器都 Visible），
+    /// 并按页面从上到下的视觉顺序排列。手柄映射编辑时标题/路径/类型/图标整块被隐藏，
+    /// 若仍按控件自身 Visibility 入列，方向键会走进看不见的 TextBox/单选——
+    /// 表现就是"进手柄映射编辑后光标看不见、往下走了再往上回不到图区"。</summary>
     private void RebuildFormControls()
     {
-        var list = new List<Control>
+        var vis = Microsoft.UI.Xaml.Visibility.Visible;
+        var list = new List<Control>();
+        if (NameBox.Visibility == vis) list.Add(NameBox);
+        // 路径 + 浏览（手柄映射/小组件/磁贴组编辑时整块隐藏，按容器判定）
+        if (TargetRow.Visibility == vis) { list.Add(TargetBox); list.Add(BrowseButton); }
+        // 图片组定向文件夹 / 轮播速度与动画
+        if (PhotoFolderRow.Visibility == vis) list.Add(PhotoFolderButton);
+        if (PhotoSettingsPanel.Visibility == vis)
         {
-            NameBox, TargetBox, BrowseButton, AppRadio, UrlRadio, FolderRadio,
-            SmallSizeRadio, WideSizeRadio, LargeSizeRadio,
-            ColorBlueRadio, ColorRedRadio, ColorGreenRadio,
-            ColorPurpleRadio, ColorNoneRadio, ColorTealRadio,
-            ColorYellowRadio, ColorPinkRadio, ColorIndigoRadio,
-            IconButton, CoverButton
-        };
-        if (CoverClearButton.Visibility == Microsoft.UI.Xaml.Visibility.Visible)
-            list.Add(CoverClearButton);
-        if (PhotoFolderRow.Visibility == Microsoft.UI.Xaml.Visibility.Visible)
-            list.Add(PhotoFolderButton);
-        // 映射小组件：按键捕获按钮（仅映射编辑时可见）
-        if (MappingRow.Visibility == Microsoft.UI.Xaml.Visibility.Visible)
-            list.Add(MappingCaptureButton);
-        // 图片组设置：轮播速度 / 切换动画
-        if (PhotoSettingsPanel.Visibility == Microsoft.UI.Xaml.Visibility.Visible)
-            list.AddRange(new Control[]
+            list.Add(SpeedFastRadio);
+            list.Add(SpeedSlowRadio);
+            list.Add(SpeedArtRadio);
+            list.Add(AnimationToggle);
+        }
+        // 映射小组件：按键捕获按钮
+        if (MappingRow.Visibility == vis) list.Add(MappingCaptureButton);
+        // 修改器小组件：打开已下载修改器目录按钮
+        if (TrainerRow.Visibility == vis) list.Add(OpenTrainerFolderButton);
+        // 游戏存档小组件：备份方式 / 保留份数，以及按方式显示的本地面板或云端面板
+        if (BackupRow.Visibility == vis)
+        {
+            list.Add(BackupLocalRadio);
+            list.Add(BackupCloudRadio);
+            if (BackupLocalPanel.Visibility == vis)
             {
-                SpeedFastRadio, SpeedSlowRadio, SpeedArtRadio,
-                AnimationToggle
-            });
+                list.Add(BackupFolderButton);
+                list.Add(OpenBackupFolderButton);
+            }
+            if (BackupCloudPanel.Visibility == vis) list.Add(CloudSettingsButton);
+            list.Add(Keep3Radio);
+            list.Add(Keep5Radio);
+            list.Add(Keep10Radio);
+        }
+        // 手柄映射小组件：手柄图上的每个按键热区；选中某个键后再加入其输出类型/捕获/删除
+        if (GamepadMapRow.Visibility == vis)
+        {
+            foreach (var zone in _mapZones)
+                list.Add(zone.Hit);
+            if (GamepadMapEditor.Visibility == vis)
+            {
+                list.Add(GamepadMapKeyRadio);
+                list.Add(GamepadMapMouseRadio);
+                list.Add(GamepadMapPadRadio);
+                list.Add(GamepadMapCaptureButton);
+                list.Add(GamepadMapDeleteButton);
+            }
+        }
+        // 组件标题（仅手柄映射，位于类型/大小/颜色行上方）/ 类型 / 磁贴大小 / 磁贴颜色（各自容器隐藏时跳过）
+        if (TitleColumn.Visibility == vis) list.Add(WidgetTitleBox);
+        if (KindColumn.Visibility == vis) { list.Add(AppRadio); list.Add(UrlRadio); list.Add(FolderRadio); }
+        if (SizeColumn.Visibility == vis) { list.Add(SmallSizeRadio); list.Add(WideSizeRadio); list.Add(LargeSizeRadio); }
+        if (ColorColumn.Visibility == vis) list.AddRange(ColorRadios);
+        // 图标 / 磁贴图片
+        if (IconRow.Visibility == vis) list.Add(IconButton);
+        if (CoverRow.Visibility == vis)
+        {
+            list.Add(CoverButton);
+            if (CoverClearButton.Visibility == vis) list.Add(CoverClearButton);
+        }
         list.Add(SaveButton);
+
+        // 重建后按"控件引用"回填光标下标：列表顺序变化/条目增减都不会让光标跳到别的控件
+        var prev = _formControls is { Length: > 0 } && _formIndex >= 0 && _formIndex < _formControls.Length
+            ? _formControls[_formIndex] : null;
         _formControls = list.ToArray();
+        if (prev is not null)
+        {
+            var i = Array.IndexOf(_formControls, prev);
+            _formIndex = i >= 0 ? i : Math.Clamp(_formIndex, 0, _formControls.Length - 1);
+        }
     }
 
     /// <summary>按 #RRGGBB 勾选对应颜色块；空/不匹配则全部取消（自动哈希配色）</summary>
@@ -151,6 +296,8 @@ public sealed partial class AddItemPage : Page, ISettingsGamepad
         _isGroup = item.Kind == LaunchKind.Group;
         _isWidget = item.Kind == LaunchKind.Widget;
         _pendingPhotoFolder = null;
+        _pendingBackupFolder = null;
+        NameBox.Visibility = Microsoft.UI.Xaml.Visibility.Visible;
         NameBox.Header = "显示名称";
         NameBox.PlaceholderText = "例如：Steam";
         NameBox.Text = item.Name;
@@ -162,7 +309,7 @@ public sealed partial class AddItemPage : Page, ISettingsGamepad
         CheckColor(item.TileColor);
         ShowPreview(item.IconFile);
         ShowCoverPreview(item.CoverFile);
-        // 组没有"类型/路径"概念，隐藏对应区域（BuildRows 按 Visibility 自动跳过）
+        // 组没有"类型/路径"概念，隐藏对应区域（RebuildFormControls 按容器可见性自动跳过）
         var vis = _isGroup ? Microsoft.UI.Xaml.Visibility.Collapsed : Microsoft.UI.Xaml.Visibility.Visible;
         TargetRow.Visibility = vis;
         KindColumn.Visibility = vis;
@@ -181,8 +328,8 @@ public sealed partial class AddItemPage : Page, ISettingsGamepad
             IconRow.Visibility = isTileSet ? Microsoft.UI.Xaml.Visibility.Visible : w;
             CoverHeaderText.Visibility = isTileSet ? Microsoft.UI.Xaml.Visibility.Visible : w;
             CoverRow.Visibility = isTileSet ? Microsoft.UI.Xaml.Visibility.Visible : w;
-            // 音乐固定 2×2 不可改大小；其余小组件（图片组/设置/磁贴集/天气）可编辑大小。颜色：图片组不需要（整块铺图）
-            SizeColumn.Visibility = isPhoto || item.WidgetKind is WidgetKind.Settings or WidgetKind.TileSet or WidgetKind.Weather or WidgetKind.Mapping
+            // 音乐固定 2×2 不可改大小；其余小组件（图片组/设置/磁贴集/天气/映射/修改器/游戏存档/手柄映射）可编辑大小。颜色：图片组不需要（整块铺图）
+            SizeColumn.Visibility = isPhoto || item.WidgetKind is WidgetKind.Settings or WidgetKind.TileSet or WidgetKind.Weather or WidgetKind.Mapping or WidgetKind.Trainer or WidgetKind.Backup or WidgetKind.GamepadMap
                 ? Microsoft.UI.Xaml.Visibility.Visible : w;
             ColorColumn.Visibility = isPhoto ? w : Microsoft.UI.Xaml.Visibility.Visible;
             PhotoFolderRow.Visibility = isPhoto
@@ -193,6 +340,38 @@ public sealed partial class AddItemPage : Page, ISettingsGamepad
             var isMapping = item.WidgetKind == WidgetKind.Mapping;
             MappingRow.Visibility = isMapping
                 ? Microsoft.UI.Xaml.Visibility.Visible : w;
+            // 修改器：名称、大小、颜色 + 「已下载修改器」（点击跳转存放目录）
+            var isTrainer = item.WidgetKind == WidgetKind.Trainer;
+            TrainerRow.Visibility = isTrainer ? Microsoft.UI.Xaml.Visibility.Visible : w;
+            if (isTrainer) TrainerFolderText.Text = TrainerService.TrainersDir;
+            // 游戏存档：名称、大小、颜色 + 备份方式 / 备份文件夹 / 保留份数 / 打开目录
+            var isBackup = item.WidgetKind == WidgetKind.Backup;
+            BackupRow.Visibility = isBackup ? Microsoft.UI.Xaml.Visibility.Visible : w;
+            if (isBackup)
+            {
+                BackupCloudRadio.IsChecked = item.BackupMode == BackupMode.Cloud;
+                BackupLocalRadio.IsChecked = item.BackupMode != BackupMode.Cloud;
+                BackupFolderText.Text = string.IsNullOrEmpty(item.BackupFolder) ? "默认目录" : item.BackupFolder!;
+                Keep3Radio.IsChecked = item.BackupKeep == 3;
+                Keep10Radio.IsChecked = item.BackupKeep == 10;
+                Keep5Radio.IsChecked = item.BackupKeep is not 3 and not 10; // 兜底：非 3/10 一律按 5
+                UpdateBackupPanels();
+            }
+            // 手柄映射：标题、大小、颜色 + 可视化手柄图（点击手柄键 → 键盘/鼠标/手柄输出）
+            var isGamepadMap = item.WidgetKind == WidgetKind.GamepadMap;
+            GamepadMapRow.Visibility = isGamepadMap ? Microsoft.UI.Xaml.Visibility.Visible : w;
+            // 组件标题输入框（独立一行，显示在类型/大小/颜色行的上方）仅手柄映射小组件显示
+            TitleColumn.Visibility = isGamepadMap ? Microsoft.UI.Xaml.Visibility.Visible : w;
+            if (isGamepadMap)
+            {
+                // 手柄映射：拷入映射列表；每次进入编辑都从"未选中任何手柄键"开始
+                _pendingGamepadMappings = item.GamepadMappings.Select(m => m.Clone()).ToList();
+                _selectedMapSource = GamepadButtons.None;
+                RefreshGamepadMapAll();
+                // 标题走与大小/颜色并排的"组件标题"输入框，顶部名称框隐藏；留空则磁贴显示"手柄映射"
+                NameBox.Visibility = w;
+                WidgetTitleBox.Text = item.Name;
+            }
             if (isMapping)
             {
                 _pendingPad = (int)item.MappingPad;
@@ -216,6 +395,7 @@ public sealed partial class AddItemPage : Page, ISettingsGamepad
         }
         else
         {
+            TitleColumn.Visibility = Microsoft.UI.Xaml.Visibility.Collapsed;
             SizeColumn.Visibility = Microsoft.UI.Xaml.Visibility.Visible;
             ColorColumn.Visibility = Microsoft.UI.Xaml.Visibility.Visible;
             IconHeaderText.Visibility = Microsoft.UI.Xaml.Visibility.Visible;
@@ -225,6 +405,9 @@ public sealed partial class AddItemPage : Page, ISettingsGamepad
             PhotoFolderRow.Visibility = Microsoft.UI.Xaml.Visibility.Collapsed;
             PhotoSettingsPanel.Visibility = Microsoft.UI.Xaml.Visibility.Collapsed;
             MappingRow.Visibility = Microsoft.UI.Xaml.Visibility.Collapsed;
+            TrainerRow.Visibility = Microsoft.UI.Xaml.Visibility.Collapsed;
+            BackupRow.Visibility = Microsoft.UI.Xaml.Visibility.Collapsed;
+            GamepadMapRow.Visibility = Microsoft.UI.Xaml.Visibility.Collapsed;
         }
     }
 
@@ -250,7 +433,10 @@ public sealed partial class AddItemPage : Page, ISettingsGamepad
                     : item.WidgetKind == WidgetKind.Settings ? "编辑设置磁贴"
                     : item.WidgetKind == WidgetKind.TileSet ? "编辑磁贴集"
                     : item.WidgetKind == WidgetKind.Weather ? "编辑天气小组件"
-                    : item.WidgetKind == WidgetKind.Mapping ? "编辑映射小组件" : "编辑音乐小组件")
+                    : item.WidgetKind == WidgetKind.Mapping ? "编辑映射小组件"
+                    : item.WidgetKind == WidgetKind.Trainer ? "编辑修改器小组件"
+                    : item.WidgetKind == WidgetKind.Backup ? "编辑游戏存档小组件"
+                    : item.WidgetKind == WidgetKind.GamepadMap ? "编辑手柄映射小组件" : "编辑音乐小组件")
                 : _isGroup ? "编辑磁贴组" : "编辑快捷项";
         }
         else
@@ -260,12 +446,23 @@ public sealed partial class AddItemPage : Page, ISettingsGamepad
             _isGroup = false;
             _isWidget = false;
             _pendingPhotoFolder = null;
+            _pendingBackupFolder = null;
+            _pendingGamepadMappings = null;
+            _selectedMapSource = GamepadButtons.None;
+            GamepadMapEditor.Visibility = Microsoft.UI.Xaml.Visibility.Collapsed;
+            GamepadMapSummary.Text = "";
             PhotoFolderRow.Visibility = Microsoft.UI.Xaml.Visibility.Collapsed;
             PhotoSettingsPanel.Visibility = Microsoft.UI.Xaml.Visibility.Collapsed;
             MappingRow.Visibility = Microsoft.UI.Xaml.Visibility.Collapsed;
+            TrainerRow.Visibility = Microsoft.UI.Xaml.Visibility.Collapsed;
+            BackupRow.Visibility = Microsoft.UI.Xaml.Visibility.Collapsed;
+            GamepadMapRow.Visibility = Microsoft.UI.Xaml.Visibility.Collapsed;
+            TitleColumn.Visibility = Microsoft.UI.Xaml.Visibility.Collapsed;
+            WidgetTitleBox.Text = "";
             _pendingIcon = null;
             _pendingCover = null;
             PageTitle.Text = "添加快捷项";
+            NameBox.Visibility = Microsoft.UI.Xaml.Visibility.Visible;
             NameBox.Header = "显示名称";
             NameBox.PlaceholderText = "例如：Steam";
             NameBox.Text = "";
@@ -278,8 +475,9 @@ public sealed partial class AddItemPage : Page, ISettingsGamepad
             TargetRow.Visibility = Microsoft.UI.Xaml.Visibility.Visible;
             KindColumn.Visibility = Microsoft.UI.Xaml.Visibility.Visible;
         }
-        RebuildFormControls(); // 可见性决定导航序列（图片组含"选择文件夹"按钮）
-        FocusForm(0);
+        RebuildFormControls(); // 导航序列只含有效可见控件，并按页面视觉顺序排列
+        _formIndex = 0;        // 最上面的第一个可聚焦控件（手柄映射编辑时=手柄图上的 LT 热区）
+        FocusForm(_formIndex);
     }
 
     /// <summary>手柄按键（MainWindow 转发，已在 UI 线程）</summary>
@@ -312,85 +510,77 @@ public sealed partial class AddItemPage : Page, ISettingsGamepad
         FocusForm(next);
     }
 
-    // 按控件中心 Y 聚成的"行"，每行内按 X 排序（每次按键实时重建，滚动后坐标仍准确）。
-    // 行感知导航取代加权最近邻：图标/图片等整行控件不会因列不对齐被跳过。
-    private readonly List<List<(int idx, double x, double y)>> _rows = [];
+    /// <summary>上下：按方向取最近控件</summary>
+    private void MoveRow(int delta) => MoveDirection(0, delta);
 
-    private void BuildRows()
+    /// <summary>左右：按方向取最近控件</summary>
+    private void MoveCol(int delta) => MoveDirection(delta, 0);
+
+    /// <summary>
+    /// 方向最近邻导航（实时取控件在页面中的实际矩形，滚动/缩放后依然准确）：
+    /// 只在移动方向一侧的控件里，选"主方向投影距离"最小者；垂直方向与之有重叠的视为正对，优先选中。
+    /// 手柄图热区是二维散布布局，行式分组不适用，故改为该算法；找不到候选时可向下落到保存按钮。
+    /// </summary>
+    private void MoveDirection(int dx, int dy)
     {
-        _rows.Clear();
-        var pts = new List<(int idx, double x, double y)>();
+        if (_formControls.Length == 0) return;
+        if (!TryRect(_formControls[_formIndex], out var cr)) { MoveForm(dx != 0 ? dx : dy); return; }
+
+        var curX = cr.X + cr.Width / 2;
+        var curY = cr.Y + cr.Height / 2;
+        var horizontal = dx != 0;
+        var sign = horizontal ? dx : dy;
+
+        var best = -1;
+        var bestScore = double.MaxValue;
+        var bestPrimary = double.MaxValue;
+
         for (var i = 0; i < _formControls.Length; i++)
         {
-            if (_formControls[i].Visibility != Microsoft.UI.Xaml.Visibility.Visible) continue;
-            if (!TryCenter(_formControls[i], out var x, out var y)) continue;
-            pts.Add((i, x, y));
-        }
-        pts.Sort((a, b) => a.y.CompareTo(b.y));
+            if (i == _formIndex) continue;
+            if (ReferenceEquals(_formControls[i], SaveButton)) continue;
+            if (!TryRect(_formControls[i], out var r)) continue; // 折叠/未布局控件自动跳过
 
-        const double tol = 40; // 行间距 > 控件高+间隔，同行中心 Y 相同，40px 容差安全
-        for (var k = 0; k < pts.Count;)
+            var cx = r.X + r.Width / 2;
+            var cy = r.Y + r.Height / 2;
+
+            // 主方向投影：<=0 说明不在移动方向上，跳过
+            var primary = horizontal ? (cx - curX) * sign : (cy - curY) * sign;
+            if (primary < 1) continue;
+
+            var perp = horizontal ? Math.Abs(cy - curY) : Math.Abs(cx - curX);
+            var overlap = horizontal
+                ? cy >= cr.Y - 1 && cy <= cr.Y + cr.Height + 1
+                : cx >= cr.X - 1 && cx <= cr.X + cr.Width + 1;
+
+            var score = overlap ? primary : primary + perp * 2;
+            if (score < bestScore - 0.001 ||
+                (Math.Abs(score - bestScore) <= 0.001 && primary < bestPrimary))
+            {
+                bestScore = score;
+                bestPrimary = primary;
+                best = i;
+            }
+        }
+
+        if (best >= 0) { _formIndex = best; FocusForm(best); return; }
+
+        // 找不到候选：向下（含右下方）兜底到页脚保存按钮，其余方向不移动
+        if (dy > 0)
         {
-            var rowY = pts[k].y;
-            var row = new List<(int idx, double x, double y)>();
-            while (k < pts.Count && pts[k].y - rowY <= tol) row.Add(pts[k++]);
-            row.Sort((a, b) => a.x.CompareTo(b.x));
-            _rows.Add(row);
+            var saveIdx = Array.IndexOf(_formControls, SaveButton);
+            if (saveIdx >= 0 && saveIdx != _formIndex) { _formIndex = saveIdx; FocusForm(saveIdx); }
         }
     }
 
-    private (int row, int col) LocateCurrent()
+    private bool TryRect(Control c, out Windows.Foundation.Rect rect)
     {
-        for (var r = 0; r < _rows.Count; r++)
-            for (var c = 0; c < _rows[r].Count; c++)
-                if (_rows[r][c].idx == _formIndex) return (r, c);
-        return (-1, -1);
-    }
-
-    /// <summary>上下：移动到相邻行，取 X 最接近当前列的控件；到顶/到底不移动</summary>
-    private void MoveRow(int delta)
-    {
-        BuildRows();
-        var (ri, ci) = LocateCurrent();
-        if (ri < 0) { MoveForm(delta); return; }
-        var target = ri + delta;
-        if (target < 0 || target >= _rows.Count) return;
-        var row = _rows[target];
-        var curX = _rows[ri][ci].x;
-        var best = row[0];
-        var bd = Math.Abs(row[0].x - curX);
-        foreach (var p in row)
-        {
-            var d = Math.Abs(p.x - curX);
-            if (d < bd) { bd = d; best = p; }
-        }
-        _formIndex = best.idx;
-        FocusForm(best.idx);
-    }
-
-    /// <summary>左右：同一行内移动；单控件行到头不移动</summary>
-    private void MoveCol(int delta)
-    {
-        BuildRows();
-        var (ri, ci) = LocateCurrent();
-        if (ri < 0) { MoveForm(delta); return; }
-        var row = _rows[ri];
-        var nc = ci + delta;
-        if (nc < 0 || nc >= row.Count) return;
-        _formIndex = row[nc].idx;
-        FocusForm(row[nc].idx);
-    }
-
-    private bool TryCenter(Control c, out double x, out double y)
-    {
-        x = y = 0;
+        rect = default;
         if (c.ActualWidth <= 0 || c.ActualHeight <= 0) return false;
         try
         {
-            var r = c.TransformToVisual(FormPanel)
-                      .TransformBounds(new Windows.Foundation.Rect(0, 0, c.ActualWidth, c.ActualHeight));
-            x = r.X + r.Width / 2;
-            y = r.Y + r.Height / 2;
+            rect = c.TransformToVisual(FormPanel)
+                     .TransformBounds(new Windows.Foundation.Rect(0, 0, c.ActualWidth, c.ActualHeight));
             return true;
         }
         catch { return false; }
@@ -417,12 +607,30 @@ public sealed partial class AddItemPage : Page, ISettingsGamepad
         return PhotoSpeed.Fast;
     }
 
+    /// <summary>游戏存档：当前选中的保留份数</summary>
+    private int SelectedBackupKeep()
+    {
+        if (Keep3Radio.IsChecked == true) return 3;
+        if (Keep10Radio.IsChecked == true) return 10;
+        return 5;
+    }
+
     private void ActivateForm()
     {
         switch (_formControls[_formIndex])
         {
             case TextBox tb:
                 tb.Focus(Microsoft.UI.Xaml.FocusState.Keyboard); // 弹出输入法后可物理键盘输入
+                break;
+            // 手柄映射：输出类型三选一（键盘/鼠标/手柄）——需先于通用 RadioButton 分支
+            case RadioButton rb0 when ReferenceEquals(rb0, GamepadMapKeyRadio)
+                || ReferenceEquals(rb0, GamepadMapMouseRadio)
+                || ReferenceEquals(rb0, GamepadMapPadRadio):
+                ApplyGamepadMapKind(rb0);
+                break;
+            // 手柄映射：手柄图上的按键热区（A 键即选中该键并展开其编辑面板）
+            case Button btn0 when _mapZones.Any(z => ReferenceEquals(z.Hit, btn0)):
+                SelectGamepadMapSource(_mapZones.First(z => ReferenceEquals(z.Hit, btn0)).Button);
                 break;
             case RadioButton rb:
                 rb.IsChecked = true;
@@ -451,6 +659,31 @@ public sealed partial class AddItemPage : Page, ISettingsGamepad
             case Button btn when ReferenceEquals(btn, MappingCaptureButton):
                 StartMappingCapture();
                 break;
+            // 手柄映射：捕获/切换选中键的输出目标
+            case Button btn when ReferenceEquals(btn, GamepadMapCaptureButton):
+                DoGamepadMapCapture();
+                break;
+            // 手柄映射：删除选中键的映射
+            case Button btn when ReferenceEquals(btn, GamepadMapDeleteButton):
+                DoGamepadMapDelete();
+                break;
+            case Button btn when ReferenceEquals(btn, OpenTrainerFolderButton):
+                // 修改器：A 键打开已下载修改器目录
+                TrainerService.OpenTrainersFolder();
+                break;
+            case Button btn when ReferenceEquals(btn, BackupFolderButton):
+                // 游戏存档：进入文件夹浏览，结果写入 _pendingBackupFolder（不改 TargetBox/类型）
+                _pickingBackupFolder = true;
+                EnterBrowse(BrowseMode.Folder);
+                break;
+            case Button btn when ReferenceEquals(btn, OpenBackupFolderButton):
+                // 游戏存档：A 键打开当前备份目标目录
+                OpenBackupFolder();
+                break;
+            case Button btn when ReferenceEquals(btn, CloudSettingsButton):
+                // 游戏存档：A 键跳到 设置 → 云端备份 配置 WebDAV
+                App.Main?.NavigateSettings(typeof(CloudPage));
+                break;
             case Button btn when ReferenceEquals(btn, SaveButton):
                 _ = SaveAsync();
                 break;
@@ -460,6 +693,9 @@ public sealed partial class AddItemPage : Page, ISettingsGamepad
     private void FocusForm(int i)
     {
         var c = _formControls[i];
+        // 手柄图热区（Button）的"光标"用热区自身描边表达：默认焦点视觉在 BorderThickness=0 的
+        // 透明按钮上看不见，必须显式画一圈白框
+        UpdateZoneCursor(_mapZones.FirstOrDefault(z => ReferenceEquals(z.Hit, c))?.Hit);
         if (c is RadioButton rb)
         {
             // 单选按钮：移动只移动光标（高亮），不聚焦——WinUI 键盘聚焦会自动勾选，
@@ -483,15 +719,15 @@ public sealed partial class AddItemPage : Page, ISettingsGamepad
         EnsureVisible(c); // 窄窗口下焦点控件自动滚入可视区
     }
 
-    /// <summary>高亮光标所在单选按钮（卡片描边）</summary>
+    /// <summary>高亮光标所在单选按钮（白色 0xCC 描边，与全局卡片式样式一致）。
+    /// 非光标控件清除本地 BorderBrush，让样式自带的默认描边生效（不能用 Transparent 硬覆盖）</summary>
     private void UpdateRadioCursor(RadioButton? cursor)
     {
         foreach (var ctl in _formControls)
         {
             if (ctl is not RadioButton r) continue;
-            r.BorderBrush = ReferenceEquals(r, cursor)
-                ? new Microsoft.UI.Xaml.Media.SolidColorBrush(Windows.UI.Color.FromArgb(0xCC, 0xFF, 0xFF, 0xFF))
-                : new Microsoft.UI.Xaml.Media.SolidColorBrush(Microsoft.UI.Colors.Transparent);
+            if (ReferenceEquals(r, cursor)) r.BorderBrush = CursorBrush;
+            else r.ClearValue(RadioButton.BorderBrushProperty);
         }
     }
 
@@ -501,23 +737,45 @@ public sealed partial class AddItemPage : Page, ISettingsGamepad
         foreach (var ctl in _formControls)
         {
             if (ctl is not ToggleSwitch t) continue;
-            t.BorderBrush = ReferenceEquals(t, cursor)
-                ? new Microsoft.UI.Xaml.Media.SolidColorBrush(Windows.UI.Color.FromArgb(0xCC, 0xFF, 0xFF, 0xFF))
-                : new Microsoft.UI.Xaml.Media.SolidColorBrush(Microsoft.UI.Colors.Transparent);
+            if (ReferenceEquals(t, cursor)) t.BorderBrush = CursorBrush;
+            else t.ClearValue(ToggleSwitch.BorderBrushProperty);
         }
     }
 
-    /// <summary>把控件滚动到 ScrollViewer 可视区内（WinUI3 无 BringIntoView，用 ChangeView 手动实现）</summary>
+    /// <summary>高亮光标所在的手柄图热区（白框），其余热区收起描边</summary>
+    private void UpdateZoneCursor(Button? cursor)
+    {
+        foreach (var z in _mapZones)
+        {
+            var on = ReferenceEquals(z.Hit, cursor);
+            z.Hit.BorderBrush = on ? CursorBrush : null;
+            z.Hit.BorderThickness = new Thickness(on ? 2 : 0);
+        }
+    }
+
+    /// <summary>把控件滚动到可视区，并保留上下文：上方留 44px 余量（保证分组标题/说明不在视野外），
+    /// 下方留 8px；光标在首个控件时整页滚回顶部、在页脚保存按钮时滚到底（与外观页同款行为），
+    /// 目标偏移钳在可滚动范围并关闭滚动动画——方向键连发时不会丢滚动请求。</summary>
     private void EnsureVisible(Control c)
     {
         try
         {
+            // 首个/末个控件：直接滚到顶/底，避免"往下走了再往上回不到上方"
+            if (_formIndex == 0) { FormScroll.ChangeView(null, 0, null, true); return; }
+            if (_formIndex == _formControls.Length - 1)
+            {
+                // 末位恒为页脚固定的保存按钮（不在滚动区内）：此时把表单滚到底
+                FormScroll.ChangeView(null, FormScroll.ScrollableHeight, null, true);
+                return;
+            }
             var p = c.TransformToVisual(FormScroll).TransformPoint(new Windows.Foundation.Point(0, 0));
             var vh = FormScroll.ViewportHeight;
-            if (p.Y < 0)
-                FormScroll.ChangeView(null, FormScroll.VerticalOffset + p.Y - 8, null);
-            else if (p.Y + c.ActualHeight > vh)
-                FormScroll.ChangeView(null, FormScroll.VerticalOffset + p.Y + c.ActualHeight - vh + 8, null);
+            const double topMargin = 44;
+            double? target;
+            if (p.Y < topMargin) target = FormScroll.VerticalOffset + p.Y - topMargin;
+            else if (p.Y + c.ActualHeight > vh - 8) target = FormScroll.VerticalOffset + p.Y + c.ActualHeight - vh + 8;
+            else return;
+            FormScroll.ChangeView(null, Math.Clamp(target.Value, 0, FormScroll.ScrollableHeight), null, true);
         }
         catch { }
     }
@@ -532,10 +790,12 @@ public sealed partial class AddItemPage : Page, ISettingsGamepad
 
     private async Task SaveAsync()
     {
-        var name = NameBox.Text.Trim();
+        // 手柄映射小组件的标题走与大小/颜色并排的"组件标题"框，其余走顶部名称框
+        var name = (_isWidget && _editing?.WidgetKind == WidgetKind.GamepadMap
+            ? WidgetTitleBox.Text : NameBox.Text).Trim();
         var target = TargetBox.Text.Trim();
-        // 映射小组件标题可与按键无关且可留空（留空即显示映射按键名），不作必填校验
-        var nameRequired = !(_isWidget && _editing?.WidgetKind == WidgetKind.Mapping);
+        // 映射小组件、手柄映射小组件标题可与按键无关且可留空（留空即显示按键名/"手柄映射"），不作必填校验
+        var nameRequired = !(_isWidget && _editing?.WidgetKind is WidgetKind.Mapping or WidgetKind.GamepadMap);
         if ((nameRequired && string.IsNullOrWhiteSpace(name))
             || (!_isGroup && !_isWidget && string.IsNullOrWhiteSpace(target)))
         {
@@ -619,6 +879,40 @@ public sealed partial class AddItemPage : Page, ISettingsGamepad
                     it.MappingKey = _pendingKey;
                     it.MappingMods = _pendingMods;
                 }
+                else if (it.WidgetKind == WidgetKind.Trainer)
+                {
+                    // 修改器：改名称、大小与颜色（取哪个修改器由当前游戏进程决定，无其他配置）
+                    it.Size = SelectedSize();
+                    it.TileColor = SelectedColor();
+                }
+                else if (it.WidgetKind == WidgetKind.GamepadMap)
+                {
+                    // 手柄映射：改名称、大小、颜色与映射列表（源手柄键 → 键盘/鼠标/手柄输出）
+                    it.Size = SelectedSize();
+                    it.TileColor = SelectedColor();
+                    // 只保存已设好目标的条目（选中过按键但没设目标的不写入）
+                    it.GamepadMappings = (_pendingGamepadMappings ?? [])
+                        .Where(HasTarget).Select(m => m.Clone()).ToList();
+                    // 若该磁贴的映射正开启，刷新登记引用使编辑立即生效（开关状态保持不变）
+                    GamepadRemapService.Refresh(it);
+                }
+                else if (it.WidgetKind == WidgetKind.Backup)
+                {
+                    // 游戏存档：改名称、大小、颜色、备份方式与保留份数；云端直传不使用本地备份文件夹
+                    it.Size = SelectedSize();
+                    it.TileColor = SelectedColor();
+                    it.BackupMode = BackupCloudRadio.IsChecked == true ? BackupMode.Cloud : BackupMode.Local;
+                    if (it.BackupMode == BackupMode.Local)
+                    {
+                        if (_pendingBackupFolder != null)
+                            it.BackupFolder = _pendingBackupFolder.Length == 0 ? null : _pendingBackupFolder;
+                    }
+                    else
+                    {
+                        it.BackupFolder = null;
+                    }
+                    it.BackupKeep = SelectedBackupKeep();
+                }
                 else
                 {
                     it.TileColor = SelectedColor();
@@ -672,48 +966,146 @@ public sealed partial class AddItemPage : Page, ISettingsGamepad
     }
     private void OnCoverClick(object sender, Microsoft.UI.Xaml.RoutedEventArgs e) => EnterBrowse(BrowseMode.Cover);
     private void OnCoverClearClick(object sender, Microsoft.UI.Xaml.RoutedEventArgs e) => ClearCover();
+    // 修改器编辑：「已下载修改器」一键跳转到存放修改器的目录
+    private void OnOpenTrainerFolderClick(object sender, Microsoft.UI.Xaml.RoutedEventArgs e) => TrainerService.OpenTrainersFolder();
+    // 游戏存档编辑：「备份文件夹」进入文件夹浏览 / 「打开备份目录」打开当前目标目录
+    private void OnBackupFolderClick(object sender, Microsoft.UI.Xaml.RoutedEventArgs e)
+    {
+        _pickingBackupFolder = true;
+        EnterBrowse(BrowseMode.Folder);
+    }
+    private void OnOpenBackupFolderClick(object sender, Microsoft.UI.Xaml.RoutedEventArgs e) => OpenBackupFolder();
+
+    // 备份方式切换：本地面板 / 云端面板互换（云端面板只展示 WebDAV 配置状态）
+    private void OnBackupModeChanged(object sender, Microsoft.UI.Xaml.RoutedEventArgs e)
+    {
+        if (BackupCloudPanel is null) return; // XAML 解析阶段（IsChecked="True" 触发）此时控件尚未创建
+        UpdateBackupPanels();
+        RebuildFormControls();
+    }
+
+    /// <summary>按当前备份方式切换面板，并刷新云端（WebDAV）配置状态</summary>
+    private void UpdateBackupPanels()
+    {
+        var cloud = BackupCloudRadio.IsChecked == true;
+        var visible = Microsoft.UI.Xaml.Visibility.Visible;
+        var collapsed = Microsoft.UI.Xaml.Visibility.Collapsed;
+        BackupLocalPanel.Visibility = cloud ? collapsed : visible;
+        BackupCloudPanel.Visibility = cloud ? visible : collapsed;
+
+        var acct = WebDavService.CurrentAccount();
+        CloudStateText.Text = acct is null
+            ? "未配置（无法云端备份）"
+            : $"已配置：{acct.Value.User} → {SettingsService.Current.WebDavRootFolder}";
+    }
+
+    // 游戏存档编辑：「打开云端备份设置」跳到 设置 → 云端备份
+    private void OnCloudSettingsClick(object sender, Microsoft.UI.Xaml.RoutedEventArgs e) =>
+        App.Main?.NavigateSettings(typeof(CloudPage));
+
+    /// <summary>打开当前编辑中的备份目标目录（按未保存的方式/文件夹选择计算，不写回配置）</summary>
+    private void OpenBackupFolder()
+    {
+        // 云端直传没有本地目标目录：直接不打开
+        if (BackupCloudRadio.IsChecked == true) return;
+
+        var tmp = new LaunchItem
+        {
+            BackupMode = BackupMode.Local,
+            BackupFolder = _pendingBackupFolder ?? _editing?.BackupFolder
+        };
+        SaveBackupService.OpenBackupsFolder(tmp);
+    }
     private void OnBackClick(object sender, Microsoft.UI.Xaml.RoutedEventArgs e) => Cancel();
 
-    // ---- 映射按键捕获（键盘在页面 KeyDown/KeyUp 捕获，手柄由 MainWindow 转发到 CaptureButtons） ----
+    // ---- 按键捕获（键盘在页面 KeyDown/KeyUp 捕获，手柄由 MainWindow 转发到 CaptureButtons） ----
+    // 同一套捕获状态服务两处：映射小组件（源可为手柄键或键盘键）与 手柄映射（源=手柄键，目标=键盘键/手柄键/鼠标键）
 
     private void OnMappingCaptureClick(object sender, Microsoft.UI.Xaml.RoutedEventArgs e) => StartMappingCapture();
 
-    /// <summary>进入按键捕获：清空待定映射，提示文案，并把焦点收回页面以接收键盘事件</summary>
-    private void StartMappingCapture()
+    /// <summary>映射小组件的按键捕获入口（源：手柄键或键盘键，二选一）</summary>
+    private void StartMappingCapture() => StartCapture(CaptureMode.Mapping);
+
+    /// <summary>进入按键捕获：清空待定缓冲，按模式给出提示，并把焦点收回页面以接收键盘事件</summary>
+    private void StartCapture(CaptureMode mode, GamepadMapping? mapping = null)
     {
+        _captureMode = mode;
+        _captureMapping = mapping;
         _mappingCapturing = true;
         _pendingPad = 0;
         _pendingKey = 0;
         _pendingMods = 0;
         _liveMods = 0;
-        MappingText.Text = "请按下手柄或键盘按键…";
+        switch (mode)
+        {
+            case CaptureMode.Mapping:
+                MappingText.Text = "请按下手柄或键盘按键…";
+                break;
+            case CaptureMode.MapTargetKey:
+                GamepadMapHintText.Text = "请按下要输出的键盘按键…";
+                GamepadMapHintBox.Visibility = Microsoft.UI.Xaml.Visibility.Visible;
+                break;
+            case CaptureMode.MapTargetPad:
+                GamepadMapHintText.Text = "请按下要输出的手柄按键…";
+                GamepadMapHintBox.Visibility = Microsoft.UI.Xaml.Visibility.Visible;
+                break;
+        }
         App.Main?.KeyboardHook.SetSuspended(true); // 捕获期间暂停呼出键，避免按下呼出键把窗口收起
         Focus(FocusState.Programmatic); // 键盘事件落到页面（否则可能被按钮/文本框吞掉）
     }
 
-    /// <summary>捕获结束：定格显示并交还焦点到表单</summary>
+    /// <summary>捕获结束：按模式定格结果并交还焦点到表单</summary>
     private void EndMappingCapture()
     {
+        var mode = _captureMode;
+        var mapping = _captureMapping;
         _mappingCapturing = false;
+        _captureMapping = null;
+        _captureMode = CaptureMode.Mapping;
         App.Main?.KeyboardHook.SetSuspended(false);
-        MappingText.Text = KeySendService.MappingLabel(_pendingPad, _pendingKey, _pendingMods);
+        switch (mode)
+        {
+            case CaptureMode.Mapping:
+                MappingText.Text = KeySendService.MappingLabel(_pendingPad, _pendingKey, _pendingMods);
+                break;
+            case CaptureMode.MapTargetKey:
+                if (mapping is not null && _pendingKey != 0)
+                {
+                    mapping.TargetKind = MappingTargetKind.Key;
+                    mapping.TargetKey = _pendingKey;
+                    mapping.TargetMods = _pendingMods;
+                }
+                break;
+            case CaptureMode.MapTargetPad:
+                if (mapping is not null && _pendingPad != 0)
+                {
+                    mapping.TargetKind = MappingTargetKind.Pad;
+                    mapping.TargetPad = (GamepadButtons)_pendingPad;
+                }
+                break;
+        }
+        GamepadMapHintBox.Visibility = Microsoft.UI.Xaml.Visibility.Collapsed;
+        if (mode != CaptureMode.Mapping) RefreshGamepadMapAll();
         FocusForm(_formIndex);
     }
 
-    /// <summary>MainWindow 在捕获模式转发的原始手柄按键：累加为映射（手柄键优先于键盘键）</summary>
+    /// <summary>MainWindow 在捕获模式转发的原始手柄按键：键盘目标模式忽略；否则累加为手柄键（可组合）</summary>
     public void CaptureButtons(GamepadButtons buttons)
     {
         if (!_mappingCapturing) return;
+        if (_captureMode == CaptureMode.MapTargetKey) return; // 键盘目标只接受键盘输入
         _pendingPad |= (int)buttons;
         _pendingKey = 0;
         _pendingMods = 0;
-        MappingText.Text = GamepadService.Describe((GamepadButtons)_pendingPad);
+        if (_captureMode == CaptureMode.Mapping)
+            MappingText.Text = GamepadService.Describe((GamepadButtons)_pendingPad);
     }
 
     /// <summary>MainWindow 在所有手柄键松开时通知：若已捕获到手柄键则结束捕获</summary>
     public void NotifyAllReleased()
     {
         if (!_mappingCapturing || _pendingPad == 0) return;
+        if (_captureMode == CaptureMode.MapTargetKey) return;
         EndMappingCapture();
     }
 
@@ -721,6 +1113,8 @@ public sealed partial class AddItemPage : Page, ISettingsGamepad
     protected override void OnKeyDown(KeyRoutedEventArgs e)
     {
         if (!_mappingCapturing) { base.OnKeyDown(e); return; }
+        // 手柄目标模式只接受手柄输入，吞掉键盘事件避免误操作
+        if (_captureMode == CaptureMode.MapTargetPad) { e.Handled = true; return; }
         var vk = (int)e.Key;
         if (KeySendService.IsModifier(vk))
         {
@@ -731,7 +1125,10 @@ public sealed partial class AddItemPage : Page, ISettingsGamepad
             _pendingPad = 0;
             _pendingKey = vk;
             _pendingMods = _liveMods;
-            MappingText.Text = KeySendService.Describe(vk, _liveMods);
+            if (_captureMode == CaptureMode.Mapping)
+                MappingText.Text = KeySendService.Describe(vk, _liveMods);
+            else if (_captureMode == CaptureMode.MapTargetKey)
+                GamepadMapHintText.Text = KeySendService.Describe(vk, _liveMods);
         }
         e.Handled = true;
     }
@@ -739,17 +1136,258 @@ public sealed partial class AddItemPage : Page, ISettingsGamepad
     protected override void OnKeyUp(KeyRoutedEventArgs e)
     {
         if (!_mappingCapturing) { base.OnKeyUp(e); return; }
+        if (_captureMode == CaptureMode.MapTargetPad) { e.Handled = true; return; }
         var vk = (int)e.Key;
         if (KeySendService.IsModifier(vk)) { _liveMods &= ~KeySendService.ModFlag(vk); return; }
         if (_pendingKey == vk) EndMappingCapture(); // 主键抬起即定格（此时修饰键仍按住，组合已记录）
         e.Handled = true;
     }
 
+    // ---- 手柄映射：可视化手柄图编辑（按键热区参考 YeManCC 的 GamepadVisualizer）----
+
+    /// <summary>构建可视化手柄图：网上找的手柄线稿底图（Assets/gamepad-base.png，裁剪+调色后 1:1 铺满画布）
+    /// + 每个手柄键一个贴合底图按键轮廓的可聚焦热区（点击或手柄 A 键即选中该键）</summary>
+    private void BuildGamepadMapDiagram()
+    {
+        GamepadMapCanvas.Children.Clear();
+        _mapZones.Clear();
+
+        // 底图：手柄线稿（取自参考实现 YeManCC 同款素材，裁剪到机身范围并统一调成浅灰线稿色）
+        var baseImage = new Image
+        {
+            Source = new BitmapImage(new Uri("ms-appx:///Assets/gamepad-base.png")),
+            Width = PadCanvasWidth,
+            Height = PadCanvasHeight,
+            Stretch = Microsoft.UI.Xaml.Media.Stretch.Fill
+        };
+        Canvas.SetLeft(baseImage, 0);
+        Canvas.SetTop(baseImage, 0);
+        GamepadMapCanvas.Children.Add(baseImage);
+
+        foreach (var (btn, x, y, w, h, text, round) in ZoneLayout)
+        {
+            // 扳机/肩键在底图上挨得很近，留白收紧以免热区互相压盖
+            var pad = btn is GamepadButtons.LeftTrigger or GamepadButtons.RightTrigger
+                or GamepadButtons.LeftShoulder or GamepadButtons.RightShoulder
+                ? ShoulderHitPadding
+                : ZoneHitPadding;
+
+            Microsoft.UI.Xaml.Shapes.Shape visual = round
+                ? new Microsoft.UI.Xaml.Shapes.Ellipse { Width = w, Height = h }
+                : new Microsoft.UI.Xaml.Shapes.Rectangle { Width = w, Height = h, RadiusX = 5, RadiusY = 5 };
+            visual.StrokeThickness = 1.5;
+
+            var label = new TextBlock
+            {
+                Text = text,
+                // 按键标注：长词（Select/Start/Guide）缩小，方向键用箭头
+                FontSize = text.Length > 4 ? 7 : text.Length > 2 ? 8 : round ? 12 : 11,
+                FontWeight = Microsoft.UI.Text.FontWeights.SemiBold,
+                HorizontalAlignment = HorizontalAlignment.Center,
+                VerticalAlignment = VerticalAlignment.Center
+            };
+            // 热区比图形框外扩 pad，图形本身仍按 ZoneLayout 尺寸居中（坐标一一对应底图按键轮廓）
+            var content = new Grid
+            {
+                Width = w + pad * 2,
+                Height = h + pad * 2,
+                HorizontalAlignment = HorizontalAlignment.Center,
+                VerticalAlignment = VerticalAlignment.Center
+            };
+            content.Children.Add(visual);
+            content.Children.Add(label);
+
+            var hit = new Button
+            {
+                Content = content,
+                Width = w + pad * 2,
+                Height = h + pad * 2,
+                MinWidth = 0,
+                MinHeight = 0,
+                Padding = new Thickness(0),
+                BorderThickness = new Thickness(0),
+                CornerRadius = new CornerRadius(round ? (w + pad * 2) / 2 : 5),
+                Background = new Microsoft.UI.Xaml.Media.SolidColorBrush(Microsoft.UI.Colors.Transparent),
+                // 光标改用热区自身白描边表达（UpdateZoneCursor），关掉系统焦点框避免两圈重叠
+                UseSystemFocusVisuals = false
+            };
+            var zone = new MapZoneUi { Button = btn, Hit = hit, Visual = visual, Label = label };
+            hit.Click += (_, _) => SelectGamepadMapSource(zone.Button);
+            Canvas.SetLeft(hit, x - pad);
+            Canvas.SetTop(hit, y - pad);
+            GamepadMapCanvas.Children.Add(hit);
+            _mapZones.Add(zone);
+        }
+    }
+
+    /// <summary>手柄图 + 编辑面板 + 概要一起刷新（选中/输出/删除变化后统一调用）</summary>
+    private void RefreshGamepadMapAll()
+    {
+        RefreshGamepadMapDiagram();
+        RefreshGamepadMapEditor();
+        RefreshGamepadMapSummary();
+        RebuildFormControls();
+    }
+
+    /// <summary>刷新手柄图配色：已设好输出=强调蓝，当前选中=琥珀描边</summary>
+    private void RefreshGamepadMapDiagram()
+    {
+        foreach (var zone in _mapZones)
+        {
+            var mapped = HasTarget(MapFor(zone.Button));
+            var selected = zone.Button == _selectedMapSource;
+            zone.Visual.Fill = mapped ? MappedFillBrush : ZoneFillBrush;
+            zone.Visual.Stroke = selected ? SelectedStrokeBrush : mapped ? MappedStrokeBrush : ZoneStrokeBrush;
+            zone.Visual.StrokeThickness = selected ? 2.6 : 1.5;
+            zone.Label.Foreground = mapped ? LabelMappedBrush : LabelBrush;
+        }
+    }
+
+    /// <summary>刷新输出编辑面板：仅在选中某个手柄键后显示</summary>
+    private void RefreshGamepadMapEditor()
+    {
+        if (_selectedMapSource == GamepadButtons.None)
+        {
+            GamepadMapEditor.Visibility = Microsoft.UI.Xaml.Visibility.Collapsed;
+            return;
+        }
+        GamepadMapEditor.Visibility = Microsoft.UI.Xaml.Visibility.Visible;
+        var m = MapFor(_selectedMapSource);
+        GamepadMapEditorTitle.Text = $"已选手柄键：{GamepadService.Describe(_selectedMapSource)}"
+            + (m is null ? "（尚未设置输出）" : $" → {TargetTextOf(m)}");
+        GamepadMapKeyRadio.IsChecked = m is null || m.TargetKind == MappingTargetKind.Key;
+        GamepadMapMouseRadio.IsChecked = m?.TargetKind == MappingTargetKind.Mouse;
+        GamepadMapPadRadio.IsChecked = m?.TargetKind == MappingTargetKind.Pad;
+        GamepadMapCaptureButton.Content = m is null
+            ? "设置键盘键…"
+            : m.TargetKind switch
+            {
+                MappingTargetKind.Mouse => "切换鼠标键",
+                MappingTargetKind.Pad => "设置手柄键…",
+                _ => "设置键盘键…"
+            };
+        GamepadMapDeleteButton.IsEnabled = m is not null;
+    }
+
+    /// <summary>刷新概要文案：列出所有已设好输出的映射</summary>
+    private void RefreshGamepadMapSummary()
+    {
+        var parts = (_pendingGamepadMappings ?? [])
+            .Where(m => HasTarget(m))
+            .Select(m => $"{GamepadService.Describe(m.Source)} → {TargetTextOf(m)}")
+            .ToList();
+        GamepadMapSummary.Text = parts.Count == 0
+            ? "尚未设置映射"
+            : "已设置：" + string.Join("；", parts);
+    }
+
+    /// <summary>取某手柄键的映射（未设置返回 null）</summary>
+    private GamepadMapping? MapFor(GamepadButtons btn)
+        => _pendingGamepadMappings?.FirstOrDefault(m => m.Source == btn);
+
+    /// <summary>取当前选中手柄键的映射；不存在则新建（默认键盘输出）</summary>
+    private GamepadMapping? EnsureMap()
+    {
+        if (_selectedMapSource == GamepadButtons.None) return null;
+        var m = MapFor(_selectedMapSource);
+        if (m is null)
+        {
+            m = new GamepadMapping { Source = _selectedMapSource, TargetKind = MappingTargetKind.Key };
+            _pendingGamepadMappings ??= [];
+            _pendingGamepadMappings.Add(m);
+        }
+        return m;
+    }
+
+    /// <summary>该映射是否已设好输出（未设好的只在编辑期存在：不保存、图上也不算"已映射"）</summary>
+    private static bool HasTarget(GamepadMapping? m)
+    {
+        if (m is null) return false;
+        return m.TargetKind switch
+        {
+            MappingTargetKind.Mouse => m.TargetMouse != 0,
+            MappingTargetKind.Pad => m.TargetPad != GamepadButtons.None,
+            _ => m.TargetKey != 0
+        };
+    }
+
+    /// <summary>目标文案：键盘键 / 鼠标键 / 手柄键（未设置显示对应提示）</summary>
+    private static string TargetTextOf(GamepadMapping m) => m.TargetKind switch
+    {
+        MappingTargetKind.Mouse => KeySendService.MouseLabel(m.TargetMouse),
+        MappingTargetKind.Pad => m.TargetPad == GamepadButtons.None ? "未设置手柄键" : GamepadService.Describe(m.TargetPad),
+        _ => m.TargetKey == 0 ? "未设置键盘键" : KeySendService.Describe(m.TargetKey, m.TargetMods)
+    };
+
+    /// <summary>选中手柄图上的某个键：展开其输出编辑面板（映射在首次设置输出时才真正创建）</summary>
+    private void SelectGamepadMapSource(GamepadButtons btn)
+    {
+        _selectedMapSource = btn;
+        GamepadMapHintBox.Visibility = Microsoft.UI.Xaml.Visibility.Collapsed;
+        RefreshGamepadMapAll();
+        var zone = _mapZones.FirstOrDefault(z => z.Button == btn);
+        if (zone is null) return;
+        var idx = Array.IndexOf(_formControls, zone.Hit); // 手柄导航光标跟到这个热区
+        if (idx >= 0) _formIndex = idx;
+        FocusForm(_formIndex);
+    }
+
+    private void OnGamepadMapKindClick(object sender, Microsoft.UI.Xaml.RoutedEventArgs e) => ApplyGamepadMapKind(sender);
+
+    /// <summary>切换选中手柄键的输出类型（键盘/鼠标/手柄）</summary>
+    private void ApplyGamepadMapKind(object sender)
+    {
+        var kind = ReferenceEquals(sender, GamepadMapMouseRadio) ? MappingTargetKind.Mouse
+            : ReferenceEquals(sender, GamepadMapPadRadio) ? MappingTargetKind.Pad
+            : MappingTargetKind.Key;
+        var m = EnsureMap();
+        if (m is not null) m.TargetKind = kind;
+        RefreshGamepadMapAll();
+    }
+
+    private void OnGamepadMapCaptureClick(object sender, Microsoft.UI.Xaml.RoutedEventArgs e) => DoGamepadMapCapture();
+
+    /// <summary>设置/切换选中手柄键的输出：鼠标输出循环切换按键，键盘/手柄输出进入按键捕获</summary>
+    private void DoGamepadMapCapture()
+    {
+        var m = EnsureMap();
+        if (m is null) return;
+        switch (m.TargetKind)
+        {
+            case MappingTargetKind.Mouse:
+                var pos = Array.IndexOf(MouseOrder, m.TargetMouse);
+                m.TargetMouse = MouseOrder[(pos + 1) % MouseOrder.Length]; // pos=-1 时取第一个
+                RefreshGamepadMapAll();
+                break;
+            case MappingTargetKind.Pad:
+                StartCapture(CaptureMode.MapTargetPad, m);
+                break;
+            default:
+                StartCapture(CaptureMode.MapTargetKey, m);
+                break;
+        }
+    }
+
+    private void OnGamepadMapDeleteClick(object sender, Microsoft.UI.Xaml.RoutedEventArgs e) => DoGamepadMapDelete();
+
+    /// <summary>删除选中手柄键的映射</summary>
+    private void DoGamepadMapDelete()
+    {
+        var m = MapFor(_selectedMapSource);
+        if (m is null) return;
+        _pendingGamepadMappings?.Remove(m);
+        RefreshGamepadMapAll();
+    }
+
+
     /// <remarks>切走页面时结束捕获，避免 MainWindow 仍向本页转发原始按键</remarks>
     protected override void OnNavigatedFrom(NavigationEventArgs e)
     {
         base.OnNavigatedFrom(e);
         _mappingCapturing = false;
+        _captureMapping = null;
+        _captureMode = CaptureMode.Mapping;
+        GamepadMapHintBox.Visibility = Microsoft.UI.Xaml.Visibility.Collapsed;
         App.Main?.KeyboardHook.SetSuspended(false); // 捕获中途离开页面时恢复呼出键
     }
 
@@ -760,6 +1398,7 @@ public sealed partial class AddItemPage : Page, ISettingsGamepad
         _browsing = true;
         _browseMode = mode;
         FormScroll.Visibility = Microsoft.UI.Xaml.Visibility.Collapsed;
+        FooterBar.Visibility = Microsoft.UI.Xaml.Visibility.Collapsed; // 选文件时页脚让位给列表
         BrowsePanel.Visibility = Microsoft.UI.Xaml.Visibility.Visible;
         PageTitle.Text = mode switch
         {
@@ -778,8 +1417,10 @@ public sealed partial class AddItemPage : Page, ISettingsGamepad
     {
         _browsing = false;
         _pickingPhotoFolder = false; // 取消浏览时同样复位，避免影响下次普通文件夹选择
+        _pickingBackupFolder = false;
         BrowsePanel.Visibility = Microsoft.UI.Xaml.Visibility.Collapsed;
         FormScroll.Visibility = Microsoft.UI.Xaml.Visibility.Visible;
+        FooterBar.Visibility = Microsoft.UI.Xaml.Visibility.Visible;
         PageTitle.Text = _isGroup ? "编辑磁贴组" : _editing != null ? "编辑快捷项" : "添加快捷项";
         HintBar.SetHints("DPAD:选择|A:确认/切换|X:保存|B:返回");
         FocusForm(_formIndex);
@@ -917,6 +1558,15 @@ public sealed partial class AddItemPage : Page, ISettingsGamepad
     /// <summary>选文件夹：填入当前浏览目录并置类型为文件夹</summary>
     private void SelectFolder(string dir)
     {
+        // 游戏存档选目标文件夹：只记录到 _pendingBackupFolder，不改 TargetBox/类型（Target 是组件标识）
+        if (_pickingBackupFolder)
+        {
+            _pendingBackupFolder = dir;
+            BackupFolderText.Text = dir;
+            _pickingBackupFolder = false;
+            ExitBrowse();
+            return;
+        }
         // 图片组选定向文件夹：只记录到 _pendingPhotoFolder，不改 TargetBox/类型（Target 是组件标识）
         if (_pickingPhotoFolder)
         {

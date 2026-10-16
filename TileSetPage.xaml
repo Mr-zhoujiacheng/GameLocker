@@ -23,23 +23,6 @@
                            Foreground="White" FontFamily="Segoe UI Variable Display, Segoe UI"
                            Visibility="Collapsed"/>
             </StackPanel>
-            <!-- 临时提示条（关闭反馈 toast，与主页同款）：玻璃质感药丸 + 状态图标徽章，顶栏居中，入场淡入下移 -->
-            <Border x:Name="MoveHintBar" HorizontalAlignment="Center" VerticalAlignment="Center"
-                    CornerRadius="12" Padding="12,7,16,7"
-                    Background="#E6242424" BorderBrush="#33FFFFFF" BorderThickness="1.5"
-                    Visibility="Collapsed">
-                <Border.RenderTransform>
-                    <TranslateTransform x:Name="MoveHintSlide"/>
-                </Border.RenderTransform>
-                <StackPanel Orientation="Horizontal" Spacing="9">
-                    <Border x:Name="MoveHintBadge" Width="22" Height="22" CornerRadius="6"
-                            Background="#2A4CC2FF" VerticalAlignment="Center">
-                        <FontIcon x:Name="MoveHintIcon" Glyph="&#xE73E;" FontSize="11" Foreground="#4CC2FF"/>
-                    </Border>
-                    <TextBlock x:Name="MoveHintText" Text="" FontSize="13" VerticalAlignment="Center"
-                               FontFamily="Segoe UI Variable Text, Segoe UI"/>
-                </StackPanel>
-            </Border>
         </Grid>
 
         <!-- 磁贴画布：与主页同款 ScrollViewer + Canvas 流式排布 -->
@@ -52,6 +35,27 @@
                     MinWidth="{Binding ActualWidth, ElementName=TileScroll}"
                     MinHeight="{Binding ActualHeight, ElementName=TileScroll}"/>
         </ScrollViewer>
+
+        <!-- 临时提示条（关闭反馈 toast，与主页同款）：玻璃质感药丸 + 状态图标徽章，
+             画布底部居中 —— 紧贴手柄提示条上方；入场淡入并自下方归位 -->
+        <Border x:Name="MoveHintBar" Grid.Row="1" HorizontalAlignment="Center" VerticalAlignment="Bottom"
+                Margin="0,0,0,6" IsHitTestVisible="False"
+                CornerRadius="12" Padding="12,7,16,7"
+                Background="#E6242424" BorderBrush="#33FFFFFF" BorderThickness="1.5"
+                Visibility="Collapsed">
+            <Border.RenderTransform>
+                <TranslateTransform x:Name="MoveHintSlide"/>
+            </Border.RenderTransform>
+            <StackPanel Orientation="Horizontal" Spacing="9">
+                <Border x:Name="MoveHintBadge" Width="22" Height="22" CornerRadius="6"
+                        Background="#2A4CC2FF" VerticalAlignment="Center">
+                    <FontIcon x:Name="MoveHintIcon" Glyph="&#xE73E;" FontSize="11" Foreground="#4CC2FF"/>
+                </Border>
+                <TextBlock x:Name="MoveHintText" Text="" FontSize="13" VerticalAlignment="Center"
+                           FontFamily="Segoe UI Variable Text, Segoe UI"
+                           TextWrapping="Wrap" MaxWidth="500"/>
+            </StackPanel>
+        </Border>
 
         <!-- 底部按键提示：手柄图标徽章，单行，透明背景 -->
         <ctl:GamepadHintBar x:Name="HintBar" Grid.Row="2" Margin="0,8,0,12"

@@ -2,6 +2,7 @@ using GameLocker.Models;
 using GameLocker.Services;
 using Microsoft.UI.Xaml;
 using Microsoft.UI.Xaml.Controls;
+using Microsoft.UI.Xaml.Input;
 using Microsoft.UI.Xaml.Media.Imaging;
 using Microsoft.UI.Xaml.Navigation;
 
@@ -32,7 +33,7 @@ public enum BrowseMode
 /// 浏览模式：列出当前目录的文件夹与文件（按用途过滤），方向=选择，A=进入/选中，B=返回表单。
 /// 编辑模式：OnNavigatedTo 传入 LaunchItem 时预填表单，保存时更新原项。
 /// </summary>
-public sealed partial class AddItemPage : Page
+public sealed partial class AddItemPage : Page, ISettingsGamepad
 {
     private Control[] _formControls = [];
     private int _formIndex;
@@ -66,6 +67,20 @@ public sealed partial class AddItemPage : Page
     /// <summary>当前浏览是否为"图片组选文件夹"（区别于普通 Folder 类型项选路径）</summary>
     private bool _pickingPhotoFolder;
 
+    // ---- 映射小组件的按键捕获状态（实现 ISettingsGamepad，MainWindow 据此转发原始手柄按键） ----
+
+    /// <summary>是否处于映射按键捕获模式</summary>
+    public bool IsCapturing => _mappingCapturing;
+    private bool _mappingCapturing;
+    /// <summary>本次捕获/编辑得到的手柄键（0=未映射手柄键）</summary>
+    private int _pendingPad;
+    /// <summary>本次捕获/编辑得到的键盘虚拟键码（0=未映射键盘键）</summary>
+    private int _pendingKey;
+    /// <summary>本次捕获/编辑得到的键盘修饰键标志</summary>
+    private int _pendingMods;
+    /// <summary>捕获过程中实时累积的修饰键状态（键盘按键按住期间）</summary>
+    private int _liveMods;
+
     public AddItemPage()
     {
         InitializeComponent();
@@ -96,6 +111,9 @@ public sealed partial class AddItemPage : Page
             list.Add(CoverClearButton);
         if (PhotoFolderRow.Visibility == Microsoft.UI.Xaml.Visibility.Visible)
             list.Add(PhotoFolderButton);
+        // 映射小组件：按键捕获按钮（仅映射编辑时可见）
+        if (MappingRow.Visibility == Microsoft.UI.Xaml.Visibility.Visible)
+            list.Add(MappingCaptureButton);
         // 图片组设置：轮播速度 / 切换动画
         if (PhotoSettingsPanel.Visibility == Microsoft.UI.Xaml.Visibility.Visible)
             list.AddRange(new Control[]
@@ -133,6 +151,8 @@ public sealed partial class AddItemPage : Page
         _isGroup = item.Kind == LaunchKind.Group;
         _isWidget = item.Kind == LaunchKind.Widget;
         _pendingPhotoFolder = null;
+        NameBox.Header = "显示名称";
+        NameBox.PlaceholderText = "例如：Steam";
         NameBox.Text = item.Name;
         TargetBox.Text = item.Target;
         AppRadio.IsChecked = item.Kind == LaunchKind.App;
@@ -161,14 +181,29 @@ public sealed partial class AddItemPage : Page
             IconRow.Visibility = isTileSet ? Microsoft.UI.Xaml.Visibility.Visible : w;
             CoverHeaderText.Visibility = isTileSet ? Microsoft.UI.Xaml.Visibility.Visible : w;
             CoverRow.Visibility = isTileSet ? Microsoft.UI.Xaml.Visibility.Visible : w;
-            // 音乐固定 2×2 不可改大小；其余小组件可编辑大小。颜色：图片组不需要（整块铺图）
-            SizeColumn.Visibility = isPhoto || item.WidgetKind is WidgetKind.Settings or WidgetKind.TileSet
+            // 音乐固定 2×2 不可改大小；其余小组件（图片组/设置/磁贴集/天气）可编辑大小。颜色：图片组不需要（整块铺图）
+            SizeColumn.Visibility = isPhoto || item.WidgetKind is WidgetKind.Settings or WidgetKind.TileSet or WidgetKind.Weather or WidgetKind.Mapping
                 ? Microsoft.UI.Xaml.Visibility.Visible : w;
             ColorColumn.Visibility = isPhoto ? w : Microsoft.UI.Xaml.Visibility.Visible;
             PhotoFolderRow.Visibility = isPhoto
                 ? Microsoft.UI.Xaml.Visibility.Visible : w;
             PhotoSettingsPanel.Visibility = isPhoto
                 ? Microsoft.UI.Xaml.Visibility.Visible : w;
+            // 映射：名称、大小、颜色 + 按键捕获（无图标/图片）
+            var isMapping = item.WidgetKind == WidgetKind.Mapping;
+            MappingRow.Visibility = isMapping
+                ? Microsoft.UI.Xaml.Visibility.Visible : w;
+            if (isMapping)
+            {
+                _pendingPad = (int)item.MappingPad;
+                _pendingKey = item.MappingKey;
+                _pendingMods = item.MappingMods;
+                _mappingCapturing = false;
+                MappingText.Text = item.MappingLabel;
+                // 标题与映射按键无关联，可单独填写；留空则磁贴显示映射按键名
+                NameBox.Header = "标题";
+                NameBox.PlaceholderText = "留空则显示映射按键名";
+            }
             if (isPhoto)
             {
                 PhotoFolderText.Text = string.IsNullOrEmpty(item.WidgetFolder)
@@ -189,6 +224,7 @@ public sealed partial class AddItemPage : Page
             CoverRow.Visibility = Microsoft.UI.Xaml.Visibility.Visible;
             PhotoFolderRow.Visibility = Microsoft.UI.Xaml.Visibility.Collapsed;
             PhotoSettingsPanel.Visibility = Microsoft.UI.Xaml.Visibility.Collapsed;
+            MappingRow.Visibility = Microsoft.UI.Xaml.Visibility.Collapsed;
         }
     }
 
@@ -212,7 +248,9 @@ public sealed partial class AddItemPage : Page
             PageTitle.Text = _isWidget
                 ? (item.WidgetKind == WidgetKind.Photos ? "编辑图片组"
                     : item.WidgetKind == WidgetKind.Settings ? "编辑设置磁贴"
-                    : item.WidgetKind == WidgetKind.TileSet ? "编辑磁贴集" : "编辑音乐小组件")
+                    : item.WidgetKind == WidgetKind.TileSet ? "编辑磁贴集"
+                    : item.WidgetKind == WidgetKind.Weather ? "编辑天气小组件"
+                    : item.WidgetKind == WidgetKind.Mapping ? "编辑映射小组件" : "编辑音乐小组件")
                 : _isGroup ? "编辑磁贴组" : "编辑快捷项";
         }
         else
@@ -224,9 +262,12 @@ public sealed partial class AddItemPage : Page
             _pendingPhotoFolder = null;
             PhotoFolderRow.Visibility = Microsoft.UI.Xaml.Visibility.Collapsed;
             PhotoSettingsPanel.Visibility = Microsoft.UI.Xaml.Visibility.Collapsed;
+            MappingRow.Visibility = Microsoft.UI.Xaml.Visibility.Collapsed;
             _pendingIcon = null;
             _pendingCover = null;
             PageTitle.Text = "添加快捷项";
+            NameBox.Header = "显示名称";
+            NameBox.PlaceholderText = "例如：Steam";
             NameBox.Text = "";
             TargetBox.Text = "";
             AppRadio.IsChecked = true;
@@ -407,6 +448,9 @@ public sealed partial class AddItemPage : Page
                 _pickingPhotoFolder = true;
                 EnterBrowse(BrowseMode.Folder);
                 break;
+            case Button btn when ReferenceEquals(btn, MappingCaptureButton):
+                StartMappingCapture();
+                break;
             case Button btn when ReferenceEquals(btn, SaveButton):
                 _ = SaveAsync();
                 break;
@@ -490,7 +534,10 @@ public sealed partial class AddItemPage : Page
     {
         var name = NameBox.Text.Trim();
         var target = TargetBox.Text.Trim();
-        if (string.IsNullOrWhiteSpace(name) || (!_isGroup && !_isWidget && string.IsNullOrWhiteSpace(target)))
+        // 映射小组件标题可与按键无关且可留空（留空即显示映射按键名），不作必填校验
+        var nameRequired = !(_isWidget && _editing?.WidgetKind == WidgetKind.Mapping);
+        if ((nameRequired && string.IsNullOrWhiteSpace(name))
+            || (!_isGroup && !_isWidget && string.IsNullOrWhiteSpace(target)))
         {
             PageTitle.Text = _isGroup ? "名称不能为空"
                 : _isWidget ? "名称不能为空" : "名称和路径不能为空";
@@ -556,6 +603,22 @@ public sealed partial class AddItemPage : Page
                     if (_pendingCover != null)
                         it.CoverFile = _pendingCover.Length == 0 ? null : _pendingCover;
                 }
+                else if (it.WidgetKind == WidgetKind.Weather)
+                {
+                    // 天气：改名称、大小与颜色（数据由服务刷新，无其他配置）
+                    it.Size = SelectedSize();
+                    it.TileColor = SelectedColor();
+                }
+                else if (it.WidgetKind == WidgetKind.Mapping)
+                {
+                    // 映射：改标题、大小、颜色与映射按键（手柄键或键盘键二选一）；
+                    // 标题与按键无关联——标题留空时磁贴改为显示按键名（it.Name 已由通用逻辑写入）
+                    it.Size = SelectedSize();
+                    it.TileColor = SelectedColor();
+                    it.MappingPad = (GamepadButtons)_pendingPad;
+                    it.MappingKey = _pendingKey;
+                    it.MappingMods = _pendingMods;
+                }
                 else
                 {
                     it.TileColor = SelectedColor();
@@ -610,6 +673,85 @@ public sealed partial class AddItemPage : Page
     private void OnCoverClick(object sender, Microsoft.UI.Xaml.RoutedEventArgs e) => EnterBrowse(BrowseMode.Cover);
     private void OnCoverClearClick(object sender, Microsoft.UI.Xaml.RoutedEventArgs e) => ClearCover();
     private void OnBackClick(object sender, Microsoft.UI.Xaml.RoutedEventArgs e) => Cancel();
+
+    // ---- 映射按键捕获（键盘在页面 KeyDown/KeyUp 捕获，手柄由 MainWindow 转发到 CaptureButtons） ----
+
+    private void OnMappingCaptureClick(object sender, Microsoft.UI.Xaml.RoutedEventArgs e) => StartMappingCapture();
+
+    /// <summary>进入按键捕获：清空待定映射，提示文案，并把焦点收回页面以接收键盘事件</summary>
+    private void StartMappingCapture()
+    {
+        _mappingCapturing = true;
+        _pendingPad = 0;
+        _pendingKey = 0;
+        _pendingMods = 0;
+        _liveMods = 0;
+        MappingText.Text = "请按下手柄或键盘按键…";
+        App.Main?.KeyboardHook.SetSuspended(true); // 捕获期间暂停呼出键，避免按下呼出键把窗口收起
+        Focus(FocusState.Programmatic); // 键盘事件落到页面（否则可能被按钮/文本框吞掉）
+    }
+
+    /// <summary>捕获结束：定格显示并交还焦点到表单</summary>
+    private void EndMappingCapture()
+    {
+        _mappingCapturing = false;
+        App.Main?.KeyboardHook.SetSuspended(false);
+        MappingText.Text = KeySendService.MappingLabel(_pendingPad, _pendingKey, _pendingMods);
+        FocusForm(_formIndex);
+    }
+
+    /// <summary>MainWindow 在捕获模式转发的原始手柄按键：累加为映射（手柄键优先于键盘键）</summary>
+    public void CaptureButtons(GamepadButtons buttons)
+    {
+        if (!_mappingCapturing) return;
+        _pendingPad |= (int)buttons;
+        _pendingKey = 0;
+        _pendingMods = 0;
+        MappingText.Text = GamepadService.Describe((GamepadButtons)_pendingPad);
+    }
+
+    /// <summary>MainWindow 在所有手柄键松开时通知：若已捕获到手柄键则结束捕获</summary>
+    public void NotifyAllReleased()
+    {
+        if (!_mappingCapturing || _pendingPad == 0) return;
+        EndMappingCapture();
+    }
+
+    /// <remarks>捕获期间吞掉按键事件，避免误触发表单操作；单独按修饰键只累积不结束</remarks>
+    protected override void OnKeyDown(KeyRoutedEventArgs e)
+    {
+        if (!_mappingCapturing) { base.OnKeyDown(e); return; }
+        var vk = (int)e.Key;
+        if (KeySendService.IsModifier(vk))
+        {
+            _liveMods |= KeySendService.ModFlag(vk);
+        }
+        else
+        {
+            _pendingPad = 0;
+            _pendingKey = vk;
+            _pendingMods = _liveMods;
+            MappingText.Text = KeySendService.Describe(vk, _liveMods);
+        }
+        e.Handled = true;
+    }
+
+    protected override void OnKeyUp(KeyRoutedEventArgs e)
+    {
+        if (!_mappingCapturing) { base.OnKeyUp(e); return; }
+        var vk = (int)e.Key;
+        if (KeySendService.IsModifier(vk)) { _liveMods &= ~KeySendService.ModFlag(vk); return; }
+        if (_pendingKey == vk) EndMappingCapture(); // 主键抬起即定格（此时修饰键仍按住，组合已记录）
+        e.Handled = true;
+    }
+
+    /// <remarks>切走页面时结束捕获，避免 MainWindow 仍向本页转发原始按键</remarks>
+    protected override void OnNavigatedFrom(NavigationEventArgs e)
+    {
+        base.OnNavigatedFrom(e);
+        _mappingCapturing = false;
+        App.Main?.KeyboardHook.SetSuspended(false); // 捕获中途离开页面时恢复呼出键
+    }
 
     // ---- 浏览模式 ----
 

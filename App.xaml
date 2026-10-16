@@ -4,7 +4,8 @@
     xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
     xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml">
     <Application.Resources>
-        <ResourceDictionary>
+        <ResourceDictionary
+            xmlns:primitives="using:Microsoft.UI.Xaml.Controls.Primitives">
             <ResourceDictionary.MergedDictionaries>
                 <XamlControlsResources xmlns="using:Microsoft.UI.Xaml.Controls" />
             </ResourceDictionary.MergedDictionaries>
@@ -66,6 +67,8 @@
                 <Setter Property="BorderBrush" Value="Transparent"/>
                 <Setter Property="BorderThickness" Value="1.5"/>
                 <Setter Property="HorizontalAlignment" Value="Stretch"/>
+                <!-- 与默认样式一致：缺少它时触摸轻触不会产生手势/切换（仅鼠标或代码赋值有效） -->
+                <Setter Property="ManipulationMode" Value="System,TranslateX"/>
                 <Setter Property="Template">
                     <Setter.Value>
                         <ControlTemplate TargetType="ToggleSwitch">
@@ -80,6 +83,13 @@
                                         <ColumnDefinition Width="*"/>
                                         <ColumnDefinition Width="Auto"/>
                                     </Grid.ColumnDefinitions>
+
+                                    <!-- 交互所需模板部件（对齐默认模板）：命中测试区 + 焦点目标。
+                                         原先自定义模板缺失它们，导致开关无法被点击/触摸切换。 -->
+                                    <Grid x:Name="SwitchAreaGrid" Grid.ColumnSpan="3"
+                                          Background="Transparent"
+                                          Control.IsTemplateFocusTarget="True"/>
+
                                     <Border x:Name="Accent" Width="4" CornerRadius="2"
                                             Margin="2,4,0,4" Background="#4CC2FF"
                                             Visibility="Collapsed"/>
@@ -101,6 +111,23 @@
                                             </Ellipse>
                                         </Grid>
                                     </Border>
+
+                                    <!-- ToggleSwitch 内部拖拽逻辑引用的位移元素（不可见，仅占位防空引用） -->
+                                    <Grid x:Name="SwitchKnob" Visibility="Collapsed">
+                                        <Grid.RenderTransform>
+                                            <TranslateTransform x:Name="KnobTranslateTransform"/>
+                                        </Grid.RenderTransform>
+                                    </Grid>
+
+                                    <!-- 覆盖整张卡片的透明拖拽层：轻触卡片任意位置即可切换开关 -->
+                                    <primitives:Thumb x:Name="SwitchThumb" Grid.ColumnSpan="3"
+                                                      AutomationProperties.AccessibilityView="Raw">
+                                        <primitives:Thumb.Template>
+                                            <ControlTemplate TargetType="primitives:Thumb">
+                                                <Rectangle Fill="Transparent"/>
+                                            </ControlTemplate>
+                                        </primitives:Thumb.Template>
+                                    </primitives:Thumb>
                                 </Grid>
                                 <VisualStateManager.VisualStateGroups>
                                     <VisualStateGroup x:Name="ToggleSwitchStates">

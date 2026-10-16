@@ -18,6 +18,10 @@ namespace GameLocker;
 public sealed partial class MainWindow : Window
 {
     public GamepadService Gamepad { get; } = new();
+
+    /// <summary>全局键盘呼出键钩子：命中即刻呼出窗口（无需长按，仅键盘，可含修饰键组合）</summary>
+    public KeyboardHookService KeyboardHook { get; } = new();
+
     private bool _exiting;
     private bool _fullscreen;
     private EdgeGestureService? _edgeGesture;
@@ -82,6 +86,7 @@ public sealed partial class MainWindow : Window
 
         Closed += (_, _) =>
         {
+            KeyboardHook.Dispose();
             if (_exiting)
                 Microsoft.UI.Xaml.Application.Current?.Exit();
         };
@@ -110,6 +115,11 @@ public sealed partial class MainWindow : Window
             else ToggleFullscreen();
         });
         Gamepad.Start();
+
+        // 键盘呼出键：命中即刻呼出（对比：手柄呼出键需长按 1 秒）
+        SyncKeyboardHook();
+        KeyboardHook.Triggered += () => DispatcherQueue.TryEnqueue(SummonFromHotkey);
+        KeyboardHook.Start();
 
         // 平板边缘手势呼出
         _edgeGesture = new EdgeGestureService();
@@ -279,6 +289,21 @@ public sealed partial class MainWindow : Window
         // 已呼出显示：恢复手柄对启动器的操作。只跟显示状态走，不依赖抢前台是否成功
         // （抢前台失败时窗口照样显示，若不在这里打开门控，手柄就会永久失效）
         SetGamepadRouting(true);
+    }
+
+    /// <summary>按当前设置同步键盘呼出键（控制页捕获保存后调用）</summary>
+    public void SyncKeyboardHook()
+    {
+        KeyboardHook.Key = SettingsService.Current.KeyboardSummonKey;
+        KeyboardHook.Mods = SettingsService.Current.KeyboardSummonMods;
+    }
+
+    /// <summary>键盘呼出键命中（开关）：窗口未显示或被其他窗口遮盖时置顶呼出；已显示且在前台时收起。
+    /// 显示状态用 _shown 判定——AppWindow.Hide() 后 Window.Visible 不一定同步翻转。</summary>
+    private void SummonFromHotkey()
+    {
+        if (!_shown || GetForegroundWindow() != _hwnd) ShowFromTray();
+        else HideToTray();
     }
 
     /// <summary>Y 关闭目标程序后调用：等待目标窗口销毁、系统焦点转移完成，再把启动器重新置顶聚焦（保持前台不最小化）</summary>
@@ -525,10 +550,11 @@ public sealed partial class MainWindow : Window
             // （否则"在游戏里按 Y"会命中启动器上一次选中的磁贴，把游戏关掉）
             if (!_routing) return;
 
-            // 添加页：方向/A/B 全交给页面（浏览状态 B 返回表单）
+            // 添加页：方向/A/B 全交给页面（浏览状态 B 返回表单；映射按键捕获时把原始按键交给捕获）
             if (Root.Content is AddItemPage add)
             {
-                add.HandleGamepad(buttons);
+                if (add.IsCapturing) add.CaptureButtons(buttons);
+                else add.HandleGamepad(buttons);
                 return;
             }
 

@@ -23,7 +23,7 @@
             </Button>
         </Grid>
 
-        <!-- 组件列表：三列等宽（Grid * 列），任意窗口宽度下刚好放下 3 个且不被遮挡 -->
+        <!-- 组件列表：三列等宽（Grid * 列），一排 3 个不错位；第 4 张卡片换行到第二行左对齐 -->
         <ScrollViewer x:Name="FormScroll" Grid.Row="1" Padding="12,8"
                       VerticalScrollMode="Auto" VerticalScrollBarVisibility="Hidden"
                       HorizontalScrollMode="Disabled" HorizontalScrollBarVisibility="Disabled">
@@ -33,9 +33,13 @@
                     <ColumnDefinition Width="*"/>
                     <ColumnDefinition Width="*"/>
                 </Grid.ColumnDefinitions>
+                <Grid.RowDefinitions>
+                    <RowDefinition Height="Auto"/>
+                    <RowDefinition Height="Auto"/>
+                </Grid.RowDefinitions>
 
                 <!-- 音乐控制器组件卡片：缩小磁贴预览（样式与主页一致）+ 名称 + 简述 -->
-                <Button x:Name="MusicWidgetCard" Grid.Column="0" Tag="music" Background="#14FFFFFF" BorderThickness="1"
+                <Button x:Name="MusicWidgetCard" Grid.Row="0" Grid.Column="0" Tag="music" Background="#14FFFFFF" BorderThickness="1"
                         BorderBrush="Transparent" Margin="6" Height="204" VerticalAlignment="Top"
                         HorizontalContentAlignment="Center" VerticalContentAlignment="Top" Padding="10" Click="OnAddClick">
                     <StackPanel Spacing="8">
@@ -51,7 +55,7 @@
                 </Button>
 
                 <!-- 图片组组件卡片：缩小磁贴预览（占位样式）+ 名称 + 简述 -->
-                <Button x:Name="PhotoWidgetCard" Grid.Column="1" Tag="photo" Background="#14FFFFFF" BorderThickness="1"
+                <Button x:Name="PhotoWidgetCard" Grid.Row="0" Grid.Column="1" Tag="photo" Background="#14FFFFFF" BorderThickness="1"
                         BorderBrush="Transparent" Margin="6" Height="204" VerticalAlignment="Top"
                         HorizontalContentAlignment="Center" VerticalContentAlignment="Top" Padding="10" Click="OnAddClick">
                     <StackPanel Spacing="8">
@@ -67,7 +71,7 @@
                 </Button>
 
                 <!-- 磁贴集组件卡片：缩小磁贴预览（集合 glyph）+ 名称 + 简述 -->
-                <Button x:Name="TileSetWidgetCard" Grid.Column="2" Tag="tileset" Background="#14FFFFFF" BorderThickness="1"
+                <Button x:Name="TileSetWidgetCard" Grid.Row="0" Grid.Column="2" Tag="tileset" Background="#14FFFFFF" BorderThickness="1"
                         BorderBrush="Transparent" Margin="6" Height="204" VerticalAlignment="Top"
                         HorizontalContentAlignment="Center" VerticalContentAlignment="Top" Padding="10" Click="OnAddClick">
                     <StackPanel Spacing="8">
@@ -77,6 +81,38 @@
                         <StackPanel Spacing="3">
                             <TextBlock Text="磁贴集" FontSize="14" FontWeight="Bold" HorizontalAlignment="Center"/>
                             <TextBlock Text="复制当前主页磁贴"
+                                       FontSize="11" Opacity="0.7" TextWrapping="Wrap" TextAlignment="Center"/>
+                        </StackPanel>
+                    </StackPanel>
+                </Button>
+
+                <!-- 天气组件卡片：缩小天气磁贴预览（显示当前位置当天天气）+ 名称 + 简述 -->
+                <Button x:Name="WeatherWidgetCard" Grid.Row="1" Grid.Column="0" Tag="weather" Background="#14FFFFFF" BorderThickness="1"
+                        BorderBrush="Transparent" Margin="6" Height="204" VerticalAlignment="Top"
+                        HorizontalContentAlignment="Center" VerticalContentAlignment="Top" Padding="10" Click="OnAddClick">
+                    <StackPanel Spacing="8">
+                        <Viewbox MaxHeight="116" Stretch="Uniform" HorizontalAlignment="Center">
+                            <ContentPresenter x:Name="WeatherPreviewHost"/>
+                        </Viewbox>
+                        <StackPanel Spacing="3">
+                            <TextBlock Text="天气" FontSize="14" FontWeight="Bold" HorizontalAlignment="Center"/>
+                            <TextBlock Text="当前位置当天天气"
+                                       FontSize="11" Opacity="0.7" TextWrapping="Wrap" TextAlignment="Center"/>
+                        </StackPanel>
+                    </StackPanel>
+                </Button>
+
+                <!-- 映射组件卡片：缩小映射磁贴预览（显示已映射按键）+ 名称 + 简述 -->
+                <Button x:Name="MappingWidgetCard" Grid.Row="1" Grid.Column="1" Tag="mapping" Background="#14FFFFFF" BorderThickness="1"
+                        BorderBrush="Transparent" Margin="6" Height="204" VerticalAlignment="Top"
+                        HorizontalContentAlignment="Center" VerticalContentAlignment="Top" Padding="10" Click="OnAddClick">
+                    <StackPanel Spacing="8">
+                        <Viewbox MaxHeight="116" Stretch="Uniform" HorizontalAlignment="Center">
+                            <ContentPresenter x:Name="MappingPreviewHost"/>
+                        </Viewbox>
+                        <StackPanel Spacing="3">
+                            <TextBlock Text="映射" FontSize="14" FontWeight="Bold" HorizontalAlignment="Center"/>
+                            <TextBlock Text="映射手柄或键盘按键"
                                        FontSize="11" Opacity="0.7" TextWrapping="Wrap" TextAlignment="Center"/>
                         </StackPanel>
                     </StackPanel>

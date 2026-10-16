@@ -83,6 +83,27 @@
                     </StackPanel>
                 </StackPanel>
 
+                <!-- 映射小组件：映射按键（仅映射编辑时显示） -->
+                <StackPanel x:Name="MappingRow" Spacing="4" Visibility="Collapsed">
+                    <TextBlock Text="映射按键" FontSize="15" Opacity="0.9"/>
+                    <Grid>
+                        <Grid.ColumnDefinitions>
+                            <ColumnDefinition Width="*"/>
+                            <ColumnDefinition Width="Auto"/>
+                        </Grid.ColumnDefinitions>
+                        <TextBlock x:Name="MappingText" Grid.Column="0" VerticalAlignment="Center"
+                                   FontSize="15" FontWeight="SemiBold" TextTrimming="CharacterEllipsis"
+                                   Text="未设置"/>
+                        <Button x:Name="MappingCaptureButton" Grid.Column="1" Margin="8,0,0,0"
+                                Click="OnMappingCaptureClick">
+                            <StackPanel Orientation="Horizontal" Spacing="6">
+                                <FontIcon Glyph="&#xE7FC;" FontSize="14"/>
+                                <TextBlock Text="捕获按键…"/>
+                            </StackPanel>
+                        </Button>
+                    </Grid>
+                </StackPanel>
+
                 <!-- 类型 / 磁贴大小 / 磁贴颜色：三列并排，颜色为紧凑色块（无说明文字） -->
                 <Grid>
                     <Grid.ColumnDefinitions>

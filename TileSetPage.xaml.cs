@@ -24,6 +24,7 @@ public sealed partial class TileSetPage : Page
     private readonly List<Border> _tiles = [];
     private readonly Dictionary<TileStyle.MusicTileRefs, int> _musicRefs = [];
     private readonly Dictionary<TileStyle.PhotoTileRefs, (int, string, LaunchItem)> _photoRefs = [];
+    private readonly Dictionary<TileStyle.WeatherTileRefs, int> _weatherRefs = [];
     private LaunchItem? _expanded;
     private bool _groupAnimating;
     private int _selected;
@@ -119,6 +120,10 @@ public sealed partial class TileSetPage : Page
         SlideshowService.CurrentChanged += OnSlideshowChanged;
         SlideshowService.Start();
         RefreshPhotoTiles();
+        // 天气小组件在快照中同样刷新
+        WeatherService.StateChanged += OnWeatherChanged;
+        WeatherService.EnsureFresh();
+        RefreshWeatherTiles();
     }
 
     protected override void OnNavigatedFrom(NavigationEventArgs e)
@@ -130,10 +135,12 @@ public sealed partial class TileSetPage : Page
         _lpCloseItem = null;
         SystemMediaService.StateChanged -= OnMusicStateChanged;
         SlideshowService.CurrentChanged -= OnSlideshowChanged;
+        WeatherService.StateChanged -= OnWeatherChanged;
     }
 
     private void OnMusicStateChanged() => DispatcherQueue.TryEnqueue(RefreshMusicTiles);
     private void OnSlideshowChanged() => DispatcherQueue.TryEnqueue(RefreshPhotoTiles);
+    private void OnWeatherChanged() => DispatcherQueue.TryEnqueue(RefreshWeatherTiles);
 
     private void TileHost_SizeChanged(object sender, SizeChangedEventArgs e)
     {
@@ -172,6 +179,7 @@ public sealed partial class TileSetPage : Page
         _tiles.Clear();
         _musicRefs.Clear();
         _photoRefs.Clear();
+        _weatherRefs.Clear();
         // 磁贴重建：旧的徽章引用失效（与主页同款）
         _settingsTile = null;
         _badge = SettingsBadge.None;
@@ -273,6 +281,30 @@ public sealed partial class TileSetPage : Page
             photoTile.DoubleTapped += (_, _) => HandleDoubleTap(index);
             AttachEditGestures(photoTile, item, group, index, false);
             return photoTile;
+        }
+
+        // 天气小组件磁贴（快照内照常工作）：A 键/点击 = 刷新
+        if (item.Kind == LaunchKind.Widget && item.WidgetKind == WidgetKind.Weather)
+        {
+            var (weatherTile, weatherRefs) = TileStyle.BuildWeatherTile(item, width, height, accent, noColor);
+            weatherTile.Tag = index;
+            _weatherRefs[weatherRefs] = index;
+            weatherTile.Tapped += (_, _) => OnTileTapped(index, WeatherService.Refresh);
+            weatherTile.DoubleTapped += (_, _) => HandleDoubleTap(index);
+            AttachEditGestures(weatherTile, item, group, index, false);
+            TileStyle.FillWeatherTile(weatherRefs);
+            return weatherTile;
+        }
+
+        // 映射小组件磁贴（快照内照常工作）：A 键/点击 = 触发映射
+        if (item.Kind == LaunchKind.Widget && item.WidgetKind == WidgetKind.Mapping)
+        {
+            var mappingTile = TileStyle.BuildMappingTile(item, width, height, accent, noColor);
+            mappingTile.Tag = index;
+            mappingTile.Tapped += (_, _) => OnTileTapped(index, () => ActivateAt(index));
+            mappingTile.DoubleTapped += (_, _) => HandleDoubleTap(index);
+            AttachEditGestures(mappingTile, item, group, index, false);
+            return mappingTile;
         }
 
         // 标准磁贴（与主页共用构建）
@@ -719,6 +751,8 @@ public sealed partial class TileSetPage : Page
         {
             if (item.WidgetKind == WidgetKind.Photos) SlideshowService.Skip(item.WidgetFolder ?? "", 1);
             else if (item.WidgetKind == WidgetKind.Settings) App.Main?.NavigateSettings(typeof(SettingsPage));
+            else if (item.WidgetKind == WidgetKind.Weather) WeatherService.Refresh();
+            else if (item.WidgetKind == WidgetKind.Mapping) TriggerMapping(item);
             else SystemMediaService.TogglePlay();
             return;
         }
@@ -730,6 +764,38 @@ public sealed partial class TileSetPage : Page
         }
         if (_groupAnimating) return;
         ToggleGroup(item);
+    }
+
+    /// <summary>映射触发中（防止"手柄键=A"这类映射递归触发自身）</summary>
+    private bool _mappingInjecting;
+
+    /// <summary>
+    /// 触发映射小组件（与主页同款）：键盘键 → 收起窗口后 SendInput 发给此前的前台程序；
+    /// 手柄键 → 等价于在本页按下该手柄键（注入本页处理）。
+    /// </summary>
+    private void TriggerMapping(LaunchItem item)
+    {
+        if (item.MappingPad != GamepadButtons.None)
+        {
+            if (_mappingInjecting) return;
+            _mappingInjecting = true;
+            try { HandleGamepad(item.MappingPad); }
+            finally { _mappingInjecting = false; }
+            return;
+        }
+        if (item.MappingKey != 0)
+        {
+            var vk = item.MappingKey;
+            var mods = item.MappingMods;
+            App.Main?.HideToTray();
+            _ = DelaySendAsync(vk, mods);
+        }
+    }
+
+    private static async Task DelaySendAsync(int vk, int mods)
+    {
+        await Task.Delay(320);
+        KeySendService.Send(vk, mods);
     }
 
     /// <summary>Y=关闭：结束选中磁贴对应的运行中程序；未运行则提示（小组件/组磁贴不响应）</summary>
@@ -869,6 +935,22 @@ public sealed partial class TileSetPage : Page
         return group is null && item.Kind is LaunchKind.App or LaunchKind.Url or LaunchKind.Folder;
     }
 
+    /// <summary>当前选中的是否为顶层天气小组件磁贴（决定 A 键是刷新天气还是启动）</summary>
+    private bool IsWeatherSelected()
+    {
+        if (_selected < 0 || _selected >= _display.Count) return false;
+        var (item, group) = _display[_selected];
+        return group is null && item.Kind == LaunchKind.Widget && item.WidgetKind == WidgetKind.Weather;
+    }
+
+    /// <summary>当前选中的是否为顶层映射小组件磁贴（决定 A 键是触发映射还是启动）</summary>
+    private bool IsMappingSelected()
+    {
+        if (_selected < 0 || _selected >= _display.Count) return false;
+        var (item, group) = _display[_selected];
+        return group is null && item.Kind == LaunchKind.Widget && item.WidgetKind == WidgetKind.Mapping;
+    }
+
     /// <summary>按当前选中项替换底部提示条（与主页同款）：音乐/图片组磁贴=只显示对应操作提示，其他=恢复副本页常规提示（排列模式不处理，由 UpdateHintBar 负责）</summary>
     private void UpdateHintForSelection()
     {
@@ -877,6 +959,10 @@ public sealed partial class TileSetPage : Page
             HintBar.SetHints("DPAD:切换选择|A:播放/暂停|LB:上一曲|RB:下一曲");
         else if (IsPhotoSelected())
             HintBar.SetHints("DPAD:切换选择|A:切换|LB:上一张|RB:下一张");
+        else if (IsWeatherSelected())
+            HintBar.SetHints("DPAD:切换选择|A:刷新天气|R3:编辑|L3:排列|B:返回");
+        else if (IsMappingSelected())
+            HintBar.SetHints("DPAD:切换选择|A:触发映射|R3:编辑|L3:排列|B:返回");
         else
             HintBar.SetHints(NormalHints);
     }
@@ -963,6 +1049,12 @@ public sealed partial class TileSetPage : Page
             }
             else refs.CoverBox.Visibility = Visibility.Collapsed;
         }
+    }
+
+    /// <summary>刷新所有天气小组件磁贴的显示（只改文字不重建磁贴）</summary>
+    private void RefreshWeatherTiles()
+    {
+        foreach (var (refs, _) in _weatherRefs) TileStyle.FillWeatherTile(refs);
     }
 
     private void RefreshPhotoTiles()

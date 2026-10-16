@@ -84,4 +84,10 @@ public class AppSettings
 
     /// <summary>全屏组合键（长按 1 秒切换全屏模式），默认菜单键</summary>
     public GamepadButtons FullscreenCombo { get; set; } = GamepadButtons.Menu;
+
+    /// <summary>键盘呼出键（虚拟键码，0=未设置）；默认 F7，按下即刻呼出（无需长按），仅键盘</summary>
+    public int KeyboardSummonKey { get; set; } = 0x76;
+
+    /// <summary>键盘呼出键的修饰键标志（Ctrl=1/Shift=2/Alt=4/Win=8，见 KeySendService.Mod*）</summary>
+    public int KeyboardSummonMods { get; set; }
 }

@@ -60,6 +60,9 @@ public sealed partial class MainPage : Page
     /// <summary>当前显示的图片组磁贴引用（key=磁贴元素引用，value=(显示序列索引, 定向文件夹, 设置项)）</summary>
     private readonly Dictionary<TileStyle.PhotoTileRefs, (int index, string folder, LaunchItem item)> _photoRefs = [];
 
+    /// <summary>当前显示的天气小组件磁贴引用（重排时重建；value=显示序列索引）</summary>
+    private readonly Dictionary<TileStyle.WeatherTileRefs, int> _weatherRefs = [];
+
     /// <summary>磁贴间距（像素，可在外观设置调节）；磁贴基本单位固定</summary>
     private static double Gap => TileStyle.Gap;
     private const double Unit = TileStyle.Unit;
@@ -202,6 +205,10 @@ public sealed partial class MainPage : Page
         SlideshowService.CurrentChanged += OnSlideshowChanged;
         SlideshowService.Start();
         RefreshPhotoTiles();
+        // 天气小组件：数据在后台线程取得，事件 marshal 后刷新磁贴；窗口显示时按需补一次刷新（30 分钟过期）
+        WeatherService.StateChanged += OnWeatherChanged;
+        WeatherService.EnsureFresh();
+        RefreshWeatherTiles();
     }
 
     private void OnMusicStateChanged() =>
@@ -209,6 +216,9 @@ public sealed partial class MainPage : Page
 
     private void OnSlideshowChanged() =>
         DispatcherQueue.TryEnqueue(RefreshPhotoTiles);
+
+    private void OnWeatherChanged() =>
+        DispatcherQueue.TryEnqueue(RefreshWeatherTiles);
 
     /// <summary>按设置显示/隐藏顶栏时钟、网络/电池与手柄图标</summary>
     public void ApplyTopbarVisibility()
@@ -231,6 +241,7 @@ public sealed partial class MainPage : Page
         SystemMediaService.StateChanged -= OnMusicStateChanged;
         SlideshowService.CurrentChanged -= OnSlideshowChanged;
         SlideshowService.Stop();
+        WeatherService.StateChanged -= OnWeatherChanged;
     }
 
     public void Reload()
@@ -568,6 +579,7 @@ public sealed partial class MainPage : Page
         _tiles.Clear();
         _musicRefs.Clear();
         _photoRefs.Clear();
+        _weatherRefs.Clear();
         // 磁贴重建：旧的徽章引用失效
         _settingsTile = null;
         _badge = SettingsBadge.None;
@@ -588,7 +600,7 @@ public sealed partial class MainPage : Page
         for (var i = 0; i < _display.Count; i++)
         {
             var (item, group) = _display[i];
-            // 组成员保持自身原有尺寸/样式；音乐小组件固定 2×2，图片组可编辑尺寸
+            // 组成员保持自身原有尺寸/样式；音乐小组件固定 2×2，图片组/天气可编辑尺寸
             var (w, h) = item.Kind == LaunchKind.Widget && item.WidgetKind == WidgetKind.Music
                 ? (2, 2)
                 : CellsOf(item.Size);
@@ -741,6 +753,30 @@ public sealed partial class MainPage : Page
             photoTile.DoubleTapped += (_, _) => HandleDoubleTap(index);
             AttachEditGestures(photoTile, item, group, index, false);
             return photoTile;
+        }
+
+        // 天气小组件磁贴：显示当前位置当天天气，A 键/点击 = 刷新（只改文字不重建磁贴）
+        if (item.Kind == LaunchKind.Widget && item.WidgetKind == WidgetKind.Weather)
+        {
+            var (weatherTile, weatherRefs) = TileStyle.BuildWeatherTile(item, width, height, accent, noColor);
+            weatherTile.Tag = index;
+            _weatherRefs[weatherRefs] = index;
+            weatherTile.Tapped += (_, _) => OnTileTapped(index, WeatherService.Refresh);
+            weatherTile.DoubleTapped += (_, _) => HandleDoubleTap(index);
+            AttachEditGestures(weatherTile, item, group, index, false);
+            TileStyle.FillWeatherTile(weatherRefs); // 建好即显示当前数据（无需等一次刷新）
+            return weatherTile;
+        }
+
+        // 映射小组件磁贴：显示已映射的按键，A 键/点击 = 触发（键盘键对外发送 / 手柄键内部派发）
+        if (item.Kind == LaunchKind.Widget && item.WidgetKind == WidgetKind.Mapping)
+        {
+            var mappingTile = TileStyle.BuildMappingTile(item, width, height, accent, noColor);
+            mappingTile.Tag = index;
+            mappingTile.Tapped += (_, _) => OnTileTapped(index, () => ActivateAt(index));
+            mappingTile.DoubleTapped += (_, _) => HandleDoubleTap(index);
+            AttachEditGestures(mappingTile, item, group, index, false);
+            return mappingTile;
         }
 
         // 标准磁贴（背景图片铺满 / 强调色底+图标+名称）：与磁贴集副本页共用同一构建
@@ -1037,7 +1073,7 @@ public sealed partial class MainPage : Page
                 if (draggedIsSettings) return; // 设置磁贴拖到自身：不动
                 // 垃圾桶：组按展开状态区分（展开=仅删组本体，收起=整组删除）；普通磁贴=删除
                 DeleteItem(dragged, null);
-                ShowToast($"已删除 {dragged.Name}");
+                ShowToast(string.IsNullOrWhiteSpace(dragged.Name) ? "已删除磁贴" : $"已删除 {dragged.Name}");
                 return;
             }
             // 拖到普通磁贴/组成员（成员算其组本体）上：交换位置=移动
@@ -1196,6 +1232,16 @@ public sealed partial class MainPage : Page
                 // 设置磁贴：A = 进入软件设置页
                 App.Main?.NavigateSettings(typeof(SettingsPage));
             }
+            else if (item.WidgetKind == WidgetKind.Weather)
+            {
+                // 天气小组件：A = 刷新当前天气
+                WeatherService.Refresh();
+            }
+            else if (item.WidgetKind == WidgetKind.Mapping)
+            {
+                // 映射小组件：A = 触发映射（键盘键对外发送 / 手柄键内部派发）
+                TriggerMapping(item);
+            }
             else
             {
                 // 音乐小组件：A = 播放/暂停系统当前媒体
@@ -1210,6 +1256,40 @@ public sealed partial class MainPage : Page
         }
         if (_groupAnimating) return; // 展开/收起动画进行中，忽略重复触发
         ToggleGroup(item);
+    }
+
+    /// <summary>映射触发中（防止"手柄键=A"这类映射递归触发自身）</summary>
+    private bool _mappingInjecting;
+
+    /// <summary>
+    /// 触发映射小组件：
+    /// 键盘键 → 收起窗口到托盘后，用 SendInput 把该键（含 Ctrl/Shift/Alt/Win 组合）发给此前的前台程序；
+    /// 手柄键 → Windows 无法把 XInput 注入其它程序，改为等价于在本应用内按下该手柄键（注入当前页处理）。
+    /// </summary>
+    private void TriggerMapping(LaunchItem item)
+    {
+        if (item.MappingPad != GamepadButtons.None)
+        {
+            if (_mappingInjecting) return;
+            _mappingInjecting = true;
+            try { HandleGamepad(item.MappingPad); }
+            finally { _mappingInjecting = false; }
+            return;
+        }
+        if (item.MappingKey != 0)
+        {
+            var vk = item.MappingKey;
+            var mods = item.MappingMods;
+            App.Main?.HideToTray();
+            // 等窗口滑出/隐藏后再发送，确保按键落到此前的前台程序（而非本窗口）
+            _ = DelaySendAsync(vk, mods);
+        }
+    }
+
+    private static async Task DelaySendAsync(int vk, int mods)
+    {
+        await Task.Delay(320);
+        KeySendService.Send(vk, mods);
     }
 
     /// <summary>展开/收起磁贴组（按外观设置开关决定是否播放成员交错浮现动画）</summary>
@@ -1341,6 +1421,22 @@ public sealed partial class MainPage : Page
         if (_selected < 0 || _selected >= _display.Count) return false;
         var (item, group) = _display[_selected];
         return group is null && item.Kind == LaunchKind.Widget && item.WidgetKind == WidgetKind.Photos;
+    }
+
+    /// <summary>当前选中的是否为顶层天气小组件磁贴（决定 A 键是刷新天气还是启动）</summary>
+    private bool IsWeatherSelected()
+    {
+        if (_selected < 0 || _selected >= _display.Count) return false;
+        var (item, group) = _display[_selected];
+        return group is null && item.Kind == LaunchKind.Widget && item.WidgetKind == WidgetKind.Weather;
+    }
+
+    /// <summary>当前选中的是否为顶层映射小组件磁贴（决定 A 键是触发映射还是启动）</summary>
+    private bool IsMappingSelected()
+    {
+        if (_selected < 0 || _selected >= _display.Count) return false;
+        var (item, group) = _display[_selected];
+        return group is null && item.Kind == LaunchKind.Widget && item.WidgetKind == WidgetKind.Mapping;
     }
 
     /// <summary>当前选中磁贴定向的图片文件夹（未选中/无文件夹返回空串）</summary>
@@ -1500,6 +1596,12 @@ public sealed partial class MainPage : Page
         }
     }
 
+    /// <summary>刷新所有天气小组件磁贴的显示（数据变化时只改文字不重建磁贴）</summary>
+    private void RefreshWeatherTiles()
+    {
+        foreach (var (refs, _) in _weatherRefs) TileStyle.FillWeatherTile(refs);
+    }
+
     /// <summary>磁贴换图淡入动画（1 秒）</summary>
     private static void FadeIn(UIElement el)
     {
@@ -1566,6 +1668,10 @@ public sealed partial class MainPage : Page
             HintBar.SetHints("DPAD:切换选择|A:播放/暂停|LB:上一曲|RB:下一曲");
         else if (IsPhotoSelected())
             HintBar.SetHints("DPAD:切换选择|A:切换|LB:上一张|RB:下一张");
+        else if (IsWeatherSelected())
+            HintBar.SetHints("DPAD:切换选择|A:刷新天气|R3:编辑|L3:排列|B:隐藏");
+        else if (IsMappingSelected())
+            HintBar.SetHints("DPAD:切换选择|A:触发映射|R3:编辑|L3:排列|B:隐藏");
         else if (IsClosableSelected())
             HintBar.SetHints("DPAD:选择|A:启动|Y:关闭|X:添加|R3:编辑|L3:排列|VIEW:设置|B:隐藏");
         else

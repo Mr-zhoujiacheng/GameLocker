@@ -7,9 +7,10 @@ using Microsoft.UI.Xaml.Navigation;
 
 namespace GameLocker;
 
-/// <summary>控制设置：呼出/全屏组合键捕获 + 手柄 ↔ 触控操作对照。
+/// <summary>控制设置：呼出组合键 / 键盘呼出键 / 全屏组合键捕获 + 手柄 ↔ 触控操作对照。
 /// 手柄：方向键按"整张卡片"上下切换（每次只选中一张卡，卡内说明只读、不可单独选中，
-/// 往下移动即看下一张卡的全部内容），A=捕获当前卡片的组合键，View/B=返回设置主页。</summary>
+/// 往下移动即看下一张卡的全部内容），A=捕获当前卡片的键位，View/B=返回设置主页。
+/// 键盘呼出键仅键盘有效，按下即刻呼出（无需长按），可含 Ctrl/Shift/Alt/Win 组合。</summary>
 public sealed partial class KeybindPage : Page, ISettingsGamepad
 {
     private bool _ready;
@@ -18,11 +19,16 @@ public sealed partial class KeybindPage : Page, ISettingsGamepad
     public bool IsCapturing { get; private set; }
     private GamepadButtons _captured;
 
-    /// <summary>捕获目标：呼出键 / 全屏键</summary>
-    private enum CaptureTarget { Summon, Fullscreen }
+    // 键盘呼出键捕获状态：主键虚拟键码 + 快照的修饰键标志；_liveMods 累积当前按住的修饰键
+    private int _capturedKey;
+    private int _capturedMods;
+    private int _liveMods;
+
+    /// <summary>捕获目标：呼出键 / 键盘呼出键 / 全屏键</summary>
+    private enum CaptureTarget { Summon, KeySummon, Fullscreen }
     private CaptureTarget _target;
 
-    /// <summary>手柄焦点所在卡片序号：0=阅读提示 1=呼出键 2=全屏键 ≥3=说明卡片</summary>
+    /// <summary>手柄焦点所在卡片序号：0=呼出键 1=键盘呼出键 2=全屏键 ≥3=说明卡片</summary>
     private int _focus;
 
     private Border[] _cards = default!;
@@ -36,6 +42,8 @@ public sealed partial class KeybindPage : Page, ISettingsGamepad
     {
         InitializeComponent();
         CaptureText.Text = GamepadService.Describe(SettingsService.Current.SummonCombo);
+        KeyCaptureText.Text = KeySendService.MappingLabel(0, SettingsService.Current.KeyboardSummonKey,
+            SettingsService.Current.KeyboardSummonMods);
         FsCaptureText.Text = GamepadService.Describe(SettingsService.Current.FullscreenCombo);
 
         // 说明数据源：按 ControlHelp 的分组顺序逐个卡片填充（含"关于"分组）
@@ -45,7 +53,7 @@ public sealed partial class KeybindPage : Page, ISettingsGamepad
         LvAbout.ItemsSource = ControlHelp.Sections[3].Rows;
         LvGlobal.ItemsSource = ControlHelp.Sections[4].Rows;
 
-        _cards = [CardLegend, CardSummon, CardFullscreen, CardHome, CardEdit, CardSettings, CardAbout, CardGlobal];
+        _cards = [CardSummon, CardKeySummon, CardFullscreen, CardHome, CardEdit, CardSettings, CardAbout, CardGlobal];
         ApplyCardFocus();
 
         // 布局完成后再复位：OnNavigatedTo 时元素尚未排列，滚动偏移不可用
@@ -71,6 +79,8 @@ public sealed partial class KeybindPage : Page, ISettingsGamepad
         base.OnNavigatedFrom(e);
         _ready = false;
         IsCapturing = false;
+        // 离开页面时确保钩子恢复，避免捕获中途返回导致呼出键永久失效
+        App.Main?.KeyboardHook.SetSuspended(false);
     }
 
     public void HandleGamepad(GamepadButtons buttons)
@@ -82,10 +92,16 @@ public sealed partial class KeybindPage : Page, ISettingsGamepad
         else if (buttons.HasFlag(GamepadButtons.A)) ActivateCapture();
     }
 
-    /// <summary>键盘等价操作：方向键=整卡切换，Enter/空格=捕获当前卡片键位（旧版由 ListView 焦点导航提供，粒度改为整张卡片）</summary>
+    /// <summary>键盘等价操作：方向键=整卡切换，Enter/空格=捕获当前卡片键位。
+    /// 捕获键盘呼出键时改由 OnKeyDown/OnKeyUp 直接记录按键（钩子已暂停，事件正常到达本页）。</summary>
     protected override void OnKeyDown(KeyRoutedEventArgs e)
     {
-        if (!_ready || IsCapturing) return;
+        if (IsCapturing)
+        {
+            if (_target == CaptureTarget.KeySummon) CaptureKeyDown(e);
+            return;
+        }
+        if (!_ready) return;
         switch (e.Key)
         {
             case Windows.System.VirtualKey.Up:
@@ -106,10 +122,47 @@ public sealed partial class KeybindPage : Page, ISettingsGamepad
         }
     }
 
-    /// <summary>A 键：捕获当前选中卡片对应的组合键（阅读提示 / 说明卡片只读，无动作）</summary>
+    /// <summary>键盘呼出键捕获：修饰键累积，主键记录并在松开时保存</summary>
+    private void CaptureKeyDown(KeyRoutedEventArgs e)
+    {
+        var vk = (int)e.Key;
+        var mod = KeySendService.ModFlag(vk);
+        if (mod != 0)
+        {
+            // 修饰键：只累积，等主键按下时一并快照
+            _liveMods |= mod;
+            e.Handled = true;
+            return;
+        }
+        _capturedKey = vk;
+        _capturedMods = _liveMods;
+        e.Handled = true;
+        KeyCaptureText.Text = KeySendService.Describe(_capturedKey, _capturedMods) + "（松开即保存）";
+    }
+
+    protected override void OnKeyUp(KeyRoutedEventArgs e)
+    {
+        if (!IsCapturing || _target != CaptureTarget.KeySummon) return;
+        var vk = (int)e.Key;
+        var mod = KeySendService.ModFlag(vk);
+        if (mod != 0)
+        {
+            _liveMods &= ~mod;
+            e.Handled = true;
+            return;
+        }
+        if (vk == _capturedKey && _capturedKey != 0)
+        {
+            e.Handled = true;
+            FinishKeyboardCapture();
+        }
+    }
+
+    /// <summary>A 键：捕获当前选中卡片对应的键位（呼出键/键盘呼出键/全屏键之外均为只读说明卡，无动作）</summary>
     private void ActivateCapture()
     {
-        if (_focus == 1) StartCapture(CaptureTarget.Summon);
+        if (_focus == 0) StartCapture(CaptureTarget.Summon);
+        else if (_focus == 1) StartCapture(CaptureTarget.KeySummon);
         else if (_focus == 2) StartCapture(CaptureTarget.Fullscreen);
     }
 
@@ -152,41 +205,74 @@ public sealed partial class KeybindPage : Page, ISettingsGamepad
     /// <summary>鼠标点击呼出键位按钮</summary>
     private void OnCaptureClick(object sender, RoutedEventArgs e) => StartCapture(CaptureTarget.Summon);
 
+    /// <summary>鼠标点击键盘呼出键位按钮</summary>
+    private void OnKeyCaptureClick(object sender, RoutedEventArgs e) => StartCapture(CaptureTarget.KeySummon);
+
     /// <summary>鼠标点击全屏键位按钮</summary>
     private void OnFsCaptureClick(object sender, RoutedEventArgs e) => StartCapture(CaptureTarget.Fullscreen);
 
-    /// <summary>进入捕获模式：等待用户按下组合键并松开</summary>
+    /// <summary>进入捕获模式：等待用户按下组合键并松开。
+    /// 捕获期间暂停全局键盘钩子，避免正在捕获的按键被钩子吞掉。</summary>
     private void StartCapture(CaptureTarget target)
     {
         if (IsCapturing) return;
         IsCapturing = true;
         _target = target;
         _captured = GamepadButtons.None;
-        SetCaptureText("请按住组合键…");
+        _capturedKey = 0;
+        _capturedMods = 0;
+        _liveMods = 0;
+        App.Main?.KeyboardHook.SetSuspended(true);
+        if (target == CaptureTarget.KeySummon)
+        {
+            SetCaptureText("请按下想要的按键…");
+            Focus(FocusState.Programmatic); // 键盘捕获需页面持有焦点才能收到按键事件
+        }
+        else SetCaptureText("请按住组合键…");
     }
 
     private void SetCaptureText(string text)
     {
-        if (_target == CaptureTarget.Summon) CaptureText.Text = text;
-        else FsCaptureText.Text = text;
+        switch (_target)
+        {
+            case CaptureTarget.Summon: CaptureText.Text = text; break;
+            case CaptureTarget.KeySummon: KeyCaptureText.Text = text; break;
+            default: FsCaptureText.Text = text; break;
+        }
     }
 
-    /// <summary>捕获模式下累积按下的按键（MainWindow 转发边沿）</summary>
+    /// <summary>键盘呼出键捕获完成：保存并立即生效</summary>
+    private void FinishKeyboardCapture()
+    {
+        if (_capturedKey == 0) return;
+        IsCapturing = false;
+        App.Main?.KeyboardHook.SetSuspended(false);
+        KeyCaptureText.Text = KeySendService.Describe(_capturedKey, _capturedMods);
+        SettingsService.Update(s =>
+        {
+            s.KeyboardSummonKey = _capturedKey;
+            s.KeyboardSummonMods = _capturedMods;
+        });
+        App.Main?.SyncKeyboardHook();
+    }
+
+    /// <summary>捕获模式下累积按下的按键（MainWindow 转发边沿）；键盘呼出键不走此路径</summary>
     public void CaptureButtons(GamepadButtons pressed)
     {
-        if (!IsCapturing) return;
+        if (!IsCapturing || _target == CaptureTarget.KeySummon) return;
         _captured |= pressed;
         var desc = GamepadService.Describe(_captured);
         SetCaptureText(desc == "未设置" ? "请按住组合键…" : desc);
     }
 
-    /// <summary>所有键松开 → 结束捕获并保存</summary>
+    /// <summary>所有键松开 → 结束捕获并保存（手柄呼出/全屏键；键盘呼出键由 OnKeyUp 收尾）</summary>
     public void NotifyAllReleased()
     {
-        if (!IsCapturing) return;
+        if (!IsCapturing || _target == CaptureTarget.KeySummon) return;
         if (_captured != GamepadButtons.None)
         {
             IsCapturing = false;
+            App.Main?.KeyboardHook.SetSuspended(false);
             SetCaptureText(GamepadService.Describe(_captured));
             if (_target == CaptureTarget.Summon)
             {

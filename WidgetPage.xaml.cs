@@ -7,7 +7,7 @@ using Microsoft.UI.Xaml.Navigation;
 namespace GameLocker;
 
 /// <summary>
-/// 小组件页：列出可添加的小组件（当前为音乐控制器），磁贴预览完全复用主页磁贴样式。
+/// 小组件页：列出可添加的小组件（音乐控制器 / 图片组 / 磁贴集 / 天气），磁贴预览完全复用主页磁贴样式。
 /// 手柄：方向=移动光标，A/X=添加到主页，B/View=返回主页。
 /// </summary>
 public sealed partial class WidgetPage : Page
@@ -45,10 +45,33 @@ public sealed partial class WidgetPage : Page
         Size = TileSize.Large
     };
 
+    /// <summary>预览用固定天气项（2×2 大磁贴展示全部字段；实际添加时为默认"长"尺寸）</summary>
+    private static readonly LaunchItem WeatherPreviewItem = new()
+    {
+        Name = "天气",
+        Target = "widget:weather",
+        Kind = LaunchKind.Widget,
+        WidgetKind = WidgetKind.Weather,
+        Size = TileSize.Large
+    };
+
+    /// <summary>预览用固定映射项（无自定义标题 → 显示映射按键名占位；实际添加时为默认"长"尺寸）</summary>
+    private static readonly LaunchItem MappingPreviewItem = new()
+    {
+        Name = "",
+        Target = "widget:mapping",
+        Kind = LaunchKind.Widget,
+        WidgetKind = WidgetKind.Mapping,
+        Size = TileSize.Large
+    };
+
+    /// <summary>预览磁贴框架（订阅天气变化时刷新文字）</summary>
+    private TileStyle.WeatherTileRefs? _weatherPreviewRefs;
+
     public WidgetPage()
     {
         InitializeComponent();
-        _formControls = [MusicWidgetCard, PhotoWidgetCard, TileSetWidgetCard];
+        _formControls = [MusicWidgetCard, PhotoWidgetCard, TileSetWidgetCard, WeatherWidgetCard, MappingWidgetCard];
     }
 
     protected override void OnNavigatedTo(NavigationEventArgs e)
@@ -64,9 +87,35 @@ public sealed partial class WidgetPage : Page
         TileSetPreviewHost.Content = TileStyle.BuildStandardTile(
             TileSetPreviewItem, null, w, h, TileStyle.AccentFor(TileSetPreviewItem),
             TileStyle.IsNoColor(TileSetPreviewItem));
+        // 天气预览：与主页同一构建 + 同一填充，数据变化时实时更新预览文字
+        var (weatherTile, weatherRefs) = TileStyle.BuildWeatherTile(
+            WeatherPreviewItem, w, h, TileStyle.AccentFor(WeatherPreviewItem),
+            TileStyle.IsNoColor(WeatherPreviewItem));
+        TileStyle.FillWeatherTile(weatherRefs);
+        WeatherPreviewHost.Content = weatherTile;
+        _weatherPreviewRefs = weatherRefs;
+        // 映射预览：与主页同一构建（未设置按键 → 显示占位文案）
+        MappingPreviewHost.Content = TileStyle.BuildMappingTile(
+            MappingPreviewItem, w, h, TileStyle.AccentFor(MappingPreviewItem),
+            TileStyle.IsNoColor(MappingPreviewItem));
+        WeatherService.StateChanged += OnWeatherChanged;
+        WeatherService.EnsureFresh();
+
         _formIndex = 0;
         FocusForm(0);
     }
+
+    protected override void OnNavigatedFrom(NavigationEventArgs e)
+    {
+        base.OnNavigatedFrom(e);
+        WeatherService.StateChanged -= OnWeatherChanged;
+    }
+
+    private void OnWeatherChanged() =>
+        DispatcherQueue.TryEnqueue(() =>
+        {
+            if (_weatherPreviewRefs is not null) TileStyle.FillWeatherTile(_weatherPreviewRefs);
+        });
 
     // ---- 手柄 ----
 
@@ -87,6 +136,8 @@ public sealed partial class WidgetPage : Page
         var c = _formControls[_formIndex];
         if (ReferenceEquals(c, PhotoWidgetCard)) AddPhotoWidget();
         else if (ReferenceEquals(c, TileSetWidgetCard)) AddTileSetWidget();
+        else if (ReferenceEquals(c, WeatherWidgetCard)) AddWeatherWidget();
+        else if (ReferenceEquals(c, MappingWidgetCard)) AddMappingWidget();
         else AddMusicWidget();
     }
 
@@ -276,6 +327,45 @@ public sealed partial class WidgetPage : Page
         App.Main?.ShowMainPage();
     }
 
+    /// <summary>天气组件：默认"长"尺寸（可后续编辑大小与颜色），只允许一个（避免多个显示同一份天气）</summary>
+    private void AddWeatherWidget()
+    {
+        var items = ConfigService.Load();
+        if (items.Any(it => it.Kind == LaunchKind.Widget && it.WidgetKind == WidgetKind.Weather))
+        {
+            PageTitle.Text = "天气已在主页";
+            return;
+        }
+        items.Add(new LaunchItem
+        {
+            Name = "天气",
+            Target = "widget:weather",
+            Kind = LaunchKind.Widget,
+            WidgetKind = WidgetKind.Weather,
+            Size = TileSize.Wide
+        });
+        ConfigService.Save(items);
+        WeatherService.EnsureFresh();
+        App.Main?.ShowMainPage();
+    }
+
+    /// <summary>映射小组件：默认"长"尺寸（可后续编辑大小、颜色与映射按键），可添加多个（各映射不同按键）。
+    /// 名称留空：未设自定义标题时磁贴显示映射的按键名。</summary>
+    private void AddMappingWidget()
+    {
+        var items = ConfigService.Load();
+        items.Add(new LaunchItem
+        {
+            Name = "",
+            Target = "widget:mapping:" + Guid.NewGuid().ToString("N"),
+            Kind = LaunchKind.Widget,
+            WidgetKind = WidgetKind.Mapping,
+            Size = TileSize.Wide
+        });
+        ConfigService.Save(items);
+        App.Main?.ShowMainPage();
+    }
+
     // ---- 鼠标 ----
 
     private void OnBackClick(object sender, RoutedEventArgs e) => App.Main?.ShowMainPage();
@@ -284,6 +374,8 @@ public sealed partial class WidgetPage : Page
     {
         if (sender is Button { Tag: "photo" }) AddPhotoWidget();
         else if (sender is Button { Tag: "tileset" }) AddTileSetWidget();
+        else if (sender is Button { Tag: "weather" }) AddWeatherWidget();
+        else if (sender is Button { Tag: "mapping" }) AddMappingWidget();
         else AddMusicWidget();
     }
 }

@@ -1,4 +1,5 @@
 using System.Text.Json.Serialization;
+using GameLocker.Services;
 using Microsoft.UI.Xaml;
 using Microsoft.UI.Xaml.Media;
 using Microsoft.UI.Xaml.Media.Imaging;
@@ -30,7 +31,11 @@ public enum WidgetKind
     /// <summary>磁贴集（添加时复制当前主页磁贴为快照，打开进入复制出的页面）</summary>
     TileSet,
     /// <summary>设置（常驻主页，点击进入软件设置页；不可删除/组合，可移动与改颜色大小）</summary>
-    Settings
+    Settings,
+    /// <summary>天气（显示当前位置当天天气；A/点击刷新，大小与颜色可改）</summary>
+    Weather,
+    /// <summary>映射（把一个手柄键或键盘键映射到本磁贴；A/点击触发，大小与颜色可改）</summary>
+    Mapping
 }
 
 /// <summary>图片组轮播速度档位</summary>
@@ -92,6 +97,15 @@ public class LaunchItem
     /// <summary>磁贴集快照（仅 WidgetKind.TileSet 使用：添加时复制的当前主页磁贴列表）</summary>
     public List<LaunchItem> Snapshot { get; set; } = [];
 
+    /// <summary>映射的手柄按键（仅 WidgetKind.Mapping 使用；None=未映射手柄键）</summary>
+    public GamepadButtons MappingPad { get; set; } = GamepadButtons.None;
+
+    /// <summary>映射的键盘虚拟键码（仅 WidgetKind.Mapping 使用；0=未映射键盘键）</summary>
+    public int MappingKey { get; set; }
+
+    /// <summary>键盘映射的修饰键标志（仅 WidgetKind.Mapping 使用；见 KeySendService.Mod*）</summary>
+    public int MappingMods { get; set; }
+
     /// <summary>深拷贝一个快捷项（含组成员），用于磁贴集快照/进入副本页时与主页数据隔离</summary>
     public LaunchItem Clone() => new()
     {
@@ -106,6 +120,9 @@ public class LaunchItem
         WidgetFolder = WidgetFolder,
         SlideshowSpeed = SlideshowSpeed,
         PhotoAnimation = PhotoAnimation,
+        MappingPad = MappingPad,
+        MappingKey = MappingKey,
+        MappingMods = MappingMods,
         Members = [.. Members.Select(m => m.Clone())],
         Snapshot = [.. Snapshot.Select(s => s.Clone())]
     };
@@ -126,6 +143,8 @@ public class LaunchItem
             WidgetKind.Photos => "\uE8B9", // 图片（图片组，通常被轮播图覆盖）
             WidgetKind.TileSet => "\uE80A",// 集合（磁贴集）
             WidgetKind.Settings => "\uE713",// 齿轮（设置）
+            WidgetKind.Weather => "\uE753", // 云（天气）
+            WidgetKind.Mapping => "\uE7FC", // 手柄（映射按键）
             _ => "\uE8D6"                  // 音乐（音乐控制器）
         },
         _ => "\uE7F8"                  // desktop
@@ -133,6 +152,10 @@ public class LaunchItem
 
     [JsonIgnore]
     public bool HasCover => !string.IsNullOrEmpty(CoverFile) && IsValidImageFile(CoverFilePath);
+
+    /// <summary>映射小组件当前映射的按键显示名（手柄键或键盘键；未设置为"未设置"）</summary>
+    [JsonIgnore]
+    public string MappingLabel => KeySendService.MappingLabel((int)MappingPad, MappingKey, MappingMods);
 
     /// <summary>存在且非空（0 字节的残留文件会导致解码失败、磁贴空白）</summary>
     private static bool IsValidImageFile(string path)

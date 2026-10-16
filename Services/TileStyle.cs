@@ -397,4 +397,305 @@ public static class TileStyle
         tile.Opacity = Opacity;
         return (tile, refs);
     }
+
+    /// <summary>天气小组件磁贴的可刷新元素引用（刷新时只改文字，不重建磁贴，保留选中框）</summary>
+    public sealed class WeatherTileRefs
+    {
+        public FontIcon Icon = null!;    // 天气图标
+        public TextBlock Temp = null!;   // 当前温度（大字）
+        public TextBlock City = null!;   // 城市
+        public TextBlock Cond = null!;   // 天气描述
+        public TextBlock Extra = null!;  // 大磁贴补充行（最高/最低、湿度/风；小/长磁贴不显示）
+    }
+
+    /// <summary>
+    /// 构建天气小组件磁贴：外壳（圆角/描边/填充/透明度/立体边缘）与普通磁贴完全一致，内容按尺寸分档——
+    /// 小(1×1)=图标+温度；长(2×1)=图标+温度/城市/描述；大(2×2)=全部 + 最高最低/湿度风。
+    /// 文本先填占位，由 FillWeatherTile 写入数据。
+    /// </summary>
+    public static (Border Tile, WeatherTileRefs Refs) BuildWeatherTile(
+        LaunchItem item, double width, double height, Windows.UI.Color accent, bool noColor)
+    {
+        var white = new SolidColorBrush(Microsoft.UI.Colors.White);
+        var refs = new WeatherTileRefs
+        {
+            Icon = new FontIcon { Glyph = "\uE753", Foreground = white, IsHitTestVisible = false },
+            Temp = new TextBlock
+            {
+                Text = "--°",
+                FontWeight = Microsoft.UI.Text.FontWeights.SemiBold,
+                Foreground = white,
+                IsHitTestVisible = false
+            },
+            City = new TextBlock
+            {
+                Text = "定位中…",
+                FontSize = 12,
+                Opacity = 0.8,
+                Foreground = white,
+                TextTrimming = TextTrimming.CharacterEllipsis,
+                IsHitTestVisible = false
+            },
+            Cond = new TextBlock
+            {
+                Text = "",
+                FontSize = 12,
+                Opacity = 0.9,
+                Foreground = white,
+                IsHitTestVisible = false
+            },
+            Extra = new TextBlock
+            {
+                Text = "",
+                FontSize = 11.5,
+                Opacity = 0.75,
+                Foreground = white,
+                TextWrapping = TextWrapping.Wrap,
+                TextAlignment = Microsoft.UI.Xaml.TextAlignment.Center,
+                IsHitTestVisible = false,
+                Visibility = Visibility.Collapsed
+            }
+        };
+
+        var grid = new Grid();
+        if (item.Size == TileSize.Small)
+        {
+            // 小：上下排布，只保留图标与温度
+            refs.Icon.FontSize = 26;
+            refs.Temp.FontSize = 21;
+            refs.City.Visibility = Visibility.Collapsed;
+            refs.Cond.Visibility = Visibility.Collapsed;
+
+            var stack = new StackPanel
+            {
+                Spacing = 2,
+                HorizontalAlignment = HorizontalAlignment.Center,
+                VerticalAlignment = VerticalAlignment.Center
+            };
+            stack.Children.Add(refs.Icon);
+            stack.Children.Add(refs.Temp);
+            grid.Children.Add(stack);
+        }
+        else if (item.Size == TileSize.Wide)
+        {
+            // 长：左图标 + 右文字列（温度/城市/描述）
+            refs.Icon.FontSize = 34;
+            refs.Temp.FontSize = 25;
+            refs.City.MaxWidth = width - 96;
+
+            var row = new StackPanel
+            {
+                Orientation = Orientation.Horizontal,
+                Spacing = 10,
+                HorizontalAlignment = HorizontalAlignment.Center,
+                VerticalAlignment = VerticalAlignment.Center
+            };
+            var col = new StackPanel { Spacing = 1, VerticalAlignment = VerticalAlignment.Center };
+            col.Children.Add(refs.Temp);
+            col.Children.Add(refs.City);
+            col.Children.Add(refs.Cond);
+            row.Children.Add(refs.Icon);
+            row.Children.Add(col);
+            grid.Children.Add(row);
+        }
+        else
+        {
+            // 大：居中竖排，图标+温度一行，下面城市/描述/最高最低湿度风
+            refs.Icon.FontSize = 40;
+            refs.Temp.FontSize = 33;
+            refs.City.MaxWidth = width - 28;
+            refs.Cond.MaxWidth = width - 28;
+
+            var head = new StackPanel
+            {
+                Orientation = Orientation.Horizontal,
+                Spacing = 10,
+                HorizontalAlignment = HorizontalAlignment.Center
+            };
+            head.Children.Add(refs.Icon);
+            refs.Temp.VerticalAlignment = VerticalAlignment.Center;
+            head.Children.Add(refs.Temp);
+
+            var stack = new StackPanel
+            {
+                Spacing = 5,
+                Margin = new Thickness(12, 10, 12, 10),
+                HorizontalAlignment = HorizontalAlignment.Center,
+                VerticalAlignment = VerticalAlignment.Center
+            };
+            refs.City.HorizontalAlignment = HorizontalAlignment.Center;
+            refs.Cond.HorizontalAlignment = HorizontalAlignment.Center;
+            refs.Extra.Visibility = Visibility.Visible;
+            stack.Children.Add(head);
+            stack.Children.Add(refs.City);
+            stack.Children.Add(refs.Cond);
+            stack.Children.Add(refs.Extra);
+            grid.Children.Add(stack);
+        }
+
+        var tile = new Border
+        {
+            Width = width,
+            Height = height,
+            CornerRadius = new CornerRadius(Radius),
+            Background = noColor ? new SolidColorBrush(Windows.UI.Color.FromArgb(0, 0, 0, 0)) : TileFill(accent),
+            BorderBrush = new SolidColorBrush(Windows.UI.Color.FromArgb(0x40, 0xFF, 0xFF, 0xFF)),
+            BorderThickness = new Thickness(1),
+            Child = grid
+        };
+        if (SettingsService.Current.Tile3D && !noColor) Add3DEdge(grid);
+        tile.Opacity = Opacity;
+        return (tile, refs);
+    }
+
+    /// <summary>把当前天气写入磁贴引用：无数据时显示"定位中…"/"天气获取失败"，有数据时填温度与描述</summary>
+    public static void FillWeatherTile(WeatherTileRefs refs)
+    {
+        var w = WeatherService.Current;
+        if (w is null)
+        {
+            refs.Icon.Glyph = "\uE753";
+            refs.Temp.Text = "--°";
+            refs.City.Text = WeatherService.Loading ? "定位中…" : "天气获取失败";
+            refs.Cond.Text = WeatherService.Loading ? "" : "按 A 重试";
+            refs.Extra.Text = "";
+            return;
+        }
+
+        refs.Icon.Glyph = w.Glyph;
+        refs.Temp.Text = (int)Math.Round(w.Temp) + "°";
+        refs.City.Text = string.IsNullOrEmpty(w.City) ? "当前位置" : w.City;
+        refs.Cond.Text = w.Text;
+        refs.Extra.Text = $"最高 {(int)Math.Round(w.TempMax)}° / 最低 {(int)Math.Round(w.TempMin)}°"
+                        + $"\n湿度 {w.Humidity}%　风 {(int)Math.Round(w.Wind)} km/h";
+    }
+
+    /// <summary>
+    /// 构建映射小组件磁贴：外壳（圆角/描边/填充/透明度/立体边缘）与普通磁贴完全一致，
+    /// 内容按尺寸分档——小(1×1)=手柄图标+按键名；长(2×1)=图标 + 按键名（居中横排）；
+    /// 大(2×2)=图标 + 按键名 + 提示"按 A 触发"。内容仅随编辑变化，无需刷新引用。
+    /// </summary>
+    public static Border BuildMappingTile(
+        LaunchItem item, double width, double height, Windows.UI.Color accent, bool noColor)
+    {
+        var white = new SolidColorBrush(Microsoft.UI.Colors.White);
+        // 标题：自定义标题（显示名称）非空时覆盖显示，留空则显示映射的按键名
+        var label = string.IsNullOrWhiteSpace(item.Name) ? item.MappingLabel : item.Name;
+
+        var grid = new Grid();
+        if (item.Size == TileSize.Small)
+        {
+            // 小：图标上下按键名
+            var stack = new StackPanel
+            {
+                Spacing = 2,
+                HorizontalAlignment = HorizontalAlignment.Center,
+                VerticalAlignment = VerticalAlignment.Center
+            };
+            stack.Children.Add(new FontIcon
+            {
+                Glyph = "\uE7FC",
+                FontSize = 24,
+                Foreground = white,
+                HorizontalAlignment = HorizontalAlignment.Center,
+                IsHitTestVisible = false
+            });
+            stack.Children.Add(new TextBlock
+            {
+                Text = label,
+                FontSize = 11,
+                Foreground = white,
+                HorizontalAlignment = HorizontalAlignment.Center,
+                TextTrimming = TextTrimming.CharacterEllipsis,
+                MaxWidth = width - 12,
+                IsHitTestVisible = false
+            });
+            grid.Children.Add(stack);
+        }
+        else if (item.Size == TileSize.Wide)
+        {
+            // 长：左图标 + 右按键名（居中横排）
+            var row = new StackPanel
+            {
+                Orientation = Orientation.Horizontal,
+                Spacing = 10,
+                HorizontalAlignment = HorizontalAlignment.Center,
+                VerticalAlignment = VerticalAlignment.Center
+            };
+            row.Children.Add(new FontIcon
+            {
+                Glyph = "\uE7FC",
+                FontSize = 30,
+                Foreground = white,
+                VerticalAlignment = VerticalAlignment.Center,
+                IsHitTestVisible = false
+            });
+            row.Children.Add(new TextBlock
+            {
+                Text = label,
+                FontSize = 16,
+                FontWeight = Microsoft.UI.Text.FontWeights.SemiBold,
+                Foreground = white,
+                VerticalAlignment = VerticalAlignment.Center,
+                TextTrimming = TextTrimming.CharacterEllipsis,
+                MaxWidth = width - 96,
+                IsHitTestVisible = false
+            });
+            grid.Children.Add(row);
+        }
+        else
+        {
+            // 大：居中竖排，图标 + 按键名 + 提示
+            var stack = new StackPanel
+            {
+                Spacing = 6,
+                Margin = new Thickness(12, 10, 12, 10),
+                HorizontalAlignment = HorizontalAlignment.Center,
+                VerticalAlignment = VerticalAlignment.Center
+            };
+            stack.Children.Add(new FontIcon
+            {
+                Glyph = "\uE7FC",
+                FontSize = 38,
+                Foreground = white,
+                HorizontalAlignment = HorizontalAlignment.Center,
+                IsHitTestVisible = false
+            });
+            stack.Children.Add(new TextBlock
+            {
+                Text = label,
+                FontSize = 20,
+                FontWeight = Microsoft.UI.Text.FontWeights.SemiBold,
+                Foreground = white,
+                HorizontalAlignment = HorizontalAlignment.Center,
+                TextTrimming = TextTrimming.CharacterEllipsis,
+                MaxWidth = width - 28,
+                IsHitTestVisible = false
+            });
+            stack.Children.Add(new TextBlock
+            {
+                Text = "按 A 触发",
+                FontSize = 12,
+                Opacity = 0.75,
+                Foreground = white,
+                HorizontalAlignment = HorizontalAlignment.Center,
+                IsHitTestVisible = false
+            });
+            grid.Children.Add(stack);
+        }
+
+        var tile = new Border
+        {
+            Width = width,
+            Height = height,
+            CornerRadius = new CornerRadius(Radius),
+            Background = noColor ? new SolidColorBrush(Windows.UI.Color.FromArgb(0, 0, 0, 0)) : TileFill(accent),
+            BorderBrush = new SolidColorBrush(Windows.UI.Color.FromArgb(0x40, 0xFF, 0xFF, 0xFF)),
+            BorderThickness = new Thickness(1),
+            Child = grid
+        };
+        if (SettingsService.Current.Tile3D && !noColor) Add3DEdge(grid);
+        tile.Opacity = Opacity;
+        return tile;
+    }
 }

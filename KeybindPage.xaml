@@ -30,22 +30,62 @@
             <Setter Property="Foreground" Value="#BBD8FF"/>
         </Style>
 
-        <!-- 说明行：左=手柄操作键帽，右=触控 / 鼠标等价操作 -->
+        <!-- 键帽：手柄操作与触屏操作共用同款样式，保证两列外观完全一致 -->
+        <Style x:Key="ChipStyle" TargetType="Border">
+            <Setter Property="Background" Value="#1FFFFFFF"/>
+            <Setter Property="BorderBrush" Value="#3DFFFFFF"/>
+            <Setter Property="BorderThickness" Value="1,1,1,2"/>
+            <Setter Property="CornerRadius" Value="7"/>
+            <Setter Property="Padding" Value="8,4"/>
+            <Setter Property="VerticalAlignment" Value="Top"/>
+        </Style>
+        <Style x:Key="ChipTextStyle" TargetType="TextBlock">
+            <Setter Property="FontSize" Value="13"/>
+            <Setter Property="FontWeight" Value="SemiBold"/>
+            <Setter Property="Foreground" Value="#9ECBFF"/>
+            <Setter Property="HorizontalAlignment" Value="Center"/>
+            <Setter Property="TextAlignment" Value="Center"/>
+            <Setter Property="TextWrapping" Value="Wrap"/>
+        </Style>
+
+        <!-- 表头文字：与键帽同列对齐，用浅蓝弱化字表示"列名"而非数据 -->
+        <Style x:Key="HeadTextStyle" TargetType="TextBlock">
+            <Setter Property="FontSize" Value="12"/>
+            <Setter Property="FontWeight" Value="SemiBold"/>
+            <Setter Property="Foreground" Value="#7FB6F0"/>
+            <Setter Property="HorizontalAlignment" Value="Center"/>
+            <Setter Property="TextAlignment" Value="Center"/>
+        </Style>
+
+        <!-- 说明行，按「手柄操作 → 触屏操作 → 实际操作效果」排列；
+             前两列同款键帽，效果列白字加粗并以 ▸ 标记突出 -->
         <DataTemplate x:Key="RowTpl" x:DataType="local:ControlRow">
-            <Grid ColumnSpacing="12">
+            <Grid ColumnSpacing="10">
                 <Grid.ColumnDefinitions>
-                    <ColumnDefinition Width="130"/>
+                    <ColumnDefinition Width="116"/>
+                    <ColumnDefinition Width="116"/>
                     <ColumnDefinition Width="*"/>
                 </Grid.ColumnDefinitions>
-                <Border Grid.Column="0" Background="#1FFFFFFF" BorderBrush="#3DFFFFFF"
-                        BorderThickness="1,1,1,2" CornerRadius="7" Padding="8,4"
-                        VerticalAlignment="Top">
-                    <TextBlock Text="{x:Bind Pad}" FontSize="13" FontWeight="SemiBold"
-                               Foreground="#9ECBFF" HorizontalAlignment="Center"
-                               TextAlignment="Center" TextWrapping="Wrap"/>
+
+                <Border Grid.Column="0" Style="{StaticResource ChipStyle}">
+                    <TextBlock Text="{x:Bind Pad}" Style="{StaticResource ChipTextStyle}"/>
                 </Border>
-                <TextBlock Grid.Column="1" Text="{x:Bind Touch}" FontSize="13.5"
-                           Opacity="0.88" VerticalAlignment="Center" TextWrapping="Wrap"/>
+
+                <Border Grid.Column="1" Style="{StaticResource ChipStyle}">
+                    <TextBlock Text="{x:Bind Touch}" Style="{StaticResource ChipTextStyle}"/>
+                </Border>
+
+                <Grid Grid.Column="2" ColumnSpacing="7" VerticalAlignment="Center">
+                    <Grid.ColumnDefinitions>
+                        <ColumnDefinition Width="Auto"/>
+                        <ColumnDefinition Width="*"/>
+                    </Grid.ColumnDefinitions>
+                    <FontIcon Grid.Column="0" Glyph="&#xE76C;" FontSize="10" Foreground="#4CC2FF"
+                              VerticalAlignment="Center"/>
+                    <TextBlock Grid.Column="1" Text="{x:Bind Effect}" FontSize="13.5"
+                               FontWeight="SemiBold" Foreground="White"
+                               VerticalAlignment="Center" TextWrapping="Wrap"/>
+                </Grid>
             </Grid>
         </DataTemplate>
 
@@ -95,17 +135,6 @@
         <ScrollViewer x:Name="PageScroller" Grid.Row="1" Padding="20,4,20,12" VerticalScrollBarVisibility="Auto">
             <StackPanel Spacing="12">
 
-                <!-- 阅读提示：说明每张卡片内的左右两列各代表什么，放在最上方先讲读法 -->
-                <Border x:Name="CardLegend" Style="{StaticResource CardStyle}">
-                    <StackPanel Spacing="9">
-                        <Border Style="{StaticResource PillStyle}">
-                            <TextBlock Style="{StaticResource PillTextStyle}" Text="阅读提示"/>
-                        </Border>
-                        <TextBlock Text="左列 = 手柄操作，右列 = 对应的触控 / 鼠标操作"
-                                   FontSize="13.5" Opacity="0.88" TextWrapping="Wrap"/>
-                    </StackPanel>
-                </Border>
-
                 <!-- 呼出窗口组合键 -->
                 <Border x:Name="CardSummon" Style="{StaticResource CardStyle}">
                     <StackPanel Spacing="9">
@@ -119,6 +148,27 @@
                             <TextBlock Text="按 A 或点击后按住想要的组合键，全部松开即保存"
                                        FontSize="12.5" Opacity="0.55" VerticalAlignment="Center" TextWrapping="Wrap"/>
                         </StackPanel>
+                    </StackPanel>
+                </Border>
+
+                <!-- 键盘呼出键（仅键盘，按下即刻呼出，无需长按） -->
+                <Border x:Name="CardKeySummon" Style="{StaticResource CardStyle}">
+                    <StackPanel Spacing="9">
+                        <Border Style="{StaticResource PillStyle}">
+                            <TextBlock Style="{StaticResource PillTextStyle}" Text="键盘呼出键"/>
+                        </Border>
+                        <Grid ColumnSpacing="12">
+                            <Grid.ColumnDefinitions>
+                                <ColumnDefinition Width="Auto"/>
+                                <ColumnDefinition Width="*"/>
+                            </Grid.ColumnDefinitions>
+                            <Button Grid.Column="0" x:Name="KeyCaptureButton" Style="{StaticResource KeyCapStyle}"
+                                    Click="OnKeyCaptureClick" VerticalAlignment="Center">
+                                <TextBlock x:Name="KeyCaptureText" FontSize="15" FontWeight="SemiBold" Foreground="#CFE2FF"/>
+                            </Button>
+                            <TextBlock Grid.Column="1" Text="按 A 或点击后按下想要的按键（可含 Ctrl/Shift/Alt/Win），松开即保存；再按呼出键收起"
+                                       FontSize="12.5" Opacity="0.55" VerticalAlignment="Center" TextWrapping="Wrap"/>
+                        </Grid>
                     </StackPanel>
                 </Border>
 
@@ -138,12 +188,43 @@
                     </StackPanel>
                 </Border>
 
-                <!-- 主页 / 磁贴集 -->
+                <!-- 主页 / 磁贴集：卡内首行即三列表头，图例本身就是表格的一部分 -->
                 <Border x:Name="CardHome" Style="{StaticResource CardStyle}">
                     <StackPanel Spacing="9">
-                        <Border Style="{StaticResource PillStyle}">
-                            <TextBlock Style="{StaticResource PillTextStyle}" Text="主页 / 磁贴集"/>
-                        </Border>
+                        <Grid ColumnSpacing="10">
+                            <Grid.ColumnDefinitions>
+                                <ColumnDefinition Width="Auto"/>
+                                <ColumnDefinition Width="*"/>
+                            </Grid.ColumnDefinitions>
+                            <Border Grid.Column="0" Style="{StaticResource PillStyle}">
+                                <TextBlock Style="{StaticResource PillTextStyle}" Text="主页 / 磁贴集"/>
+                            </Border>
+                            <TextBlock Grid.Column="1" Text="标「—」表示该操作无等价项"
+                                       FontSize="11.5" Opacity="0.5" HorizontalAlignment="Right"
+                                       VerticalAlignment="Center"/>
+                        </Grid>
+
+                        <!-- 表头行：列宽与下方键帽行严格一致，读起来就是表格的列名 -->
+                        <StackPanel Spacing="6">
+                            <Grid ColumnSpacing="10">
+                                <Grid.ColumnDefinitions>
+                                    <ColumnDefinition Width="116"/>
+                                    <ColumnDefinition Width="116"/>
+                                    <ColumnDefinition Width="*"/>
+                                </Grid.ColumnDefinitions>
+                                <TextBlock Grid.Column="0" Text="手柄操作" Style="{StaticResource HeadTextStyle}"/>
+                                <TextBlock Grid.Column="1" Text="触屏操作" Style="{StaticResource HeadTextStyle}"/>
+                                <StackPanel Grid.Column="2" Orientation="Horizontal" Spacing="6"
+                                            HorizontalAlignment="Left">
+                                    <FontIcon Glyph="&#xE76C;" FontSize="10" Foreground="#4CC2FF"
+                                              VerticalAlignment="Center"/>
+                                    <TextBlock Text="实际操作效果" Style="{StaticResource HeadTextStyle}"
+                                               HorizontalAlignment="Left"/>
+                                </StackPanel>
+                            </Grid>
+                            <Border Height="1" Background="#1FFFFFFF"/>
+                        </StackPanel>
+
                         <ItemsControl x:Name="LvHome" Style="{StaticResource RowListStyle}"/>
                     </StackPanel>
                 </Border>

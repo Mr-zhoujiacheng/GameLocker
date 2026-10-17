@@ -70,11 +70,13 @@ public static class SaveBackupService
             }
 
             var gameName = Sanitize(TrainerService.CurrentGameName());
+            DebugLog.Write($"存档备份: 触发 exe={TrainerService.LastExeName} 标题={TrainerService.LastWindowTitle} 模式={item.BackupMode}");
             Report("正在查找存档位置…");
             await SaveManifest.EnsureLoadedAsync(t => Report(t));
 
             var exePath = TrainerService.CurrentGameExePath();
             var location = SavePathResolver.Resolve(exePath, TrainerService.LastWindowTitle, TrainerService.LastExeName);
+            DebugLog.Write($"存档备份: 定位 method={location.Method} paths={string.Join(" ; ", location.Paths)}");
             if (location.Paths.Count == 0)
             {
                 Report($"未找到 {gameName} 的存档位置", true);
@@ -103,6 +105,7 @@ public static class SaveBackupService
         }
         catch (Exception ex)
         {
+            DebugLog.Write($"存档备份: 异常 {ex.GetType().Name}: {ex.Message}");
             Report("备份失败：" + ex.Message, true);
         }
         finally
@@ -164,6 +167,7 @@ public static class SaveBackupService
         }
         catch (Exception ex)
         {
+            DebugLog.Write($"云端备份: 异常 {ex.GetType().Name}: {ex.Message}");
             Report("云端备份失败：" + ex.Message, true);
         }
         finally
@@ -192,10 +196,12 @@ public static class SaveBackupService
             }
 
             var gameName = Sanitize(TrainerService.CurrentGameName());
+            DebugLog.Write($"存档同步: 触发 exe={TrainerService.LastExeName} 标题={TrainerService.LastWindowTitle} 模式={item.BackupMode}");
             await SaveManifest.EnsureLoadedAsync(t => Report(t));
 
             var exePath = TrainerService.CurrentGameExePath();
             var location = SavePathResolver.Resolve(exePath, TrainerService.LastWindowTitle, TrainerService.LastExeName);
+            DebugLog.Write($"存档同步: 定位 method={location.Method} paths={string.Join(" ; ", location.Paths)}");
             if (location.Paths.Count == 0)
             {
                 Report($"未找到 {gameName} 的存档位置", true);
@@ -211,6 +217,7 @@ public static class SaveBackupService
         }
         catch (Exception ex)
         {
+            DebugLog.Write($"存档同步: 异常 {ex.GetType().Name}: {ex.Message}");
             Report("存档同步失败：" + ex.Message, true);
         }
         finally
@@ -288,6 +295,7 @@ public static class SaveBackupService
         }
         catch (Exception ex)
         {
+            DebugLog.Write($"云端同步: 异常 {ex.GetType().Name}: {ex.Message}");
             Report("云端同步失败：" + ex.Message, true);
         }
         finally

@@ -58,14 +58,19 @@
             <Border.RenderTransform>
                 <TranslateTransform x:Name="MoveHintSlide"/>
             </Border.RenderTransform>
-            <StackPanel Orientation="Horizontal" Spacing="9">
-                <Border x:Name="MoveHintBadge" Width="22" Height="22" CornerRadius="6"
-                        Background="#2A4CC2FF" VerticalAlignment="Center">
-                    <FontIcon x:Name="MoveHintIcon" Glyph="&#xE73E;" FontSize="11" Foreground="#4CC2FF"/>
-                </Border>
-                <TextBlock x:Name="MoveHintText" Text="" FontSize="13" VerticalAlignment="Center"
-                           FontFamily="Segoe UI Variable Text, Segoe UI"
-                           TextWrapping="Wrap" MaxWidth="500"/>
+            <StackPanel Spacing="8">
+                <StackPanel Orientation="Horizontal" Spacing="9">
+                    <Border x:Name="MoveHintBadge" Width="22" Height="22" CornerRadius="6"
+                            Background="#2A4CC2FF" VerticalAlignment="Center">
+                        <FontIcon x:Name="MoveHintIcon" Glyph="&#xE73E;" FontSize="11" Foreground="#4CC2FF"/>
+                    </Border>
+                    <TextBlock x:Name="MoveHintText" Text="" FontSize="13" VerticalAlignment="Center"
+                               FontFamily="Segoe UI Variable Text, Segoe UI"
+                               TextWrapping="Wrap" MaxWidth="500"/>
+                </StackPanel>
+                <!-- 联网下载时的细进度条：文案下方，仅下载期间显示（由 ShowToast 的 progress 参数驱动） -->
+                <ProgressBar x:Name="MoveHintProgress" Height="4" MinWidth="180" Minimum="0" Maximum="100"
+                             Value="0" Visibility="Collapsed" Background="#26FFFFFF"/>
             </StackPanel>
         </Border>
 

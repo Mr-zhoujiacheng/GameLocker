@@ -829,6 +829,132 @@ public static class TileStyle
     }
 
     /// <summary>
+    /// 构建 OptiScaler 小组件磁贴：外壳（圆角/描边/填充/透明度/立体边缘）与普通磁贴完全一致，
+    /// 内容按尺寸分档——小(1×1)=胶片图标+名称；长(2×1)=图标 + 名称（居中横排）；
+    /// 大(2×2)=图标 + 名称 + 提示"A 呼出菜单 · Y 注入"。内容仅随编辑变化，无需刷新引用。
+    /// </summary>
+    public static Border BuildOptiScalerTile(
+        LaunchItem item, double width, double height, Windows.UI.Color accent, bool noColor)
+    {
+        var white = new SolidColorBrush(Microsoft.UI.Colors.White);
+        var label = string.IsNullOrWhiteSpace(item.Name) ? "OptiScaler" : item.Name;
+        const string glyph = "\uE8C8"; // 层叠帧
+
+        var grid = new Grid();
+        if (item.Size == TileSize.Small)
+        {
+            var stack = new StackPanel
+            {
+                Spacing = 2,
+                HorizontalAlignment = HorizontalAlignment.Center,
+                VerticalAlignment = VerticalAlignment.Center
+            };
+            stack.Children.Add(new FontIcon
+            {
+                Glyph = glyph,
+                FontSize = 24,
+                Foreground = white,
+                HorizontalAlignment = HorizontalAlignment.Center,
+                IsHitTestVisible = false
+            });
+            stack.Children.Add(new TextBlock
+            {
+                Text = label,
+                FontSize = 11,
+                Foreground = white,
+                HorizontalAlignment = HorizontalAlignment.Center,
+                TextTrimming = TextTrimming.CharacterEllipsis,
+                MaxWidth = width - 12,
+                IsHitTestVisible = false
+            });
+            grid.Children.Add(stack);
+        }
+        else if (item.Size == TileSize.Wide)
+        {
+            var row = new StackPanel
+            {
+                Orientation = Orientation.Horizontal,
+                Spacing = 10,
+                HorizontalAlignment = HorizontalAlignment.Center,
+                VerticalAlignment = VerticalAlignment.Center
+            };
+            row.Children.Add(new FontIcon
+            {
+                Glyph = glyph,
+                FontSize = 30,
+                Foreground = white,
+                VerticalAlignment = VerticalAlignment.Center,
+                IsHitTestVisible = false
+            });
+            row.Children.Add(new TextBlock
+            {
+                Text = label,
+                FontSize = 16,
+                FontWeight = Microsoft.UI.Text.FontWeights.SemiBold,
+                Foreground = white,
+                VerticalAlignment = VerticalAlignment.Center,
+                TextTrimming = TextTrimming.CharacterEllipsis,
+                MaxWidth = width - 96,
+                IsHitTestVisible = false
+            });
+            grid.Children.Add(row);
+        }
+        else
+        {
+            var stack = new StackPanel
+            {
+                Spacing = 6,
+                Margin = new Thickness(12, 10, 12, 10),
+                HorizontalAlignment = HorizontalAlignment.Center,
+                VerticalAlignment = VerticalAlignment.Center
+            };
+            stack.Children.Add(new FontIcon
+            {
+                Glyph = glyph,
+                FontSize = 38,
+                Foreground = white,
+                HorizontalAlignment = HorizontalAlignment.Center,
+                IsHitTestVisible = false
+            });
+            stack.Children.Add(new TextBlock
+            {
+                Text = label,
+                FontSize = 20,
+                FontWeight = Microsoft.UI.Text.FontWeights.SemiBold,
+                Foreground = white,
+                HorizontalAlignment = HorizontalAlignment.Center,
+                TextTrimming = TextTrimming.CharacterEllipsis,
+                MaxWidth = width - 28,
+                IsHitTestVisible = false
+            });
+            stack.Children.Add(new TextBlock
+            {
+                Text = "A 呼出菜单 · Y 注入",
+                FontSize = 12,
+                Opacity = 0.75,
+                Foreground = white,
+                HorizontalAlignment = HorizontalAlignment.Center,
+                IsHitTestVisible = false
+            });
+            grid.Children.Add(stack);
+        }
+
+        var tile = new Border
+        {
+            Width = width,
+            Height = height,
+            CornerRadius = new CornerRadius(Radius),
+            Background = noColor ? new SolidColorBrush(Windows.UI.Color.FromArgb(0, 0, 0, 0)) : TileFill(accent),
+            BorderBrush = new SolidColorBrush(Windows.UI.Color.FromArgb(0x40, 0xFF, 0xFF, 0xFF)),
+            BorderThickness = new Thickness(1),
+            Child = grid
+        };
+        if (SettingsService.Current.Tile3D && !noColor) Add3DEdge(grid);
+        tile.Opacity = Opacity;
+        return tile;
+    }
+
+    /// <summary>
     /// 构建游戏存档小组件磁贴：外壳（圆角/描边/填充/透明度/立体边缘）与普通磁贴完全一致，
     /// 内容按尺寸分档——小(1×1)=保存图标+名称；长(2×1)=图标 + 名称（居中横排）；
     /// 大(2×2)=图标 + 名称 + 提示"按 A 备份 · Y 同步"。内容仅随编辑变化，无需刷新引用。

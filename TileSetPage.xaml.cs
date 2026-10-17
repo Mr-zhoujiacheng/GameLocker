@@ -50,6 +50,7 @@ public sealed partial class TileSetPage : Page
     private LaunchItem? _lpCloseItem;  // 长按目标=可关闭磁贴时记录（null=设置磁贴进编辑 / 游戏存档磁贴走同步）
     private LaunchItem? _lpSyncItem;   // 长按目标=游戏存档磁贴时记录（长按=同步存档）
     private LaunchItem? _lpRemapItem;  // 长按目标=手柄映射磁贴时记录（长按=关闭映射）
+    private LaunchItem? _lpOptiItem;   // 长按目标=OptiScaler 磁贴时记录（长按=注入）
     private Windows.Foundation.Point _lpStart;
     private uint _lpPointerId;
 
@@ -132,6 +133,8 @@ public sealed partial class TileSetPage : Page
         TrainerService.StatusChanged += OnTrainerStatus;
         // 游戏存档小组件：定位/打包在后台线程执行，进度经提示条反馈
         SaveBackupService.StatusChanged += OnBackupStatus;
+        // OptiScaler 小组件：检测/下载/注入在后台线程执行，进度经提示条反馈（适配性弹窗由 MainWindow 处理）
+        OptiScalerService.StatusChanged += OnOptiScalerStatus;
         // 手柄映射小组件：开关状态变化后刷新磁贴的"映射开/关"显示
         GamepadRemapService.StateChanged += OnRemapStateChanged;
         RefreshRemapTiles();
@@ -146,11 +149,13 @@ public sealed partial class TileSetPage : Page
         _lpCloseItem = null;
         _lpSyncItem = null;
         _lpRemapItem = null;
+        _lpOptiItem = null;
         SystemMediaService.StateChanged -= OnMusicStateChanged;
         SlideshowService.CurrentChanged -= OnSlideshowChanged;
         WeatherService.StateChanged -= OnWeatherChanged;
         TrainerService.StatusChanged -= OnTrainerStatus;
         SaveBackupService.StatusChanged -= OnBackupStatus;
+        OptiScalerService.StatusChanged -= OnOptiScalerStatus;
         GamepadRemapService.StateChanged -= OnRemapStateChanged;
     }
 
@@ -160,11 +165,15 @@ public sealed partial class TileSetPage : Page
 
     /// <summary>修改器取回进度：事件来自后台线程，marshal 回 UI 线程后用提示条反馈（失败用警告样式）</summary>
     private void OnTrainerStatus(TrainerMessage m) =>
-        DispatcherQueue.TryEnqueue(() => ShowToast(m.Text, m.Error ? ToastKind.Warning : ToastKind.Success));
+        DispatcherQueue.TryEnqueue(() => ShowToast(m.Text, m.Error ? ToastKind.Warning : ToastKind.Success, m.Progress));
 
     /// <summary>游戏存档进度：事件来自后台线程，marshal 回 UI 线程后用提示条反馈（失败用警告样式）</summary>
     private void OnBackupStatus(BackupMessage m) =>
         DispatcherQueue.TryEnqueue(() => ShowToast(m.Text, m.Error ? ToastKind.Warning : ToastKind.Success));
+
+    /// <summary>OptiScaler 进度：事件来自后台线程，marshal 回 UI 线程后用提示条反馈（失败用警告样式）</summary>
+    private void OnOptiScalerStatus(OptiScalerMessage m) =>
+        DispatcherQueue.TryEnqueue(() => ShowToast(m.Text, m.Error ? ToastKind.Warning : ToastKind.Success, m.Progress));
 
     private void TileHost_SizeChanged(object sender, SizeChangedEventArgs e)
     {
@@ -367,6 +376,17 @@ public sealed partial class TileSetPage : Page
             return remapTile;
         }
 
+        // OptiScaler 小组件磁贴（快照内照常工作）：A 键/单点 = 发 Insert 键呼出游戏内 OptiScaler 菜单（注入走 Y/长按）
+        if (item.Kind == LaunchKind.Widget && item.WidgetKind == WidgetKind.OptiScaler)
+        {
+            var optiTile = TileStyle.BuildOptiScalerTile(item, width, height, accent, noColor);
+            optiTile.Tag = index;
+            optiTile.Tapped += (_, _) => OnTileTapped(index, () => ActivateAt(index));
+            optiTile.DoubleTapped += (_, _) => HandleDoubleTap(index);
+            AttachEditGestures(optiTile, item, group, index, false);
+            return optiTile;
+        }
+
         // 标准磁贴（与主页共用构建）
         var tile = TileStyle.BuildStandardTile(item, group, width, height, accent, noColor);
         tile.Tag = index;
@@ -487,6 +507,7 @@ public sealed partial class TileSetPage : Page
         _lpTile = null;
         _lpCloseItem = null;
         _lpSyncItem = null;
+        _lpOptiItem = null;
         OpenEditorAt(index);
     }
 
@@ -514,7 +535,7 @@ public sealed partial class TileSetPage : Page
             // 手柄映射小组件磁贴=关闭映射（等同长按关闭）
             if (!_moving && group is null &&
                 (isSettings || item.Kind is LaunchKind.App or LaunchKind.Url or LaunchKind.Folder
-                 || (item.Kind == LaunchKind.Widget && item.WidgetKind is WidgetKind.Trainer or WidgetKind.Backup or WidgetKind.GamepadMap)))
+                 || (item.Kind == LaunchKind.Widget && item.WidgetKind is WidgetKind.Trainer or WidgetKind.Backup or WidgetKind.GamepadMap or WidgetKind.OptiScaler)))
             {
                 _lpTimer ??= new Microsoft.UI.Xaml.DispatcherTimer { Interval = TimeSpan.FromMilliseconds(600) };
                 _lpTimer.Stop();
@@ -523,9 +544,11 @@ public sealed partial class TileSetPage : Page
                 _lpTile = tile;
                 var isBackup = item.Kind == LaunchKind.Widget && item.WidgetKind == WidgetKind.Backup;
                 var isRemap = item.Kind == LaunchKind.Widget && item.WidgetKind == WidgetKind.GamepadMap;
-                _lpCloseItem = isSettings || isBackup || isRemap ? null : item;
+                var isOpti = item.Kind == LaunchKind.Widget && item.WidgetKind == WidgetKind.OptiScaler;
+                _lpCloseItem = isSettings || isBackup || isRemap || isOpti ? null : item;
                 _lpSyncItem = isBackup ? item : null;
                 _lpRemapItem = isRemap ? item : null;
+                _lpOptiItem = isOpti ? item : null;
                 _lpStart = p;
                 _lpPointerId = e.Pointer.PointerId;
                 tile.CapturePointer(e.Pointer);
@@ -557,7 +580,7 @@ public sealed partial class TileSetPage : Page
             var p = e.GetCurrentPoint(TileHost).Position;
             if (_lpTile is not null && e.Pointer.PointerId == _lpPointerId)
             {
-                if (Dist(p, _lpStart) > 12) { _lpTimer?.Stop(); _lpTile = null; _lpCloseItem = null; _lpSyncItem = null; _lpRemapItem = null; } // 移走了=取消长按
+                if (Dist(p, _lpStart) > 12) { _lpTimer?.Stop(); _lpTile = null; _lpCloseItem = null; _lpSyncItem = null; _lpRemapItem = null; _lpOptiItem = null; } // 移走了=取消长按
                 return;
             }
             if (_dragTile is null || !ReferenceEquals(_dragTile, tile) || e.Pointer.PointerId != _dragPointerId) return;
@@ -582,6 +605,7 @@ public sealed partial class TileSetPage : Page
                 _lpCloseItem = null;
                 _lpSyncItem = null;
                 _lpRemapItem = null;
+                _lpOptiItem = null;
                 return;
             }
             if (_dragTile is null || !ReferenceEquals(_dragTile, tile) || e.Pointer.PointerId != _dragPointerId) return;
@@ -628,6 +652,7 @@ public sealed partial class TileSetPage : Page
                 _lpCloseItem = null;
                 _lpSyncItem = null;
                 _lpRemapItem = null;
+                _lpOptiItem = null;
             }
         }), true);
     }
@@ -639,14 +664,17 @@ public sealed partial class TileSetPage : Page
         var closeItem = _lpCloseItem;
         var syncItem = _lpSyncItem;
         var remapItem = _lpRemapItem;
+        var optiItem = _lpOptiItem;
         _lpCloseItem = null;
         _lpSyncItem = null;
         _lpRemapItem = null;
+        _lpOptiItem = null;
         // 兜底守卫：若已切走（双击进编辑页等），绝不在后台执行关闭程序/进入编辑模式
         if (App.Main?.IsCurrentPage(this) != true) return;
         _suppressTap = true;
         if (syncItem is not null) SaveBackupService.Sync(syncItem);              // 长按游戏存档磁贴=同步存档
         else if (remapItem is not null) { GamepadRemapService.Disable(remapItem); ShowToast("已关闭映射", ToastKind.Warning); } // 长按手柄映射磁贴=关闭映射
+        else if (optiItem is not null) OptiScalerService.Activate(optiItem);      // 长按 OptiScaler 磁贴=注入（等同 Y 键）
         else if (closeItem is not null) CloseItem(closeItem);                      // 长按可关闭磁贴=关程序/网站/文件夹
         else EnterEditMode();                                                     // 长按设置磁贴=进入编辑模式
     }
@@ -834,6 +862,11 @@ public sealed partial class TileSetPage : Page
             else if (item.WidgetKind == WidgetKind.Mapping) TriggerMapping(item);
             else if (item.WidgetKind == WidgetKind.Trainer) TrainerService.Activate();
             else if (item.WidgetKind == WidgetKind.Backup) SaveBackupService.Activate(item);
+            else if (item.WidgetKind == WidgetKind.OptiScaler)
+            {
+                // OptiScaler 小组件：A/单点 = 发 Insert 键呼出游戏内 OptiScaler 菜单（注入走 Y/长按）
+                SendOptiScalerMenuKey();
+            }
             else if (item.WidgetKind == WidgetKind.GamepadMap)
             {
                 // 手柄映射小组件：A/点击 = 开/关映射（长按 = 关闭，见 OnLongPressTick）
@@ -886,6 +919,22 @@ public sealed partial class TileSetPage : Page
         KeySendService.Send(vk, mods);
     }
 
+    /// <summary>
+    /// 呼出 OptiScaler 游戏内菜单：收起窗口到托盘后用 SendInput 把 Insert 键发给此前的前台游戏
+    /// （OptiScaler 默认用 Insert 开关它的设置菜单）。注入走 Y 键 / 触屏长按（与主页同款）。
+    /// </summary>
+    private void SendOptiScalerMenuKey()
+    {
+        if (!TrainerService.IsGameRunning())
+        {
+            ShowToast("未检测到游戏进程，请先运行游戏", ToastKind.Warning);
+            return;
+        }
+        App.Main?.HideToTray();
+        // 等窗口滑出/隐藏后再发送，确保 Insert 落到此前的前台游戏，而不是本窗口
+        _ = DelaySendAsync(KeySendService.VkInsert, 0);
+    }
+
     /// <summary>Y=关闭：结束选中磁贴对应的运行中程序；未运行则提示（小组件/组磁贴不响应；修改器小组件=关闭修改器）</summary>
     private void CloseSelected()
     {
@@ -924,11 +973,12 @@ public sealed partial class TileSetPage : Page
     private enum ToastKind { Success, Warning }
 
     /// <summary>临时提示条：玻璃质感药丸，2 秒后自动隐藏（与主页同款样式）。
-    /// 成功=青色对勾，警告=琥珀感叹号；位置在磁贴画布底部（手柄提示条上方），首次出现时淡入 + 自下方归位。</summary>
+    /// 成功=青色对勾，警告=琥珀感叹号；位置在磁贴画布底部（手柄提示条上方），首次出现时淡入 + 自下方归位。
+    /// progress 非空表示这是一条联网下载进度：文案下方显示细进度条，且只要还有进度上报就不自动收起。</summary>
     private Microsoft.UI.Xaml.DispatcherTimer? _toastTimer;
     private Storyboard? _toastIn;
 
-    private void ShowToast(string text, ToastKind kind = ToastKind.Success)
+    private void ShowToast(string text, ToastKind kind = ToastKind.Success, double? progress = null)
     {
         var warn = kind == ToastKind.Warning;
         var accent = warn ? Windows.UI.Color.FromArgb(0xFF, 0xFF, 0xB9, 0x00)
@@ -938,6 +988,18 @@ public sealed partial class TileSetPage : Page
         MoveHintBadge.Background = new SolidColorBrush(
             Windows.UI.Color.FromArgb(0x2A, accent.R, accent.G, accent.B));
         MoveHintText.Text = text;
+
+        // 下载进度 → 细进度条（0..1 折算成 0..100）；下载结束/失败的报告不带进度，条随即收起
+        if (progress is { } p)
+        {
+            MoveHintProgress.Foreground = new SolidColorBrush(accent);
+            MoveHintProgress.Value = Math.Clamp(p, 0, 1) * 100;
+            MoveHintProgress.Visibility = Visibility.Visible;
+        }
+        else
+        {
+            MoveHintProgress.Visibility = Visibility.Collapsed;
+        }
 
         if (MoveHintBar.Visibility != Visibility.Visible)
         {
@@ -953,6 +1015,8 @@ public sealed partial class TileSetPage : Page
                 MoveHintBar.Visibility = Visibility.Collapsed;
             };
         }
+        // 下载中每条进度都会重置计时器（正常下载不会中途消失），卡住超过 6 秒才收起
+        _toastTimer.Interval = TimeSpan.FromMilliseconds(progress is null ? 2000 : 6000);
         _toastTimer.Stop();
         _toastTimer.Start();
     }
@@ -1079,6 +1143,14 @@ public sealed partial class TileSetPage : Page
         return group is null && item.Kind == LaunchKind.Widget && item.WidgetKind == WidgetKind.GamepadMap;
     }
 
+    /// <summary>当前选中的是否为顶层 OptiScaler 小组件磁贴（决定 Y 键是注入还是关闭程序）</summary>
+    private bool IsOptiSelected()
+    {
+        if (_selected < 0 || _selected >= _display.Count) return false;
+        var (item, group) = _display[_selected];
+        return group is null && item.Kind == LaunchKind.Widget && item.WidgetKind == WidgetKind.OptiScaler;
+    }
+
     /// <summary>按当前选中项替换底部提示条（与主页同款）：音乐/图片组磁贴=只显示对应操作提示，其他=恢复副本页常规提示（排列模式不处理，由 UpdateHintBar 负责）</summary>
     private void UpdateHintForSelection()
     {
@@ -1097,6 +1169,8 @@ public sealed partial class TileSetPage : Page
             HintBar.SetHints("DPAD:切换选择|A:备份存档|Y:同步存档|R3:编辑|L3:排列|B:返回");
         else if (IsGamepadMapSelected())
             HintBar.SetHints("DPAD:切换选择|A:开启/关闭映射|长按:关闭映射|R3:编辑|L3:排列|B:返回");
+        else if (IsOptiSelected())
+            HintBar.SetHints("DPAD:切换选择|A:呼出OptiScaler菜单|Y:注入|长按:注入|R3:编辑|L3:排列|B:返回");
         else
             HintBar.SetHints(NormalHints);
     }
@@ -1269,10 +1343,11 @@ public sealed partial class TileSetPage : Page
         if (buttons.HasFlag(GamepadButtons.DPadLeft)) { MoveSelection(-1, 0); return true; }
         if (buttons.HasFlag(GamepadButtons.DPadRight)) { MoveSelection(1, 0); return true; }
         if (buttons.HasFlag(GamepadButtons.A)) { ActivateAt(_selected); return true; }
-        // 常规模式 Y：选中游戏存档磁贴=同步存档（用最近一份备份覆盖回本地）；否则关闭选中磁贴对应的运行中程序
+        // 常规模式 Y：OptiScaler 磁贴=注入；游戏存档磁贴=同步存档（用最近一份备份覆盖回本地）；否则关闭选中磁贴对应的运行中程序
         if (buttons.HasFlag(GamepadButtons.Y))
         {
-            if (IsBackupSelected()) SaveBackupService.Sync(_display[_selected].item);
+            if (IsOptiSelected()) OptiScalerService.Activate(_display[_selected].item);
+            else if (IsBackupSelected()) SaveBackupService.Sync(_display[_selected].item);
             else CloseSelected();
             return true;
         }

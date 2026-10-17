@@ -95,13 +95,23 @@ public sealed partial class WidgetPage : Page
         Size = TileSize.Large
     };
 
+    /// <summary>预览用固定 OptiScaler 项（图像图标 + 名称，无实时状态；实际添加时为默认"长"尺寸）</summary>
+    private static readonly LaunchItem OptiScalerPreviewItem = new()
+    {
+        Name = "OptiScaler",
+        Target = "widget:optiscaler",
+        Kind = LaunchKind.Widget,
+        WidgetKind = WidgetKind.OptiScaler,
+        Size = TileSize.Large
+    };
+
     /// <summary>预览磁贴框架（订阅天气变化时刷新文字）</summary>
     private TileStyle.WeatherTileRefs? _weatherPreviewRefs;
 
     public WidgetPage()
     {
         InitializeComponent();
-        _formControls = [MusicWidgetCard, PhotoWidgetCard, TileSetWidgetCard, WeatherWidgetCard, MappingWidgetCard, TrainerWidgetCard, BackupWidgetCard, GamepadMapWidgetCard];
+        _formControls = [MusicWidgetCard, PhotoWidgetCard, TileSetWidgetCard, WeatherWidgetCard, MappingWidgetCard, TrainerWidgetCard, BackupWidgetCard, GamepadMapWidgetCard, OptiScalerWidgetCard];
     }
 
     protected override void OnNavigatedTo(NavigationEventArgs e)
@@ -142,6 +152,10 @@ public sealed partial class WidgetPage : Page
             TileStyle.IsNoColor(GamepadMapPreviewItem));
         TileStyle.FillGamepadMapState(gamepadMapRefs, GamepadMapPreviewItem);
         GamepadMapPreviewHost.Content = gamepadMapTile;
+        // OptiScaler 预览：与主页同一构建（图像图标 + 名称）
+        OptiScalerPreviewHost.Content = TileStyle.BuildOptiScalerTile(
+            OptiScalerPreviewItem, w, h, TileStyle.AccentFor(OptiScalerPreviewItem),
+            TileStyle.IsNoColor(OptiScalerPreviewItem));
         WeatherService.StateChanged += OnWeatherChanged;
         WeatherService.EnsureFresh();
 
@@ -185,6 +199,7 @@ public sealed partial class WidgetPage : Page
         else if (ReferenceEquals(c, TrainerWidgetCard)) AddTrainerWidget();
         else if (ReferenceEquals(c, BackupWidgetCard)) AddBackupWidget();
         else if (ReferenceEquals(c, GamepadMapWidgetCard)) AddGamepadMapWidget();
+        else if (ReferenceEquals(c, OptiScalerWidgetCard)) AddOptiScalerWidget();
         else AddMusicWidget();
     }
 
@@ -474,6 +489,28 @@ public sealed partial class WidgetPage : Page
         App.Main?.ShowMainPage();
     }
 
+    /// <summary>OptiScaler 组件：默认"长"尺寸（可后续编辑大小、颜色、注入 DLL 与 ini 关键项），只允许一个——
+    /// 其行为始终是"检测当前正在玩的游戏并注入 OptiScaler"，多份没有区别。</summary>
+    private void AddOptiScalerWidget()
+    {
+        var items = ConfigService.Load();
+        if (items.Any(it => it.Kind == LaunchKind.Widget && it.WidgetKind == WidgetKind.OptiScaler))
+        {
+            PageTitle.Text = "OptiScaler 已在主页";
+            return;
+        }
+        items.Add(new LaunchItem
+        {
+            Name = "OptiScaler",
+            Target = "widget:optiscaler",
+            Kind = LaunchKind.Widget,
+            WidgetKind = WidgetKind.OptiScaler,
+            Size = TileSize.Wide
+        });
+        ConfigService.Save(items);
+        App.Main?.ShowMainPage();
+    }
+
     // ---- 鼠标 ----
 
     private void OnBackClick(object sender, RoutedEventArgs e) => App.Main?.ShowMainPage();
@@ -487,6 +524,7 @@ public sealed partial class WidgetPage : Page
         else if (sender is Button { Tag: "trainer" }) AddTrainerWidget();
         else if (sender is Button { Tag: "backup" }) AddBackupWidget();
         else if (sender is Button { Tag: "gamepadmap" }) AddGamepadMapWidget();
+        else if (sender is Button { Tag: "optiscaler" }) AddOptiScalerWidget();
         else AddMusicWidget();
     }
 }

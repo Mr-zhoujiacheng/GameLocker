@@ -9,8 +9,12 @@ using System.Text.RegularExpressions;
 
 namespace GameLocker.Services;
 
-/// <summary>修改器取回过程中的一条进度/结果提示（Error=true 时以警告样式显示）</summary>
-public readonly record struct TrainerMessage(string Text, bool Error);
+/// <summary>修改器取回过程中的一条进度/结果提示（Error=true 时以警告样式显示；
+/// Progress 非空时提示条下方显示小进度条，0..1）</summary>
+public readonly record struct TrainerMessage(string Text, bool Error, double? Progress = null);
+
+/// <summary>列表页里的一条候选修改器（Name=页面标题，Url=修改器页地址，Percent=折算后的匹配度百分比，Score=原始打分）</summary>
+public readonly record struct TrainerCandidate(string Name, string Url, int Percent, int Score);
 
 /// <summary>
 /// 修改器小组件服务：识别最近一个「非本程序的前台游戏进程」→ 在风灵月影官方站 flingtrainer.com
@@ -83,6 +87,8 @@ public static class TrainerService
             if (string.Equals(exe, "explorer", StringComparison.OrdinalIgnoreCase)) return; // 桌面/任务栏
             var title = WindowText(hwnd);
             if (string.IsNullOrWhiteSpace(title)) return; // 无标题的窗口不认作游戏
+            if (!string.Equals(LastExeName, exe, StringComparison.OrdinalIgnoreCase))
+                DebugLog.Write($"修改器: 记录前台游戏 exe={exe} 标题={title}");
             LastExeName = exe;
             LastWindowTitle = title;
         }
@@ -116,15 +122,33 @@ public static class TrainerService
     /// <summary>取回过程中的提示（可能来自后台线程，订阅方自行 marshal 到 UI 线程）</summary>
     public static event Action<TrainerMessage>? StatusChanged;
 
-    private static void Report(string text, bool error = false) =>
-        StatusChanged?.Invoke(new TrainerMessage(text, error));
+    /// <summary>
+    /// 精确匹配失败但存在模糊候选时触发（后台线程）。交由 UI 层弹窗让用户选择，选中后调用 DownloadChosen；
+    /// 不在这里直接弹窗，是为了不给服务层引入 UI 依赖。
+    /// </summary>
+    public static event Action<IReadOnlyList<TrainerCandidate>>? CandidatesReady;
+
+    private static void Report(string text, bool error = false, double? progress = null) =>
+        StatusChanged?.Invoke(new TrainerMessage(text, error, progress));
+
+    /// <summary>下载进度 → 提示条文案（带 MB 数值）+ 小进度条取值；总长度未知时只报体积、不显示进度条</summary>
+    private static void ReportDownload(string what, long got, long? total) =>
+        Report(total is > 0
+                ? $"正在下载{what}… {DownloadProgress.Mb(got)}/{DownloadProgress.Mb(total.Value)} MB（{got * 100 / total.Value}%）"
+                : $"正在下载{what}… 已接收 {DownloadProgress.Mb(got)} MB",
+            progress: total is > 0 ? (double)got / total.Value : null);
 
     // ---- 入口 ----
 
     private static bool _busy;
 
     /// <summary>点击/ A 键触发：按当前游戏进程自动搜索、下载并打开最新修改器（后台执行，进度经 StatusChanged 上报）</summary>
-    public static void Activate()
+    public static void Activate() => Start(null);
+
+    /// <summary>用户在候选弹窗里选定后调用：按所选修改器页继续解析、下载并打开</summary>
+    public static void DownloadChosen(TrainerCandidate candidate) => Start(candidate);
+
+    private static void Start(TrainerCandidate? chosen)
     {
         if (_busy)
         {
@@ -132,10 +156,10 @@ public static class TrainerService
             return;
         }
         _busy = true;
-        _ = ActivateAsync();
+        _ = ActivateAsync(chosen);
     }
 
-    private static async Task ActivateAsync()
+    private static async Task ActivateAsync(TrainerCandidate? chosen)
     {
         try
         {
@@ -150,9 +174,12 @@ public static class TrainerService
                 return;
             }
 
+            DebugLog.Write($"修改器: 触发 exe={LastExeName} 标题={LastWindowTitle}");
+
             // 已下载过当前游戏的修改器：直接打开，不再联网（要换版本可删掉下载目录里的旧版）
             if (FindDownloaded() is { } cached)
             {
+                DebugLog.Write($"修改器: 命中已下载的修改器 {cached}");
                 if (TryLaunch(cached) is { } cachedErr)
                 {
                     Report($"无法运行修改器：{cachedErr}", true);
@@ -163,12 +190,31 @@ public static class TrainerService
                 return;
             }
 
-            Report($"正在搜索 {GameName()} 的修改器…");
-            var pageUrl = await SearchTrainerAsync();
-            if (pageUrl is null)
+            string? pageUrl;
+            if (chosen is { } pick)
             {
-                Report($"未找到 {GameName()} 对应的修改器", true);
-                return;
+                pageUrl = pick.Url; // 用户已在候选弹窗里选定，直接用该修改器页
+            }
+            else
+            {
+                Report($"正在搜索 {GameName()} 的修改器…");
+                var (best, candidates) = await SearchAsync();
+                if (best is null)
+                {
+                    if (candidates.Count > 0)
+                    {
+                        // 精确匹配失败：把模糊候选交给 UI 弹窗让用户自己挑。风灵月影列表的写法常与
+                        // 窗口标题差很远（中文标题尤其），靠字符串自动选准是不可能的，交给人最稳。
+                        DebugLog.Write($"修改器: 无精确匹配，提供 {candidates.Count} 条模糊候选供用户选择");
+                        Report($"没有完全匹配的修改器，请从 {candidates.Count} 条相似结果中选择");
+                        CandidatesReady?.Invoke(candidates);
+                        return;
+                    }
+                    DebugLog.Write("修改器: 列表页未匹配到候选（看上面 links / 最高分 两行日志）");
+                    Report($"未找到 {GameName()} 对应的修改器", true);
+                    return;
+                }
+                pageUrl = best;
             }
 
             Report("正在获取最新修改器下载地址…");
@@ -179,7 +225,7 @@ public static class TrainerService
                 return;
             }
 
-            Report("正在下载修改器…");
+            Report("正在下载修改器…", progress: 0);
             var file = await DownloadAsync(link.Value.Url, pageUrl, link.Value.Name);
             if (file is null)
             {
@@ -200,6 +246,7 @@ public static class TrainerService
         }
         catch (Exception ex)
         {
+            DebugLog.Write($"修改器: 异常 {ex.GetType().Name}: {ex.Message}\n{ex}");
             Report("修改器获取失败：" + ex.Message, true);
         }
         finally
@@ -339,13 +386,46 @@ public static class TrainerService
 
     // ---- 搜索 / 解析 / 下载 ----
 
-    /// <summary>在全部修改器 A-Z 列表中搜索最匹配当前游戏的修改器页地址（未匹配到返回 null）</summary>
-    private static async Task<string?> SearchTrainerAsync()
+    /// <summary>
+    /// 抓取 A-Z 列表页 → 打分取最优；最优低于阈值时另给一份低阈值候选列表供用户选择。
+    /// 匹配用的名字有三个来源：窗口标题、进程名、Steam 安装目录名 —— 中文标题（如「破门而入：行动小队」）
+    /// 分词后为空，只有安装目录名（Door Kickers - Action Squad）能提供英文名，等于自动完成了「中文→英文」。
+    /// </summary>
+    private static async Task<(string? Best, List<TrainerCandidate> Candidates)> SearchAsync()
     {
-        var html = await Http.GetStringAsync(AllTrainersUrl);
+        using var resp = await Http.GetAsync(AllTrainersUrl);
+        var html = await resp.Content.ReadAsStringAsync();
+        DebugLog.Write($"修改器: 列表页 status={(int)resp.StatusCode} len={html.Length}");
+        resp.EnsureSuccessStatusCode(); // 与 GetStringAsync 一致：非 2xx 抛错
+
         var entries = ParseTrainerLinks(html);
-        if (entries.Count == 0) return null;
-        return MatchBest(entries, LastWindowTitle, LastExeName);
+        DebugLog.Write($"修改器: 列表页解析到 links={entries.Count}");
+
+        var keys = SearchKeys();
+        var best = MatchBest(entries, keys, out var score, out var bestName);
+        DebugLog.Write($"修改器: 匹配 名称候选=[{string.Join(" / ", keys)}] → " +
+            (best is null ? "无命中" : bestName) + $"（最高分={score}，阈值 40）");
+        return (best, best is null ? RankCandidates(entries, keys) : []);
+    }
+
+    /// <summary>用于匹配的名字：窗口标题、进程名、Steam 安装目录名（去空、去重）</summary>
+    private static List<string> SearchKeys()
+    {
+        var keys = new List<string> { LastWindowTitle.Trim(), LastExeName.Trim() };
+        var dir = InstallDirName();
+        if (dir.Length > 0) keys.Add(dir);
+        return keys.Where(k => k.Length > 0).Distinct(StringComparer.OrdinalIgnoreCase).ToList();
+    }
+
+    /// <summary>Steam 安装目录名（&lt;库&gt;\steamapps\common\&lt;目录&gt;）；非 Steam 游戏返回空串</summary>
+    private static string InstallDirName()
+    {
+        const string marker = @"\steamapps\common\";
+        var path = GameInstallPath();
+        var idx = path.IndexOf(marker, StringComparison.OrdinalIgnoreCase);
+        if (idx < 0) return "";
+        return path[(idx + marker.Length)..]
+            .Split('\\', StringSplitOptions.RemoveEmptyEntries).FirstOrDefault() ?? "";
     }
 
     /// <summary>正则解析列表页中的 (名称, 修改器页绝对地址)，按地址去重</summary>
@@ -365,18 +445,18 @@ public static class TrainerService
     }
 
     /// <summary>
-    /// 逐个候选打分取最优：归一化完全相等 100 / 包含 60 / 命中词元 ×20，候选词元多于游戏词元时按超出数降权；
+    /// 逐个候选打分取最优：归一化与任一名字相等 100 / 双向包含 60 / 命中词元 ×20，候选词元多于游戏词元时按超出数降权；
     /// 最高分低于 40 视为未匹配（阈值可避免"一个通用词"就误配）。
     /// </summary>
-    private static string? MatchBest(List<(string Name, string Url)> entries, string title, string exe)
+    private static string? MatchBest(
+        List<(string Name, string Url)> entries, IReadOnlyList<string> keys,
+        out int bestScore, out string bestName)
     {
-        var gameTokens = new HashSet<string>(Tokens(title));
-        foreach (var t in Tokens(exe)) gameTokens.Add(t);
-        var normTitle = Norm(title);
-        var normExe = Norm(exe);
+        var (gameTokens, norms) = Tokenize(keys);
 
         string? bestUrl = null;
-        var bestScore = 0;
+        bestName = "";
+        bestScore = 0;
         foreach (var (name, url) in entries)
         {
             var cand = StripTrainerWord(name);
@@ -386,8 +466,10 @@ public static class TrainerService
             if (candTokens.Count == 0) continue;
 
             var score = 0;
-            if (norm == normExe || norm == normTitle) score += 100;
-            if (normTitle.Contains(norm) || normExe.Contains(norm)) score += 60;
+            if (norms.Contains(norm)) score += 100;
+            // 双向包含都是很强的信号：窗口标题常常只是简称（"Dawnwalker"），而列表里是全名
+            // （"The Blood of Dawnwalker"）；反过来列表名也可能只是标题的一部分，两个方向都要认。
+            if (norms.Any(n => n.Contains(norm) || norm.Contains(n))) score += 60;
             score += candTokens.Count(t => gameTokens.Contains(t)) * 20;
             score -= Math.Max(0, candTokens.Count - gameTokens.Count) * 10;
 
@@ -395,9 +477,54 @@ public static class TrainerService
             {
                 bestScore = score;
                 bestUrl = url;
+                bestName = name;
             }
         }
         return bestScore >= 40 ? bestUrl : null;
+    }
+
+    /// <summary>把若干个名字汇总为「词元集合 + 归一化集合」，供精确打分与候选排序复用</summary>
+    private static (HashSet<string> Tokens, List<string> Norms) Tokenize(IReadOnlyList<string> keys)
+    {
+        var tokens = new HashSet<string>();
+        var norms = new List<string>();
+        foreach (var k in keys)
+        {
+            foreach (var t in Tokens(k)) tokens.Add(t);
+            var n = Norm(k);
+            if (n.Length > 0) norms.Add(n);
+        }
+        return (tokens, norms);
+    }
+
+    /// <summary>
+    /// 精确匹配失败时的低阈值候选（词元重合 ×20 + 双向包含 40，只留得分 &gt; 0 的，取前 15 条）。
+    /// 目的不是自动选对，而是挑出「最像的几条」交人工确认。得分会折算成 0-100 的匹配度百分比：
+    /// 以「本查询能拿到的满分」为分母（名称全等 100 + 双向包含 60 + 每个游戏词元命中 20），故数值有绝对含义，
+    /// 而非仅列表内的相对高低。
+    /// </summary>
+    private static List<TrainerCandidate> RankCandidates(
+        List<(string Name, string Url)> entries, IReadOnlyList<string> keys)
+    {
+        var (gameTokens, norms) = Tokenize(keys);
+        var ideal = 160 + 20 * Math.Max(1, gameTokens.Count); // 完美匹配的分数：全等+包含+命中全部词元
+        var list = new List<TrainerCandidate>();
+        foreach (var (name, url) in entries)
+        {
+            var cand = StripTrainerWord(name);
+            var norm = Norm(cand);
+            if (norm.Length < 4) continue;
+            var candTokens = Tokens(cand);
+            if (candTokens.Count == 0) continue;
+
+            var score = candTokens.Count(t => gameTokens.Contains(t)) * 20;
+            if (norms.Any(n => n.Contains(norm) || norm.Contains(n))) score += 40;
+            if (score <= 0) continue;
+            var percent = Math.Clamp((int)Math.Round(score * 100.0 / ideal), 1, 99);
+            list.Add(new TrainerCandidate(name, url, percent, score));
+        }
+        return list.OrderByDescending(c => c.Score).ThenBy(c => c.Name, StringComparer.OrdinalIgnoreCase)
+                   .Take(15).ToList();
     }
 
     /// <summary>去掉候选名中单独的 "trainer" 词（列表中名称形如 "Enshrouded Trainer"）</summary>
@@ -429,9 +556,11 @@ public static class TrainerService
     {
         var html = await Http.GetStringAsync(trainerPageUrl);
         var m = DownloadLinkRegex.Match(html);
+        DebugLog.Write($"修改器: 修改器页 len={html.Length} 下载链接解析={(m.Success ? "成功" : "失败")}");
         if (!m.Success) return null;
         var url = m.Groups[1].Value;
         var name = WebUtility.HtmlDecode(m.Groups[2].Value).Trim();
+        DebugLog.Write($"修改器: 下载地址 {url}（{name}）");
         return (url, string.IsNullOrWhiteSpace(name) ? "Trainer-FLiNG" : name);
     }
 
@@ -446,19 +575,34 @@ public static class TrainerService
         using var req = new HttpRequestMessage(HttpMethod.Get, url);
         req.Headers.Referrer = new Uri(referer); // 防盗链：无 Referer 会 403
         req.Headers.TryAddWithoutValidation("Accept", "*/*");
-        using var resp = await Http.SendAsync(req);
+        using var resp = await Http.SendAsync(req, HttpCompletionOption.ResponseHeadersRead);
+        DebugLog.Write($"修改器: 下载 status={(int)resp.StatusCode} 最终地址={resp.RequestMessage?.RequestUri}");
         if (!resp.IsSuccessStatusCode) return null;
 
         // 防诱导弹页：正常入口最终落在 flingtrainer.com 自己的 uploads 上，指向 wemod 即异常
         var finalUrl = resp.RequestMessage?.RequestUri?.ToString() ?? "";
-        if (finalUrl.Contains("wemod", StringComparison.OrdinalIgnoreCase)) return null;
+        if (finalUrl.Contains("wemod", StringComparison.OrdinalIgnoreCase))
+        {
+            DebugLog.Write("修改器: 最终地址指向 wemod，判定为诱导弹页 → 放弃");
+            return null;
+        }
 
-        var bytes = await resp.Content.ReadAsByteArrayAsync();
+        // 边收边报进度：修改器包通常几 MB，先落到内存再判 zip/PE（两种载荷都要按字节甄别）
+        using var buffer = new MemoryStream();
+        await using (var net = await resp.Content.ReadAsStreamAsync())
+            await DownloadProgress.CopyAsync(net, resp.Content.Headers.ContentLength, buffer,
+                (got, total) => ReportDownload("修改器", got, total));
+        var bytes = buffer.ToArray();
+        DebugLog.Write($"修改器: 下载完成 bytes={bytes.Length}");
         var dir = Path.Combine(TrainersDir, SanitizeBaseName(versionName));
         Directory.CreateDirectory(dir);
 
         if (IsZip(bytes)) return ExtractTrainer(bytes, dir);
-        if (!IsPe(bytes)) return null; // 既不是 zip 也不是 PE：拒绝落盘
+        if (!IsPe(bytes))
+        {
+            DebugLog.Write("修改器: 载荷既非 zip 也非 PE → 拒绝落盘");
+            return null; // 既不是 zip 也不是 PE：拒绝落盘
+        }
 
         var pePath = Path.Combine(dir, SanitizeBaseName(versionName) + ".exe");
         await File.WriteAllBytesAsync(pePath, bytes);

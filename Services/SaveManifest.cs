@@ -51,6 +51,12 @@ public static class SaveManifest
 
     private static readonly TimeSpan MaxAge = TimeSpan.FromDays(7);
 
+    /// <summary>
+    /// 缓存格式版本。修好解析器后必须自增：旧缓存是用有缺陷的解析器生成的（86% 游戏没有存档路径），
+    /// 若继续命中旧缓存，7 天内都不会重新解析，修复就白做了。
+    /// </summary>
+    private const int CacheVersion = 2;
+
     private static readonly HttpClient Http = CreateHttp();
 
     private static HttpClient CreateHttp()
@@ -66,11 +72,14 @@ public static class SaveManifest
         return http;
     }
 
-    /// <summary>缓存元数据（ETag / 抓取时间）</summary>
+    /// <summary>缓存元数据（ETag / 抓取时间 / 格式版本）</summary>
     private sealed class ManifestMeta
     {
         public string? ETag { get; set; }
         public DateTimeOffset FetchedAt { get; set; }
+
+        /// <summary>生成该缓存的解析器版本；与 CacheVersion 不符即视为无缓存</summary>
+        public int Version { get; set; }
     }
 
     private static SaveManifestIndex? _index;
@@ -90,29 +99,36 @@ public static class SaveManifest
             if (_index is not null) return;
 
             var meta = LoadMeta();
-            var hasCache = File.Exists(CacheFile) && meta is not null;
+            // 版本不符的旧缓存（由有缺陷的解析器生成）直接作废，避免继续喂错数据
+            var hasCache = File.Exists(CacheFile) && meta is not null && meta.Version == CacheVersion;
             if (hasCache && DateTimeOffset.UtcNow - meta!.FetchedAt < MaxAge)
             {
                 _index = LoadCache();
+                DebugLog.Write($"存档清单: 缓存命中 games={_index?.Games.Count ?? 0} 抓取于 {meta.FetchedAt:u}");
                 if (_index is not null) return;
             }
+            DebugLog.Write($"存档清单: 无可用缓存(hasCache={hasCache} ver={meta?.Version.ToString() ?? "-"}) → 开始下载 {ManifestUrl}");
 
             note?.Invoke("正在更新存档位置数据库…");
             try
             {
-                var parsed = await DownloadAndParseAsync(meta?.ETag, note);
+                // 旧缓存按版本作废时不再带 ETag：否则服务端回 304 又会退回到那份错误缓存
+                var parsed = await DownloadAndParseAsync(hasCache ? meta!.ETag : null, note);
                 if (parsed is null) return; // 未变更（304）：沿用旧缓存，下面兜底读取
                 _index = parsed;
                 SaveCache(_index);
+                DebugLog.Write($"存档清单: 下载解析成功 games={_index.Games.Count}");
             }
-            catch
+            catch (Exception ex)
             {
-                // 下载/解析失败：静默回退，读旧缓存或空索引
+                // 下载/解析失败：静默回退，读旧缓存或空索引（原因入日志，供故障机定位）
+                DebugLog.Write($"存档清单: 下载/解析失败 → 回退 {ex.GetType().Name}: {ex.Message}");
             }
 
             if (_index is not null) return;
             _index = hasCache ? LoadCache() : null;
             _index ??= new SaveManifestIndex();
+            DebugLog.Write($"存档清单: 回退后 games={_index.Games.Count}（0 = 只能走启发式）");
         }
         finally
         {
@@ -127,6 +143,7 @@ public static class SaveManifest
         if (!string.IsNullOrEmpty(etag))
             req.Headers.TryAddWithoutValidation("If-None-Match", etag);
         using var resp = await Http.SendAsync(req, HttpCompletionOption.ResponseHeadersRead);
+        DebugLog.Write($"存档清单: 响应 status={(int)resp.StatusCode} etag={resp.Headers.ETag?.Tag ?? "(无)"}");
         if (resp.StatusCode == HttpStatusCode.NotModified) return null;
         resp.EnsureSuccessStatusCode();
 
@@ -137,9 +154,10 @@ public static class SaveManifest
             await using (var dst = File.Create(tmp))
                 await src.CopyToAsync(dst);
 
+            DebugLog.Write($"存档清单: 下载完成 bytes={new FileInfo(tmp).Length}");
             note?.Invoke("正在解析存档位置数据库…");
             var index = ParseManifest(tmp);
-            SaveMeta(new ManifestMeta { ETag = resp.Headers.ETag?.Tag, FetchedAt = DateTimeOffset.UtcNow });
+            SaveMeta(new ManifestMeta { Version = CacheVersion, ETag = resp.Headers.ETag?.Tag, FetchedAt = DateTimeOffset.UtcNow });
             return index;
         }
         finally
@@ -194,6 +212,9 @@ public static class SaveManifest
                 case MappingEnd:
                 case SequenceEnd:
                     if (frames.Count > 0) frames.RemoveAt(frames.Count - 1);
+                    // 集合值（map/seq）读完后，父 map 必须回到「等待键」状态：否则下一个同级键会被误读成值，
+                    // 导致 section / pendingPath / 层级全部错位（实测会让 86% 的游戏丢掉全部存档路径）。
+                    if (frames.Count > 0 && frames[^1].IsMap) frames[^1].ExpectKey = true;
                     // 离开 files 条目回到 files 映射层（深度 3）：提交上一个路径
                     if (frames.Count == 3 && section == "files")
                     {
@@ -213,6 +234,7 @@ public static class SaveManifest
                     break;
             }
         }
+        DebugLog.Write($"存档清单: 解析完成 games={index.Games.Count} files={index.Games.Values.Sum(g => g.Files.Count)}");
         return index;
 
         void HandleScalar(string value)
@@ -362,7 +384,7 @@ public static class SaveManifest
             Directory.CreateDirectory(Path.GetDirectoryName(CacheFile)!);
             File.WriteAllText(CacheFile, JsonSerializer.Serialize(index));
             if (LoadMeta() is null)
-                SaveMeta(new ManifestMeta { FetchedAt = DateTimeOffset.UtcNow });
+                SaveMeta(new ManifestMeta { Version = CacheVersion, FetchedAt = DateTimeOffset.UtcNow });
         }
         catch { /* 落盘失败不影响本次使用（下次再拉） */ }
     }

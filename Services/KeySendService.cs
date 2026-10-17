@@ -20,6 +20,9 @@ public static class KeySendService
     private const int VkAlt = 0x12;
     private const int VkWin = 0x5B;
 
+    /// <summary>Insert 键：OptiScaler 默认用它呼出游戏内的设置菜单</summary>
+    public const int VkInsert = 0x2D;
+
     // ---- 鼠标按键编码（存于 GamepadMapping.TargetMouse） ----
     public const int MouseLeft = 1;
     public const int MouseRight = 2;

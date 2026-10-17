@@ -1,3 +1,4 @@
+using Microsoft.Win32;
 using System.Text;
 using System.Text.RegularExpressions;
 
@@ -45,11 +46,15 @@ public static class SavePathResolver
             installDirs.Add(Path.GetFileName(installRoot));
 
         // ① 清单命中 → 展开 files
+        DebugLog.Write($"存档定位: 输入 进程='{exeName}' 标题='{gameName}' exe路径='{exePath ?? "(无)"}' " +
+            $"→ steam='{steamRoot ?? "(无)"}' 安装目录='{installDirName}' appId={appId?.ToString() ?? "(无)"}");
+
         var entry = SaveManifest.TryFind(gameName, installDirs, appId);
+        DebugLog.Write($"存档定位: 清单命中={(entry is not null)} 条目路径数={entry?.Files.Count ?? 0}");
         if (entry is not null && entry.Files.Count > 0)
         {
             var paths = new List<string>();
-            foreach (var raw in entry.Files) paths.AddRange(Expand(raw, baseDir));
+            foreach (var raw in entry.Files) paths.AddRange(Expand(raw, baseDir, steamRoot));
             var filtered = Filter(paths, baseDir);
             if (filtered.Count > 0)
             {
@@ -57,6 +62,7 @@ public static class SavePathResolver
                     : installDirs.Count > 0 ? "目录名" : "名称";
                 return new SaveLocation(filtered, $"清单({how})");
             }
+            DebugLog.Write("存档定位: 清单条目展开后无有效目录，候选 " + string.Join(" | ", paths.Distinct().Take(20)));
         }
 
         // ② Steam 云存档直取（清单未命中或清单路径都不存在时）
@@ -67,7 +73,10 @@ public static class SavePathResolver
         }
 
         // ③ 引擎启发式兜底
-        var heuristic = Filter(HeuristicCandidates(installDirName, gameName, exeName), baseDir);
+        var candidates = HeuristicCandidates(installDirName, gameName, exeName).Distinct().ToList();
+        var heuristic = Filter(candidates, baseDir);
+        if (heuristic.Count == 0)
+            DebugLog.Write("存档定位: 清单未命中且启发式无结果，已尝试候选 " + string.Join(" | ", candidates));
         return heuristic.Count > 0
             ? new SaveLocation(heuristic, "启发式")
             : new SaveLocation([], "未找到");
@@ -108,34 +117,40 @@ public static class SavePathResolver
         return null;
     }
 
-    /// <summary>Steam userdata 直取：&lt;steam&gt;\userdata\&lt;accountId&gt;\&lt;appid&gt;\remote（多账号取最近修改的）</summary>
-    private static List<string> FindSteamUserdata(string steamRoot, long appId)
+    /// <summary>
+    /// Steam userdata 直取：&lt;根&gt;\userdata\&lt;accountId&gt;\&lt;appid&gt;\remote（多账号取最近修改的）。
+    /// 注意这里的「根」有两种：客户端安装根（userdata 真正所在）与库目录（兜底），见 UserdataRoots。
+    /// </summary>
+    private static List<string> FindSteamUserdata(string? steamRoot, long appId)
     {
         var result = new List<string>();
-        var userdata = Path.Combine(steamRoot, "userdata");
-        try
+        var candidates = new List<(string Path, DateTime Time)>();
+        foreach (var root in UserdataRoots(steamRoot).ToList())
         {
-            var candidates = new List<(string Path, DateTime Time)>();
-            foreach (var acct in Directory.EnumerateDirectories(userdata))
+            var userdata = Path.Combine(root, "userdata");
+            try
             {
-                var remote = Path.Combine(acct, appId.ToString(), "remote");
-                if (Directory.Exists(remote) && HasEntries(remote))
+                foreach (var acct in Directory.EnumerateDirectories(userdata))
                 {
-                    try { candidates.Add((remote, Directory.GetLastWriteTime(remote))); }
-                    catch { candidates.Add((remote, DateTime.MinValue)); }
+                    var remote = Path.Combine(acct, appId.ToString(), "remote");
+                    if (Directory.Exists(remote) && HasEntries(remote))
+                    {
+                        try { candidates.Add((remote, Directory.GetLastWriteTime(remote))); }
+                        catch { candidates.Add((remote, DateTime.MinValue)); }
+                    }
                 }
             }
-            if (candidates.Count > 0)
-                result.Add(candidates.OrderByDescending(c => c.Time).First().Path); // 多账号取最近修改
+            catch { /* userdata 不存在：试下一个根 */ }
         }
-        catch { /* userdata 不存在：忽略 */ }
+        if (candidates.Count > 0)
+            result.Add(candidates.OrderByDescending(c => c.Time).First().Path); // 多账号取最近修改
         return result;
     }
 
     // ---- 占位符展开 ----
 
     /// <summary>把含占位符的原始路径展开为若干候选绝对路径（先展开 &lt;…|…&gt; 备选，再展开 * 通配）</summary>
-    private static IEnumerable<string> Expand(string raw, string installRoot)
+    private static IEnumerable<string> Expand(string raw, string installRoot, string? steamRoot)
     {
         var alts = new List<string> { raw };
         for (var guard = 0; guard < 8 && alts.Any(s => PlaceholderRegex.IsMatch(s)); guard++)
@@ -147,9 +162,8 @@ public static class SavePathResolver
                 if (!m.Success) { next.Add(s); continue; }
                 foreach (var opt in m.Groups[1].Value.Split('|'))
                 {
-                    var val = Substitute(opt.Trim(), installRoot);
-                    if (val is null) continue; // 未支持/未知的占位符：丢弃该分支
-                    next.Add(s[..m.Index] + val + s[(m.Index + m.Length)..]);
+                    foreach (var val in SubstituteAll(opt.Trim(), installRoot, steamRoot))
+                        next.Add(s[..m.Index] + val + s[(m.Index + m.Length)..]);
                 }
             }
             alts = next;
@@ -165,20 +179,109 @@ public static class SavePathResolver
         return final;
     }
 
-    /// <summary>占位符取值；未知返回 null（丢弃该分支）</summary>
-    private static string? Substitute(string key, string installRoot) => key.ToLowerInvariant() switch
+    /// <summary>
+    /// 单个占位符的全部取值；不支持的占位符返回空集合（调用方据此丢弃该分支）。
+    /// 之所以返回集合：&lt;root&gt; 在清单里既有「Steam 客户端安装根」用法（userdata），也有「库目录」用法
+    /// （steamapps/common），分盘时两者不同，只能都给出候选，再交由 Filter 按目录是否真实存在筛掉。
+    /// </summary>
+    private static IEnumerable<string> SubstituteAll(string key, string installRoot, string? steamRoot)
     {
-        "base" => installRoot.Length > 0 ? installRoot : null,
-        "home" => Environment.GetFolderPath(Environment.SpecialFolder.UserProfile),
-        "winlocalappdata" => Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
-        "winlocalappdatalow" => Path.Combine(
-            Environment.GetFolderPath(Environment.SpecialFolder.UserProfile), "AppData", "LocalLow"),
-        "winappdata" => Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData),
-        "winprogramdata" => Environment.GetFolderPath(Environment.SpecialFolder.CommonApplicationData),
-        "windocuments" => Environment.GetFolderPath(Environment.SpecialFolder.MyDocuments),
-        "osusername" => Environment.UserName,
-        _ => null
-    };
+        switch (key.ToLowerInvariant())
+        {
+            case "base":
+                return installRoot.Length > 0 ? new[] { installRoot } : Array.Empty<string>();
+            case "home":
+                return [Environment.GetFolderPath(Environment.SpecialFolder.UserProfile)];
+            case "winlocalappdata":
+                return [Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData)];
+            case "winlocalappdatalow":
+                return [Path.Combine(
+                    Environment.GetFolderPath(Environment.SpecialFolder.UserProfile), "AppData", "LocalLow")];
+            case "winappdata":
+                return [Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData)];
+            case "winprogramdata":
+                return [Environment.GetFolderPath(Environment.SpecialFolder.CommonApplicationData)];
+            case "windocuments":
+                return [Environment.GetFolderPath(Environment.SpecialFolder.MyDocuments)];
+            case "osusername":
+                return [Environment.UserName];
+            case "root":
+                return RootCandidates(steamRoot);
+            case "storeuserid":
+                return StoreUserIds(steamRoot);
+            default:
+                return Array.Empty<string>();
+        }
+    }
+
+    /// <summary>&lt;root&gt; 候选：Steam 客户端安装根（userdata 所在），外加由 exe 推出的库目录兜底</summary>
+    private static List<string> RootCandidates(string? steamRoot)
+    {
+        var list = new List<string>();
+        if (SteamClientRoot() is { } client) list.Add(client);
+        if (!string.IsNullOrEmpty(steamRoot) && !list.Contains(steamRoot, StringComparer.OrdinalIgnoreCase))
+            list.Add(steamRoot);
+        return list;
+    }
+
+    /// <summary>&lt;storeUserId&gt; 候选：Steam userdata 下的账号目录名（清单里也常直接嵌在文件名中）</summary>
+    private static List<string> StoreUserIds(string? steamRoot)
+    {
+        var list = new List<string>();
+        var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        foreach (var root in UserdataRoots(steamRoot).ToList())
+        {
+            List<string> dirs;
+            try { dirs = Directory.EnumerateDirectories(Path.Combine(root, "userdata")).ToList(); }
+            catch { continue; }
+            foreach (var d in dirs)
+            {
+                var name = Path.GetFileName(d);
+                if (name.Length > 0 && seen.Add(name)) list.Add(name);
+            }
+        }
+        return list;
+    }
+
+    /// <summary>可能存放 Steam userdata 的根目录：客户端安装根优先，库目录兜底（二者同盘时相同）</summary>
+    private static IEnumerable<string> UserdataRoots(string? steamRoot)
+    {
+        var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        if (SteamClientRoot() is { } client && seen.Add(client)) yield return client;
+        if (!string.IsNullOrEmpty(steamRoot) && seen.Add(steamRoot!)) yield return steamRoot!;
+    }
+
+    private static string? _steamClientRoot;
+    private static bool _steamClientProbed;
+
+    /// <summary>
+    /// Steam 客户端安装根。exe 路径只能看出「库目录」（steamapps\common 前那段），而 Steam 把 userdata 固定
+    /// 放在客户端安装根 —— 这正是「只在默认安装（客户端与库同盘）才碰巧可用」的原因，故必须另从注册表取。
+    /// </summary>
+    private static string? SteamClientRoot()
+    {
+        if (_steamClientProbed) return _steamClientRoot;
+        _steamClientProbed = true;
+        foreach (var (key, name) in SteamRegistryKeys)
+        {
+            try
+            {
+                if (Registry.GetValue(key, name, null) is not string raw || raw.Length == 0) continue;
+                var path = Path.GetFullPath(raw.Replace('/', '\\')).TrimEnd('\\');
+                if (Directory.Exists(path)) { _steamClientRoot = path; break; }
+            }
+            catch { /* 键不存在 / 无权限：试下一个 */ }
+        }
+        DebugLog.Write($"存档定位: Steam 客户端根={_steamClientRoot ?? "(未探测到)"}");
+        return _steamClientRoot;
+    }
+
+    private static readonly (string Key, string Name)[] SteamRegistryKeys =
+    [
+        (@"HKEY_CURRENT_USER\Software\Valve\Steam", "SteamPath"),
+        (@"HKEY_LOCAL_MACHINE\SOFTWARE\Valve\Steam", "InstallPath"),
+        (@"HKEY_LOCAL_MACHINE\SOFTWARE\WOW6432Node\Valve\Steam", "InstallPath"),
+    ];
 
     /// <summary>把含 * 的目录模式按目录枚举逐段展开（无 * 时原样返回）</summary>
     private static IEnumerable<string> ExpandWildcard(string pattern)
@@ -197,10 +300,19 @@ public static class SavePathResolver
             {
                 if (seg.Contains('*'))
                 {
+                    List<string> dirs;
+                    try { dirs = Directory.EnumerateDirectories(dir, seg).ToList(); }
+                    catch { dirs = []; }
+                    if (dirs.Count > 0)
+                    {
+                        foreach (var sub in dirs) next.Add(sub + "\\");
+                        continue;
+                    }
+                    // 该段其实是「文件名模式」（如 user_*.dat / *.sav，清单里非常常见）：匹配到的是文件而非目录，
+                    // 而备份要的是它所在的目录，故整段退化为父目录本身（后面 Filter 还会再校验存在性）。
                     try
                     {
-                        foreach (var sub in Directory.EnumerateDirectories(dir, seg))
-                            next.Add(sub + "\\");
+                        if (Directory.EnumerateFiles(dir, seg).Any()) next.Add(dir);
                     }
                     catch { /* 无权限 / 目录不存在：该分支无结果 */ }
                 }
@@ -263,6 +375,11 @@ public static class SavePathResolver
             string full;
             try { full = Path.GetFullPath(c).TrimEnd('\\'); }
             catch { continue; }
+            if (full.Length == 0) continue;
+            // 清单里不少条目直接指向单个文件（如 .../KillHouseGames/ActionSquad/userdata.bin）。
+            // 备份以目录为单位，且同目录下的兄弟文件通常同属该游戏数据，故改取其父目录。
+            try { if (File.Exists(full)) full = (Path.GetDirectoryName(full) ?? full).TrimEnd('\\'); }
+            catch { /* 路径异常：保持原样，后面按目录校验失败即丢弃 */ }
             if (full.Length == 0 || seen.Contains(full)) continue;
             if (installRoot.Length > 0 && string.Equals(full, installRoot.TrimEnd('\\'), StringComparison.OrdinalIgnoreCase))
                 continue; // 不能把整个安装目录打进包里

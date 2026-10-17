@@ -41,7 +41,9 @@ public enum WidgetKind
     /// <summary>游戏存档（一键扫描并备份当前正在玩的游戏的存档；可选备份到本地目录或 WebDAV 云端）</summary>
     Backup,
     /// <summary>手柄映射（把若干手柄按键映射成键盘/鼠标/手柄输出；A/点击=开关映射，长按=关闭映射）</summary>
-    GamepadMap
+    GamepadMap,
+    /// <summary>OptiScaler（检测当前游戏，按 wiki 兼容列表给出适配性，确认后注入 OptiScaler 并重开游戏）</summary>
+    OptiScaler
 }
 
 /// <summary>手柄映射的目标类型（仅 GamepadMapping 使用）</summary>
@@ -178,6 +180,37 @@ public class LaunchItem
     /// <summary>手柄映射列表（仅 WidgetKind.GamepadMap 使用；一条映射=一个手柄键映射到键盘/鼠标/手柄输出）</summary>
     public List<GamepadMapping> GamepadMappings { get; set; } = [];
 
+    /// <summary>注入用的代理 DLL 文件名（仅 WidgetKind.OptiScaler 使用；空=自动按 wiki 建议，默认 dxgi.dll）</summary>
+    public string? OptiDllName { get; set; }
+
+    /// <summary>OptiScaler.ini 的 Dx12Upscaler 项（仅 WidgetKind.OptiScaler 使用；默认 auto）</summary>
+    public string OptiDx12Upscaler { get; set; } = "auto";
+
+    /// <summary>OptiScaler.ini 的帧生成开关（仅 WidgetKind.OptiScaler 使用；写 FrameGen 段的 Enabled）</summary>
+    public bool OptiFrameGen { get; set; } = true;
+
+    /// <summary>帧生成输入源（写 FrameGen 段的 FGInput；auto/nofg/dlssg/nvngxfg/fsrfg/fsrfg30/xefg/upscaler）</summary>
+    public string OptiFgInput { get; set; } = "auto";
+
+    /// <summary>帧生成输出（写 FrameGen 段的 FGOutput；auto/nofg/fsrfg/xefg/dlssg）</summary>
+    public string OptiFgOutput { get; set; } = "auto";
+
+    /// <summary>帧生成倍数（写 DLSSG / XeFG 段的 InterpolationCount；auto 或 1=2X … 5=6X）</summary>
+    public string OptiFgMultiplier { get; set; } = "auto";
+
+    /// <summary>FSR4 画质档（写 [FSR] 段的 Fsr4Preset；auto 或 0=原生AA … 5=超级性能）</summary>
+    public string OptiFsr4Preset { get; set; } = "auto";
+
+    /// <summary>FSR4 附加文件（官方包不含）：auto=不额外注入 / int8=兼容卡 / fp8=RDNA4</summary>
+    public string OptiFsr4Files { get; set; } = "auto";
+
+    /// <summary>本地 OptiScaler 包路径（目录或 zip/7z；为空则自动从 GitHub Release 下载最新包并缓存）</summary>
+    public string? OptiLocalPackage { get; set; }
+
+    /// <summary>要注入的 OptiScaler 版本渠道（仅 WidgetKind.OptiScaler 使用）：stable=官方正式版，
+    /// beta=社区镜像的最新预览版（OptiScaler-Betas）。两者 ini 与用法一致，只是包更新更快。</summary>
+    public string OptiChannel { get; set; } = "stable";
+
     /// <summary>深拷贝一个快捷项（含组成员），用于磁贴集快照/进入副本页时与主页数据隔离</summary>
     public LaunchItem Clone() => new()
     {
@@ -198,6 +231,16 @@ public class LaunchItem
         BackupMode = BackupMode,
         BackupFolder = BackupFolder,
         BackupKeep = BackupKeep,
+        OptiDllName = OptiDllName,
+        OptiDx12Upscaler = OptiDx12Upscaler,
+        OptiFrameGen = OptiFrameGen,
+        OptiFgInput = OptiFgInput,
+        OptiFgOutput = OptiFgOutput,
+        OptiFgMultiplier = OptiFgMultiplier,
+        OptiFsr4Preset = OptiFsr4Preset,
+        OptiFsr4Files = OptiFsr4Files,
+        OptiLocalPackage = OptiLocalPackage,
+        OptiChannel = OptiChannel,
         GamepadMappings = [.. GamepadMappings.Select(m => m.Clone())],
         Members = [.. Members.Select(m => m.Clone())],
         Snapshot = [.. Snapshot.Select(s => s.Clone())]
@@ -224,6 +267,7 @@ public class LaunchItem
             WidgetKind.Trainer => "\uE90F", // 扳手（修改器）
             WidgetKind.Backup => "\uE74E", // 保存（游戏存档）
             WidgetKind.GamepadMap => "\uE7FC", // 手柄（手柄映射）
+            WidgetKind.OptiScaler => "\uE8C8", // 层叠帧（OptiScaler 帧生成/画质增强）
             _ => "\uE8D6"                  // 音乐（音乐控制器）
         },
         _ => "\uE7F8"                  // desktop

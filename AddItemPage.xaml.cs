@@ -24,7 +24,9 @@ public enum BrowseMode
     /// <summary>选图标（exe/ico/图片）</summary>
     Icon,
     /// <summary>选磁贴背景图片（仅图片）</summary>
-    Cover
+    Cover,
+    /// <summary>选 OptiScaler 包（文件夹 / zip / 7z）</summary>
+    Archive
 }
 
 /// <summary>
@@ -72,6 +74,12 @@ public sealed partial class AddItemPage : Page, ISettingsGamepad
 
     /// <summary>当前浏览是否为"游戏存档选文件夹"</summary>
     private bool _pickingBackupFolder;
+
+    /// <summary>OptiScaler：本次会话选定的本地包路径（null=未改动；""=清除改用自动下载）</summary>
+    private string? _pendingOptiLocalPack;
+
+    /// <summary>当前浏览是否为"选 OptiScaler 本地包"</summary>
+    private bool _pickingOptiPack;
 
     // ---- 映射小组件的按键捕获状态（实现 ISettingsGamepad，MainWindow 据此转发原始手柄按键） ----
 
@@ -181,7 +189,18 @@ public sealed partial class AddItemPage : Page, ISettingsGamepad
     {
         InitializeComponent();
         BuildGamepadMapDiagram();
-        RebuildFormControls();
+        // OptiScaler 下拉框选项来自服务层数组，保证与写入配置的值一致
+        FillOptiCombo(OptiDllCombo, OptiScalerService.ProxyOptions);
+        // 版本渠道下拉项带"已下载到的版本号"后缀，故每次进页面都重新灌一次
+        FillOptiCombo(OptiVersionCombo, OptiScalerService.GetVersionChannelOptions());
+        FillOptiCombo(OptiUpscalerCombo, OptiScalerService.UpscalerOptions);
+        FillOptiCombo(OptiFgInputCombo, OptiScalerService.FgInputOptions);
+        FillOptiCombo(OptiFgOutputCombo, OptiScalerService.FgOutputOptions);
+        FillOptiCombo(OptiFgMultiplierCombo, OptiScalerService.FgMultiplierOptions);
+        FillOptiCombo(OptiFsr4PresetCombo, OptiScalerService.Fsr4PresetOptions);
+        FillOptiCombo(OptiFsr4FilesCombo, OptiScalerService.Fsr4FilesOptions);
+        UpdateOptiFsr4Row();  // 画质提升默认"自动" → 先收起 FSR4 画质档
+        UpdateOptiFgRows();   // 帧生成默认关闭 → 先收起输入/输出/倍数三项（内部会重建手柄导航序列）
     }
 
     /// <summary>八个磁贴颜色单选（Tag=#RRGGBB）+ 无颜色（Tag=none）</summary>
@@ -191,6 +210,32 @@ public sealed partial class AddItemPage : Page, ISettingsGamepad
         ColorPurpleRadio, ColorNoneRadio, ColorTealRadio,
         ColorYellowRadio, ColorPinkRadio, ColorIndigoRadio
     ];
+
+    /// <summary>当前已展开下拉的 OptiScaler 下拉框（非空时方向键在其选项内移动、A 确认、B 取消）</summary>
+    private ComboBox? _openCombo;
+
+    /// <summary>展开下拉前的已选索引（B 取消时回滚）</summary>
+    private int _comboBackupIndex;
+
+    /// <summary>把 OptiScalerService 里的选项数组灌进下拉框（Tag=写入配置的值）</summary>
+    private static void FillOptiCombo(ComboBox cb, (string Value, string Label)[] options)
+    {
+        cb.Items.Clear();
+        foreach (var o in options)
+            cb.Items.Add(new ComboBoxItem { Content = o.Label, Tag = o.Value });
+    }
+
+    /// <summary>下拉框当前项对应的配置值（空串=自动）</summary>
+    private static string OptiComboValue(ComboBox cb) =>
+        (cb.SelectedItem as ComboBoxItem)?.Tag as string ?? "";
+
+    /// <summary>按配置值反查下拉框索引并选中（找不到或空值=第一项"自动"）</summary>
+    private static void SelectOptiCombo(ComboBox cb, (string Value, string Label)[] options, string? value)
+    {
+        var want = value ?? "";
+        var idx = Array.FindIndex(options, o => string.Equals(o.Value, want, StringComparison.OrdinalIgnoreCase));
+        cb.SelectedIndex = idx < 0 ? 0 : idx;
+    }
 
     /// <summary>表单导航序列：只纳入"有效可见"的控件（自身与所属分组容器都 Visible），
     /// 并按页面从上到下的视觉顺序排列。手柄映射编辑时标题/路径/类型/图标整块被隐藏，
@@ -244,6 +289,28 @@ public sealed partial class AddItemPage : Page, ISettingsGamepad
                 list.Add(GamepadMapCaptureButton);
                 list.Add(GamepadMapDeleteButton);
             }
+        }
+        // OptiScaler 小组件：注入 DLL 名 / ini 关键项 / 本地包 / 一键还原与打开目录
+        if (OptiScalerRow.Visibility == vis)
+        {
+            list.Add(OptiDllCombo);
+            list.Add(OptiVersionCombo);
+            list.Add(OptiUpscalerCombo);
+            // 仅"画质提升"选到 FSR4 时才显示 FSR4 画质档 / FSR4 文件 → 收起时不纳入导航
+            if (OptiFsr4Cell.Visibility == vis)
+            {
+                list.Add(OptiFsr4PresetCombo);
+                list.Add(OptiFsr4FilesCombo);
+            }
+            list.Add(OptiFrameGenToggle);
+            // 两列并排的视觉顺序：帧生成 → 输入 → 输出 → 倍数；关闭时后三格收起，不纳入导航
+            if (OptiFgInputCell.Visibility == vis) list.Add(OptiFgInputCombo);
+            if (OptiFgOutputCell.Visibility == vis) list.Add(OptiFgOutputCombo);
+            if (OptiFgMultiplierCell.Visibility == vis) list.Add(OptiFgMultiplierCombo);
+            list.Add(OptiLocalPackButton);
+            list.Add(OptiLocalPackClearButton);
+            list.Add(OptiRestoreButton);
+            list.Add(OptiOpenFolderButton);
         }
         // 组件标题（仅手柄映射，位于类型/大小/颜色行上方）/ 类型 / 磁贴大小 / 磁贴颜色（各自容器隐藏时跳过）
         if (TitleColumn.Visibility == vis) list.Add(WidgetTitleBox);
@@ -329,7 +396,7 @@ public sealed partial class AddItemPage : Page, ISettingsGamepad
             CoverHeaderText.Visibility = isTileSet ? Microsoft.UI.Xaml.Visibility.Visible : w;
             CoverRow.Visibility = isTileSet ? Microsoft.UI.Xaml.Visibility.Visible : w;
             // 音乐固定 2×2 不可改大小；其余小组件（图片组/设置/磁贴集/天气/映射/修改器/游戏存档/手柄映射）可编辑大小。颜色：图片组不需要（整块铺图）
-            SizeColumn.Visibility = isPhoto || item.WidgetKind is WidgetKind.Settings or WidgetKind.TileSet or WidgetKind.Weather or WidgetKind.Mapping or WidgetKind.Trainer or WidgetKind.Backup or WidgetKind.GamepadMap
+            SizeColumn.Visibility = isPhoto || item.WidgetKind is WidgetKind.Settings or WidgetKind.TileSet or WidgetKind.Weather or WidgetKind.Mapping or WidgetKind.Trainer or WidgetKind.Backup or WidgetKind.GamepadMap or WidgetKind.OptiScaler
                 ? Microsoft.UI.Xaml.Visibility.Visible : w;
             ColorColumn.Visibility = isPhoto ? w : Microsoft.UI.Xaml.Visibility.Visible;
             PhotoFolderRow.Visibility = isPhoto
@@ -356,6 +423,31 @@ public sealed partial class AddItemPage : Page, ISettingsGamepad
                 Keep10Radio.IsChecked = item.BackupKeep == 10;
                 Keep5Radio.IsChecked = item.BackupKeep is not 3 and not 10; // 兜底：非 3/10 一律按 5
                 UpdateBackupPanels();
+            }
+            // OptiScaler：名称、大小、颜色 + 注入 DLL 名 / ini 关键项 / 本地包 / 一键还原
+            var isOptiScaler = item.WidgetKind == WidgetKind.OptiScaler;
+            OptiScalerRow.Visibility = isOptiScaler ? Microsoft.UI.Xaml.Visibility.Visible : w;
+            if (isOptiScaler)
+            {
+                // 磁贴固定显示图标 + "OptiScaler"名称，无需用户自定义 → 隐藏顶部"显示名称"输入框
+                // （NameBox.Text 仍保留原值，保存时不改变名称；InitForEdit 每次会把它重置为 Visible，不会残留）
+                if (string.IsNullOrWhiteSpace(NameBox.Text)) NameBox.Text = "OptiScaler";
+                NameBox.Visibility = w;
+                SelectOptiCombo(OptiDllCombo, OptiScalerService.ProxyOptions, item.OptiDllName);
+                SelectOptiCombo(OptiVersionCombo, OptiScalerService.GetVersionChannelOptions(), item.OptiChannel);
+                SelectOptiCombo(OptiUpscalerCombo, OptiScalerService.UpscalerOptions, item.OptiDx12Upscaler);
+                SelectOptiCombo(OptiFgInputCombo, OptiScalerService.FgInputOptions, item.OptiFgInput);
+                SelectOptiCombo(OptiFgOutputCombo, OptiScalerService.FgOutputOptions, item.OptiFgOutput);
+                SelectOptiCombo(OptiFgMultiplierCombo, OptiScalerService.FgMultiplierOptions, item.OptiFgMultiplier);
+                SelectOptiCombo(OptiFsr4PresetCombo, OptiScalerService.Fsr4PresetOptions, item.OptiFsr4Preset);
+                SelectOptiCombo(OptiFsr4FilesCombo, OptiScalerService.Fsr4FilesOptions, item.OptiFsr4Files);
+                UpdateOptiFsr4Row();  // 按"画质提升"的取值决定 FSR4 画质档是否展开
+                OptiFrameGenToggle.IsOn = item.OptiFrameGen;
+                _pendingOptiLocalPack = null;
+                OptiLocalPackText.Text = string.IsNullOrEmpty(item.OptiLocalPackage)
+                    ? "自动下载最新版" : item.OptiLocalPackage!;
+                OptiRestoreStatus.Text = OptiScalerService.HasBackup()
+                    ? "检测到已有注入备份，可一键还原。" : "";
             }
             // 手柄映射：标题、大小、颜色 + 可视化手柄图（点击手柄键 → 键盘/鼠标/手柄输出）
             var isGamepadMap = item.WidgetKind == WidgetKind.GamepadMap;
@@ -408,6 +500,7 @@ public sealed partial class AddItemPage : Page, ISettingsGamepad
             TrainerRow.Visibility = Microsoft.UI.Xaml.Visibility.Collapsed;
             BackupRow.Visibility = Microsoft.UI.Xaml.Visibility.Collapsed;
             GamepadMapRow.Visibility = Microsoft.UI.Xaml.Visibility.Collapsed;
+            OptiScalerRow.Visibility = Microsoft.UI.Xaml.Visibility.Collapsed;
         }
     }
 
@@ -436,7 +529,8 @@ public sealed partial class AddItemPage : Page, ISettingsGamepad
                     : item.WidgetKind == WidgetKind.Mapping ? "编辑映射小组件"
                     : item.WidgetKind == WidgetKind.Trainer ? "编辑修改器小组件"
                     : item.WidgetKind == WidgetKind.Backup ? "编辑游戏存档小组件"
-                    : item.WidgetKind == WidgetKind.GamepadMap ? "编辑手柄映射小组件" : "编辑音乐小组件")
+                    : item.WidgetKind == WidgetKind.GamepadMap ? "编辑手柄映射小组件"
+                    : item.WidgetKind == WidgetKind.OptiScaler ? "编辑 OptiScaler 小组件" : "编辑音乐小组件")
                 : _isGroup ? "编辑磁贴组" : "编辑快捷项";
         }
         else
@@ -457,6 +551,8 @@ public sealed partial class AddItemPage : Page, ISettingsGamepad
             TrainerRow.Visibility = Microsoft.UI.Xaml.Visibility.Collapsed;
             BackupRow.Visibility = Microsoft.UI.Xaml.Visibility.Collapsed;
             GamepadMapRow.Visibility = Microsoft.UI.Xaml.Visibility.Collapsed;
+            OptiScalerRow.Visibility = Microsoft.UI.Xaml.Visibility.Collapsed;
+            _pendingOptiLocalPack = null;
             TitleColumn.Visibility = Microsoft.UI.Xaml.Visibility.Collapsed;
             WidgetTitleBox.Text = "";
             _pendingIcon = null;
@@ -491,6 +587,9 @@ public sealed partial class AddItemPage : Page, ISettingsGamepad
 
     private void HandleForm(GamepadButtons b)
     {
+        // OptiScaler 下拉展开中：方向键在选项内移动，A 确认，B/Select 取消（不走表单导航）
+        if (_openCombo != null) { HandleOpenCombo(b); return; }
+
         if (b.HasFlag(GamepadButtons.DPadUp)) MoveRow(-1);
         else if (b.HasFlag(GamepadButtons.DPadDown)) MoveRow(1);
         else if (b.HasFlag(GamepadButtons.DPadLeft)) MoveCol(-1);
@@ -615,12 +714,95 @@ public sealed partial class AddItemPage : Page, ISettingsGamepad
         return 5;
     }
 
+    /// <summary>OptiScaler：A 键展开下拉框（记下当前索引，供 B 取消时回滚）</summary>
+    private void OpenCombo(ComboBox cb)
+    {
+        _comboBackupIndex = cb.SelectedIndex;
+        _openCombo = cb;
+        cb.IsDropDownOpen = true;
+    }
+
+    /// <summary>下拉框展开中的按键：上/下移动选项（即时预览选中项），A 确认收起，B/Select 回滚并收起。
+    /// 下拉列表由 WinUI 自己渲染，这里只改 SelectedIndex。</summary>
+    private void HandleOpenCombo(GamepadButtons b)
+    {
+        var cb = _openCombo!;
+        var last = cb.Items.Count - 1;
+        if (b.HasFlag(GamepadButtons.DPadUp))
+            cb.SelectedIndex = Math.Max(0, cb.SelectedIndex - 1);
+        else if (b.HasFlag(GamepadButtons.DPadDown))
+            cb.SelectedIndex = Math.Min(last, cb.SelectedIndex + 1);
+        else if (b.HasFlag(GamepadButtons.A))
+            CloseCombo(false);
+        else if (b.HasFlag(GamepadButtons.B) || b.HasFlag(GamepadButtons.View))
+            CloseCombo(true);
+    }
+
+    /// <summary>收起下拉框；rollback=true 时把选中项退回展开前的值（B 取消）</summary>
+    private void CloseCombo(bool rollback)
+    {
+        if (_openCombo is not { } cb) return;
+        if (rollback) cb.SelectedIndex = _comboBackupIndex;
+        cb.IsDropDownOpen = false;
+        _openCombo = null;
+    }
+
+    /// <summary>OptiScaler：当前选中的注入 DLL 名（null=自动，按 wiki 建议/默认 dxgi.dll）</summary>
+    private string? SelectedOptiDll()
+    {
+        var v = OptiComboValue(OptiDllCombo);
+        return v.Length == 0 ? null : v;
+    }
+
+    /// <summary>OptiScaler：当前选中的 Dx12Upscaler（写入 OptiScaler.ini）</summary>
+    private string SelectedOptiUpscaler()
+    {
+        var v = OptiComboValue(OptiUpscalerCombo);
+        return v.Length == 0 ? "auto" : v;
+    }
+
+    private void OnOptiFrameGenToggled(object sender, RoutedEventArgs e) => UpdateOptiFgRows();
+
+    private void OnOptiUpscalerChanged(object sender, SelectionChangedEventArgs e) => UpdateOptiFsr4Row();
+
+    /// <summary>
+    /// 只有"画质提升"选到 FSR4 时才需要 FSR4 画质档（Fsr4Preset）→ 其余取值一律收起该子项，
+    /// 避免无关选项占位；同时重建导航序列。
+    /// </summary>
+    private void UpdateOptiFsr4Row()
+    {
+        var show = OptiComboValue(OptiUpscalerCombo) == "fsr4";
+        OptiFsr4Cell.Visibility = show
+            ? Microsoft.UI.Xaml.Visibility.Visible
+            : Microsoft.UI.Xaml.Visibility.Collapsed;
+        RebuildFormControls();
+    }
+
+    /// <summary>
+    /// 帧生成总闸关闭时输入/输出/倍数不生效 → 三格（小标题 + 下拉框）整体收起，
+    /// 行高与间距一并归零，后面的"本地包"随之上移；同时重建导航序列，避免手柄光标走到已隐藏的控件上。
+    /// </summary>
+    private void UpdateOptiFgRows()
+    {
+        var vis = OptiFrameGenToggle.IsOn
+            ? Microsoft.UI.Xaml.Visibility.Visible
+            : Microsoft.UI.Xaml.Visibility.Collapsed;
+        OptiFgMultiplierCell.Visibility = vis;
+        OptiFgInputCell.Visibility = vis;
+        OptiFgOutputCell.Visibility = vis;
+        RebuildFormControls();
+    }
+
     private void ActivateForm()
     {
         switch (_formControls[_formIndex])
         {
             case TextBox tb:
                 tb.Focus(Microsoft.UI.Xaml.FocusState.Keyboard); // 弹出输入法后可物理键盘输入
+                break;
+            // OptiScaler 下拉框：A 键展开选项列表（展开后由 HandleOpenCombo 接管按键）
+            case ComboBox cb:
+                OpenCombo(cb);
                 break;
             // 手柄映射：输出类型三选一（键盘/鼠标/手柄）——需先于通用 RadioButton 分支
             case RadioButton rb0 when ReferenceEquals(rb0, GamepadMapKeyRadio)
@@ -702,6 +884,7 @@ public sealed partial class AddItemPage : Page, ISettingsGamepad
             // 导致"移动即变更"；按 A 才真正切换选中。
             UpdateRadioCursor(rb);
             UpdateToggleCursor(null);
+            UpdateComboCursor(null);
             EnsureVisible(c);
             return;
         }
@@ -710,11 +893,22 @@ public sealed partial class AddItemPage : Page, ISettingsGamepad
             // 开关同理：移动只高亮，按 A 才切换
             UpdateRadioCursor(null);
             UpdateToggleCursor(ts);
+            UpdateComboCursor(null);
+            EnsureVisible(c);
+            return;
+        }
+        if (c is ComboBox combo)
+        {
+            // 下拉框同理：不聚焦（否则键盘上下键会直接改选中项），只高亮，按 A 才展开
+            UpdateRadioCursor(null);
+            UpdateToggleCursor(null);
+            UpdateComboCursor(combo);
             EnsureVisible(c);
             return;
         }
         UpdateRadioCursor(null);
         UpdateToggleCursor(null);
+        UpdateComboCursor(null);
         c.Focus(Microsoft.UI.Xaml.FocusState.Keyboard);
         EnsureVisible(c); // 窄窗口下焦点控件自动滚入可视区
     }
@@ -739,6 +933,17 @@ public sealed partial class AddItemPage : Page, ISettingsGamepad
             if (ctl is not ToggleSwitch t) continue;
             if (ReferenceEquals(t, cursor)) t.BorderBrush = CursorBrush;
             else t.ClearValue(ToggleSwitch.BorderBrushProperty);
+        }
+    }
+
+    /// <summary>高亮光标所在下拉框（描边，与单选/开关的光标语义一致）</summary>
+    private void UpdateComboCursor(ComboBox? cursor)
+    {
+        foreach (var ctl in _formControls)
+        {
+            if (ctl is not ComboBox c) continue;
+            if (ReferenceEquals(c, cursor)) c.BorderBrush = CursorBrush;
+            else c.ClearValue(ComboBox.BorderBrushProperty);
         }
     }
 
@@ -913,6 +1118,23 @@ public sealed partial class AddItemPage : Page, ISettingsGamepad
                     }
                     it.BackupKeep = SelectedBackupKeep();
                 }
+                else if (it.WidgetKind == WidgetKind.OptiScaler)
+                {
+                    // OptiScaler：改名称、大小、颜色、注入 DLL 名、ini 关键项与本地包（空=自动）
+                    it.Size = SelectedSize();
+                    it.TileColor = SelectedColor();
+                    it.OptiDllName = SelectedOptiDll();
+                    it.OptiChannel = OptiComboValue(OptiVersionCombo);
+                    it.OptiDx12Upscaler = SelectedOptiUpscaler();
+                    it.OptiFrameGen = OptiFrameGenToggle.IsOn;
+                    it.OptiFgInput = OptiComboValue(OptiFgInputCombo);
+                    it.OptiFgOutput = OptiComboValue(OptiFgOutputCombo);
+                    it.OptiFgMultiplier = OptiComboValue(OptiFgMultiplierCombo);
+                    it.OptiFsr4Preset = OptiComboValue(OptiFsr4PresetCombo);
+                    it.OptiFsr4Files = OptiComboValue(OptiFsr4FilesCombo);
+                    if (_pendingOptiLocalPack != null)
+                        it.OptiLocalPackage = _pendingOptiLocalPack.Length == 0 ? null : _pendingOptiLocalPack;
+                }
                 else
                 {
                     it.TileColor = SelectedColor();
@@ -975,6 +1197,24 @@ public sealed partial class AddItemPage : Page, ISettingsGamepad
         EnterBrowse(BrowseMode.Folder);
     }
     private void OnOpenBackupFolderClick(object sender, Microsoft.UI.Xaml.RoutedEventArgs e) => OpenBackupFolder();
+
+    // OptiScaler 编辑：选本地包（文件夹/zip/7z）/ 清除（改用自动下载）/ 一键还原 / 打开数据目录
+    private void OnOptiLocalPackClick(object sender, Microsoft.UI.Xaml.RoutedEventArgs e)
+    {
+        _pickingOptiPack = true;
+        EnterBrowse(BrowseMode.Archive);
+    }
+
+    private void OnOptiLocalPackClearClick(object sender, Microsoft.UI.Xaml.RoutedEventArgs e)
+    {
+        _pendingOptiLocalPack = "";
+        OptiLocalPackText.Text = "自动下载最新版";
+    }
+
+    private void OnOptiRestoreClick(object sender, Microsoft.UI.Xaml.RoutedEventArgs e)
+        => OptiRestoreStatus.Text = OptiScalerService.Restore();
+
+    private void OnOptiOpenFolderClick(object sender, Microsoft.UI.Xaml.RoutedEventArgs e) => OptiScalerService.OpenFolder();
 
     // 备份方式切换：本地面板 / 云端面板互换（云端面板只展示 WebDAV 配置状态）
     private void OnBackupModeChanged(object sender, Microsoft.UI.Xaml.RoutedEventArgs e)
@@ -1405,9 +1645,10 @@ public sealed partial class AddItemPage : Page, ISettingsGamepad
             BrowseMode.Icon => "选择图标（exe / ico / 图片）",
             BrowseMode.Cover => "选择磁贴图片（png / jpg / bmp…）",
             BrowseMode.Folder => "选择文件夹",
+            BrowseMode.Archive => "选择 OptiScaler 包（文件夹 / zip / 7z）",
             _ => "选择程序（.exe）"
         };
-        HintBar.SetHints(mode == BrowseMode.Folder
+        HintBar.SetHints(mode is BrowseMode.Folder or BrowseMode.Archive
             ? "DPAD:选择|A:进入/选中|B:返回"
             : "DPAD:选择|A:进入/确认|B:返回");
         NavigateTo(GetStartDir());
@@ -1418,6 +1659,7 @@ public sealed partial class AddItemPage : Page, ISettingsGamepad
         _browsing = false;
         _pickingPhotoFolder = false; // 取消浏览时同样复位，避免影响下次普通文件夹选择
         _pickingBackupFolder = false;
+        _pickingOptiPack = false;
         BrowsePanel.Visibility = Microsoft.UI.Xaml.Visibility.Collapsed;
         FormScroll.Visibility = Microsoft.UI.Xaml.Visibility.Visible;
         FooterBar.Visibility = Microsoft.UI.Xaml.Visibility.Visible;
@@ -1466,6 +1708,7 @@ public sealed partial class AddItemPage : Page, ISettingsGamepad
                 }
                 else if (_browseMode == BrowseMode.Cover) _ = SelectCover(entry);
                 else if (_browseMode == BrowseMode.Icon) SelectIcon(entry);
+                else if (_browseMode == BrowseMode.Archive) SelectArchive(entry);
                 else SelectExe(entry);
             }
         }
@@ -1487,6 +1730,7 @@ public sealed partial class AddItemPage : Page, ISettingsGamepad
             {
                 BrowseMode.Icon => new[] { "*.exe", "*.ico", "*.png", "*.jpg", "*.jpeg", "*.bmp", "*.gif" },
                 BrowseMode.Cover => new[] { "*.png", "*.jpg", "*.jpeg", "*.bmp", "*.gif", "*.webp" },
+                BrowseMode.Archive => new[] { "*.zip", "*.7z" },
                 BrowseMode.Folder => [],
                 _ => new[] { "*.exe" }
             };
@@ -1496,7 +1740,7 @@ public sealed partial class AddItemPage : Page, ISettingsGamepad
                 if (parent != null)
                     list.Add(new FileEntry("上一级", parent.FullName, true, true));
 
-                if (mode == BrowseMode.Folder)
+                if (mode is BrowseMode.Folder or BrowseMode.Archive)
                 {
                     var curName = Path.GetFileName(dir);
                     list.Add(new FileEntry(
@@ -1576,10 +1820,29 @@ public sealed partial class AddItemPage : Page, ISettingsGamepad
             ExitBrowse();
             return;
         }
+        // OptiScaler 选本地包（目录）：只记录到 _pendingOptiLocalPack，不改 TargetBox/类型
+        if (_pickingOptiPack)
+        {
+            _pendingOptiLocalPack = dir;
+            OptiLocalPackText.Text = dir;
+            _pickingOptiPack = false;
+            ExitBrowse();
+            return;
+        }
         TargetBox.Text = dir;
         if (string.IsNullOrWhiteSpace(NameBox.Text))
             NameBox.Text = Path.GetFileName(dir) is { Length: > 0 } n ? n : dir;
         FolderRadio.IsChecked = true;
+        ExitBrowse();
+    }
+
+    /// <summary>选 OptiScaler 本地包（zip / 7z）：只记录到 _pendingOptiLocalPack，不改 TargetBox/类型</summary>
+    private void SelectArchive(FileEntry entry)
+    {
+        if (!_pickingOptiPack) { ExitBrowse(); return; }
+        _pendingOptiLocalPack = entry.Path;
+        OptiLocalPackText.Text = entry.Path;
+        _pickingOptiPack = false;
         ExitBrowse();
     }
 

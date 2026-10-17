@@ -1,10 +1,13 @@
 using System.Runtime.InteropServices;
 using Microsoft.UI;
 using Microsoft.UI.Composition.SystemBackdrops;
+using Microsoft.UI.Text;
 using Microsoft.UI.Windowing;
 using Microsoft.UI.Xaml;
+using Microsoft.UI.Xaml.Controls;
 using Microsoft.UI.Xaml.Input;
 using Microsoft.UI.Xaml.Media;
+using Microsoft.UI.Xaml.Media.Animation;
 using GameLocker.Models;
 using GameLocker.Services;
 
@@ -134,14 +137,22 @@ public sealed partial class MainWindow : Window
             if (!Visible || GetForegroundWindow() != _hwnd)
                 ShowFromTray();
         });
-        // 收起手势（呼出的反方向）：走原始输入触摸通道，与页面内容无关，任何页面都生效
+        // 收起手势（呼出的反方向）：走原始输入触摸通道，与页面内容无关，任何页面都生效（现为"直接最小化"）
         _edgeGesture.DismissTriggered += () => DispatcherQueue.TryEnqueue(OnDismissGesture);
+        // 向下滑：返回上一级（主页则最小化）
+        _edgeGesture.BackTriggered += () => DispatcherQueue.TryEnqueue(OnBackGesture);
         SyncEdgeGesture();
 
         // 前台游戏进程采样（常驻运行：窗口隐藏期间也要能记录到正在玩的游戏）
         _trainerTracker.Tick += (_, _) => TrainerService.CaptureForeground();
         TrainerService.CaptureForeground();
         _trainerTracker.Start();
+
+        // 修改器无精确匹配时，弹窗让用户从相似结果里挑一个
+        TrainerService.CandidatesReady += OnTrainerCandidates;
+
+        // OptiScaler 点击磁贴后，弹窗显示适配性并询问是否注入
+        OptiScalerService.InspectionReady += OnOptiInspection;
 
         Root.Navigate(typeof(MainPage));
 
@@ -168,6 +179,285 @@ public sealed partial class MainWindow : Window
             _summonPending = false;
             AnimateMove(_summonStart, _summonTarget, 260, easeOut: true, null);
         };
+    }
+
+    // ---- 修改器候选选择遮罩：精确匹配失败时弹出，用户从相似结果里挑一个（手柄可操作）----
+
+    private readonly List<Border> _trainerCards = [];   // 候选卡片（索引与 _trainerCandidates 一一对应）
+    private IReadOnlyList<TrainerCandidate> _trainerCandidates = [];
+    private int _trainerIndex;
+    private bool _trainerChoiceOpen;
+    private Storyboard? _trainerChoiceIn;
+
+    /// <summary>
+    /// 修改器精确匹配失败时，把相似候选列成遮罩面板让用户自己挑（事件来自后台线程，需 marshal 回 UI 线程）。
+    /// 挑中的修改器页地址回传给 TrainerService 继续解析、下载并打开。
+    /// </summary>
+    private void OnTrainerCandidates(IReadOnlyList<TrainerCandidate> list) =>
+        DispatcherQueue.TryEnqueue(() => ShowTrainerChoice(list));
+
+    private void ShowTrainerChoice(IReadOnlyList<TrainerCandidate> list)
+    {
+        _trainerCandidates = list;
+        _trainerIndex = 0;
+        _trainerCards.Clear();
+        TrainerChoiceList.Children.Clear();
+        for (var i = 0; i < list.Count; i++)
+        {
+            var card = BuildTrainerCard(list[i], i);
+            _trainerCards.Add(card);
+            TrainerChoiceList.Children.Add(card);
+        }
+        TrainerChoiceHint.Text = $"没有完全匹配的修改器，请从以下 {list.Count} 条相似结果中选择";
+        _trainerChoiceOpen = true;
+        TrainerChoiceOverlay.Visibility = Visibility.Visible;
+        UpdateTrainerCursor();
+        PlayTrainerChoiceIn();
+    }
+
+    /// <summary>候选卡片：扳手徽章 + 修改器名 + 右对齐的匹配度百分比（选中态由 UpdateTrainerCursor 统一切换）</summary>
+    private Border BuildTrainerCard(TrainerCandidate c, int index)
+    {
+        var name = new TextBlock
+        {
+            Text = c.Name,
+            FontSize = 15,
+            FontWeight = FontWeights.SemiBold,
+            TextTrimming = TextTrimming.CharacterEllipsis,
+            VerticalAlignment = VerticalAlignment.Center
+        };
+        var percent = new TextBlock
+        {
+            Text = $"{c.Percent}%",
+            FontSize = 15,
+            FontWeight = FontWeights.SemiBold,
+            Foreground = new SolidColorBrush(Windows.UI.Color.FromArgb(0xFF, 0x4C, 0xC2, 0xFF)),
+            VerticalAlignment = VerticalAlignment.Center
+        };
+        var badge = new Border
+        {
+            Width = 30,
+            Height = 30,
+            CornerRadius = new CornerRadius(9),
+            Background = new SolidColorBrush(Windows.UI.Color.FromArgb(0x2A, 0x4C, 0xC2, 0xFF)),
+            VerticalAlignment = VerticalAlignment.Center,
+            Child = new FontIcon
+            {
+                Glyph = "\uE90F",
+                FontSize = 14,
+                Foreground = new SolidColorBrush(Windows.UI.Color.FromArgb(0xFF, 0x4C, 0xC2, 0xFF))
+            }
+        };
+
+        var grid = new Grid { ColumnSpacing = 12 };
+        grid.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
+        grid.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
+        grid.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
+        Grid.SetColumn(badge, 0);
+        Grid.SetColumn(name, 1);
+        Grid.SetColumn(percent, 2);
+        grid.Children.Add(badge);
+        grid.Children.Add(name);
+        grid.Children.Add(percent);
+
+        var card = new Border
+        {
+            CornerRadius = new CornerRadius(12),
+            Background = new SolidColorBrush(Windows.UI.Color.FromArgb(0x14, 0xFF, 0xFF, 0xFF)),
+            BorderBrush = new SolidColorBrush(Windows.UI.Color.FromArgb(0x26, 0xFF, 0xFF, 0xFF)),
+            BorderThickness = new Thickness(1.5),
+            Padding = new Thickness(14, 11, 14, 11),
+            Child = grid
+        };
+        card.Tapped += (_, _) => { _trainerIndex = index; UpdateTrainerCursor(); ConfirmTrainerChoice(); };
+        return card;
+    }
+
+    /// <summary>遮罩入场：遮罩层淡入 + 面板由 0.94 缓动放大到 1（与主页"添加"弹窗一致）</summary>
+    private void PlayTrainerChoiceIn()
+    {
+        var fade = new DoubleAnimation { From = 0, To = 1, Duration = TimeSpan.FromMilliseconds(140) };
+        Storyboard.SetTarget(fade, TrainerChoiceMask);
+        Storyboard.SetTargetProperty(fade, "Opacity");
+
+        var scale = new DoubleAnimation
+        {
+            From = 0.94, To = 1, Duration = TimeSpan.FromMilliseconds(190),
+            EasingFunction = new CubicEase { EasingMode = EasingMode.EaseOut }
+        };
+        var scaleY = new DoubleAnimation
+        {
+            From = 0.94, To = 1, Duration = TimeSpan.FromMilliseconds(190),
+            EasingFunction = new CubicEase { EasingMode = EasingMode.EaseOut }
+        };
+        Storyboard.SetTarget(scale, TrainerChoiceScale);
+        Storyboard.SetTargetProperty(scale, "ScaleX");
+        Storyboard.SetTarget(scaleY, TrainerChoiceScale);
+        Storyboard.SetTargetProperty(scaleY, "ScaleY");
+
+        var sb = new Storyboard();
+        sb.Children.Add(fade);
+        sb.Children.Add(scale);
+        sb.Children.Add(scaleY);
+        _trainerChoiceIn?.Stop();
+        _trainerChoiceIn = sb;
+        sb.Begin();
+    }
+
+    /// <summary>遮罩内手柄按键：上下=切换候选，A=下载所选，B/View/X=取消；其余按键一并吞掉避免误触主页</summary>
+    private void HandleTrainerChoice(GamepadButtons b)
+    {
+        var n = _trainerCards.Count;
+        if (b.HasFlag(GamepadButtons.DPadUp))
+        {
+            if (n > 0) { _trainerIndex = (_trainerIndex - 1 + n) % n; UpdateTrainerCursor(); }
+            return;
+        }
+        if (b.HasFlag(GamepadButtons.DPadDown))
+        {
+            if (n > 0) { _trainerIndex = (_trainerIndex + 1) % n; UpdateTrainerCursor(); }
+            return;
+        }
+        if (b.HasFlag(GamepadButtons.A)) { ConfirmTrainerChoice(); return; }
+        if (b.HasFlag(GamepadButtons.B) || b.HasFlag(GamepadButtons.View) || b.HasFlag(GamepadButtons.X))
+            CloseTrainerChoice();
+    }
+
+    private void OnTrainerChoiceMaskTapped(object sender, TappedRoutedEventArgs e) => CloseTrainerChoice();
+
+    /// <summary>确认当前高亮候选：收起遮罩并交给服务继续解析下载</summary>
+    private void ConfirmTrainerChoice()
+    {
+        if (_trainerIndex < 0 || _trainerIndex >= _trainerCandidates.Count)
+        {
+            CloseTrainerChoice();
+            return;
+        }
+        var pick = _trainerCandidates[_trainerIndex];
+        CloseTrainerChoice();
+        TrainerService.DownloadChosen(pick);
+    }
+
+    private void CloseTrainerChoice()
+    {
+        _trainerChoiceOpen = false;
+        _trainerChoiceIn?.Stop();
+        TrainerChoiceOverlay.Visibility = Visibility.Collapsed;
+    }
+
+    /// <summary>选中项：强调色描边 + 底色高亮，并滚动到可见位置（手柄连续翻页时不会跑出视野）</summary>
+    private void UpdateTrainerCursor()
+    {
+        var accentBr = new SolidColorBrush(Windows.UI.Color.FromArgb(0xFF, 0x4C, 0xC2, 0xFF));
+        var idleBr = new SolidColorBrush(Windows.UI.Color.FromArgb(0x26, 0xFF, 0xFF, 0xFF));
+        var accentBg = new SolidColorBrush(Windows.UI.Color.FromArgb(0x20, 0x4C, 0xC2, 0xFF));
+        var idleBg = new SolidColorBrush(Windows.UI.Color.FromArgb(0x14, 0xFF, 0xFF, 0xFF));
+        for (var i = 0; i < _trainerCards.Count; i++)
+        {
+            var on = i == _trainerIndex;
+            _trainerCards[i].BorderBrush = on ? accentBr : idleBr;
+            _trainerCards[i].BorderThickness = new Thickness(on ? 2 : 1.5);
+            _trainerCards[i].Background = on ? accentBg : idleBg;
+        }
+        if (_trainerIndex >= 0 && _trainerIndex < _trainerCards.Count)
+            _trainerCards[_trainerIndex].StartBringIntoView();
+    }
+
+    // ---- OptiScaler 适配性确认遮罩：显示当前游戏适配性与建议注入方式，询问是否注入（手柄可操作）----
+
+    private LaunchItem? _optiItem;
+    private OptiScalerInspection? _optiInspection;
+    private bool _optiOpen;
+    private Storyboard? _optiIn;
+
+    /// <summary>OptiScaler 适配性检查完成（事件来自后台线程，marshal 回 UI 线程后再弹窗）</summary>
+    private void OnOptiInspection(LaunchItem item, OptiScalerInspection insp) =>
+        DispatcherQueue.TryEnqueue(() => ShowOptiConfirm(item, insp));
+
+    private void ShowOptiConfirm(LaunchItem item, OptiScalerInspection insp)
+    {
+        _optiItem = item;
+        _optiInspection = insp;
+        _optiOpen = true;
+
+        var (accent, emoji) = insp.Status switch
+        {
+            "✅" => (Windows.UI.Color.FromArgb(0xFF, 0x5C, 0xC4, 0x6A), "✅"),
+            "❌" => (Windows.UI.Color.FromArgb(0xFF, 0xFF, 0x7A, 0x6B), "❌"),
+            "💥" => (Windows.UI.Color.FromArgb(0xFF, 0xFF, 0xB9, 0x00), "💥"),
+            _ => (Windows.UI.Color.FromArgb(0xFF, 0x9A, 0xA3, 0xB0), "❔")
+        };
+        OptiStatusEmoji.Text = emoji;
+        OptiStatusEmoji.Foreground = new SolidColorBrush(accent);
+        OptiGameName.Text = string.IsNullOrWhiteSpace(insp.GameName) ? insp.ExeName : insp.GameName;
+        OptiStatusText.Text = $"适配性：{insp.Status} {insp.StatusText}";
+        OptiDllText.Text = insp.SuggestedDll;
+        OptiInputsText.Text = insp.Inputs;
+        OptiInputsRow.Visibility = string.IsNullOrWhiteSpace(insp.Inputs) ? Visibility.Collapsed : Visibility.Visible;
+        OptiNoteText.Text = insp.Note;
+        OptiNoteBox.Visibility = string.IsNullOrWhiteSpace(insp.Note) ? Visibility.Collapsed : Visibility.Visible;
+
+        OptiOverlay.Visibility = Visibility.Visible;
+        PlayOptiIn();
+    }
+
+    /// <summary>遮罩入场：遮罩层淡入 + 面板由 0.94 缓动放大到 1（与修改器候选弹窗一致）</summary>
+    private void PlayOptiIn()
+    {
+        var fade = new DoubleAnimation { From = 0, To = 1, Duration = TimeSpan.FromMilliseconds(140) };
+        Storyboard.SetTarget(fade, OptiMask);
+        Storyboard.SetTargetProperty(fade, "Opacity");
+
+        var scale = new DoubleAnimation
+        {
+            From = 0.94, To = 1, Duration = TimeSpan.FromMilliseconds(190),
+            EasingFunction = new CubicEase { EasingMode = EasingMode.EaseOut }
+        };
+        var scaleY = new DoubleAnimation
+        {
+            From = 0.94, To = 1, Duration = TimeSpan.FromMilliseconds(190),
+            EasingFunction = new CubicEase { EasingMode = EasingMode.EaseOut }
+        };
+        Storyboard.SetTarget(scale, OptiScale);
+        Storyboard.SetTargetProperty(scale, "ScaleX");
+        Storyboard.SetTarget(scaleY, OptiScale);
+        Storyboard.SetTargetProperty(scaleY, "ScaleY");
+
+        var sb = new Storyboard();
+        sb.Children.Add(fade);
+        sb.Children.Add(scale);
+        sb.Children.Add(scaleY);
+        _optiIn?.Stop();
+        _optiIn = sb;
+        sb.Begin();
+    }
+
+    /// <summary>遮罩内手柄按键：A=注入，B/View/X=取消；其余按键一并吞掉避免误触主页</summary>
+    private void HandleOpti(GamepadButtons b)
+    {
+        if (b.HasFlag(GamepadButtons.A)) { ConfirmOpti(); return; }
+        if (b.HasFlag(GamepadButtons.B) || b.HasFlag(GamepadButtons.View) || b.HasFlag(GamepadButtons.X))
+            CloseOpti();
+    }
+
+    private void OnOptiMaskTapped(object sender, TappedRoutedEventArgs e) => CloseOpti();
+
+    /// <summary>确认注入：收起遮罩并交给服务执行（关闭游戏 → 注入 → 重新打开游戏）</summary>
+    private void ConfirmOpti()
+    {
+        var item = _optiItem;
+        var insp = _optiInspection;
+        CloseOpti();
+        if (item is not null && insp is not null) OptiScalerService.InjectConfirmed(item, insp);
+    }
+
+    private void CloseOpti()
+    {
+        _optiOpen = false;
+        _optiItem = null;
+        _optiInspection = null;
+        _optiIn?.Stop();
+        OptiOverlay.Visibility = Visibility.Collapsed;
     }
 
     // ---- 弹出/隐藏动画：物理移动真实窗口（SetWindowPos 直调 + CompositionTarget.Rendering 帧对齐）。
@@ -560,83 +850,151 @@ public sealed partial class MainWindow : Window
             if (Root.Content is ISettingsGamepad page) page.NotifyAllReleased();
         });
 
-    private void OnGamepadButton(GamepadButtons buttons)
-    {
+    private void OnGamepadButton(GamepadButtons buttons) =>
         // 轮询线程触发，marshal 回 UI 线程
-        DispatcherQueue.TryEnqueue(() =>
+        DispatcherQueue.TryEnqueue(() => DispatchButtons(buttons));
+
+    /// <summary>手柄按键派发（UI 线程）。allowDeferB=false 专用于"双击 B 判定到期"后补发单击 B 的原有行为</summary>
+    private void DispatchButtons(GamepadButtons buttons, bool allowDeferB = true)
+    {
+        // 双保险：入队后窗口可能已经隐藏/失去前台，此时一律不处理手柄
+        // （否则"在游戏里按 Y"会命中启动器上一次选中的磁贴，把游戏关掉）
+        if (!_routing) return;
+
+        // 修改器候选遮罩打开时，方向/A/B 全交给遮罩，避免误触底下的主页操作
+        if (_trainerChoiceOpen)
         {
-            // 双保险：入队后窗口可能已经隐藏/失去前台，此时一律不处理手柄
-            // （否则"在游戏里按 Y"会命中启动器上一次选中的磁贴，把游戏关掉）
-            if (!_routing) return;
+            HandleTrainerChoice(buttons);
+            return;
+        }
 
-            // 添加页：方向/A/B 全交给页面（浏览状态 B 返回表单；映射按键捕获时把原始按键交给捕获）
-            if (Root.Content is AddItemPage add)
+        // OptiScaler 适配性确认遮罩打开时，A/B 交给遮罩（A=注入，B=取消），避免误触主页
+        if (_optiOpen)
+        {
+            HandleOpti(buttons);
+            return;
+        }
+
+        // 双击 B = 直接最小化：B 按下先挂起，双击窗口内没有第二次按下才补发原 B 行为（返回/收起），
+        // 这样双击不会先触发一次返回。
+        // 不挂在主页——主页 B 单击本就是"收起窗口到托盘"，与双击同效，延迟反而让收起变卡；
+        // 挂起也不用于按键捕获场景——那里 B 是待捕获的原始输入，不能延迟
+        if (allowDeferB && buttons == GamepadButtons.B && Root.Content is not MainPage &&
+            !IsCapturingNow() && HandleBPress()) return;
+
+        // 添加页：方向/A/B 全交给页面（浏览状态 B 返回表单；映射按键捕获时把原始按键交给捕获）
+        if (Root.Content is AddItemPage add)
+        {
+            if (add.IsCapturing) add.CaptureButtons(buttons);
+            else add.HandleGamepad(buttons);
+            return;
+        }
+
+        // 小组件页：同添加页模式（浏览状态 B 返回表单）
+        if (Root.Content is WidgetPage widget)
+        {
+            widget.HandleGamepad(buttons);
+            return;
+        }
+
+        // 磁贴集副本页：方向/A/LB/RB/R3 交给页面，B/View 返回主页
+        if (Root.Content is TileSetPage tileSet)
+        {
+            // R3：编辑当前选中的快照磁贴（与主页同理；排列模式中不触发）
+            if (buttons.HasFlag(GamepadButtons.RightThumb) && !buttons.HasFlag(GamepadButtons.A))
             {
-                if (add.IsCapturing) add.CaptureButtons(buttons);
-                else add.HandleGamepad(buttons);
+                if (!tileSet.IsMoving && tileSet.SelectedItem is { } si)
+                    Root.Navigate(typeof(AddItemPage), (tileSet.SetTarget, si));
                 return;
             }
+            // 页面未消费的 B/View 才返回主页（排列模式中 B=退出排列，已被页面消费）
+            if (!tileSet.HandleGamepad(buttons) &&
+                (buttons.HasFlag(GamepadButtons.View) || buttons.HasFlag(GamepadButtons.B)))
+                ShowMainPage();
+            return;
+        }
 
-            // 小组件页：同添加页模式（浏览状态 B 返回表单）
-            if (Root.Content is WidgetPage widget)
+        // 设置主页与各分类子页：捕获模式下按键原样交给页面；
+        // 否则方向/A 页面处理，View/B 逐级返回
+        if (Root.Content is ISettingsGamepad page)
+        {
+            if (page.IsCapturing)
             {
-                widget.HandleGamepad(buttons);
+                page.CaptureButtons(buttons);
                 return;
             }
-
-            // 磁贴集副本页：方向/A/LB/RB/R3 交给页面，B/View 返回主页
-            if (Root.Content is TileSetPage tileSet)
+            page.HandleGamepad(buttons);
+            if (buttons.HasFlag(GamepadButtons.View) || buttons.HasFlag(GamepadButtons.B))
             {
-                // R3：编辑当前选中的快照磁贴（与主页同理；排列模式中不触发）
-                if (buttons.HasFlag(GamepadButtons.RightThumb) && !buttons.HasFlag(GamepadButtons.A))
-                {
-                    if (!tileSet.IsMoving && tileSet.SelectedItem is { } si)
-                        Root.Navigate(typeof(AddItemPage), (tileSet.SetTarget, si));
-                    return;
-                }
-                // 页面未消费的 B/View 才返回主页（排列模式中 B=退出排列，已被页面消费）
-                if (!tileSet.HandleGamepad(buttons) &&
-                    (buttons.HasFlag(GamepadButtons.View) || buttons.HasFlag(GamepadButtons.B)))
-                    ShowMainPage();
-                return;
+                if (page is SettingsPage) SettingsBack();
+                else ShowSettingsHub();
             }
+            return;
+        }
 
-            // 设置主页与各分类子页：捕获模式下按键原样交给页面；
-            // 否则方向/A 页面处理，View/B 逐级返回
-            if (Root.Content is ISettingsGamepad page)
-            {
-                if (page.IsCapturing)
-                {
-                    page.CaptureButtons(buttons);
-                    return;
-                }
-                page.HandleGamepad(buttons);
-                if (buttons.HasFlag(GamepadButtons.View) || buttons.HasFlag(GamepadButtons.B))
-                {
-                    if (page is SettingsPage) SettingsBack();
-                    else ShowSettingsHub();
-                }
-                return;
-            }
+        if (Root.Content is MainPage main && main.HandleGamepad(buttons))
+            return;
 
-            if (Root.Content is MainPage main && main.HandleGamepad(buttons))
-                return;
-
-            if (buttons.HasFlag(GamepadButtons.View)) Root.Navigate(typeof(SettingsPage));
-            else if (buttons.HasFlag(GamepadButtons.X))
-            {
-                // 添加：先弹出方式选择（自定义 / 小组件）
-                if (Root.Content is MainPage mp2) mp2.OpenAddChoice();
-            }
-            else if (buttons.HasFlag(GamepadButtons.RightThumb))
-            {
-                // R3（右摇杆按下）：编辑当前选中的快捷项
-                if (Root.Content is MainPage mp && mp.SelectedItem is { } item)
-                    Root.Navigate(typeof(AddItemPage), item);
-            }
-            else if (buttons.HasFlag(GamepadButtons.B)) HideToTray();
-        });
+        if (buttons.HasFlag(GamepadButtons.View)) Root.Navigate(typeof(SettingsPage));
+        else if (buttons.HasFlag(GamepadButtons.X))
+        {
+            // 添加：先弹出方式选择（自定义 / 小组件）
+            if (Root.Content is MainPage mp2) mp2.OpenAddChoice();
+        }
+        else if (buttons.HasFlag(GamepadButtons.RightThumb))
+        {
+            // R3（右摇杆按下）：编辑当前选中的快捷项
+            if (Root.Content is MainPage mp && mp.SelectedItem is { } item)
+                Root.Navigate(typeof(AddItemPage), item);
+        }
+        else if (buttons.HasFlag(GamepadButtons.B)) HideToTray();
     }
+
+    // ---- 双击 B = 直接最小化。B 单击原本是"返回上一级/收起"，若不做延迟，
+    // 双击的第一下就已经把页面返回了，用户会看到"双击误触发返回"。故第一下先挂起，
+    // 双击窗口（同系统"双击速度"，见 MainPage 磁贴双击）内没有第二次按下，才补发单击行为。----
+
+    private bool _bPending;
+    private DispatcherTimer? _bTimer;
+
+    /// <summary>B 按下：返回 true=本次按键已在此处消费（双击已最小化 / 首次已挂起）。
+    /// false 不返回——本方法总是返回 true，仅为调用点写起来顺手</summary>
+    private bool HandleBPress()
+    {
+        if (_bPending)
+        {
+            // 双击窗口内的第二次按下：直接最小化（收起启动器）
+            _bPending = false;
+            _bTimer?.Stop();
+            HideToTray();
+            return true;
+        }
+        _bPending = true;
+        (_bTimer ??= NewBTimer()).Start();
+        return true;
+    }
+
+    private DispatcherTimer NewBTimer()
+    {
+        var t = new DispatcherTimer { Interval = TimeSpan.FromMilliseconds(DoublePressMs) };
+        t.Tick += (_, _) =>
+        {
+            t.Stop();
+            if (!_bPending) return;
+            _bPending = false;
+            DispatchButtons(GamepadButtons.B, allowDeferB: false); // 补发单击 B 的原有行为
+        };
+        return t;
+    }
+
+    /// <summary>双击 B 判定窗口（毫秒）。手柄按键是物理按键，双击远快于鼠标，故不用系统"双击速度"
+    /// （≥400ms 会让单击返回明显发卡），取 180ms：单击返回几乎无感，又够容纳一次有意的双击</summary>
+    private const int DoublePressMs = 180;
+
+    /// <summary>当前页是否在"捕获按键"（此时 B 是待捕获的原始输入，不能延迟/劫持）</summary>
+    private bool IsCapturingNow() =>
+        (Root.Content as ISettingsGamepad)?.IsCapturing == true ||
+        (Root.Content is AddItemPage a && a.IsCapturing);
 
     public void ToggleFullscreen()
     {
@@ -683,11 +1041,11 @@ public sealed partial class MainWindow : Window
     [DllImport("user32.dll", CharSet = CharSet.Unicode)]
     private static extern IntPtr SendMessage(IntPtr hWnd, int msg, IntPtr wParam, IntPtr lParam);
 
-    // ---- 触摸收起手势：返回上一级 / 主页收起。方向与呼出手势相反：
-    // 呼出=从边缘向中心内滑（左停靠=向右、右停靠=向左、全屏=向下），
-    // 收起=同轴反向（左停靠=向左、右停靠=向右、全屏=向上）。
+    // ---- 触摸手势：向下滑 = 返回上一级（主页则最小化），反向滑（呼出反方向）= 直接最小化。
+    // 呼出=从边缘向中心内滑（左停靠=向右、右停靠=向左、全屏=向下），反向滑=同轴反向
+    // （左停靠=向左、右停靠=向右、全屏=向上）。
     // 双通道：① 窗口内指针事件（主页磁贴区可靠）；② 原始输入触摸通道（子页被列表/滚动视图
-    // 捕获触摸时仍有效，见 EdgeGestureService.DismissTriggered）。两通道按 600ms 冷却互斥去重。----
+    // 捕获触摸时仍有效，见 EdgeGestureService.DismissTriggered/BackTriggered）。两通道按 600ms 冷却互斥去重。----
 
     private Windows.Foundation.Point? _swipeStart;
     private DateTime _swipeStartAt;
@@ -695,6 +1053,7 @@ public sealed partial class MainWindow : Window
     private bool _swipeDone;
     private bool _swipeMoveLogged;
     private long _dismissAt;
+    private long _backAt;
 
     /// <summary>在窗口根面板监听指针（触摸）事件（handledEventsToo=true，ScrollViewer 消费后仍能收到）</summary>
     private void HookSwipeBack()
@@ -720,12 +1079,12 @@ public sealed partial class MainWindow : Window
     {
         if (_swipeDone || _swipeStart is not { } s || e.Pointer.PointerId != _swipeId) return;
         var p = e.GetCurrentPoint(null).Position;
-        // 收起方向 = 呼出手势的反向：左停靠=向左滑，右停靠=向右滑，全屏=向上滑
+        // 反向滑方向 = 呼出手势的反向：左停靠=向左滑，右停靠=向右滑，全屏=向上滑 → 最小化
         // 主轴位移>120px、正交偏移<80px、时长<500ms；慢速滚动不误触
         var edge = CurrentSummonEdge();
         var dx = p.X - s.X;
         var dy = p.Y - s.Y;
-        var main = edge switch
+        var reverse = edge switch
         {
             SummonEdge.Left => -dx,
             SummonEdge.Right => dx,
@@ -733,17 +1092,25 @@ public sealed partial class MainWindow : Window
         };
         var cross = edge == SummonEdge.Top ? Math.Abs(dx) : Math.Abs(dy);
         // 诊断：每次按下只记一条，用于确认子页是否还能收到 Moved 事件
-        if (!_swipeMoveLogged && Math.Abs(main) > 40)
+        if (!_swipeMoveLogged && Math.Abs(reverse) > 40)
         {
             _swipeMoveLogged = true;
-            EdgeGestureService.Trace($"win swipe moved page={Root.Content?.GetType().Name} main={main} cross={cross}");
+            EdgeGestureService.Trace(
+                $"win swipe moved page={Root.Content?.GetType().Name} reverse={reverse} cross={cross} dy={dy}");
         }
-        if (main > 120 && cross < 80 &&
-            (DateTime.UtcNow - _swipeStartAt).TotalMilliseconds < 500)
+        var fast = (DateTime.UtcNow - _swipeStartAt).TotalMilliseconds < 500;
+        if (fast && reverse > 120 && cross < 80)
         {
             _swipeDone = true;
             _dismissAt = Environment.TickCount64; // 与原始输入通道去重
-            DismissCurrent();
+            Minimize();
+        }
+        // 向下滑（竖直向下、横向偏移小）→ 返回上一级。全屏停靠时"向下"即呼出方向，不会与上面的反向滑冲突
+        else if (fast && dy > 120 && Math.Abs(dx) < 80)
+        {
+            _swipeDone = true;
+            _backAt = Environment.TickCount64; // 与原始输入通道去重
+            BackOneLevel();
         }
     }
 
@@ -752,24 +1119,35 @@ public sealed partial class MainWindow : Window
         if (e.Pointer.PointerId == _swipeId) _swipeStart = null;
     }
 
-    /// <summary>收起：子页=返回上一级，主页=收起启动器（滑出屏外再隐藏到托盘）</summary>
-    private void DismissCurrent()
+    /// <summary>反向滑：直接最小化（收起启动器：滑出屏外再隐藏到托盘）</summary>
+    private void Minimize() => HideToTray();
+
+    /// <summary>向下滑：返回上一级；已在主页（无上一级）则改用最小化</summary>
+    private void BackOneLevel()
     {
-        if (Root.Content is MainPage)
-            HideToTray();
-        else if (Root.CanGoBack)
-            Root.GoBack();
+        if (Root.Content is MainPage) HideToTray();
+        else if (Root.CanGoBack) Root.GoBack();
     }
 
-    /// <summary>原始输入触摸通道识别到"呼出反方向"快滑：仅在本窗口前台、且不在磁贴拖拽页时收起/返回。
-    /// 磁贴页（主页/磁贴集）有横向拖拽换位，交给窗口内指针通道判定，避免误收起。</summary>
+    /// <summary>原始输入触摸通道识别到"呼出反方向"快滑：仅在本窗口前台时直接最小化。
+    /// 磁贴页（主页/磁贴集）有横向拖拽换位，交给窗口内指针通道判定，避免误最小化。</summary>
     private void OnDismissGesture()
     {
         if (!Visible || GetForegroundWindow() != _hwnd) return;
         if (Root.Content is MainPage or TileSetPage) return;
         if (Environment.TickCount64 - _dismissAt < 600) return; // 与指针通道去重
         _dismissAt = Environment.TickCount64;
-        DismissCurrent();
+        Minimize();
+    }
+
+    /// <summary>原始输入触摸通道识别到"向下滑"：返回上一级（主页则最小化）。
+    /// 该方向与磁贴页的横向拖拽换位不冲突，故磁贴页也放行。</summary>
+    private void OnBackGesture()
+    {
+        if (!Visible || GetForegroundWindow() != _hwnd) return;
+        if (Environment.TickCount64 - _backAt < 600) return; // 与指针通道去重
+        _backAt = Environment.TickCount64;
+        BackOneLevel();
     }
 
     // ---- 移除标题栏所需 Win32 样式操作 ----

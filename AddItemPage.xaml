@@ -531,6 +531,142 @@
                     </Border>
                 </StackPanel>
 
+                <!-- OptiScaler 小组件：注入 DLL 名 / ini 关键项（Dx12Upscaler + 帧生成）/ 本地包 / 一键还原（仅 OptiScaler 编辑时显示） -->
+                <StackPanel x:Name="OptiScalerRow" Spacing="12" Visibility="Collapsed">
+                    <StackPanel Orientation="Horizontal" Spacing="8">
+                        <FontIcon Glyph="&#xE8C8;" FontSize="16" Foreground="#BBD8FF" VerticalAlignment="Center"/>
+                        <TextBlock Text="OptiScaler 设置" FontSize="17" FontWeight="Bold" Opacity="0.95" VerticalAlignment="Center"/>
+                    </StackPanel>
+
+                    <Border Background="#0FFFFFFF" BorderBrush="#1FFFFFFF" BorderThickness="1"
+                            CornerRadius="10" Padding="14,12">
+                        <StackPanel Spacing="7">
+                            <StackPanel Orientation="Horizontal" Spacing="9">
+                                <Border Width="4" Height="4" CornerRadius="2" Background="#8FA3BF" VerticalAlignment="Center"/>
+                                <TextBlock Text="主页点击磁贴 = 检测当前游戏适配性并询问是否注入" FontSize="12" Opacity="0.85" TextWrapping="Wrap"/>
+                            </StackPanel>
+                            <StackPanel Orientation="Horizontal" Spacing="9">
+                                <Border Width="4" Height="4" CornerRadius="2" Background="#8FA3BF" VerticalAlignment="Center"/>
+                                <TextBlock Text="确认注入后会关闭游戏、写入 OptiScaler、再重新打开游戏" FontSize="12" Opacity="0.85" TextWrapping="Wrap"/>
+                            </StackPanel>
+                            <StackPanel Orientation="Horizontal" Spacing="9">
+                                <Border Width="4" Height="4" CornerRadius="2" Background="#8FA3BF" VerticalAlignment="Center"/>
+                                <TextBlock Text="注入前会自动备份被覆盖的同名文件，可用下方「一键还原」撤销" FontSize="12" Opacity="0.6" TextWrapping="Wrap"/>
+                            </StackPanel>
+                        </StackPanel>
+                    </Border>
+
+                    <!-- 设置项：DLL/画质两列并排；帧生成开关独占一行；其下输入+输出并排、倍数落在输入正下方。
+                         帧生成关闭时，倍数/输入/输出三格整体收起（行高归零，下方内容随之上移）。
+                         用 Margin 代替 RowSpacing，收起后不留空档。 -->
+                    <Grid ColumnSpacing="18">
+                        <Grid.ColumnDefinitions>
+                            <ColumnDefinition Width="*"/>
+                            <ColumnDefinition Width="*"/>
+                        </Grid.ColumnDefinitions>
+                        <Grid.RowDefinitions>
+                            <RowDefinition Height="Auto"/>
+                            <RowDefinition Height="Auto"/>
+                            <RowDefinition Height="Auto"/>
+                            <RowDefinition Height="Auto"/>
+                            <RowDefinition Height="Auto"/>
+                        </Grid.RowDefinitions>
+
+                        <StackPanel Grid.Row="0" Grid.Column="0" Spacing="5" Margin="0,0,0,14">
+                            <TextBlock Text="注入 DLL 名" FontSize="13" Opacity="0.72"/>
+                            <ComboBox x:Name="OptiDllCombo" HorizontalAlignment="Stretch"
+                                      ToolTipService.ToolTip="自动 = 按 OptiScaler wiki 对该游戏的建议（默认 dxgi）。若游戏自带同名 DLL，可改用 version / winmm 等规避。"/>
+                            <TextBlock Text="OptiScaler 版本" FontSize="13" Opacity="0.72" Margin="0,9,0,0"/>
+                            <ComboBox x:Name="OptiVersionCombo" HorizontalAlignment="Stretch"
+                                      ToolTipService.ToolTip="选择注入时下载的版本渠道。正式版来自 OptiScaler 官方仓库的最新 Release，最稳定；测试版来自社区镜像的最新预览版，更新更快但可能有 Bug。选定渠道后，注入（Y 键 / 长按磁贴）时才会按该渠道下载；下载完成后，这里会显示实际的版本号。"/>
+                        </StackPanel>
+                        <StackPanel Grid.Row="0" Grid.Column="1" Spacing="5" Margin="0,0,0,14">
+                            <TextBlock Text="画质提升" FontSize="13" Opacity="0.72"/>
+                            <ComboBox x:Name="OptiUpscalerCombo" HorizontalAlignment="Stretch"
+                                      SelectionChanged="OnOptiUpscalerChanged"
+                                      ToolTipService.ToolTip="写入 [Upscalers] Dx12Upscaler：实际使用的超分方案。选 FSR4 = ffx + [FSR] UpscalerIndex=0（FSR 4.0.2，RDNA4 原生支持；其他卡由驱动回退到 FSR3）。"/>
+                            <StackPanel x:Name="OptiFsr4Cell" Spacing="5" Margin="0,9,0,0" Visibility="Collapsed">
+                                <TextBlock Text="FSR4 画质档" FontSize="13" Opacity="0.72"/>
+                                <ComboBox x:Name="OptiFsr4PresetCombo" HorizontalAlignment="Stretch"
+                                          ToolTipService.ToolTip="写入 [FSR] Fsr4Preset 内部 FSR4 预设：原生 AA / 质量 / 平衡 / 性能 / DRS / 超级性能。"/>
+                                <TextBlock Text="FSR4 文件" FontSize="13" Opacity="0.72" Margin="0,4,0,0"/>
+                                <ComboBox x:Name="OptiFsr4FilesCombo" HorizontalAlignment="Stretch"
+                                          ToolTipService.ToolTip="FSR4 的主 DLL 不在 OptiScaler 官方包里，需另从社区仓库下载。INT8 适合 RDNA2/3 等兼容卡；FP8 是 RDNA4 的官方模型。选「不额外注入」则沿用驱动/游戏自带的 FSR4 文件（RDNA4 通常够用）。"/>
+                            </StackPanel>
+                        </StackPanel>
+
+                        <StackPanel Grid.Row="1" Grid.Column="0" Grid.ColumnSpan="2" Spacing="5" Margin="0,0,0,14">
+                            <TextBlock Text="帧生成" FontSize="13" Opacity="0.72"/>
+                            <ToggleSwitch x:Name="OptiFrameGenToggle" HorizontalAlignment="Left"
+                                          OnContent="开" OffContent="关" Toggled="OnOptiFrameGenToggled"
+                                          ToolTipService.ToolTip="写入 OptiScaler.ini 的 FrameGen.Enabled。关闭时输入/输出/倍数不生效，会一并收起。"/>
+                        </StackPanel>
+
+                        <StackPanel x:Name="OptiFgInputCell" Grid.Row="2" Grid.Column="0" Spacing="5" Margin="0,0,0,14">
+                            <TextBlock Text="帧生成输入" FontSize="13" Opacity="0.72"/>
+                            <ComboBox x:Name="OptiFgInputCombo" HorizontalAlignment="Stretch"
+                                      ToolTipService.ToolTip="FrameGen.FGInput 帧生成的帧源。DLSSG 需游戏走 Streamline + DLSSG，NvngxFG 需游戏支持 DLSS 帧生成；FSRFG / FSRFG 3.0 可配合任意输出；OptiFG（ini 值就是 upscaler）走 OptiScaler 内置的实验性补帧通路，需超分开启，细节由 [OptiFG] 段调节。"/>
+                        </StackPanel>
+                        <StackPanel x:Name="OptiFgOutputCell" Grid.Row="2" Grid.Column="1" Spacing="5" Margin="0,0,0,14">
+                            <TextBlock Text="帧生成输出" FontSize="13" Opacity="0.72"/>
+                            <ComboBox x:Name="OptiFgOutputCombo" HorizontalAlignment="Stretch"
+                                      ToolTipService.ToolTip="FrameGen.FGOutput 实际补帧的实现。FSRFG 需 amd_fidelityfx 系列 DLL，XeFG 需 libxess_fg.dll 与 libxell.dll，NvngxFG 需 dlssg_to_fsr3_amd_is_better.dll，DLSSG 需 streamline + nvngx_dlssg.dll，DLSSG+NvngxFG 还需一个 NvNGX 提供方。"/>
+                        </StackPanel>
+
+                        <StackPanel x:Name="OptiFgMultiplierCell" Grid.Row="3" Grid.Column="0" Spacing="5" Margin="0,0,0,14">
+                            <TextBlock Text="帧生成倍数" FontSize="13" Opacity="0.72"/>
+                            <ComboBox x:Name="OptiFgMultiplierCombo" HorizontalAlignment="Stretch"
+                                      ToolTipService.ToolTip="写入 DLSSG / XeFG 的 InterpolationCount：1=2X、2=3X、3=4X、4=5X、5=6X。5X/6X 仅 DLSSG 系输出支持（XeFG 上限 4X）；FSRFG 固定 2X。"/>
+                        </StackPanel>
+
+                        <StackPanel Grid.Row="4" Grid.Column="0" Grid.ColumnSpan="2" Spacing="5">
+                            <TextBlock Text="本地包" FontSize="13" Opacity="0.72"/>
+                            <Grid>
+                                <Grid.ColumnDefinitions>
+                                    <ColumnDefinition Width="*"/>
+                                    <ColumnDefinition Width="Auto"/>
+                                    <ColumnDefinition Width="Auto"/>
+                                </Grid.ColumnDefinitions>
+                                <TextBlock x:Name="OptiLocalPackText" Grid.Column="0" VerticalAlignment="Center"
+                                           FontSize="13" Opacity="0.7" TextTrimming="CharacterEllipsis"
+                                           Text="自动下载最新版"
+                                           ToolTipService.ToolTip="留空则自动从 GitHub 下载最新版并缓存；也可指定已解压目录或 zip / 7z 包覆盖。"/>
+                                <Button x:Name="OptiLocalPackButton" Grid.Column="1" Margin="8,0,0,0"
+                                        Click="OnOptiLocalPackClick">
+                                    <StackPanel Orientation="Horizontal" Spacing="6">
+                                        <FontIcon Glyph="&#xE8B7;" FontSize="14"/>
+                                        <TextBlock Text="选择…"/>
+                                    </StackPanel>
+                                </Button>
+                                <Button x:Name="OptiLocalPackClearButton" Grid.Column="2" Margin="8,0,0,0"
+                                        Click="OnOptiLocalPackClearClick" ToolTipService.ToolTip="清除，改用自动下载">
+                                    <FontIcon Glyph="&#xE74D;" FontSize="14" Foreground="#FF7A6B"/>
+                                </Button>
+                            </Grid>
+                        </StackPanel>
+                    </Grid>
+
+                    <!-- 一键还原：撤销上一次注入；数据目录：包缓存与备份 -->
+                    <StackPanel Spacing="8">
+                        <StackPanel Orientation="Horizontal" Spacing="8">
+                            <Button x:Name="OptiRestoreButton" Click="OnOptiRestoreClick"
+                                    ToolTipService.ToolTip="撤销上一次注入，复原被覆盖的文件">
+                                <StackPanel Orientation="Horizontal" Spacing="6">
+                                    <FontIcon Glyph="&#xE7A7;" FontSize="14"/>
+                                    <TextBlock Text="一键还原"/>
+                                </StackPanel>
+                            </Button>
+                            <Button x:Name="OptiOpenFolderButton" Click="OnOptiOpenFolderClick">
+                                <StackPanel Orientation="Horizontal" Spacing="6">
+                                    <FontIcon Glyph="&#xE8B7;" FontSize="14"/>
+                                    <TextBlock Text="打开数据目录…"/>
+                                </StackPanel>
+                            </Button>
+                        </StackPanel>
+                        <TextBlock x:Name="OptiRestoreStatus" FontSize="12" Opacity="0.7" TextWrapping="Wrap"/>
+                    </StackPanel>
+                </StackPanel>
+
                 <!-- 组件标题（仅手柄映射小组件）：独立一行，显示在下方类型/大小/颜色行的上方 -->
                 <StackPanel x:Name="TitleColumn" Spacing="4" Visibility="Collapsed">
                     <TextBlock Text="组件标题" FontSize="17" FontWeight="Bold" Opacity="0.95"/>

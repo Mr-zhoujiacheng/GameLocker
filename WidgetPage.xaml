@@ -166,6 +166,22 @@
                         </StackPanel>
                     </StackPanel>
                 </Button>
+
+                <!-- OptiScaler 组件卡片：缩小 OptiScaler 磁贴预览（图像图标 + 名称）+ 名称 + 简述 -->
+                <Button x:Name="OptiScalerWidgetCard" Grid.Row="2" Grid.Column="2" Tag="optiscaler" Background="#14FFFFFF" BorderThickness="1"
+                        BorderBrush="Transparent" Margin="6" Height="204" VerticalAlignment="Top"
+                        HorizontalContentAlignment="Center" VerticalContentAlignment="Top" Padding="10" Click="OnAddClick">
+                    <StackPanel Spacing="8">
+                        <Viewbox MaxHeight="116" Stretch="Uniform" HorizontalAlignment="Center">
+                            <ContentPresenter x:Name="OptiScalerPreviewHost"/>
+                        </Viewbox>
+                        <StackPanel Spacing="3">
+                            <TextBlock Text="OptiScaler" FontSize="14" FontWeight="Bold" HorizontalAlignment="Center"/>
+                            <TextBlock Text="检测当前游戏适配性，一键注入 OptiScaler"
+                                       FontSize="11" Opacity="0.7" TextWrapping="Wrap" TextAlignment="Center"/>
+                        </StackPanel>
+                    </StackPanel>
+                </Button>
             </Grid>
         </ScrollViewer>
 

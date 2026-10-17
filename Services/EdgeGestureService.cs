@@ -45,6 +45,7 @@ public sealed class EdgeGestureService : IDisposable
     private bool _downNearEdge;     // 本次按下起点是否在边缘感应带内（决定抬起时判呼出还是收起）
     private long _lastTrigger;
     private long _lastDismiss;
+    private long _lastBack;
 
     // ---- Raw Input 触摸 sink（屏外 1x1 窗口，仅接收 WM_INPUT）----
     private IntPtr _sink = 0;
@@ -66,9 +67,13 @@ public sealed class EdgeGestureService : IDisposable
     /// <summary>边缘向内滑动被识别 → 请求呼出</summary>
     public event Action? SummonTriggered;
 
-    /// <summary>与呼出反向的滑动被识别（从窗口内部朝呼出边缘快滑，即手指反向离开边缘）→ 请求收起/返回。
+    /// <summary>与呼出反向的滑动被识别（从窗口内部朝呼出边缘快滑，即手指反向离开边缘）→ 请求最小化。
     /// 走 Raw Input 触摸通道：不受页面命中测试/列表框触摸捕获影响，任何页面都能触发</summary>
     public event Action? DismissTriggered;
+
+    /// <summary>从窗口内部向下快滑被识别 → 请求返回上一级（主页由上层决定改为最小化）。
+    /// 同样走 Raw Input 触摸通道</summary>
+    public event Action? BackTriggered;
 
     public EdgeGestureService()
     {
@@ -301,7 +306,15 @@ public sealed class EdgeGestureService : IDisposable
                 try { SummonTriggered?.Invoke(); Log("touch summon dispatched"); }
                 catch (Exception ex) { Log($"summon invoke EX: {ex.GetType().Name}: {ex.Message}"); }
             }
-            // 收起：起点在窗口内部（非边缘带）、朝边缘方向快滑且够快（慢速滚动不误触）
+            // 向下滑：起点在窗口内部、竖直向下快滑（横向偏移小，避开横向拖拽）→ 返回上一级
+            else if (!nearEdge && (_tLastY - _tStartY) >= DismissThreshold && Math.Abs(_tLastX - _tStartX) < 80 &&
+                elapsed < 500 && (Environment.TickCount64 - _lastBack) > 600)
+            {
+                _lastBack = Environment.TickCount64;
+                try { BackTriggered?.Invoke(); Log("touch back dispatched"); }
+                catch (Exception ex) { Log($"back invoke EX: {ex.GetType().Name}: {ex.Message}"); }
+            }
+            // 反向滑（呼出反方向）：起点在窗口内部、朝边缘方向快滑且够快（慢速滚动不误触）→ 最小化
             else if (!nearEdge && -inward >= DismissThreshold && elapsed < 500 &&
                 (Environment.TickCount64 - _lastDismiss) > 600)
             {
@@ -445,6 +458,13 @@ public sealed class EdgeGestureService : IDisposable
                         try { SummonTriggered?.Invoke(); Log("summon dispatched"); }
                         catch (Exception ex) { Log($"summon invoke EX: {ex.GetType().Name}: {ex.Message}"); }
                     }
+                }
+                else if ((info.ptY - _downY) >= DismissThreshold && Math.Abs(info.ptX - _downX) < 80 &&
+                    (Environment.TickCount64 - _lastBack) > 600)
+                {
+                    _lastBack = Environment.TickCount64;
+                    try { BackTriggered?.Invoke(); Log("back dispatched"); }
+                    catch (Exception ex) { Log($"back invoke EX: {ex.GetType().Name}: {ex.Message}"); }
                 }
                 else if (-inward >= DismissThreshold && (Environment.TickCount64 - _lastDismiss) > 600)
                 {

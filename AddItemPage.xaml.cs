@@ -995,7 +995,18 @@ public sealed partial class AddItemPage : Page, ISettingsGamepad
         // 手柄图热区（Button）的"光标"用热区自身描边表达：默认焦点视觉在 BorderThickness=0 的
         // 透明按钮上看不见，必须显式画一圈白框
         UpdateZoneCursor(_mapZones.FirstOrDefault(z => ReferenceEquals(z.Hit, c))?.Hit);
-        UpdateSysChipCursor(c as ToggleButton);
+        UpdateSysChipCursor(c is ToggleButton tb && !(c is RadioButton) ? tb : null);
+        if (c is RadioButton rb)
+        {
+            // 单选按钮：移动只移动光标（高亮），不聚焦——WinUI 键盘聚焦会自动勾选，
+            // 导致"移动即变更"；按 A 才真正切换选中。
+            // 注意：RadioButton 继承自 ToggleButton，必须先判断 RadioButton，否则会被当成胶囊处理
+            UpdateRadioCursor(rb);
+            UpdateToggleCursor(null);
+            UpdateComboCursor(null);
+            EnsureVisible(c);
+            return;
+        }
         if (c is ToggleButton chip)
         {
             // 胶囊：只移动光标高亮，不聚焦——与单选按钮同理，避免 XAML 焦点机制干扰 A 键的勾选/取消
@@ -1003,16 +1014,6 @@ public sealed partial class AddItemPage : Page, ISettingsGamepad
             UpdateToggleCursor(null);
             UpdateComboCursor(null);
             EnsureVisible(chip);
-            return;
-        }
-        if (c is RadioButton rb)
-        {
-            // 单选按钮：移动只移动光标（高亮），不聚焦——WinUI 键盘聚焦会自动勾选，
-            // 导致"移动即变更"；按 A 才真正切换选中。
-            UpdateRadioCursor(rb);
-            UpdateToggleCursor(null);
-            UpdateComboCursor(null);
-            EnsureVisible(c);
             return;
         }
         if (c is ToggleSwitch ts)

@@ -74,7 +74,7 @@ public static class WeatherService
         catch { /* 缓存损坏按无数据处理 */ }
     }
 
-    /// <summary>无数据或数据超过 30 分钟时后台刷新一次（主页/磁贴集页显示时调用）</summary>
+    /// <summary>无数据或数据超过 30 分钟时后台刷新一次（主页显示时调用）</summary>
     public static void EnsureFresh()
     {
         if (Current is null || (DateTime.Now - Current.UpdatedAt).TotalMinutes >= 30) Refresh();

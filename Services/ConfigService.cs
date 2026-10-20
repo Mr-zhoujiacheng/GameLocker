@@ -27,6 +27,7 @@ public static class ConfigService
                 var items = JsonSerializer.Deserialize<List<LaunchItem>>(File.ReadAllText(FilePath), Options);
                 if (items is not null)
                 {
+                    MigrateTileSets(items);
                     EnsureSettingsTile(items);
                     return items;
                 }
@@ -40,6 +41,34 @@ public static class ConfigService
         EnsureSettingsTile(defaults);
         Save(defaults);
         return defaults;
+    }
+
+    /// <summary>
+    /// 一次性迁移：「磁贴集」磁贴已随该功能移除。快照非空的旧磁贴集，把快照内容整体转成一个新的副页
+    /// （PageIndex = 已有页数）后再移除该磁贴集磁贴；无快照的直接移除。有改动才落盘，避免每次启动重复处理。
+    /// </summary>
+    private static void MigrateTileSets(List<LaunchItem> items)
+    {
+        var sets = items.Where(it => it.Kind == LaunchKind.Widget && it.WidgetKind == WidgetKind.TileSet).ToList();
+        if (sets.Count == 0) return;
+
+        var page = Math.Max(1, SettingsService.Current.HomePageCount);
+        foreach (var set in sets)
+        {
+            if (set.Snapshot is { Count: > 0 } snapshot)
+            {
+                foreach (var m in snapshot)
+                {
+                    var copy = m.Clone();
+                    copy.PageIndex = page;
+                    items.Add(copy);
+                }
+                SettingsService.Update(s => s.HomePageCount = Math.Max(s.HomePageCount, page + 1));
+                page++;
+            }
+            items.Remove(set);
+        }
+        Save(items);
     }
 
     /// <summary>

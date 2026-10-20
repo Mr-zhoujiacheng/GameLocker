@@ -1,4 +1,4 @@
-﻿<?xml version="1.0" encoding="utf-8"?>
+<?xml version="1.0" encoding="utf-8"?>
 <Page
     x:Class="GameLocker.MainPage"
     NavigationCacheMode="Required"
@@ -7,7 +7,7 @@
     xmlns:ctl="using:GameLocker.Controls">
 
     <Grid Background="Transparent" RequestedTheme="Dark"
-          AllowDrop="True" DragOver="OnDragOver" Drop="OnDrop">
+          AllowDrop="True" DragOver="OnDragOver" DragLeave="OnDragLeave" Drop="OnDrop">
 
         <Grid.RowDefinitions>
             <RowDefinition Height="Auto"/>
@@ -35,49 +35,92 @@
             </StackPanel>
         </Grid>
 
-        <!-- 磁贴画布：ScrollViewer + Canvas 手动布局（靠上排布，从上往下） -->
-        <ScrollViewer x:Name="TileScroll" Grid.Row="1" Padding="12,10"
-                      VerticalAlignment="Top" HorizontalAlignment="Stretch"
-                      HorizontalContentAlignment="Left" VerticalContentAlignment="Top"
-                      VerticalScrollMode="Auto" HorizontalScrollMode="Disabled"
-                      VerticalScrollBarVisibility="Hidden">
-            <!-- MinWidth/MinHeight 绑定撑满视口：WinUI3 ScrollViewer 会把小于视口的内容居中，撑满后磁贴靠左靠上 -->
-            <Canvas x:Name="TileHost"
-                    MinWidth="{Binding ActualWidth, ElementName=TileScroll}"
-                    MinHeight="{Binding ActualHeight, ElementName=TileScroll}"/>
-        </ScrollViewer>
+        <!-- 磁贴区（上）+ 抽屉面板（下）：两行 Grid —— 抽屉固定在主页下方独立区域，
+             宽度铺满软件界面；无抽屉时第二行折叠为 0，不占高度 -->
+        <Grid x:Name="TileArea" Grid.Row="1">
+            <Grid.RowDefinitions>
+                <RowDefinition Height="*"/>
+                <RowDefinition Height="Auto"/>
+            </Grid.RowDefinitions>
 
-        <!-- 临时提示条（关闭反馈/删除反馈/拖入结果 toast）：玻璃质感药丸 + 状态图标徽章，
-             画布底部居中 —— 紧贴手柄提示条上方；图标/强调色由 ShowToast 按消息语义
-             （成功=青色对勾 / 警告=琥珀感叹号）切换，入场淡入并自下方归位 -->
-        <Border x:Name="MoveHintBar" Grid.Row="1" HorizontalAlignment="Center" VerticalAlignment="Bottom"
-                Margin="0,0,0,6" IsHitTestVisible="False"
-                CornerRadius="12" Padding="12,7,16,7"
-                Background="#E6242424" BorderBrush="#33FFFFFF" BorderThickness="1.5"
-                Visibility="Collapsed">
-            <Border.RenderTransform>
-                <TranslateTransform x:Name="MoveHintSlide"/>
-            </Border.RenderTransform>
-            <StackPanel Spacing="8">
-                <StackPanel Orientation="Horizontal" Spacing="9">
-                    <Border x:Name="MoveHintBadge" Width="22" Height="22" CornerRadius="6"
-                            Background="#2A4CC2FF" VerticalAlignment="Center">
-                        <FontIcon x:Name="MoveHintIcon" Glyph="&#xE73E;" FontSize="11" Foreground="#4CC2FF"/>
-                    </Border>
-                    <TextBlock x:Name="MoveHintText" Text="" FontSize="13" VerticalAlignment="Center"
-                               FontFamily="Segoe UI Variable Text, Segoe UI"
-                               TextWrapping="Wrap" MaxWidth="500"/>
+            <!-- 磁贴画布：ScrollViewer + Canvas 手动布局（靠上排布，从上往下）。
+                 副页切换：LT/RT 时整块画布沿切换方向滑出、换页后反向滑入（TranslateTransform 由 SwitchPage 驱动） -->
+            <ScrollViewer x:Name="TileScroll" Grid.Row="0" Padding="12,10"
+                          VerticalAlignment="Top" HorizontalAlignment="Stretch"
+                          HorizontalContentAlignment="Left" VerticalContentAlignment="Top"
+                          VerticalScrollMode="Auto" HorizontalScrollMode="Disabled"
+                          VerticalScrollBarVisibility="Hidden">
+                <ScrollViewer.RenderTransform>
+                    <TranslateTransform x:Name="PageSlide"/>
+                </ScrollViewer.RenderTransform>
+                <!-- MinWidth/MinHeight 绑定撑满视口：WinUI3 ScrollViewer 会把小于视口的内容居中，撑满后磁贴靠左靠上 -->
+                <Canvas x:Name="TileHost"
+                        MinWidth="{Binding ActualWidth, ElementName=TileScroll}"
+                        MinHeight="{Binding ActualHeight, ElementName=TileScroll}"/>
+            </ScrollViewer>
+
+            <!-- 副页页码指示：底部中央圆点，数量=主页页数、当前页高亮（LayoutPageDots 重建；仅一页时隐藏） -->
+            <StackPanel x:Name="PageDots" Grid.Row="0" Orientation="Horizontal"
+                        HorizontalAlignment="Center" VerticalAlignment="Bottom"
+                        Margin="0,0,0,8" IsHitTestVisible="False" Visibility="Collapsed"/>
+
+            <!-- 临时提示条（关闭反馈/删除反馈/拖入结果 toast）：玻璃质感药丸 + 状态图标徽章，
+                 画布底部居中 —— 紧贴手柄提示条上方（页码圆点之上）；图标/强调色由 ShowToast 按消息语义
+                 （成功=青色对勾 / 警告=琥珀感叹号）切换，入场淡入并自下方归位 -->
+            <Border x:Name="MoveHintBar" Grid.Row="0" HorizontalAlignment="Center" VerticalAlignment="Bottom"
+                    Margin="0,0,0,30" IsHitTestVisible="False"
+                    CornerRadius="12" Padding="12,7,16,7"
+                    Background="#E6242424" BorderBrush="#33FFFFFF" BorderThickness="1.5"
+                    Visibility="Collapsed">
+                <Border.RenderTransform>
+                    <TranslateTransform x:Name="MoveHintSlide"/>
+                </Border.RenderTransform>
+                <StackPanel Spacing="8">
+                    <StackPanel Orientation="Horizontal" Spacing="9">
+                        <Border x:Name="MoveHintBadge" Width="22" Height="22" CornerRadius="6"
+                                Background="#2A4CC2FF" VerticalAlignment="Center">
+                            <FontIcon x:Name="MoveHintIcon" Glyph="&#xE73E;" FontSize="11" Foreground="#4CC2FF"/>
+                        </Border>
+                        <TextBlock x:Name="MoveHintText" Text="" FontSize="13" VerticalAlignment="Center"
+                                   FontFamily="Segoe UI Variable Text, Segoe UI"
+                                   TextWrapping="Wrap" MaxWidth="500"/>
+                    </StackPanel>
+                    <!-- 联网下载时的细进度条：文案下方，仅下载期间显示（由 ShowToast 的 progress 参数驱动） -->
+                    <ProgressBar x:Name="MoveHintProgress" Height="4" MinWidth="180" Minimum="0" Maximum="100"
+                                 Value="0" Visibility="Collapsed" Background="#26FFFFFF"/>
                 </StackPanel>
-                <!-- 联网下载时的细进度条：文案下方，仅下载期间显示（由 ShowToast 的 progress 参数驱动） -->
-                <ProgressBar x:Name="MoveHintProgress" Height="4" MinWidth="180" Minimum="0" Maximum="100"
-                             Value="0" Visibility="Collapsed" Background="#26FFFFFF"/>
-            </StackPanel>
-        </Border>
+            </Border>
+
+            <!-- 磁贴抽屉：固定在主页下方的独立区域，宽度随窗口自适应铺满；内容（标签条 + 内层磁贴）由
+                 MainPage.RenderDrawerPanel 代码构建；无抽屉组件时折叠隐藏，不占高度。
+                 注意：必须显式给一个背景（不能省略），否则空白处不参与命中测试，点面板空白无法进入区域 -->
+            <!-- 抽屉面板（玻璃拟态浮层）：半透明渐变底（顶部略亮→底部更透）+ 1px 高光描边 + 投影浮起，
+                 让它像一个浮在窗口上的玻璃卡片，而不是糊在背景里的一块灰。
+                 渐变与描边是"玻璃"的骨架，投影由 ThemeShadow + Translation.Z 生成（见 MainPage 构造）。
+                 注意：背景不能省略（Transparent 也参与命中测试），否则点空白无法进入抽屉区域。
+                 DrawerSlide：开启"自动隐藏"时向下平移整块面板，滑出窗口下缘即不可见 -->
+            <Border x:Name="DrawerHost" Grid.Row="1" Margin="12,6,12,8"
+                    CornerRadius="12" BorderBrush="#33FFFFFF" BorderThickness="1"
+                    HorizontalAlignment="Stretch" Visibility="Collapsed">
+                <Border.Background>
+                    <LinearGradientBrush StartPoint="0,0" EndPoint="0,1">
+                        <GradientStop Color="#1EFFFFFF" Offset="0"/>
+                        <GradientStop Color="#0DFFFFFF" Offset="1"/>
+                    </LinearGradientBrush>
+                </Border.Background>
+                <Border.Shadow>
+                    <ThemeShadow/>
+                </Border.Shadow>
+                <Border.RenderTransform>
+                    <TranslateTransform x:Name="DrawerSlide"/>
+                </Border.RenderTransform>
+            </Border>
+        </Grid>
 
         <!-- 底部按键提示：手柄图标徽章，单行，透明背景 -->
         <ctl:GamepadHintBar x:Name="HintBar" Grid.Row="2" Margin="0,8,0,12"/>
 
-        <!-- 添加方式选择遮罩：X 键 / 编辑模式"添加磁贴"弹出，二选一（自定义 / 小组件），手柄可操作。
+        <!-- 添加方式选择遮罩：X 键 / 编辑模式"添加磁贴"弹出，三选一（自定义 / 小组件 / 副页块），手柄可操作。
              玻璃质感面板 + 强调色图标徽章；选中项用强调色描边 + 底色高亮（见 UpdateChoiceCursor） -->
         <Grid x:Name="ChoiceOverlay" Grid.Row="0" Grid.RowSpan="3" Visibility="Collapsed">
             <!-- 遮罩层：点击空白处关闭 -->
@@ -125,8 +168,43 @@
                         </StackPanel>
                     </Border>
 
+                    <!-- 副页块：新增一块可 LT/RT 切换的主页（可加多个） -->
+                    <Border x:Name="ChoiceSubPage" CornerRadius="12" Background="#14FFFFFF"
+                            BorderBrush="#26FFFFFF" BorderThickness="1.5" Padding="14,12">
+                        <StackPanel Orientation="Horizontal" Spacing="12">
+                            <Border Width="34" Height="34" CornerRadius="10" Background="#2A4CC2FF" VerticalAlignment="Center">
+                                <FontIcon Glyph="&#xE7C4;" FontSize="16" Foreground="#4CC2FF"/>
+                            </Border>
+                            <StackPanel VerticalAlignment="Center" Spacing="1">
+                                <TextBlock Text="副页块" FontSize="16" FontWeight="SemiBold"/>
+                                <TextBlock Text="新增一块可 LT/RT 切换的主页" FontSize="11.5" Opacity="0.65"/>
+                            </StackPanel>
+                        </StackPanel>
+                    </Border>
+
                     <ctl:GamepadHintBar HorizontalAlignment="Center" Margin="0,4,0,0"
                                         Hints="DPAD:选择|A:确认|B:取消"/>
+                </StackPanel>
+            </Border>
+        </Grid>
+
+        <!-- 抽屉改名遮罩：抽屉层 R3 / 双击抽屉标签 打开 —— 只改"当前抽屉"的名字（A/Enter 确认，B/Esc 取消） -->
+        <Grid x:Name="RenameOverlay" Grid.Row="0" Grid.RowSpan="3" Visibility="Collapsed">
+            <Border x:Name="RenameMask" Background="#C00A0C10"/>
+
+            <Border HorizontalAlignment="Center" VerticalAlignment="Center"
+                    CornerRadius="16" Padding="20,18,20,14"
+                    Background="#E6242424" BorderBrush="#33FFFFFF" BorderThickness="1.5">
+                <StackPanel Width="292" Spacing="12">
+                    <StackPanel Orientation="Horizontal" HorizontalAlignment="Center" Spacing="10" Margin="0,0,0,4">
+                        <Border Width="26" Height="26" CornerRadius="8" Background="#2A4CC2FF" VerticalAlignment="Center">
+                            <FontIcon Glyph="&#xE8F1;" FontSize="13" Foreground="#4CC2FF"/>
+                        </Border>
+                        <TextBlock x:Name="RenameTitle" Text="抽屉名称" FontSize="19" FontWeight="SemiBold" VerticalAlignment="Center"/>
+                    </StackPanel>
+                    <TextBox x:Name="RenameBox" FontSize="16" Padding="10,8"
+                             PlaceholderText="抽屉名称" KeyDown="OnRenameBoxKeyDown"/>
+                    <ctl:GamepadHintBar HorizontalAlignment="Center" Margin="0,2,0,0" Hints="A:确认|B:取消"/>
                 </StackPanel>
             </Border>
         </Grid>

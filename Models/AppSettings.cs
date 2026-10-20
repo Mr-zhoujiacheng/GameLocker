@@ -2,11 +2,12 @@ using GameLocker.Services;
 
 namespace GameLocker.Models;
 
-/// <summary>侧边栏停靠方向</summary>
+/// <summary>窗口停靠方式：左/右贴边（侧边栏），或居中悬浮（四周不贴屏幕边）</summary>
 public enum DockSide
 {
     Left,
-    Right
+    Right,
+    Center
 }
 
 /// <summary>应用设置（JSON 持久化，见 SettingsService）</summary>
@@ -27,7 +28,7 @@ public class AppSettings
     /// <summary>平板边缘手势呼出：从任务栏对侧屏幕边缘向中心滑动唤起窗口（左/右停靠对应左/右边缘，全屏对应上边缘）</summary>
     public bool EdgeGestureSummon { get; set; } = true;
 
-    /// <summary>窗口停靠侧（左/右贴边，侧边栏样式）</summary>
+    /// <summary>窗口停靠方式（左右贴边，或居中悬浮）；居中时窗口不贴屏幕四边，边缘手势走顶边</summary>
     public DockSide SidebarSide { get; set; } = DockSide.Left;
 
     /// <summary>侧边栏宽度占屏幕比例（0.2~0.5，最小为当前默认观感，最大为屏幕一半）</summary>
@@ -35,6 +36,9 @@ public class AppSettings
 
     /// <summary>磁贴间距（像素，0~30）</summary>
     public double TileSpacing { get; set; } = 4;
+
+    /// <summary>主页总页数（含主主页；副页块在添加方式（X 键）里新增，主页用 LT/RT 循环切换）</summary>
+    public int HomePageCount { get; set; } = 1;
 
     /// <summary>磁贴立体效果（渐变受光 + 投影）</summary>
     public bool Tile3D { get; set; }
@@ -50,6 +54,20 @@ public class AppSettings
 
     /// <summary>随机磁贴颜色：未指定颜色的磁贴随机配色；关闭后未指定颜色的磁贴显示为无颜色</summary>
     public bool RandomTileColor { get; set; } = true;
+
+    /// <summary>磁贴抽屉：主页下方固定的抽屉区域总开关。关闭则抽屉区域整体隐藏（抽屉内容保留，重开即恢复）</summary>
+    public bool DrawerEnabled { get; set; } = true;
+
+    /// <summary>抽屉控件色（#RRGGBB；"none"=未指定，回退到抽屉自身的随机强调色）。
+    /// 作用于当前标签的淡底与下划线、焦点进入抽屉时的焦点环，以及"+"按钮；面板本身无底色无边框</summary>
+    public string DrawerColor { get; set; } = "none";
+
+    /// <summary>抽屉内磁贴统一大小：开启后抽屉内所有磁贴忽略自身设定的大小，一律按小磁贴（1×1）显示</summary>
+    public bool DrawerUniformSmall { get; set; }
+
+    /// <summary>抽屉自动隐藏：开启后抽屉平时收起在屏幕下方之外（带动画向下滑出；面板仍占原布局位置，磁贴区高度不变）。
+    /// 手柄右摇杆↑/↓ 呼出与收起；触屏在软件底部上划/下划呼出与收起</summary>
+    public bool DrawerAutoHide { get; set; }
 
     /// <summary>顶栏显示时钟</summary>
     public bool ShowClock { get; set; } = true;

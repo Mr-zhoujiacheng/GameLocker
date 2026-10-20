@@ -4,7 +4,7 @@ namespace GameLocker.Services;
 
 /// <summary>
 /// 映射小组件的按键工具：键盘按键注入（SendInput，含 Ctrl/Shift/Alt/Win 组合）与按键显示名。
-/// 手柄键无法向其它程序注入 XInput，改由调用方在本应用内派发（见 MainPage/TileSetPage）。
+/// 手柄键无法向其它程序注入 XInput，改由调用方在本应用内派发（见 MainPage）。
 /// </summary>
 public static class KeySendService
 {

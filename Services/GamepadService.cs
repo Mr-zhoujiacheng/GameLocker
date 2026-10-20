@@ -28,6 +28,10 @@ public enum GamepadButtons
     Y = 0x8000,
     LeftTrigger = 0x10000,  // LT（模拟量阈值化）
     RightTrigger = 0x20000, // RT
+    RightStickUp = 0x40000,   // 右摇杆向上（阈值化，供抽屉"自动隐藏"呼出用）
+    RightStickDown = 0x80000, // 右摇杆向下
+    RightStickLeft = 0x100000,  // 右摇杆向左（阈值化，供系统小组件切换面板项用）
+    RightStickRight = 0x200000, // 右摇杆向右
 }
 
 /// <summary>
@@ -74,6 +78,14 @@ public sealed class GamepadService : IDisposable
     // 左摇杆方向迟滞状态（防松杆过冲触发反向，导致"下去又上来"）
     private int _yDir, _yLastSign, _xDir, _xLastSign;
     private long _yReleaseMs, _xReleaseMs;
+
+    // 右摇杆上下迟滞状态（抽屉"自动隐藏"呼出/收起；与左摇杆同样走边沿触发，不参与方向键连发）
+    private int _ryDir, _ryLastSign;
+    private long _ryReleaseMs;
+
+    // 右摇杆左右迟滞状态（系统小组件切换面板项；同样走边沿触发）
+    private int _rxDir, _rxLastSign;
+    private long _rxReleaseMs;
 
     /// <summary>按钮按下（边沿触发，含扳机/摇杆等全部键）</summary>
     public event Action<GamepadButtons>? ButtonPressed;
@@ -163,6 +175,16 @@ public sealed class GamepadService : IDisposable
             var lx = ReadStickAxis(gp.ThumbLX, ref _xDir, ref _xLastSign, ref _xReleaseMs);
             if (lx < 0) buttons |= GamepadButtons.DPadLeft;
             else if (lx > 0) buttons |= GamepadButtons.DPadRight;
+
+            // 右摇杆上下 → 抽屉呼出/收起（独立标志，方向键连发不涉及，故只在边沿触发一次）
+            var ry = ReadStickAxis(gp.ThumbRY, ref _ryDir, ref _ryLastSign, ref _ryReleaseMs);
+            if (ry > 0) buttons |= GamepadButtons.RightStickUp;
+            else if (ry < 0) buttons |= GamepadButtons.RightStickDown;
+
+            // 右摇杆左右 → 系统小组件切换面板项（同样独立标志、边沿触发）
+            var rx = ReadStickAxis(gp.ThumbRX, ref _rxDir, ref _rxLastSign, ref _rxReleaseMs);
+            if (rx < 0) buttons |= GamepadButtons.RightStickLeft;
+            else if (rx > 0) buttons |= GamepadButtons.RightStickRight;
 
             current |= buttons;
         }

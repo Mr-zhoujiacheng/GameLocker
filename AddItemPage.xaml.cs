@@ -2,6 +2,7 @@ using GameLocker.Models;
 using GameLocker.Services;
 using Microsoft.UI.Xaml;
 using Microsoft.UI.Xaml.Controls;
+using Microsoft.UI.Xaml.Controls.Primitives;
 using Microsoft.UI.Xaml.Input;
 using Microsoft.UI.Xaml.Media.Imaging;
 using Microsoft.UI.Xaml.Navigation;
@@ -54,9 +55,6 @@ public sealed partial class AddItemPage : Page, ISettingsGamepad
     /// <summary>编辑对象为小组件磁贴：仅可改名称与颜色，隐藏路径/类型/大小/图标/图片区</summary>
     private bool _isWidget;
 
-    /// <summary>磁贴集副本页快照成员编辑：所属磁贴集的 Target（非空时保存写回该集 Snapshot 内成员并返回副本页）</summary>
-    private string? _snapshotSetTarget;
-
     /// <summary>本次会话中已提取/选择的图标文件名（null=未改动）</summary>
     private string? _pendingIcon;
 
@@ -69,11 +67,31 @@ public sealed partial class AddItemPage : Page, ISettingsGamepad
     /// <summary>游戏存档：本次会话选定的备份文件夹（null=未改动）</summary>
     private string? _pendingBackupFolder;
 
+    /// <summary>磁贴抽屉：本次会话编辑中的抽屉列表（含名称）</summary>
+    private List<DrawerPage> _pendingDrawers = [];
+
+    /// <summary>磁贴抽屉：当前正在编辑的抽屉下标</summary>
+    private int _drawerCursor;
+
     /// <summary>当前浏览是否为"图片组选文件夹"（区别于普通 Folder 类型项选路径）</summary>
     private bool _pickingPhotoFolder;
 
     /// <summary>当前浏览是否为"游戏存档选文件夹"</summary>
     private bool _pickingBackupFolder;
+
+    /// <summary>系统小组件：启用的面板项胶囊按钮（下标 = SystemPanelService.Order 的序号）</summary>
+    private ToggleButton[] _sysOptBoxes = [];
+
+    /// <summary>系统小组件：胶囊右侧的勾/叉状态图标（与 _sysOptBoxes 同下标）</summary>
+    private FontIcon[] _sysOptMarks = [];
+
+    // 胶囊选中/未选视觉（代码直设，不走 VisualState）
+    private static readonly Microsoft.UI.Xaml.Media.SolidColorBrush SysChipOnBrush = MakeBrush(0x33, 0x2E, 0x6B, 0xE6);
+    private static readonly Microsoft.UI.Xaml.Media.SolidColorBrush SysChipOffBrush = MakeBrush(0x0F, 0xFF, 0xFF, 0xFF);
+    private static readonly Microsoft.UI.Xaml.Media.SolidColorBrush SysChipOnTextBrush = MakeBrush(0xFF, 0xFF, 0xFF, 0xFF);
+    private static readonly Microsoft.UI.Xaml.Media.SolidColorBrush SysChipOffTextBrush = MakeBrush(0xE6, 0xEE, 0xF9);
+    private static readonly Microsoft.UI.Xaml.Media.SolidColorBrush SysChipOnMarkBrush = MakeBrush(0xBB, 0xD8, 0xFF);
+    private static readonly Microsoft.UI.Xaml.Media.SolidColorBrush SysChipOffMarkBrush = MakeBrush(0x59, 0xFF, 0xFF, 0xFF);
 
     /// <summary>OptiScaler：本次会话选定的本地包路径（null=未改动；""=清除改用自动下载）</summary>
     private string? _pendingOptiLocalPack;
@@ -188,6 +206,15 @@ public sealed partial class AddItemPage : Page, ISettingsGamepad
     public AddItemPage()
     {
         InitializeComponent();
+        _sysOptBoxes = [SysOptSettings, SysOptThisPc, SysOptExplorer, SysOptVolume, SysOptBrightness, SysOptWifi, SysOptBluetooth];
+        _sysOptMarks = [SysOptSettingsMark, SysOptThisPcMark, SysOptExplorerMark, SysOptVolumeMark, SysOptBrightnessMark, SysOptWifiMark, SysOptBluetoothMark];
+        for (var i = 0; i < _sysOptBoxes.Length; i++)
+        {
+            var chip = _sysOptBoxes[i];
+            var mark = _sysOptMarks[i];
+            chip.Checked += (_, _) => ApplySysChipVisual(chip, mark, true);
+            chip.Unchecked += (_, _) => ApplySysChipVisual(chip, mark, false);
+        }
         BuildGamepadMapDiagram();
         // OptiScaler 下拉框选项来自服务层数组，保证与写入配置的值一致
         FillOptiCombo(OptiDllCombo, OptiScalerService.ProxyOptions);
@@ -201,6 +228,26 @@ public sealed partial class AddItemPage : Page, ISettingsGamepad
         FillOptiCombo(OptiFsr4FilesCombo, OptiScalerService.Fsr4FilesOptions);
         UpdateOptiFsr4Row();  // 画质提升默认"自动" → 先收起 FSR4 画质档
         UpdateOptiFgRows();   // 帧生成默认关闭 → 先收起输入/输出/倍数三项（内部会重建手柄导航序列）
+
+        // 排版自适应：窗口宽度变化（侧边栏 ↔ 全屏/居中）时重算表单宽度并居中，三种模式排版一致
+        FormScroll.SizeChanged += (_, _) => LayoutForm();
+        Loaded += (_, _) => LayoutForm();
+    }
+
+    /// <summary>表单最大宽度：宽窗口（全屏/居中）下不铺满，保持与侧边栏下一致的阅读宽度</summary>
+    private const double FormMaxWidth = 640;
+
+    /// <summary>按视口宽度设置外层容器宽度、表单限宽居中（不依赖 ScrollViewer 的内容对齐，
+    /// 在 WinUI 里 HorizontalContentAlignment 常不生效导致内容靠左）</summary>
+    private void LayoutForm()
+    {
+        if (FormHost is null || FormPanel is null || FormScroll is null) return;
+        var avail = FormScroll.ViewportWidth;   // 已扣除 ScrollViewer 的 Padding
+        if (avail <= 0) return;
+        FormHost.Width = avail;
+        FormPanel.Width = Math.Min(FormMaxWidth, avail);
+        // 保存按钮与表单同宽居中：窄窗口下占满可用宽（与原样式一致的大按钮），宽窗口下不超过表单宽
+        SaveButton.Width = FormPanel.Width;
     }
 
     /// <summary>八个磁贴颜色单选（Tag=#RRGGBB）+ 无颜色（Tag=none）</summary>
@@ -312,8 +359,18 @@ public sealed partial class AddItemPage : Page, ISettingsGamepad
             list.Add(OptiRestoreButton);
             list.Add(OptiOpenFolderButton);
         }
-        // 组件标题（仅手柄映射，位于类型/大小/颜色行上方）/ 类型 / 磁贴大小 / 磁贴颜色（各自容器隐藏时跳过）
+        // 磁贴抽屉：抽屉名称 + 上一个/下一个切换 + 新增/删除
+        if (DrawerRow.Visibility == vis)
+        {
+            list.Add(DrawerNameBox);
+            list.Add(DrawerPrevButton);
+            list.Add(DrawerNextButton);
+            list.Add(DrawerAddButton);
+            list.Add(DrawerDeleteButton);
+        }
+        // 组件标题（仅手柄映射，位于类型/大小/颜色行上方）/ 系统小组件的启用项 / 类型 / 磁贴大小 / 磁贴颜色（各自容器隐藏时跳过）
         if (TitleColumn.Visibility == vis) list.Add(WidgetTitleBox);
+        if (SystemOptionsPanel.Visibility == vis) list.AddRange(_sysOptBoxes);
         if (KindColumn.Visibility == vis) { list.Add(AppRadio); list.Add(UrlRadio); list.Add(FolderRadio); }
         if (SizeColumn.Visibility == vis) { list.Add(SmallSizeRadio); list.Add(WideSizeRadio); list.Add(LargeSizeRadio); }
         if (ColorColumn.Visibility == vis) list.AddRange(ColorRadios);
@@ -337,6 +394,36 @@ public sealed partial class AddItemPage : Page, ISettingsGamepad
         }
     }
 
+    /// <summary>系统小组件：按位掩码勾选"显示的项目"（bit = 面板项序号）</summary>
+    private void CheckSystemOptions(int mask)
+    {
+        for (var i = 0; i < _sysOptBoxes.Length; i++)
+        {
+            var on = (mask & (1 << i)) != 0;
+            _sysOptBoxes[i].IsChecked = on;
+            ApplySysChipVisual(_sysOptBoxes[i], _sysOptMarks[i], on); // 事件在 null→false 时不触发，显式兜底
+        }
+    }
+
+    /// <summary>胶囊选中视觉：底色/文字色/右侧勾(选中)或叉(未选)。
+    /// 该自定义模板下 VisualState 的 Setter 实测不生效，改为代码直设。</summary>
+    private static void ApplySysChipVisual(ToggleButton chip, FontIcon mark, bool on)
+    {
+        chip.Background = on ? SysChipOnBrush : SysChipOffBrush;
+        chip.Foreground = on ? SysChipOnTextBrush : SysChipOffTextBrush;
+        mark.Glyph = on ? "\uE73E" : "\uE711";
+        mark.Foreground = on ? SysChipOnMarkBrush : SysChipOffMarkBrush;
+    }
+
+    /// <summary>系统小组件：把勾选结果读成位掩码（0 = 一个都没勾）</summary>
+    private int SelectedSystemMask()
+    {
+        var mask = 0;
+        for (var i = 0; i < _sysOptBoxes.Length; i++)
+            if (_sysOptBoxes[i].IsChecked == true) mask |= 1 << i;
+        return mask;
+    }
+
     /// <summary>按 #RRGGBB 勾选对应颜色块；空/不匹配则全部取消（自动哈希配色）</summary>
     private void CheckColor(string? hex)
     {
@@ -352,7 +439,7 @@ public sealed partial class AddItemPage : Page, ISettingsGamepad
         return null;
     }
 
-    /// <summary>编辑模式：预填表单并按类型裁剪可见区域（主页项与磁贴集快照成员共用）</summary>
+    /// <summary>编辑模式：预填表单并按类型裁剪可见区域</summary>
     private void InitForEdit(LaunchItem item)
     {
         _editing = item;
@@ -382,21 +469,21 @@ public sealed partial class AddItemPage : Page, ISettingsGamepad
         KindColumn.Visibility = vis;
         // 小组件：隐藏路径/类型；音乐保留"名称+颜色"，
         // 图片组保留"名称+大小+图片文件夹+轮播速度/动画/展示模式"（无颜色），
-        // 设置保留"名称+大小+颜色"，磁贴集保留"名称+大小+颜色+图标+图片"
+        // 设置等小组件保留"名称+大小+颜色"
         if (_isWidget)
         {
             var w = Microsoft.UI.Xaml.Visibility.Collapsed;
             TargetRow.Visibility = w;
             KindColumn.Visibility = w;
             var isPhoto = item.WidgetKind == WidgetKind.Photos;
-            var isTileSet = item.WidgetKind == WidgetKind.TileSet;
-            // 图标/图片：仅磁贴集可换（音乐/图片组/设置铺图或固定样式不适用）
-            IconHeaderText.Visibility = isTileSet ? Microsoft.UI.Xaml.Visibility.Visible : w;
-            IconRow.Visibility = isTileSet ? Microsoft.UI.Xaml.Visibility.Visible : w;
-            CoverHeaderText.Visibility = isTileSet ? Microsoft.UI.Xaml.Visibility.Visible : w;
-            CoverRow.Visibility = isTileSet ? Microsoft.UI.Xaml.Visibility.Visible : w;
-            // 音乐固定 2×2 不可改大小；其余小组件（图片组/设置/磁贴集/天气/映射/修改器/游戏存档/手柄映射）可编辑大小。颜色：图片组不需要（整块铺图）
-            SizeColumn.Visibility = isPhoto || item.WidgetKind is WidgetKind.Settings or WidgetKind.TileSet or WidgetKind.Weather or WidgetKind.Mapping or WidgetKind.Trainer or WidgetKind.Backup or WidgetKind.GamepadMap or WidgetKind.OptiScaler
+            // 图标/图片：小组件均不可换（固定样式或整块铺图）
+            IconHeaderText.Visibility = w;
+            IconRow.Visibility = w;
+            CoverHeaderText.Visibility = w;
+            CoverRow.Visibility = w;
+            // 音乐固定 2×2、系统固定"长"不可改大小；其余小组件（图片组/设置/天气/映射/修改器/游戏存档/手柄映射）可编辑大小。
+            // 颜色：图片组不需要（整块铺图）
+            SizeColumn.Visibility = isPhoto || item.WidgetKind is WidgetKind.Settings or WidgetKind.Weather or WidgetKind.Mapping or WidgetKind.Trainer or WidgetKind.Backup or WidgetKind.GamepadMap or WidgetKind.OptiScaler or WidgetKind.RecycleBin or WidgetKind.Foreground
                 ? Microsoft.UI.Xaml.Visibility.Visible : w;
             ColorColumn.Visibility = isPhoto ? w : Microsoft.UI.Xaml.Visibility.Visible;
             PhotoFolderRow.Visibility = isPhoto
@@ -464,6 +551,22 @@ public sealed partial class AddItemPage : Page, ISettingsGamepad
                 NameBox.Visibility = w;
                 WidgetTitleBox.Text = item.Name;
             }
+            // 前台应用监测：名称不参与展示（磁贴固定显示"当前前台应用"的图标/进程名/状态）→ 隐藏顶部"显示名称"输入框
+            // （NameBox.Text 仍保留原值，保存时若分支不改名称则不变；InitForEdit 每次会把它重置为 Visible，不会残留）
+            if (item.WidgetKind == WidgetKind.Foreground)
+            {
+                if (string.IsNullOrWhiteSpace(NameBox.Text)) NameBox.Text = "前台应用";
+                NameBox.Visibility = w;
+            }
+            // 系统：名称不参与展示（磁贴按当前面板项显示"Win 设置/音量/亮度…"）→ 隐藏顶部"显示名称"输入框；
+            // 大小固定"长"（SizeColumn 已隐藏），改为显示"勾选的项目"（勾选项才参与右摇杆切换）
+            if (item.WidgetKind == WidgetKind.System)
+            {
+                if (string.IsNullOrWhiteSpace(NameBox.Text)) NameBox.Text = "系统";
+                NameBox.Visibility = w;
+                SystemOptionsPanel.Visibility = Microsoft.UI.Xaml.Visibility.Visible;
+                CheckSystemOptions(SystemPanelService.NormalizeMask(item.SystemOptionMask));
+            }
             if (isMapping)
             {
                 _pendingPad = (int)item.MappingPad;
@@ -484,10 +587,21 @@ public sealed partial class AddItemPage : Page, ISettingsGamepad
                 SpeedArtRadio.IsChecked = item.SlideshowSpeed == PhotoSpeed.Art;
                 AnimationToggle.IsOn = item.PhotoAnimation;
             }
+            // 磁贴抽屉：名称、颜色 + 抽屉列表（改名/增删）；大小固定"长"尺寸，抽屉里的磁贴在主页放入
+            var isDrawer = item.WidgetKind == WidgetKind.Drawer;
+            DrawerRow.Visibility = isDrawer ? Microsoft.UI.Xaml.Visibility.Visible : w;
+            if (isDrawer)
+            {
+                _pendingDrawers = (item.Drawers ?? []).Select(d => d.Clone()).ToList();
+                if (_pendingDrawers.Count == 0) _pendingDrawers.Add(new DrawerPage { Name = "抽屉1", Items = [] });
+                _drawerCursor = 0;
+                RefreshDrawerRow();
+            }
         }
         else
         {
             TitleColumn.Visibility = Microsoft.UI.Xaml.Visibility.Collapsed;
+            SystemOptionsPanel.Visibility = Microsoft.UI.Xaml.Visibility.Collapsed;
             SizeColumn.Visibility = Microsoft.UI.Xaml.Visibility.Visible;
             ColorColumn.Visibility = Microsoft.UI.Xaml.Visibility.Visible;
             IconHeaderText.Visibility = Microsoft.UI.Xaml.Visibility.Visible;
@@ -508,29 +622,24 @@ public sealed partial class AddItemPage : Page, ISettingsGamepad
     {
         base.OnNavigatedTo(e);
         _formIndex = 0;
-        _snapshotSetTarget = null;
         HintBar.SetHints("DPAD:选择|A:确认/切换|X:保存|B:返回");
 
-        // 磁贴集副本页快照成员编辑：参数 (磁贴集 Target, 成员项)，按普通项完整编辑，保存写回该集快照
-        if (e.Parameter is ValueTuple<string, LaunchItem> snap)
-        {
-            _snapshotSetTarget = snap.Item1;
-            InitForEdit(snap.Item2);
-            PageTitle.Text = "编辑磁贴";
-        }
-        else if (e.Parameter is LaunchItem item)
+        if (e.Parameter is LaunchItem item)
         {
             InitForEdit(item);
             PageTitle.Text = _isWidget
                 ? (item.WidgetKind == WidgetKind.Photos ? "编辑图片组"
                     : item.WidgetKind == WidgetKind.Settings ? "编辑设置磁贴"
-                    : item.WidgetKind == WidgetKind.TileSet ? "编辑磁贴集"
                     : item.WidgetKind == WidgetKind.Weather ? "编辑天气小组件"
                     : item.WidgetKind == WidgetKind.Mapping ? "编辑映射小组件"
                     : item.WidgetKind == WidgetKind.Trainer ? "编辑修改器小组件"
                     : item.WidgetKind == WidgetKind.Backup ? "编辑游戏存档小组件"
                     : item.WidgetKind == WidgetKind.GamepadMap ? "编辑手柄映射小组件"
-                    : item.WidgetKind == WidgetKind.OptiScaler ? "编辑 OptiScaler 小组件" : "编辑音乐小组件")
+                    : item.WidgetKind == WidgetKind.OptiScaler ? "编辑 OptiScaler 小组件"
+                    : item.WidgetKind == WidgetKind.RecycleBin ? "编辑回收站小组件"
+                    : item.WidgetKind == WidgetKind.Foreground ? "编辑前台应用小组件"
+                    : item.WidgetKind == WidgetKind.System ? "编辑系统小组件"
+                    : item.WidgetKind == WidgetKind.Drawer ? "编辑磁贴抽屉" : "编辑音乐小组件")
                 : _isGroup ? "编辑磁贴组" : "编辑快捷项";
         }
         else
@@ -552,8 +661,12 @@ public sealed partial class AddItemPage : Page, ISettingsGamepad
             BackupRow.Visibility = Microsoft.UI.Xaml.Visibility.Collapsed;
             GamepadMapRow.Visibility = Microsoft.UI.Xaml.Visibility.Collapsed;
             OptiScalerRow.Visibility = Microsoft.UI.Xaml.Visibility.Collapsed;
+            DrawerRow.Visibility = Microsoft.UI.Xaml.Visibility.Collapsed;
+            _pendingDrawers = [];
+            _drawerCursor = 0;
             _pendingOptiLocalPack = null;
             TitleColumn.Visibility = Microsoft.UI.Xaml.Visibility.Collapsed;
+            SystemOptionsPanel.Visibility = Microsoft.UI.Xaml.Visibility.Collapsed;
             WidgetTitleBox.Text = "";
             _pendingIcon = null;
             _pendingCover = null;
@@ -817,6 +930,10 @@ public sealed partial class AddItemPage : Page, ISettingsGamepad
             case RadioButton rb:
                 rb.IsChecked = true;
                 break;
+            // 系统小组件：显示项目胶囊（A = 勾选/取消勾选）
+            case ToggleButton tb:
+                tb.IsChecked = !(tb.IsChecked ?? false);
+                break;
             case ToggleSwitch ts:
                 ts.IsOn = !ts.IsOn;
                 break;
@@ -878,6 +995,16 @@ public sealed partial class AddItemPage : Page, ISettingsGamepad
         // 手柄图热区（Button）的"光标"用热区自身描边表达：默认焦点视觉在 BorderThickness=0 的
         // 透明按钮上看不见，必须显式画一圈白框
         UpdateZoneCursor(_mapZones.FirstOrDefault(z => ReferenceEquals(z.Hit, c))?.Hit);
+        UpdateSysChipCursor(c as ToggleButton);
+        if (c is ToggleButton chip)
+        {
+            // 胶囊：只移动光标高亮，不聚焦——与单选按钮同理，避免 XAML 焦点机制干扰 A 键的勾选/取消
+            UpdateRadioCursor(null);
+            UpdateToggleCursor(null);
+            UpdateComboCursor(null);
+            EnsureVisible(chip);
+            return;
+        }
         if (c is RadioButton rb)
         {
             // 单选按钮：移动只移动光标（高亮），不聚焦——WinUI 键盘聚焦会自动勾选，
@@ -947,6 +1074,16 @@ public sealed partial class AddItemPage : Page, ISettingsGamepad
         }
     }
 
+    /// <summary>高亮光标所在的"显示项目"胶囊（白色描边走 CursorRing，与选中态/焦点态互不覆盖）</summary>
+    private void UpdateSysChipCursor(ToggleButton? cursor)
+    {
+        foreach (var b in _sysOptBoxes)
+        {
+            if (ReferenceEquals(b, cursor)) b.BorderBrush = CursorBrush;
+            else b.ClearValue(ToggleButton.BorderBrushProperty);
+        }
+    }
+
     /// <summary>高亮光标所在的手柄图热区（白框），其余热区收起描边</summary>
     private void UpdateZoneCursor(Button? cursor)
     {
@@ -988,9 +1125,58 @@ public sealed partial class AddItemPage : Page, ISettingsGamepad
     private void Cancel()
     {
         // 图标文件按目标路径哈希命名，可能被多个快捷项共用，取消时不删除（孤立文件无害）
-        // 磁贴集快照成员编辑：取消返回副本页
-        if (_snapshotSetTarget != null) App.Main?.GoBackOne();
-        else App.Main?.ShowMainPage();
+        if (App.Main is { } main) main.PendingDrawerInsert = null;   // 放弃本次新建：连带放弃"放进抽屉"的一次性请求
+        App.Main?.ShowMainPage();
+    }
+
+    // ---- 磁贴抽屉：抽屉列表的切换 / 改名 / 增删（内容在主页放入）----
+
+    /// <summary>把当前抽屉的名称与状态写进抽屉行（切换/增删后调用）</summary>
+    private void RefreshDrawerRow()
+    {
+        if (_pendingDrawers.Count == 0)
+        {
+            _drawerCursor = 0;
+            DrawerNameBox.Text = "";
+            DrawerStatusText.Text = "暂无抽屉，点「新增抽屉」新建";
+            return;
+        }
+        _drawerCursor = Math.Clamp(_drawerCursor, 0, _pendingDrawers.Count - 1);
+        var page = _pendingDrawers[_drawerCursor];
+        DrawerNameBox.Text = page.Name;
+        DrawerStatusText.Text = $"第 {_drawerCursor + 1} / {_pendingDrawers.Count} 个 · 已放 {page.Items.Count} 个磁贴";
+    }
+
+    private void OnDrawerNameChanged(object sender, TextChangedEventArgs e)
+    {
+        if (_drawerCursor < 0 || _drawerCursor >= _pendingDrawers.Count) return;
+        _pendingDrawers[_drawerCursor].Name = DrawerNameBox.Text;
+    }
+
+    private void OnDrawerPrevClick(object sender, RoutedEventArgs e) => MoveDrawerCursor(-1);
+    private void OnDrawerNextClick(object sender, RoutedEventArgs e) => MoveDrawerCursor(1);
+
+    private void MoveDrawerCursor(int delta)
+    {
+        if (_pendingDrawers.Count == 0) return;
+        _drawerCursor = (_drawerCursor + delta + _pendingDrawers.Count) % _pendingDrawers.Count;
+        RefreshDrawerRow();
+    }
+
+    private void OnDrawerAddClick(object sender, RoutedEventArgs e)
+    {
+        _pendingDrawers.Add(new DrawerPage { Name = DrawerService.NextName(_pendingDrawers), Items = [] });
+        _drawerCursor = _pendingDrawers.Count - 1;
+        RefreshDrawerRow();
+    }
+
+    private void OnDrawerDeleteClick(object sender, RoutedEventArgs e)
+    {
+        // 至少保留一个抽屉：全删光会让组件没有可显示的内容
+        if (_pendingDrawers.Count <= 1) { DrawerStatusText.Text = "至少保留一个抽屉"; return; }
+        _pendingDrawers.RemoveAt(_drawerCursor);
+        if (_drawerCursor >= _pendingDrawers.Count) _drawerCursor = _pendingDrawers.Count - 1;
+        RefreshDrawerRow();
     }
 
     private async Task SaveAsync()
@@ -1018,28 +1204,14 @@ public sealed partial class AddItemPage : Page, ISettingsGamepad
 
         if (_editing != null)
         {
-            // 定位原项：磁贴集快照成员在对应磁贴集的 Snapshot 内查找；普通项在主页列表查找
-            LaunchItem? it;
-            if (_snapshotSetTarget != null)
-            {
-                var set = items.FirstOrDefault(x => x.Target == _snapshotSetTarget &&
-                    x.Kind == LaunchKind.Widget && x.WidgetKind == WidgetKind.TileSet);
-                if (set is null) { PageTitle.Text = "未找到磁贴集"; return; }
-                var mi = set.Snapshot.FindIndex(m => m.Target == _origTarget && m.Name == _origName);
-                if (mi < 0) mi = set.Snapshot.FindIndex(m => m.Target == _origTarget);
-                if (mi < 0) { PageTitle.Text = "未找到原磁贴"; return; }
-                it = set.Snapshot[mi];
-            }
-            else
-            {
-                var idx = items.FindIndex(x => x.Target == _origTarget && x.Name == _origName);
-                if (idx < 0) idx = items.FindIndex(x => x.Target == _origTarget && (!_isGroup || x.Kind == LaunchKind.Group));
-                if (idx < 0) { PageTitle.Text = "未找到原快捷项"; return; }
-                it = items[idx];
-            }
+            // 定位原项（按 Target + 名称，组只匹配组）；抽屉内层磁贴不在顶层列表，
+            // 必须连同抽屉一起找，否则会报"未找到原快捷项"而改不动抽屉里的磁贴
+            var it = DrawerService.FindAnywhere(items, x => x.Target == _origTarget && x.Name == _origName)
+                  ?? DrawerService.FindAnywhere(items, x => x.Target == _origTarget && (!_isGroup || x.Kind == LaunchKind.Group));
+            if (it is null) { PageTitle.Text = "未找到原快捷项"; return; }
 
             it.Name = name;
-            // 小组件：音乐改名称与颜色；设置/磁贴集改名称、大小与颜色；图片组改名称、大小、文件夹与轮播设置（无颜色）
+            // 小组件：音乐改名称与颜色；设置改名称、大小与颜色；图片组改名称、大小、文件夹与轮播设置（无颜色）
             if (_isWidget)
             {
                 if (it.WidgetKind == WidgetKind.Photos)
@@ -1058,15 +1230,6 @@ public sealed partial class AddItemPage : Page, ISettingsGamepad
                 {
                     it.Size = SelectedSize();
                     it.TileColor = SelectedColor();
-                }
-                else if (it.WidgetKind == WidgetKind.TileSet)
-                {
-                    // 磁贴集：名称、大小、颜色、图标、图片均可改
-                    it.Size = SelectedSize();
-                    it.TileColor = SelectedColor();
-                    if (_pendingIcon != null) it.IconFile = _pendingIcon;
-                    if (_pendingCover != null)
-                        it.CoverFile = _pendingCover.Length == 0 ? null : _pendingCover;
                 }
                 else if (it.WidgetKind == WidgetKind.Weather)
                 {
@@ -1135,6 +1298,45 @@ public sealed partial class AddItemPage : Page, ISettingsGamepad
                     if (_pendingOptiLocalPack != null)
                         it.OptiLocalPackage = _pendingOptiLocalPack.Length == 0 ? null : _pendingOptiLocalPack;
                 }
+                else if (it.WidgetKind == WidgetKind.RecycleBin)
+                {
+                    // 回收站：改名称、大小与颜色（A 打开回收站、Y 清空，无其他配置）
+                    it.Size = SelectedSize();
+                    it.TileColor = SelectedColor();
+                }
+                else if (it.WidgetKind == WidgetKind.Foreground)
+                {
+                    // 前台应用监测：改大小与颜色（磁贴内容为"当前前台应用"，A 冻结/解冻、Y 结束，无其他配置）
+                    it.Size = SelectedSize();
+                    it.TileColor = SelectedColor();
+                }
+                else if (it.WidgetKind == WidgetKind.System)
+                {
+                    // 系统：大小固定"长"；可改颜色与"显示的项目"（勾选的才参与右摇杆切换）
+                    var mask = SelectedSystemMask();
+                    if (mask == 0)
+                    {
+                        PageTitle.Text = "系统小组件至少要勾选一个项目";
+                        return;
+                    }
+                    it.Size = TileSize.Wide;
+                    it.TileColor = SelectedColor();
+                    it.SystemOptionMask = mask;
+                    // 当前停留的项被去掉了：回落到第一个勾选项，避免磁贴停在不可切换的项上
+                    it.SystemOption = SystemPanelService.NormalizeOption(mask, it.SystemOption);
+                }
+                else if (it.WidgetKind == WidgetKind.Drawer)
+                {
+                    // 磁贴抽屉：改颜色（抽屉药丸的强调色）与抽屉列表（名称/增删）；
+                    // 大小固定"长"尺寸，抽屉里的磁贴在主页放入（此处不改）
+                    if (_pendingDrawers.Any(d => string.IsNullOrWhiteSpace(d.Name)))
+                    {
+                        PageTitle.Text = "抽屉名称不能为空";
+                        return;
+                    }
+                    it.TileColor = SelectedColor();
+                    DrawerService.ApplyEdits(it, _pendingDrawers);
+                }
                 else
                 {
                     it.TileColor = SelectedColor();
@@ -1161,6 +1363,7 @@ public sealed partial class AddItemPage : Page, ISettingsGamepad
                 Name = name,
                 Target = target,
                 Kind = kind,
+                PageIndex = App.Main?.CurrentHomePage ?? 0,   // 新建磁贴归到主页当前所在页
                 Size = SelectedSize(),
                 TileColor = SelectedColor(),
                 IconFile = _pendingIcon,
@@ -1168,13 +1371,25 @@ public sealed partial class AddItemPage : Page, ISettingsGamepad
             };
             if (kind != LaunchKind.Url && it.IconFile == null)
                 it.IconFile = await IconExtractService.ExtractAsync(target);
-            items.Add(it);
+            // 从主页抽屉内部按 X 发起的新建：直接放进该抽屉（放不下则报错且不落盘）
+            var req = App.Main?.PendingDrawerInsert;
+            if (req is not null)
+            {
+                App.Main!.PendingDrawerInsert = null;   // 一次性请求，消费即清
+                if (!DrawerService.TryInsert(items, req, it, out var error))
+                {
+                    PageTitle.Text = error ?? "抽屉放不下这个磁贴";
+                    return;
+                }
+            }
+            else
+            {
+                items.Add(it);
+            }
         }
 
         ConfigService.Save(items);
-        // 磁贴集快照成员编辑：返回副本页（GoBack），其他编辑回主页
-        if (_snapshotSetTarget != null) App.Main?.GoBackOne();
-        else App.Main?.ShowMainPage();
+        App.Main?.ShowMainPage();
     }
 
     private void OnSaveClick(object sender, Microsoft.UI.Xaml.RoutedEventArgs e) => _ = SaveAsync();

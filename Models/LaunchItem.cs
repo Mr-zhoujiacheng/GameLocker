@@ -28,7 +28,7 @@ public enum WidgetKind
     Music,
     /// <summary>图片组（定向一个文件夹，扫描其中的图片轮番展示）</summary>
     Photos,
-    /// <summary>磁贴集（添加时复制当前主页磁贴为快照，打开进入复制出的页面）</summary>
+    /// <summary>磁贴集（已移除该功能，仅保留此枚举值用于旧配置反序列化与数据迁移）</summary>
     TileSet,
     /// <summary>设置（常驻主页，点击进入软件设置页；不可删除/组合，可移动与改颜色大小）</summary>
     Settings,
@@ -43,7 +43,16 @@ public enum WidgetKind
     /// <summary>手柄映射（把若干手柄按键映射成键盘/鼠标/手柄输出；A/点击=开关映射，长按=关闭映射）</summary>
     GamepadMap,
     /// <summary>OptiScaler（检测当前游戏，按 wiki 兼容列表给出适配性，确认后注入 OptiScaler 并重开游戏）</summary>
-    OptiScaler
+    OptiScaler,
+    /// <summary>磁贴抽屉（主页上一块固定区域，内含多个可命名抽屉作为标签页，收纳磁贴）</summary>
+    Drawer,
+    /// <summary>回收站（系统回收站快捷入口：A/点击=打开回收站，Y=一键清空回收站）</summary>
+    RecycleBin,
+    /// <summary>前台应用监测（持续监测当前前台窗口所属进程，换前台窗口即刷新；A=冻结/解冻，Y=强制结束）</summary>
+    Foreground,
+    /// <summary>系统（一个磁贴收纳系统入口与开关：设置/我的电脑/资源管理器/音量/亮度/WiFi/蓝牙；
+    /// 右摇杆←→切换，A=打开或开关，LB/RB=调整）</summary>
+    System
 }
 
 /// <summary>手柄映射的目标类型（仅 GamepadMapping 使用）</summary>
@@ -131,6 +140,9 @@ public class LaunchItem
     /// <summary>磁贴尺寸（默认长方形）</summary>
     public TileSize Size { get; set; } = TileSize.Wide;
 
+    /// <summary>所属主页页号（0=主主页；副页从 1 开始。磁贴组按组自身页号归属，成员随组显示）</summary>
+    public int PageIndex { get; set; }
+
     /// <summary>自定义磁贴颜色（#RRGGBB）；为空表示按名称哈希自动配色</summary>
     public string? TileColor { get; set; }
 
@@ -149,14 +161,27 @@ public class LaunchItem
     /// <summary>图片组定向的文件夹绝对路径（仅 WidgetKind.Photos 使用；为空表示未设置）</summary>
     public string? WidgetFolder { get; set; }
 
+    /// <summary>系统小组件当前停在哪一项（仅 WidgetKind.System 使用；见 SystemPanel 枚举顺序，0=Win 设置）</summary>
+    public int SystemOption { get; set; }
+
+    /// <summary>系统小组件启用项位掩码（仅 WidgetKind.System 使用；bit = 面板项序号，0 = 全部启用）</summary>
+    public int SystemOptionMask { get; set; }
+
     /// <summary>图片组轮播速度档位（仅 WidgetKind.Photos 使用）</summary>
     public PhotoSpeed SlideshowSpeed { get; set; } = PhotoSpeed.Fast;
 
     /// <summary>图片组切换是否播放淡入动画（仅 WidgetKind.Photos 使用）</summary>
     public bool PhotoAnimation { get; set; } = true;
 
-    /// <summary>磁贴集快照（仅 WidgetKind.TileSet 使用：添加时复制的当前主页磁贴列表）</summary>
-    public List<LaunchItem> Snapshot { get; set; } = [];
+    /// <summary>磁贴集快照（功能已移除）：仅保留用于旧配置的一次性迁移——把旧磁贴集的快照内容转成一个副页；
+    /// 为 null 时不写入 JSON，新配置里不会再出现该字段</summary>
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingDefault)]
+    public List<LaunchItem>? Snapshot { get; set; }
+
+    /// <summary>磁贴抽屉的抽屉列表（仅 WidgetKind.Drawer 使用）；为 null 时不写入 JSON。
+    /// 每个抽屉是「名称 + 内含磁贴」，主页选中组件时 LB/RB 在各抽屉间导航。</summary>
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingDefault)]
+    public List<DrawerPage>? Drawers { get; set; }
 
     /// <summary>映射的手柄按键（仅 WidgetKind.Mapping 使用；None=未映射手柄键）</summary>
     public GamepadButtons MappingPad { get; set; } = GamepadButtons.None;
@@ -211,18 +236,21 @@ public class LaunchItem
     /// beta=社区镜像的最新预览版（OptiScaler-Betas）。两者 ini 与用法一致，只是包更新更快。</summary>
     public string OptiChannel { get; set; } = "stable";
 
-    /// <summary>深拷贝一个快捷项（含组成员），用于磁贴集快照/进入副本页时与主页数据隔离</summary>
+    /// <summary>深拷贝一个快捷项（含组成员），用于复制/迁移时与源数据隔离</summary>
     public LaunchItem Clone() => new()
     {
         Name = Name,
         Target = Target,
         Kind = Kind,
         Size = Size,
+        PageIndex = PageIndex,
         TileColor = TileColor,
         IconFile = IconFile,
         CoverFile = CoverFile,
         WidgetKind = WidgetKind,
         WidgetFolder = WidgetFolder,
+        SystemOption = SystemOption,
+        SystemOptionMask = SystemOptionMask,
         SlideshowSpeed = SlideshowSpeed,
         PhotoAnimation = PhotoAnimation,
         MappingPad = MappingPad,
@@ -243,7 +271,7 @@ public class LaunchItem
         OptiChannel = OptiChannel,
         GamepadMappings = [.. GamepadMappings.Select(m => m.Clone())],
         Members = [.. Members.Select(m => m.Clone())],
-        Snapshot = [.. Snapshot.Select(s => s.Clone())]
+        Drawers = Drawers is null ? null : [.. Drawers.Select(d => d.Clone())]
     };
 
     /// <summary>图标存放目录（%APPDATA%\GameLocker\icons）</summary>
@@ -268,6 +296,10 @@ public class LaunchItem
             WidgetKind.Backup => "\uE74E", // 保存（游戏存档）
             WidgetKind.GamepadMap => "\uE7FC", // 手柄（手柄映射）
             WidgetKind.OptiScaler => "\uE8C8", // 层叠帧（OptiScaler 帧生成/画质增强）
+            WidgetKind.Drawer => "\uE8F1", // 书架（磁贴抽屉）
+            WidgetKind.RecycleBin => "\uE74D", // 垃圾桶（回收站）
+            WidgetKind.Foreground => "\uE769", // 暂停（前台应用监测：冻结）
+            WidgetKind.System => "\uE713", // 设置（系统小组件：默认停在 Win 设置）
             _ => "\uE8D6"                  // 音乐（音乐控制器）
         },
         _ => "\uE7F8"                  // desktop

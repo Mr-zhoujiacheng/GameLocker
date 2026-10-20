@@ -61,6 +61,15 @@
             </ListViewItem>
             <ListViewItem Tapped="OnCategoryTapped">
                 <StackPanel Orientation="Horizontal" Spacing="14" Padding="0,10">
+                    <FontIcon Glyph="&#xE8A4;" FontSize="20" VerticalAlignment="Center"/>
+                    <StackPanel Spacing="2">
+                        <TextBlock Text="抽屉" FontSize="17"/>
+                        <TextBlock Text="抽屉开关 · 固定在主页下方" FontSize="12" Opacity="0.6"/>
+                    </StackPanel>
+                </StackPanel>
+            </ListViewItem>
+            <ListViewItem Tapped="OnCategoryTapped">
+                <StackPanel Orientation="Horizontal" Spacing="14" Padding="0,10">
                     <FontIcon Glyph="&#xE946;" FontSize="20" VerticalAlignment="Center"/>
                     <StackPanel Spacing="2">
                         <TextBlock Text="关于" FontSize="17"/>

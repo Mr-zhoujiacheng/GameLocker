@@ -1,5 +1,6 @@
 using System.Runtime.InteropServices;
 using Microsoft.UI;
+using Microsoft.UI.Composition;
 using Microsoft.UI.Composition.SystemBackdrops;
 using Microsoft.UI.Text;
 using Microsoft.UI.Windowing;
@@ -60,9 +61,15 @@ public sealed partial class MainWindow : Window
         _edgeGesture.SetEdge(CurrentSummonEdge());
     }
 
+    /// <summary>是否"满幅悬浮"形态（全屏 / 居中停靠）：这两种模式窗口很宽，
+    /// 抽屉面板按窗口宽度的固定比例居中显示，避免横向拉满显得过长（见 MainPage.ApplyDrawerWidth）</summary>
+    public bool IsWideOverlay =>
+        _fullscreen || SettingsService.Current.SidebarSide == DockSide.Center;
+
     private SummonEdge CurrentSummonEdge()
     {
-        if (_fullscreen) return SummonEdge.Top;
+        // 全屏与居中都是"上方悬浮"形态，边缘手势统一走顶边
+        if (_fullscreen || SettingsService.Current.SidebarSide == DockSide.Center) return SummonEdge.Top;
         return SettingsService.Current.SidebarSide == DockSide.Right
             ? SummonEdge.Right
             : SummonEdge.Left;
@@ -177,7 +184,8 @@ public sealed partial class MainWindow : Window
             }
             if (!_summonPending || e.WindowActivationState == WindowActivationState.Deactivated) return;
             _summonPending = false;
-            AnimateMove(_summonStart, _summonTarget, 260, easeOut: true, null);
+            // 滑入结束再抢一次前台：Activate 是在窗口还在屏外时调的，系统有时因此不给键盘焦点
+            AnimateMove(_summonStart, _summonTarget, 260, easeOut: true, BringToForeground);
         };
     }
 
@@ -479,11 +487,11 @@ public sealed partial class MainWindow : Window
     private int _animMs;
     private Action? _animDone;
 
-    /// <summary>目标位置对应的屏外起点：左停靠=左侧屏外，右停靠=右侧屏外，全屏=上方屏外</summary>
+    /// <summary>目标位置对应的屏外起点：左停靠=左侧屏外，右停靠=右侧屏外，全屏/居中=上方屏外</summary>
     private Windows.Graphics.PointInt32 OffscreenPos(
         Windows.Graphics.PointInt32 target, Windows.Graphics.SizeInt32 size)
     {
-        if (_fullscreen)
+        if (_fullscreen || SettingsService.Current.SidebarSide == Models.DockSide.Center)
             return new Windows.Graphics.PointInt32(target.X, target.Y - size.Height);
         return SettingsService.Current.SidebarSide == Models.DockSide.Right
             ? new Windows.Graphics.PointInt32(target.X + size.Width, target.Y)
@@ -584,7 +592,8 @@ public sealed partial class MainWindow : Window
         if (_summonPending)
         {
             _summonPending = false;
-            AnimateMove(_summonStart, _summonTarget, 260, easeOut: true, null);
+            // 滑入结束再抢一次前台：Activate 是在窗口还在屏外时调的，系统有时因此不给键盘焦点
+            AnimateMove(_summonStart, _summonTarget, 260, easeOut: true, BringToForeground);
         }
         (Root.Content as MainPage)?.FocusGrid();
         // 已呼出显示：恢复手柄对启动器的操作。只跟显示状态走，不依赖抢前台是否成功
@@ -618,13 +627,26 @@ public sealed partial class MainWindow : Window
     /// 强制窗口置顶并聚焦：Activate() 不保证 Z 序，热键/手柄呼出时有几率被其他窗口遮盖。
     /// 窗口常驻 TOPMOST（要盖住同样置顶的任务栏），所以这里只重申一次 TOPMOST
     /// 把它提到置顶带最上，不能再回落到 NOTOPMOST（否则任务栏又会压住窗口下沿），再抢前台焦点。
+    /// SetForegroundWindow 在"发起进程本身不是前台进程"时会被系统拒绝（手柄轮询呼出、托盘/边缘
+    /// 滑动呼出都是后台进程发起），表现为窗口显示出来了但没有键盘焦点。这里临时把本线程挂到当前
+    /// 前台线程的输入队列上，借对方的前台权限把焦点抢过来，随后立刻解除挂接。
     /// </summary>
     private void BringToForeground()
     {
         if (_hwnd == IntPtr.Zero) return;
         SetWindowPos(_hwnd, HWND_TOPMOST, 0, 0, 0, 0,
             SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE);
+        if (GetForegroundWindow() == _hwnd) return;
+
+        var cur = GetCurrentThreadId();
+        var fgOwner = GetForegroundWindow();
+        var fgThread = fgOwner == IntPtr.Zero ? 0 : GetWindowThreadProcessId(fgOwner, out _);
+        // 与前台的线程挂接：只有挂上之后 SetForegroundWindow 才会被系统放行
+        var attached = fgThread != 0 && fgThread != cur && AttachThreadInput(fgThread, cur, true);
         SetForegroundWindow(_hwnd);
+        SetActiveWindow(_hwnd);
+        BringWindowToTop(_hwnd);
+        if (attached) AttachThreadInput(fgThread, cur, false);
     }
 
     /// <summary>托盘菜单退出</summary>
@@ -660,8 +682,9 @@ public sealed partial class MainWindow : Window
     }
 
     /// <summary>
-    /// 侧边栏布局：窗口贴屏幕左/右边缘，宽度约 30%、高度铺满整屏（含任务栏区域，盖住任务栏）。
-    /// 设置页修改停靠侧后立即调用本方法生效；全屏模式下不干预。
+    /// 窗口布局：左/右停靠=贴屏幕左右边缘、宽度约 30%、高度铺满整屏（含任务栏区域，盖住任务栏）；
+    /// 居中=水平居中、上下留边距（四周都不贴屏幕边，也不盖任务栏），宽度按设置值放大换算。
+    /// 设置页修改停靠方式后立即调用本方法生效；全屏模式下不干预。
     /// </summary>
     public void ApplySidebarLayout()
     {
@@ -677,13 +700,34 @@ public sealed partial class MainWindow : Window
         // 导致窗口上下铺不满且下沿露出任务栏。
         var bounds = Microsoft.UI.Windowing.DisplayArea.Primary.OuterBounds;
         var pct = Math.Clamp(SettingsService.Current.SidebarWidthPercent, 0.38, 0.5);
-        var width = Math.Max(360, (int)(bounds.Width * pct));
-        AppWindow.Resize(new Windows.Graphics.SizeInt32(width, bounds.Height));
-        var x = SettingsService.Current.SidebarSide == Models.DockSide.Right
-            ? bounds.X + bounds.Width - width
-            : bounds.X;
-        AppWindow.Move(new Windows.Graphics.PointInt32(x, bounds.Y));
-        _homePos = new Windows.Graphics.PointInt32(x, bounds.Y);
+
+        int x, y, width;
+        if (SettingsService.Current.SidebarSide == Models.DockSide.Center)
+        {
+            // 居中模式宽度换算：设置里的最小值 38% 对应实际 70% 屏宽（居中比贴边需要占更大一块），
+            // 按同一倍率往上放大；上限 96% 保证左右始终留边
+            var centerPct = Math.Min(pct / 0.38 * 0.70, 0.96);
+            width = Math.Max(360, (int)(bounds.Width * centerPct));
+
+            // 水平居中；窗口高度仍为屏高的 88%（上下各留 6% 的量），但整体比正居中往上靠一点：
+            // 上边距取屏高的 3%（至少 24px），多出来的空间留给下边距
+            var topInset = Math.Max(24, (int)(bounds.Height * 0.03));
+            var height = bounds.Height - Math.Max(48, (int)(bounds.Height * 0.06)) * 2;
+            AppWindow.Resize(new Windows.Graphics.SizeInt32(width, height));
+            x = bounds.X + (bounds.Width - width) / 2;
+            y = bounds.Y + topInset;
+        }
+        else
+        {
+            width = Math.Max(360, (int)(bounds.Width * pct));
+            AppWindow.Resize(new Windows.Graphics.SizeInt32(width, bounds.Height));
+            x = SettingsService.Current.SidebarSide == Models.DockSide.Right
+                ? bounds.X + bounds.Width - width
+                : bounds.X;
+            y = bounds.Y;
+        }
+        AppWindow.Move(new Windows.Graphics.PointInt32(x, y));
+        _homePos = new Windows.Graphics.PointInt32(x, y);
 
         // 任务栏自身是 TOPMOST，窗口不置顶的话任务栏会压在窗口下沿之上（盖不住）。
         // 放在 Resize/Move 之后设置，避免中途被窗口操作重置。
@@ -692,8 +736,26 @@ public sealed partial class MainWindow : Window
         // presenter 状态操作可能恢复窗口样式，重新移除标题栏
         RemoveTitleBarStyle();
 
-        // 停靠侧可能变化，重新定位边缘手势窄条
+        // 居中模式是四边不贴屏的浮动小块 → 圆角；贴边/全屏要方形（否则屏幕边缘会露出圆角缺口）
+        ApplyWindowCorners();
+
+        // 停靠方式可能变化，重新定位边缘手势窄条
         SyncEdgeGesture();
+
+        // 形态（贴边/居中窄或宽）变化后，抽屉宽度上限需重算：全屏/居中按窗口宽度比例居中，贴边铺满
+        if (Root.Content is MainPage mp) mp.ApplyDrawerWidth();
+    }
+
+    /// <summary>
+    /// 窗口圆角：用系统 DWM 圆角（仅 Win11 支持，Win10 上该属性无效、保持方形）。
+    /// 只有居中模式需要圆角（四周都有留白），贴边与全屏必须方形。
+    /// </summary>
+    private void ApplyWindowCorners()
+    {
+        if (_hwnd == IntPtr.Zero) return;
+        var round = !_fullscreen && SettingsService.Current.SidebarSide == DockSide.Center;
+        var pref = round ? DWMWCP_ROUND : DWMWCP_DONOTROUND;
+        DwmSetWindowAttribute(_hwnd, DWMWA_WINDOW_CORNER_PREFERENCE, ref pref, sizeof(int));
     }
 
     /// <summary>
@@ -720,8 +782,10 @@ public sealed partial class MainWindow : Window
     /// 背景：用户背景色（BackgroundRect）+ 可选玻璃（Acrylic 材质）+ 整窗透明度（分层窗口 LWA_ALPHA）。
     /// 玻璃开启时背景色改为半透明叠加，透出磨砂材质；关闭时用不透明纯色。
     /// WinUI 的 Window 没有 Opacity 属性，整窗半透明只能经 HWND 扩展样式实现（含文字）。
+    /// 玻璃用 <see cref="AlwaysActiveAcrylicBackdrop"/> 而非系统默认的 DesktopAcrylicBackdrop：
+    /// 后者跟随窗口激活状态，窗口失活时磨砂会被系统降级为纯色（表现为"要点击窗口玻璃才出现"）。
     /// </summary>
-    private DesktopAcrylicBackdrop? _acrylic;
+    private SystemBackdrop? _acrylic;
 
     public void ApplyBackground()
     {
@@ -733,7 +797,7 @@ public sealed partial class MainWindow : Window
 
         if (s.GlassEffect)
         {
-            _acrylic ??= new DesktopAcrylicBackdrop();
+            _acrylic ??= new AlwaysActiveAcrylicBackdrop();
             SystemBackdrop = _acrylic;
             // 低透明度叠色：只轻微染色，突出 Acrylic 磨砂透出效果
             BackgroundRect.Fill = new SolidColorBrush(Windows.UI.Color.FromArgb(0x40, color.R, color.G, color.B));
@@ -807,18 +871,15 @@ public sealed partial class MainWindow : Window
     /// <summary>主页选择遮罩确认后：进入小组件页</summary>
     public void RootNavigateWidget() => Root.Navigate(typeof(WidgetPage));
 
-    /// <summary>打开磁贴集小组件：进入其添加时复制的主页快照页</summary>
-    public void OpenTileSet(LaunchItem set) => Root.Navigate(typeof(TileSetPage), set);
+    /// <summary>主页当前页号（0=主主页；副页从 1 开始）：主页切页时更新，新建磁贴据此归属当前页</summary>
+    public int CurrentHomePage { get; set; }
 
-    /// <summary>设置页返回：回到进入设置前的页面（磁贴集副本页/主页），无历史则回主页</summary>
+    /// <summary>抽屉内按 X 添加时挂起的一次性请求：(抽屉组件 Target, 抽屉下标)。
+    /// 在小组件页/编辑页新建磁贴时消费——新磁贴直接放进该抽屉，而不是加在主页顶层；消费后由消费方置空。</summary>
+    public (string Target, int Tab)? PendingDrawerInsert { get; set; }
+
+    /// <summary>设置页返回：回到进入设置前的页面（主页），无历史则回主页</summary>
     public void SettingsBack()
-    {
-        if (Root.CanGoBack) Root.GoBack();
-        else ShowMainPage();
-    }
-
-    /// <summary>返回上一级页面（磁贴集快照编辑保存/取消后回到副本页）</summary>
-    public void GoBackOne()
     {
         if (Root.CanGoBack) Root.GoBack();
         else ShowMainPage();
@@ -839,6 +900,12 @@ public sealed partial class MainWindow : Window
     public void ApplyTopbarVisibility()
     {
         if (Root.Content is MainPage mp) mp.ApplyTopbarVisibility();
+    }
+
+    /// <summary>抽屉设置（开关/颜色）变更后即时应用到主页（若已创建）</summary>
+    public void ApplyDrawerSettings()
+    {
+        if (Root.Content is MainPage mp) mp.ApplyDrawerSettings();
     }
 
     private void OnGamepadConnection(bool connected) =>
@@ -897,23 +964,6 @@ public sealed partial class MainWindow : Window
             return;
         }
 
-        // 磁贴集副本页：方向/A/LB/RB/R3 交给页面，B/View 返回主页
-        if (Root.Content is TileSetPage tileSet)
-        {
-            // R3：编辑当前选中的快照磁贴（与主页同理；排列模式中不触发）
-            if (buttons.HasFlag(GamepadButtons.RightThumb) && !buttons.HasFlag(GamepadButtons.A))
-            {
-                if (!tileSet.IsMoving && tileSet.SelectedItem is { } si)
-                    Root.Navigate(typeof(AddItemPage), (tileSet.SetTarget, si));
-                return;
-            }
-            // 页面未消费的 B/View 才返回主页（排列模式中 B=退出排列，已被页面消费）
-            if (!tileSet.HandleGamepad(buttons) &&
-                (buttons.HasFlag(GamepadButtons.View) || buttons.HasFlag(GamepadButtons.B)))
-                ShowMainPage();
-            return;
-        }
-
         // 设置主页与各分类子页：捕获模式下按键原样交给页面；
         // 否则方向/A 页面处理，View/B 逐级返回
         if (Root.Content is ISettingsGamepad page)
@@ -938,7 +988,7 @@ public sealed partial class MainWindow : Window
         if (buttons.HasFlag(GamepadButtons.View)) Root.Navigate(typeof(SettingsPage));
         else if (buttons.HasFlag(GamepadButtons.X))
         {
-            // 添加：先弹出方式选择（自定义 / 小组件）
+            // 添加：先弹出方式选择（自定义 / 小组件 / 副页块）
             if (Root.Content is MainPage mp2) mp2.OpenAddChoice();
         }
         else if (buttons.HasFlag(GamepadButtons.RightThumb))
@@ -1023,6 +1073,8 @@ public sealed partial class MainWindow : Window
         }
         // 全屏/侧边栏切换后边缘手势窄条需重新定位（全屏=顶边）
         SyncEdgeGesture();
+        // 全屏要方形，退出全屏后按当前停靠方式恢复圆角
+        ApplyWindowCorners();
     }
 
     /// <summary>把自定义图标设到窗口标题栏与任务栏</summary>
@@ -1041,9 +1093,8 @@ public sealed partial class MainWindow : Window
     [DllImport("user32.dll", CharSet = CharSet.Unicode)]
     private static extern IntPtr SendMessage(IntPtr hWnd, int msg, IntPtr wParam, IntPtr lParam);
 
-    // ---- 触摸手势：向下滑 = 返回上一级（主页则最小化），反向滑（呼出反方向）= 直接最小化。
-    // 呼出=从边缘向中心内滑（左停靠=向右、右停靠=向左、全屏=向下），反向滑=同轴反向
-    // （左停靠=向左、右停靠=向右、全屏=向上）。
+    // ---- 触摸手势：向下滑 = 返回上一级（主页则最小化）；从屏幕左右边缘起手的横滑 = 最小化；
+    // 主页中间的横滑 = 切换副页（与 LT/RT 同向）。全屏停靠时向上滑 = 最小化。
     // 双通道：① 窗口内指针事件（主页磁贴区可靠）；② 原始输入触摸通道（子页被列表/滚动视图
     // 捕获触摸时仍有效，见 EdgeGestureService.DismissTriggered/BackTriggered）。两通道按 600ms 冷却互斥去重。----
 
@@ -1054,6 +1105,24 @@ public sealed partial class MainWindow : Window
     private bool _swipeMoveLogged;
     private long _dismissAt;
     private long _backAt;
+
+    /// <summary>本次触摸起点是否落在抽屉手势感应区内（决定上/下划是抽屉呼出/收起，而非最小化/返回）</summary>
+    private bool _swipeFromBottom;
+    /// <summary>最近一次"抽屉感应区内触摸"的时间戳：该触摸期间及抬起后短暂窗口内，
+    /// 原始输入触摸通道的返回/最小化一并让位（本地触摸由窗口指针通道处理），避免两通道抢同一手势</summary>
+    private long _drawerTouchAt;
+    /// <summary>底部上下划判定阈值（DIP），比页面级手势的 120 小：起点已限定在感应区内</summary>
+    private const double DrawerSwipeThreshold = 30;
+
+    /// <summary>左右边缘手势带宽度（DIP）：横滑的终点在此带内视为"滑到屏幕边缘 → 收起窗口"</summary>
+    private const double ScreenEdgeSwipeZone = 28;
+
+    /// <summary>点是否落在屏幕（窗口）左右边缘带内</summary>
+    private bool IsNearSideEdge(Windows.Foundation.Point p)
+    {
+        if (Content is not FrameworkElement root || root.ActualWidth <= 0) return false;
+        return p.X <= ScreenEdgeSwipeZone || p.X >= root.ActualWidth - ScreenEdgeSwipeZone;
+    }
 
     /// <summary>在窗口根面板监听指针（触摸）事件（handledEventsToo=true，ScrollViewer 消费后仍能收到）</summary>
     private void HookSwipeBack()
@@ -1072,6 +1141,15 @@ public sealed partial class MainWindow : Window
         _swipeId = e.Pointer.PointerId;
         _swipeDone = false;
         _swipeMoveLogged = false;
+        // 起点落在抽屉手势感应区内（抽屉面板区域 / 抽屉收起时的窗口底部窄带，仅自动隐藏开启时）：
+        // 本次触摸归抽屉处理，并立刻预埋去重时间戳，避免原始输入通道抢先触发"下划=返回/反向滑=最小化"
+        _swipeFromBottom = Content is FrameworkElement rootEl && rootEl.ActualHeight > 0
+                           && Root.Content is MainPage zonePage && zonePage.DrawerAutoHideActive
+                           && _swipeStart.Value.Y >= zonePage.DrawerGestureZoneTop;
+        if (_swipeFromBottom)
+        {
+            _drawerTouchAt = _backAt = _dismissAt = Environment.TickCount64;
+        }
         EdgeGestureService.Trace($"win swipe down page={Root.Content?.GetType().Name}");
     }
 
@@ -1099,7 +1177,34 @@ public sealed partial class MainWindow : Window
                 $"win swipe moved page={Root.Content?.GetType().Name} reverse={reverse} cross={cross} dy={dy}");
         }
         var fast = (DateTime.UtcNow - _swipeStartAt).TotalMilliseconds < 500;
-        if (fast && reverse > 120 && cross < 80)
+
+        // 抽屉感应区内竖直滑动：上划=呼出抽屉、下划=收起抽屉（仅"抽屉自动隐藏"开启时接管）。
+        // 起点已限定在感应区（抽屉面板区域 / 底部窄带），故阈值比页面级手势小（也不要求快滑）；
+        // 命中即 return：本次触摸不再走下面的"反向滑=最小化 / 下划=返回上一级"
+        if (_swipeFromBottom && Math.Abs(dx) < 80
+            && Root.Content is MainPage drawerPage && drawerPage.DrawerAutoHideActive)
+        {
+            if (dy <= -DrawerSwipeThreshold)
+            {
+                _swipeDone = true;
+                _drawerTouchAt = _backAt = _dismissAt = Environment.TickCount64;
+                drawerPage.SetDrawerSummoned(true);
+                return;
+            }
+            if (dy >= DrawerSwipeThreshold)
+            {
+                _swipeDone = true;
+                _drawerTouchAt = _backAt = _dismissAt = Environment.TickCount64;
+                drawerPage.SetDrawerSummoned(false);
+                return;
+            }
+        }
+
+        // 横滑不在这里判定：是"滑到屏幕边缘=最小化"还是"中间横滑=切副页"要等抬手时看终点位置，
+        // 见 OnSwipePointerUp（滑动途中若提前切页，继续滑到边缘就会同时切页+最小化）
+
+        // 全屏停靠：向上快滑 → 最小化（竖直手势保持不变）
+        if (fast && edge == SummonEdge.Top && reverse > 120 && cross < 80)
         {
             _swipeDone = true;
             _dismissAt = Environment.TickCount64; // 与原始输入通道去重
@@ -1116,7 +1221,35 @@ public sealed partial class MainWindow : Window
 
     private void OnSwipePointerUp(object sender, PointerRoutedEventArgs e)
     {
-        if (e.Pointer.PointerId == _swipeId) _swipeStart = null;
+        if (e.Pointer.PointerId != _swipeId) return;
+        var start = _swipeStart;
+        var elapsed = (DateTime.UtcNow - _swipeStartAt).TotalMilliseconds;
+        _swipeStart = null;
+        // 感应区内触摸抬起后仍短暂压制原始输入通道：其 WM_INPUT 抬手检测可能晚于本次回调
+        if (_swipeFromBottom)
+        {
+            _drawerTouchAt = _backAt = _dismissAt = Environment.TickCount64;
+            _swipeFromBottom = false;
+            return;
+        }
+        // 横滑按"抬手终点"判定：滑到屏幕左右边缘 = 最小化；停在中间 = 主页切换副页
+        if (_swipeDone || start is not { } s || elapsed >= 500) return;
+        var p = e.GetCurrentPoint(null).Position;
+        var dx = p.X - s.X;
+        var dy = p.Y - s.Y;
+        if (Math.Abs(dx) <= 120 || Math.Abs(dy) >= 80) return;
+        if (IsNearSideEdge(p))
+        {
+            if (Environment.TickCount64 - _dismissAt > 600) // 原始输入通道可能已抢先触发
+            {
+                _dismissAt = Environment.TickCount64;
+                Minimize();
+            }
+        }
+        else if (Root.Content is MainPage home)
+        {
+            home.SwitchPageBySwipe(dx > 0 ? -1 : 1);
+        }
     }
 
     /// <summary>反向滑：直接最小化（收起启动器：滑出屏外再隐藏到托盘）</summary>
@@ -1129,12 +1262,12 @@ public sealed partial class MainWindow : Window
         else if (Root.CanGoBack) Root.GoBack();
     }
 
-    /// <summary>原始输入触摸通道识别到"呼出反方向"快滑：仅在本窗口前台时直接最小化。
-    /// 磁贴页（主页/磁贴集）有横向拖拽换位，交给窗口内指针通道判定，避免误最小化。</summary>
+    /// <summary>原始输入触摸通道识别到"滑到屏幕左右边缘"的快滑：仅在本窗口前台时直接最小化。
+    /// 主页也可用（该通道只在终点贴边时触发，不会误伤中间的切页横滑）。</summary>
     private void OnDismissGesture()
     {
         if (!Visible || GetForegroundWindow() != _hwnd) return;
-        if (Root.Content is MainPage or TileSetPage) return;
+        if (Environment.TickCount64 - _drawerTouchAt < 900) return; // 抽屉感应区触摸：让位给窗口指针通道
         if (Environment.TickCount64 - _dismissAt < 600) return; // 与指针通道去重
         _dismissAt = Environment.TickCount64;
         Minimize();
@@ -1145,6 +1278,7 @@ public sealed partial class MainWindow : Window
     private void OnBackGesture()
     {
         if (!Visible || GetForegroundWindow() != _hwnd) return;
+        if (Environment.TickCount64 - _drawerTouchAt < 900) return; // 抽屉感应区触摸：让位给窗口指针通道
         if (Environment.TickCount64 - _backAt < 600) return; // 与指针通道去重
         _backAt = Environment.TickCount64;
         BackOneLevel();
@@ -1176,6 +1310,21 @@ public sealed partial class MainWindow : Window
     private static extern bool SetForegroundWindow(IntPtr hWnd);
 
     [DllImport("user32.dll")]
+    private static extern bool AttachThreadInput(uint idAttach, uint idAttachTo, bool fAttach);
+
+    [DllImport("user32.dll")]
+    private static extern uint GetWindowThreadProcessId(IntPtr hWnd, out uint lpdwProcessId);
+
+    [DllImport("user32.dll")]
+    private static extern IntPtr SetActiveWindow(IntPtr hWnd);
+
+    [DllImport("user32.dll")]
+    private static extern bool BringWindowToTop(IntPtr hWnd);
+
+    [DllImport("kernel32.dll")]
+    private static extern uint GetCurrentThreadId();
+
+    [DllImport("user32.dll")]
     private static extern IntPtr GetForegroundWindow();
 
     [DllImport("user32.dll", EntryPoint = "GetWindowLongPtrW")]
@@ -1190,4 +1339,48 @@ public sealed partial class MainWindow : Window
 
     [DllImport("user32.dll")]
     private static extern bool SetLayeredWindowAttributes(IntPtr hWnd, uint crKey, byte bAlpha, uint dwFlags);
+
+    // 窗口圆角（Win11 DWMWA_WINDOW_CORNER_PREFERENCE = 33）
+    private const int DWMWA_WINDOW_CORNER_PREFERENCE = 33;
+    private const int DWMWCP_DONOTROUND = 1;
+    private const int DWMWCP_ROUND = 2;
+
+    [DllImport("dwmapi.dll")]
+    private static extern int DwmSetWindowAttribute(IntPtr hwnd, int attr, ref int attrValue, int attrSize);
+}
+
+/// <summary>
+/// 恒定"输入激活"的亚克力背景。
+/// 系统的 <c>DesktopAcrylicBackdrop</c> 会随窗口激活状态自动切换配置：窗口失活（被游戏或其他应用抢走前台）时，
+/// 背景亚克力会被系统降级为纯色，于是只在点击窗口、重新激活后才看得到磨砂效果。
+/// 这里改用手动控制器，把 <see cref="SystemBackdropConfiguration.IsInputActive"/> 恒设为 true，
+/// 让磨砂材质与窗口是否前台解耦——呼出后即便不是前台，也保持玻璃质感。
+/// </summary>
+internal sealed class AlwaysActiveAcrylicBackdrop : SystemBackdrop
+{
+    private DesktopAcrylicController? _controller;
+    private SystemBackdropConfiguration? _config;
+
+    protected override void OnTargetConnected(ICompositionSupportsSystemBackdrop target, XamlRoot xamlRoot)
+    {
+        base.OnTargetConnected(target, xamlRoot);
+        _config = new SystemBackdropConfiguration
+        {
+            IsInputActive = true, // 关键：不跟随窗口激活状态（否则失活即降级为纯色）
+            Theme = (xamlRoot.Content as FrameworkElement)?.ActualTheme == ElementTheme.Light
+                ? SystemBackdropTheme.Light
+                : SystemBackdropTheme.Dark
+        };
+        _controller = new DesktopAcrylicController();
+        _controller.AddSystemBackdropTarget(target);
+        _controller.SetSystemBackdropConfiguration(_config);
+    }
+
+    protected override void OnTargetDisconnected(ICompositionSupportsSystemBackdrop target)
+    {
+        base.OnTargetDisconnected(target);
+        _controller?.Dispose();
+        _controller = null;
+        _config = null;
+    }
 }

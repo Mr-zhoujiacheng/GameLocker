@@ -1,4 +1,4 @@
-﻿<?xml version="1.0" encoding="utf-8"?>
+<?xml version="1.0" encoding="utf-8"?>
 <Page
     x:Class="GameLocker.AddItemPage"
     xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
@@ -150,6 +150,44 @@
             </Setter>
         </Style>
 
+        <!-- 系统小组件编辑·显示项目：图标 + 名称胶囊。
+             选中/未选的视觉（底色、文字色、右侧勾/叉图标）全部由代码 ApplySysChipVisual 直接设置：
+             该自定义模板下 VisualState 的 Setter 实测不生效（IsChecked 已翻转但界面无变化），故不走 VisualState。
+             光标描边单独一层，只跟控件本地 BorderBrush 走，不会和选中态互相覆盖。 -->
+        <Style x:Key="SysOptionChipStyle" TargetType="ToggleButton">
+            <Setter Property="Background" Value="#0FFFFFFF"/>
+            <Setter Property="Foreground" Value="#E6EEF9"/>
+            <Setter Property="BorderBrush" Value="#26FFFFFF"/>
+            <Setter Property="BorderThickness" Value="1.5"/>
+            <Setter Property="CornerRadius" Value="10"/>
+            <Setter Property="Padding" Value="14,10"/>
+            <Setter Property="MinWidth" Value="0"/>
+            <Setter Property="MinHeight" Value="0"/>
+            <Setter Property="HorizontalAlignment" Value="Stretch"/>
+            <Setter Property="HorizontalContentAlignment" Value="Stretch"/>
+            <Setter Property="Template">
+                <Setter.Value>
+                    <ControlTemplate TargetType="ToggleButton">
+                        <Grid x:Name="Root" Background="{TemplateBinding Background}"
+                              CornerRadius="{TemplateBinding CornerRadius}">
+                            <ContentPresenter x:Name="Presenter"
+                                              Content="{TemplateBinding Content}"
+                                              ContentTemplate="{TemplateBinding ContentTemplate}"
+                                              Foreground="{TemplateBinding Foreground}"
+                                              Padding="{TemplateBinding Padding}"
+                                              HorizontalAlignment="{TemplateBinding HorizontalContentAlignment}"
+                                              VerticalAlignment="Center"/>
+                            <!-- 光标描边：只跟控件本地 BorderBrush 走（任何状态都不改它），画在最上层 -->
+                            <Border x:Name="CursorRing"
+                                    BorderBrush="{TemplateBinding BorderBrush}"
+                                    BorderThickness="{TemplateBinding BorderThickness}"
+                                    CornerRadius="{TemplateBinding CornerRadius}"/>
+                        </Grid>
+                    </ControlTemplate>
+                </Setter.Value>
+            </Setter>
+        </Style>
+
         <!-- 手柄映射编辑面板·次操作（删除映射）：透明底 + 柔红描边 -->
         <Style x:Key="ChipButtonStyle" TargetType="Button">
             <Setter Property="Background" Value="Transparent"/>
@@ -285,11 +323,16 @@
             </Button>
         </Grid>
 
-        <!-- 表单状态（ScrollViewer 包裹：窄窗口下内容超出可滚动，控件不被遮盖） -->
+        <!-- 表单状态（ScrollViewer 包裹：窄窗口下内容超出可滚动，控件不被遮盖）；
+             内容放进一层 FormHost 里，由 AddItemPage.LayoutForm() 把它的宽度设为视口宽、表单限宽居中，
+             这样在侧边栏 / 全屏 / 居中三种模式下排版一致（自动跟随窗口宽度变化） -->
         <ScrollViewer x:Name="FormScroll" Grid.Row="1" Padding="24,8"
+                      HorizontalContentAlignment="Stretch"
                       VerticalScrollMode="Auto" HorizontalScrollMode="Disabled"
                       VerticalScrollBarVisibility="Hidden">
-            <StackPanel x:Name="FormPanel" Spacing="12">
+            <Grid x:Name="FormHost">
+                <!-- 表单内容限宽居中：窗口变宽（全屏/居中模式）时保持与侧边栏下一致的排版 -->
+                <StackPanel x:Name="FormPanel" Spacing="12" HorizontalAlignment="Center">
                 <TextBox x:Name="NameBox" Header="显示名称" PlaceholderText="例如：Steam"/>
                 <Grid x:Name="TargetRow">
                     <Grid.ColumnDefinitions>
@@ -543,15 +586,15 @@
                         <StackPanel Spacing="7">
                             <StackPanel Orientation="Horizontal" Spacing="9">
                                 <Border Width="4" Height="4" CornerRadius="2" Background="#8FA3BF" VerticalAlignment="Center"/>
-                                <TextBlock Text="主页点击磁贴 = 检测当前游戏适配性并询问是否注入" FontSize="12" Opacity="0.85" TextWrapping="Wrap"/>
+                                <TextBlock Text="Y 键 = 检测适配性并注入，A 键 = 游戏内呼出菜单" FontSize="12" Opacity="0.85" TextWrapping="Wrap"/>
                             </StackPanel>
                             <StackPanel Orientation="Horizontal" Spacing="9">
                                 <Border Width="4" Height="4" CornerRadius="2" Background="#8FA3BF" VerticalAlignment="Center"/>
-                                <TextBlock Text="确认注入后会关闭游戏、写入 OptiScaler、再重新打开游戏" FontSize="12" Opacity="0.85" TextWrapping="Wrap"/>
+                                <TextBlock Text="注入会自动关游戏 → 写入 → 重开游戏" FontSize="12" Opacity="0.85" TextWrapping="Wrap"/>
                             </StackPanel>
                             <StackPanel Orientation="Horizontal" Spacing="9">
                                 <Border Width="4" Height="4" CornerRadius="2" Background="#8FA3BF" VerticalAlignment="Center"/>
-                                <TextBlock Text="注入前会自动备份被覆盖的同名文件，可用下方「一键还原」撤销" FontSize="12" Opacity="0.6" TextWrapping="Wrap"/>
+                                <TextBlock Text="注入前自动备份，可用下方「一键还原」撤销" FontSize="12" Opacity="0.6" TextWrapping="Wrap"/>
                             </StackPanel>
                         </StackPanel>
                     </Border>
@@ -578,7 +621,7 @@
                                       ToolTipService.ToolTip="自动 = 按 OptiScaler wiki 对该游戏的建议（默认 dxgi）。若游戏自带同名 DLL，可改用 version / winmm 等规避。"/>
                             <TextBlock Text="OptiScaler 版本" FontSize="13" Opacity="0.72" Margin="0,9,0,0"/>
                             <ComboBox x:Name="OptiVersionCombo" HorizontalAlignment="Stretch"
-                                      ToolTipService.ToolTip="选择注入时下载的版本渠道。正式版来自 OptiScaler 官方仓库的最新 Release，最稳定；测试版来自社区镜像的最新预览版，更新更快但可能有 Bug。选定渠道后，注入（Y 键 / 长按磁贴）时才会按该渠道下载；下载完成后，这里会显示实际的版本号。"/>
+                                      ToolTipService.ToolTip="选择注入时下载的版本渠道。正式版来自 OptiScaler 官方仓库的最新 Release，最稳定；测试版来自社区镜像的最新预览版，更新更快但可能有 Bug。选定渠道后，注入（Y 键）时才会按该渠道下载；下载完成后，这里会显示实际的版本号。"/>
                         </StackPanel>
                         <StackPanel Grid.Row="0" Grid.Column="1" Spacing="5" Margin="0,0,0,14">
                             <TextBlock Text="画质提升" FontSize="13" Opacity="0.72"/>
@@ -667,10 +710,136 @@
                     </StackPanel>
                 </StackPanel>
 
+                <!-- 磁贴抽屉组件：抽屉列表（名称 + 上一个/下一个切换 + 新增/删除）。
+                     抽屉里的磁贴不在这里放：主页区域内部按 X 添加、或编辑模式标记后放入、或直接拖入 -->
+                <StackPanel x:Name="DrawerRow" Spacing="10" Visibility="Collapsed">
+                    <TextBlock Text="抽屉" FontSize="17" FontWeight="Bold" Opacity="0.95"/>
+                    <Grid ColumnSpacing="8">
+                        <Grid.ColumnDefinitions>
+                            <ColumnDefinition Width="*"/>
+                            <ColumnDefinition Width="Auto"/>
+                            <ColumnDefinition Width="Auto"/>
+                        </Grid.ColumnDefinitions>
+                        <TextBox x:Name="DrawerNameBox" Grid.Column="0" PlaceholderText="抽屉名称"
+                                 TextChanged="OnDrawerNameChanged"/>
+                        <Button x:Name="DrawerPrevButton" Grid.Column="1" Click="OnDrawerPrevClick"
+                                ToolTipService.ToolTip="上一个抽屉">
+                            <FontIcon Glyph="&#xE76B;" FontSize="14"/>
+                        </Button>
+                        <Button x:Name="DrawerNextButton" Grid.Column="2" Click="OnDrawerNextClick"
+                                ToolTipService.ToolTip="下一个抽屉">
+                            <FontIcon Glyph="&#xE76C;" FontSize="14"/>
+                        </Button>
+                    </Grid>
+                    <StackPanel Orientation="Horizontal" Spacing="8">
+                        <Button x:Name="DrawerAddButton" Click="OnDrawerAddClick">
+                            <StackPanel Orientation="Horizontal" Spacing="6">
+                                <FontIcon Glyph="&#xE710;" FontSize="14"/>
+                                <TextBlock Text="新增抽屉"/>
+                            </StackPanel>
+                        </Button>
+                        <Button x:Name="DrawerDeleteButton" Click="OnDrawerDeleteClick">
+                            <StackPanel Orientation="Horizontal" Spacing="6">
+                                <FontIcon Glyph="&#xE74D;" FontSize="14"/>
+                                <TextBlock Text="删除此抽屉"/>
+                            </StackPanel>
+                        </Button>
+                    </StackPanel>
+                    <TextBlock x:Name="DrawerStatusText" FontSize="12" Opacity="0.7" TextWrapping="Wrap"/>
+                </StackPanel>
+
                 <!-- 组件标题（仅手柄映射小组件）：独立一行，显示在下方类型/大小/颜色行的上方 -->
                 <StackPanel x:Name="TitleColumn" Spacing="4" Visibility="Collapsed">
                     <TextBlock Text="组件标题" FontSize="17" FontWeight="Bold" Opacity="0.95"/>
                     <TextBox x:Name="WidgetTitleBox" PlaceholderText="留空则显示「手柄映射」"/>
+                </StackPanel>
+
+                <!-- 系统小组件：勾选的项目才会参与右摇杆 ←→ 切换；未勾选的从切换序列中去掉 -->
+                <StackPanel x:Name="SystemOptionsPanel" Spacing="8" Visibility="Collapsed">
+                    <TextBlock Text="显示的项目" FontSize="17" FontWeight="Bold" Opacity="0.95"/>
+                    <TextBlock Text="勾选的项目才会出现在右摇杆 ←→ 的切换里" FontSize="12" Opacity="0.7" TextWrapping="Wrap"/>
+                    <Grid ColumnSpacing="10" RowSpacing="10">
+                        <Grid.ColumnDefinitions>
+                            <ColumnDefinition Width="*"/>
+                            <ColumnDefinition Width="*"/>
+                        </Grid.ColumnDefinitions>
+                        <Grid.RowDefinitions>
+                            <RowDefinition Height="Auto"/>
+                            <RowDefinition Height="Auto"/>
+                            <RowDefinition Height="Auto"/>
+                            <RowDefinition Height="Auto"/>
+                        </Grid.RowDefinitions>
+                        <ToggleButton x:Name="SysOptSettings" Grid.Row="0" Grid.Column="0" Tag="0" Style="{StaticResource SysOptionChipStyle}">
+                            <Grid>
+                                <StackPanel Orientation="Horizontal" Spacing="8" VerticalAlignment="Center" Margin="0,0,24,0">
+                                    <FontIcon Glyph="&#xE713;" FontSize="16" Opacity="0.9"/>
+                                    <TextBlock Text="Win 设置" FontSize="14"/>
+                                </StackPanel>
+                                <FontIcon x:Name="SysOptSettingsMark" Glyph="&#xE711;" FontSize="14"
+                                          Foreground="#59FFFFFF" HorizontalAlignment="Right" VerticalAlignment="Center"/>
+                            </Grid>
+                        </ToggleButton>
+                        <ToggleButton x:Name="SysOptThisPc" Grid.Row="0" Grid.Column="1" Tag="1" Style="{StaticResource SysOptionChipStyle}">
+                            <Grid>
+                                <StackPanel Orientation="Horizontal" Spacing="8" VerticalAlignment="Center" Margin="0,0,24,0">
+                                    <FontIcon Glyph="&#xE7F8;" FontSize="16" Opacity="0.9"/>
+                                    <TextBlock Text="我的电脑" FontSize="14"/>
+                                </StackPanel>
+                                <FontIcon x:Name="SysOptThisPcMark" Glyph="&#xE711;" FontSize="14"
+                                          Foreground="#59FFFFFF" HorizontalAlignment="Right" VerticalAlignment="Center"/>
+                            </Grid>
+                        </ToggleButton>
+                        <ToggleButton x:Name="SysOptExplorer" Grid.Row="1" Grid.Column="0" Tag="2" Style="{StaticResource SysOptionChipStyle}">
+                            <Grid>
+                                <StackPanel Orientation="Horizontal" Spacing="8" VerticalAlignment="Center" Margin="0,0,24,0">
+                                    <FontIcon Glyph="&#xE8B7;" FontSize="16" Opacity="0.9"/>
+                                    <TextBlock Text="资源管理器" FontSize="14"/>
+                                </StackPanel>
+                                <FontIcon x:Name="SysOptExplorerMark" Glyph="&#xE711;" FontSize="14"
+                                          Foreground="#59FFFFFF" HorizontalAlignment="Right" VerticalAlignment="Center"/>
+                            </Grid>
+                        </ToggleButton>
+                        <ToggleButton x:Name="SysOptVolume" Grid.Row="1" Grid.Column="1" Tag="3" Style="{StaticResource SysOptionChipStyle}">
+                            <Grid>
+                                <StackPanel Orientation="Horizontal" Spacing="8" VerticalAlignment="Center" Margin="0,0,24,0">
+                                    <FontIcon Glyph="&#xE767;" FontSize="16" Opacity="0.9"/>
+                                    <TextBlock Text="音量" FontSize="14"/>
+                                </StackPanel>
+                                <FontIcon x:Name="SysOptVolumeMark" Glyph="&#xE711;" FontSize="14"
+                                          Foreground="#59FFFFFF" HorizontalAlignment="Right" VerticalAlignment="Center"/>
+                            </Grid>
+                        </ToggleButton>
+                        <ToggleButton x:Name="SysOptBrightness" Grid.Row="2" Grid.Column="0" Tag="4" Style="{StaticResource SysOptionChipStyle}">
+                            <Grid>
+                                <StackPanel Orientation="Horizontal" Spacing="8" VerticalAlignment="Center" Margin="0,0,24,0">
+                                    <FontIcon Glyph="&#xE706;" FontSize="16" Opacity="0.9"/>
+                                    <TextBlock Text="亮度" FontSize="14"/>
+                                </StackPanel>
+                                <FontIcon x:Name="SysOptBrightnessMark" Glyph="&#xE711;" FontSize="14"
+                                          Foreground="#59FFFFFF" HorizontalAlignment="Right" VerticalAlignment="Center"/>
+                            </Grid>
+                        </ToggleButton>
+                        <ToggleButton x:Name="SysOptWifi" Grid.Row="2" Grid.Column="1" Tag="5" Style="{StaticResource SysOptionChipStyle}">
+                            <Grid>
+                                <StackPanel Orientation="Horizontal" Spacing="8" VerticalAlignment="Center" Margin="0,0,24,0">
+                                    <FontIcon Glyph="&#xE701;" FontSize="16" Opacity="0.9"/>
+                                    <TextBlock Text="WiFi" FontSize="14"/>
+                                </StackPanel>
+                                <FontIcon x:Name="SysOptWifiMark" Glyph="&#xE711;" FontSize="14"
+                                          Foreground="#59FFFFFF" HorizontalAlignment="Right" VerticalAlignment="Center"/>
+                            </Grid>
+                        </ToggleButton>
+                        <ToggleButton x:Name="SysOptBluetooth" Grid.Row="3" Grid.Column="0" Tag="6" Style="{StaticResource SysOptionChipStyle}">
+                            <Grid>
+                                <StackPanel Orientation="Horizontal" Spacing="8" VerticalAlignment="Center" Margin="0,0,24,0">
+                                    <FontIcon Glyph="&#xE702;" FontSize="16" Opacity="0.9"/>
+                                    <TextBlock Text="蓝牙" FontSize="14"/>
+                                </StackPanel>
+                                <FontIcon x:Name="SysOptBluetoothMark" Glyph="&#xE711;" FontSize="14"
+                                          Foreground="#59FFFFFF" HorizontalAlignment="Right" VerticalAlignment="Center"/>
+                            </Grid>
+                        </ToggleButton>
+                    </Grid>
                 </StackPanel>
 
                 <!-- 类型 / 磁贴大小 / 磁贴颜色：三列并排，颜色为紧凑色块（无说明文字） -->
@@ -782,10 +951,12 @@
                     </Button>
                 </StackPanel>
             </StackPanel>
+            </Grid>
         </ScrollViewer>
 
         <!-- 文件浏览状态 -->
-        <Grid x:Name="BrowsePanel" Grid.Row="1" Padding="20,4" Visibility="Collapsed">
+        <Grid x:Name="BrowsePanel" Grid.Row="1" Padding="20,4" Visibility="Collapsed"
+              MaxWidth="680" HorizontalAlignment="Center">
             <Grid.RowDefinitions>
                 <RowDefinition Height="Auto"/>
                 <RowDefinition Height="*"/>
@@ -805,10 +976,13 @@
             </ListView>
         </Grid>
 
-        <!-- 页脚固定操作栏：保存按钮固定在页面最下方，不随表单滚动（文件浏览时收起） -->
+        <!-- 页脚固定操作栏：保存按钮固定在页面最下方，不随表单滚动（文件浏览时收起）；
+             宽度由 AddItemPage.LayoutForm() 设为与表单一致（min(640, 可用宽)）并居中，
+             避免全屏/居中模式下被拉成整屏宽，也不会因内容自适应而缩成小按钮 -->
         <Border x:Name="FooterBar" Grid.Row="2" Padding="24,12,24,0"
                 BorderThickness="0,1,0,0" BorderBrush="#1AFFFFFF">
-            <Button x:Name="SaveButton" Style="{StaticResource SaveButtonStyle}" Click="OnSaveClick">
+            <Button x:Name="SaveButton" Style="{StaticResource SaveButtonStyle}" Click="OnSaveClick"
+                    HorizontalAlignment="Center">
                 <StackPanel Orientation="Horizontal" Spacing="8">
                     <FontIcon Glyph="&#xE74E;" FontSize="16"/>
                     <TextBlock Text="保存" FontSize="16" FontWeight="SemiBold"/>

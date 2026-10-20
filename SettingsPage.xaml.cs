@@ -5,7 +5,7 @@ using Microsoft.UI.Xaml.Navigation;
 namespace GameLocker;
 
 /// <summary>
-/// 设置主页：分类入口（常规 / 外观 / 顶栏 / 控制 / 关于）。
+/// 设置主页：分类入口（常规 / 外观 / 顶栏 / 控制 / 抽屉 / 关于）。
 /// 云端备份不在此列出，只能从「游戏存档小组件」编辑页进入 CloudPage。
 /// 手柄：方向=选择分类，A=进入子页，View(Select)/B=返回主页。
 /// </summary>
@@ -82,7 +82,8 @@ public sealed partial class SettingsPage : Page, ISettingsGamepad
             1 => typeof(AppearancePage),
             2 => typeof(TopbarPage),
             3 => typeof(KeybindPage),
-            4 => typeof(AboutPage),
+            4 => typeof(DrawerSettingsPage),
+            5 => typeof(AboutPage),
             _ => typeof(GeneralPage)
         };
         App.Main?.NavigateSettings(page);

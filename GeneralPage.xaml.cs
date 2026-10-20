@@ -30,10 +30,12 @@ public sealed partial class GeneralPage : Page, ISettingsGamepad
         EdgeGestureToggle.IsOn = s.EdgeGestureSummon;
         TabletModeToggle.IsOn = s.TabletMode;
         if (s.SidebarSide == DockSide.Right) RightRadio.IsChecked = true;
+        else if (s.SidebarSide == DockSide.Center) CenterRadio.IsChecked = true;
         else LeftRadio.IsChecked = true;
 
         _controls = [AutoStartToggle, HideAfterLaunchToggle, StartFullscreenToggle,
-                     AnimationToggle, EdgeGestureToggle, TabletModeToggle, LeftRadio, RightRadio];
+                     AnimationToggle, EdgeGestureToggle, TabletModeToggle,
+                     LeftRadio, CenterRadio, RightRadio];
     }
 
     protected override void OnNavigatedTo(NavigationEventArgs e)
@@ -273,7 +275,9 @@ public sealed partial class GeneralPage : Page, ISettingsGamepad
             s.HideAfterLaunch = HideAfterLaunchToggle.IsOn;
             s.StartFullscreen = StartFullscreenToggle.IsOn;
             s.SummonAnimation = AnimationToggle.IsOn;
-            s.SidebarSide = RightRadio.IsChecked == true ? DockSide.Right : DockSide.Left;
+            s.SidebarSide = RightRadio.IsChecked == true ? DockSide.Right
+                : CenterRadio.IsChecked == true ? DockSide.Center
+                : DockSide.Left;
         });
     }
 

@@ -124,12 +124,15 @@ public static class TileStyle
     }
 
     /// <summary>
-    /// 构建标准磁贴（主页/磁贴集副本页共用）：背景图片铺满 或 强调色底+图标+名称，
+    /// 构建标准磁贴（主页 / 小组件页预览共用）：背景图片铺满 或 强调色底+图标+名称，
     /// Win10 磁贴风格；不含选中/标记描边与事件（由调用方附加）。
     /// </summary>
     public static Border BuildStandardTile(
-        LaunchItem item, LaunchItem? group, double width, double height, Windows.UI.Color accent, bool noColor)
+        LaunchItem item, LaunchItem? group, double width, double height, Windows.UI.Color accent, bool noColor,
+        bool forceSmall = false)
     {
+        // 抽屉"统一磁贴大小"开启时传 forceSmall：忽略磁贴自身大小，一律按小磁贴渲染
+        var small = forceSmall || item.Size == TileSize.Small;
         // 背景图片磁贴：铺满图片，不显示图标与名称（组成员同样保留原样式）
         if (item.HasCover)
         {
@@ -159,7 +162,7 @@ public static class TileStyle
         var grid = new Grid();
 
         // 图标：居中（组磁贴用应用网格 glyph；成员与原样式一致）
-        double iconSize = item.Size == TileSize.Small ? 40 : 48;
+        double iconSize = small ? 40 : 48;
         UIElement icon = item.HasIcon
             ? new Image
             {
@@ -172,7 +175,7 @@ public static class TileStyle
             : new FontIcon
             {
                 Glyph = item.Glyph,
-                FontSize = item.Size == TileSize.Small ? 30 : 40,
+                FontSize = small ? 30 : 40,
                 HorizontalAlignment = HorizontalAlignment.Center,
                 VerticalAlignment = VerticalAlignment.Center
             };
@@ -200,7 +203,7 @@ public static class TileStyle
             });
 
         // 名称：左下角（磁贴标题开关关闭、小磁贴空间不足、或无颜色磁贴时不显示；组成员同样显示）
-        if (SettingsService.Current.ShowTileName && !noColor && item.Size != TileSize.Small)
+        if (SettingsService.Current.ShowTileName && !noColor && !small)
             grid.Children.Add(new TextBlock
             {
                 Text = item.Name,
@@ -1254,5 +1257,300 @@ public static class TileStyle
             : Windows.UI.Color.FromArgb(0x40, 0xFF, 0xFF, 0xFF)); // 半透明白：已关闭
         refs.Knob.HorizontalAlignment = on ? HorizontalAlignment.Right : HorizontalAlignment.Left;
         refs.Knob.Margin = on ? new Thickness(0, 0, 3, 0) : new Thickness(3, 0, 0, 0);
+    }
+
+    /// <summary>前台应用监测磁贴的可刷新元素引用（前台应用或冻结状态变化时只改内容，不重建磁贴）</summary>
+    public sealed class ForegroundTileRefs
+    {
+        public Border Tile = null!;         // 磁贴外壳
+        public Image Icon = null!;          // 前台应用图标（有缓存图标时显示）
+        public FontIcon Fallback = null!;   // 无图标时的占位字形
+        public TextBlock Name = null!;      // 进程名
+        public TextBlock State = null!;     // 状态（运行中/已冻结/未检测到）
+        public TextBlock Title = null!;     // 窗口标题（仅大磁贴显示）
+    }
+
+    /// <summary>
+    /// 构建前台应用监测小组件磁贴：外壳（圆角/描边/填充/透明度/立体边缘）与普通磁贴完全一致，内容按尺寸分档——
+    /// 小(1×1)=图标+状态；长(2×1)=图标 + 进程名 + 状态；大(2×2)=图标 + 进程名 + 窗口标题 + 状态 + 按键提示。
+    /// 内容由 FillForegroundTile 按当前前台应用写入。
+    /// </summary>
+    public static (Border Tile, ForegroundTileRefs Refs) BuildForegroundTile(
+        LaunchItem item, double width, double height, Windows.UI.Color accent, bool noColor)
+    {
+        var white = new SolidColorBrush(Microsoft.UI.Colors.White);
+        var refs = new ForegroundTileRefs
+        {
+            Icon = new Image { IsHitTestVisible = false },
+            Fallback = new FontIcon { Glyph = "\uE769", Foreground = white, IsHitTestVisible = false },
+            Name = new TextBlock
+            {
+                FontSize = 16,
+                FontWeight = Microsoft.UI.Text.FontWeights.SemiBold,
+                Foreground = white,
+                TextTrimming = TextTrimming.CharacterEllipsis,
+                IsHitTestVisible = false
+            },
+            State = new TextBlock
+            {
+                FontSize = 12,
+                Opacity = 0.85,
+                Foreground = white,
+                TextTrimming = TextTrimming.CharacterEllipsis,
+                IsHitTestVisible = false
+            },
+            Title = new TextBlock
+            {
+                FontSize = 12,
+                Opacity = 0.8,
+                Foreground = white,
+                TextTrimming = TextTrimming.CharacterEllipsis,
+                IsHitTestVisible = false
+            }
+        };
+
+        // 图标层：图片与占位字形叠放，由 FillForegroundTile 切换可见性
+        var iconHost = new Grid();
+        iconHost.Children.Add(refs.Icon);
+        iconHost.Children.Add(refs.Fallback);
+
+        var grid = new Grid();
+        if (item.Size == TileSize.Small)
+        {
+            // 小：图标 + 状态（进程名放不下）
+            refs.Icon.Width = refs.Icon.Height = 40;
+            refs.Fallback.FontSize = 26;
+            refs.Name.Visibility = Visibility.Collapsed;
+            refs.Title.Visibility = Visibility.Collapsed;
+            refs.State.FontSize = 11;
+            refs.State.HorizontalAlignment = HorizontalAlignment.Center;
+
+            var stack = new StackPanel
+            {
+                Spacing = 3,
+                HorizontalAlignment = HorizontalAlignment.Center,
+                VerticalAlignment = VerticalAlignment.Center
+            };
+            stack.Children.Add(iconHost);
+            stack.Children.Add(refs.State);
+            grid.Children.Add(stack);
+        }
+        else if (item.Size == TileSize.Wide)
+        {
+            // 长：左图标 + 右（进程名 + 状态）
+            refs.Icon.Width = refs.Icon.Height = 34;
+            refs.Fallback.FontSize = 30;
+            refs.Name.MaxWidth = width - 96;
+            refs.State.MaxWidth = width - 96;
+            refs.Title.Visibility = Visibility.Collapsed;
+
+            var row = new StackPanel
+            {
+                Orientation = Orientation.Horizontal,
+                Spacing = 10,
+                HorizontalAlignment = HorizontalAlignment.Center,
+                VerticalAlignment = VerticalAlignment.Center
+            };
+            var col = new StackPanel { Spacing = 3, VerticalAlignment = VerticalAlignment.Center };
+            col.Children.Add(refs.Name);
+            col.Children.Add(refs.State);
+            row.Children.Add(iconHost);
+            row.Children.Add(col);
+            grid.Children.Add(row);
+        }
+        else
+        {
+            // 大：居中竖排，图标 + 进程名 + 窗口标题 + 状态 + 提示
+            refs.Icon.Width = refs.Icon.Height = 44;
+            refs.Fallback.FontSize = 38;
+            refs.Name.FontSize = 18;
+            refs.State.FontSize = 13;
+            refs.Name.HorizontalAlignment = HorizontalAlignment.Center;
+            refs.State.HorizontalAlignment = HorizontalAlignment.Center;
+            refs.Title.HorizontalAlignment = HorizontalAlignment.Center;
+            refs.Name.MaxWidth = width - 28;
+            refs.State.MaxWidth = width - 28;
+            refs.Title.MaxWidth = width - 28;
+
+            var stack = new StackPanel
+            {
+                Spacing = 6,
+                Margin = new Thickness(12, 10, 12, 10),
+                HorizontalAlignment = HorizontalAlignment.Center,
+                VerticalAlignment = VerticalAlignment.Center
+            };
+            stack.Children.Add(iconHost);
+            stack.Children.Add(refs.Name);
+            stack.Children.Add(refs.Title);
+            stack.Children.Add(refs.State);
+            stack.Children.Add(new TextBlock
+            {
+                Text = "A:冻结/解冻 · Y:结束",
+                FontSize = 12,
+                Opacity = 0.75,
+                Foreground = white,
+                HorizontalAlignment = HorizontalAlignment.Center,
+                IsHitTestVisible = false
+            });
+            grid.Children.Add(stack);
+        }
+
+        var tile = new Border
+        {
+            Width = width,
+            Height = height,
+            CornerRadius = new CornerRadius(Radius),
+            Background = noColor ? new SolidColorBrush(Windows.UI.Color.FromArgb(0, 0, 0, 0)) : TileFill(accent),
+            BorderBrush = new SolidColorBrush(Windows.UI.Color.FromArgb(0x40, 0xFF, 0xFF, 0xFF)),
+            BorderThickness = new Thickness(1),
+            Child = grid
+        };
+        if (SettingsService.Current.Tile3D && !noColor) Add3DEdge(grid);
+        tile.Opacity = Opacity;
+        refs.Tile = tile;
+        return (tile, refs);
+    }
+
+    /// <summary>把当前前台应用写入磁贴引用：进程名 + 窗口标题 + 运行/冻结状态 + 应用图标（无缓存图标时显示占位字形）</summary>
+    public static void FillForegroundTile(ForegroundTileRefs refs)
+    {
+        var app = ForegroundWatcherService.Current;
+        if (app is null)
+        {
+            refs.Name.Text = "未检测到应用";
+            refs.Title.Text = "";
+            refs.State.Text = "暂无前台应用";
+            refs.Icon.Source = null;
+            refs.Icon.Visibility = Visibility.Collapsed;
+            refs.Fallback.Visibility = Visibility.Visible;
+            return;
+        }
+
+        refs.Name.Text = app.ProcessName + ".exe";
+        refs.Title.Text = app.Title;
+        refs.State.Text = ForegroundWatcherService.IsFrozen ? "已冻结" : "运行中";
+
+        var iconPath = app.ExePath is null ? null : IconExtractService.CachedIconPath(app.ExePath);
+        if (iconPath is not null)
+        {
+            try
+            {
+                refs.Icon.Source = new Microsoft.UI.Xaml.Media.Imaging.BitmapImage(new Uri(iconPath));
+                refs.Icon.Visibility = Visibility.Visible;
+                refs.Fallback.Visibility = Visibility.Collapsed;
+                return;
+            }
+            catch { }
+        }
+        refs.Icon.Source = null;
+        refs.Icon.Visibility = Visibility.Collapsed;
+        refs.Fallback.Visibility = Visibility.Visible;
+    }
+
+    /// <summary>系统小组件磁贴的可刷新元素引用（右摇杆切换面板项 / 音量亮度射频变化时只改内容，不重建磁贴）</summary>
+    public sealed class SystemTileRefs
+    {
+        public Border Tile = null!;       // 磁贴外壳
+        public FontIcon Icon = null!;     // 当前面板项图标
+        public TextBlock Name = null!;    // 面板项名称（Win 设置 / 音量 / 亮度 …）
+        public TextBlock Reading = null!; // 当前读数（百分比 / 已开启 / 按 A 打开）
+        public TextBlock Hint = null!;    // 按键提示（当前尺寸不显示，保留引用）
+        public Grid SlideRow = null!;     // 内容整体（切换面板项时左右滑动 + 淡入的动画载体）
+    }
+
+    /// <summary>
+    /// 构建系统小组件磁贴：固定"长"尺寸（2×1），左图标 + 右（名称 + 读数）。
+    /// 内容装在一个可整体平移的容器里，切换面板项时由 MainPage 播左右滑入动画。
+    /// 内容由 FillSystemTile 按当前面板项写入。
+    /// </summary>
+    public static (Border Tile, SystemTileRefs Refs) BuildSystemTile(
+        LaunchItem item, double width, double height, Windows.UI.Color accent, bool noColor)
+    {
+        var white = new SolidColorBrush(Microsoft.UI.Colors.White);
+        var refs = new SystemTileRefs
+        {
+            Icon = new FontIcon { Glyph = "\uE713", FontSize = 30, Foreground = white, IsHitTestVisible = false },
+            Name = new TextBlock
+            {
+                FontSize = 16,
+                FontWeight = Microsoft.UI.Text.FontWeights.SemiBold,
+                Foreground = white,
+                TextTrimming = TextTrimming.CharacterEllipsis,
+                IsHitTestVisible = false
+            },
+            Reading = new TextBlock
+            {
+                FontSize = 12,
+                Opacity = 0.85,
+                Foreground = white,
+                TextTrimming = TextTrimming.CharacterEllipsis,
+                IsHitTestVisible = false
+            },
+            Hint = new TextBlock
+            {
+                Text = "←→:切换 · A:开关 · LB/RB:调整",
+                FontSize = 12,
+                Opacity = 0.75,
+                Foreground = white,
+                HorizontalAlignment = HorizontalAlignment.Center,
+                IsHitTestVisible = false
+            }
+        };
+
+        var grid = new Grid();
+        // 长：左图标 + 右（名称 + 读数）
+        refs.Icon.FontSize = 30;
+        refs.Name.MaxWidth = width - 96;
+        refs.Reading.MaxWidth = width - 96;
+        refs.Hint.Visibility = Visibility.Collapsed;
+
+        var row = new StackPanel
+        {
+            Orientation = Orientation.Horizontal,
+            Spacing = 10,
+            HorizontalAlignment = HorizontalAlignment.Center,
+            VerticalAlignment = VerticalAlignment.Center
+        };
+        var col = new StackPanel { Spacing = 3, VerticalAlignment = VerticalAlignment.Center };
+        col.Children.Add(refs.Name);
+        col.Children.Add(refs.Reading);
+        row.Children.Add(refs.Icon);
+        row.Children.Add(col);
+
+        // 切换动画载体：整体平移 + 淡入（不直接动磁贴本身，免得和按压/拖动反馈的变换打架）
+        var slide = new Grid
+        {
+            RenderTransform = new TranslateTransform(),
+            IsHitTestVisible = false
+        };
+        slide.Children.Add(row);
+        refs.SlideRow = slide;
+        grid.Children.Add(slide);
+
+        var tile = new Border
+        {
+            Width = width,
+            Height = height,
+            CornerRadius = new CornerRadius(Radius),
+            Background = noColor ? new SolidColorBrush(Windows.UI.Color.FromArgb(0, 0, 0, 0)) : TileFill(accent),
+            BorderBrush = new SolidColorBrush(Windows.UI.Color.FromArgb(0x40, 0xFF, 0xFF, 0xFF)),
+            BorderThickness = new Thickness(1),
+            Child = grid
+        };
+        if (SettingsService.Current.Tile3D && !noColor) Add3DEdge(grid);
+        tile.Opacity = Opacity;
+        refs.Tile = tile;
+        return (tile, refs);
+    }
+
+    /// <summary>把系统小组件当前停留的面板项写入磁贴引用：图标 + 名称 + 读数（音量/亮度百分比、射频开关或连接状态）</summary>
+    public static void FillSystemTile(SystemTileRefs refs, LaunchItem item)
+    {
+        // 编辑里可能把当前项去掉了：回落到第一个启用项，避免磁贴停在不可切换的项上
+        var panel = SystemPanelService.FromOption(
+            SystemPanelService.NormalizeOption(item.SystemOptionMask, item.SystemOption));
+        refs.Icon.Glyph = SystemPanelService.Glyph(panel);
+        refs.Name.Text = SystemPanelService.Label(panel);
+        refs.Reading.Text = SystemPanelService.Reading(panel);
     }
 }

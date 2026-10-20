@@ -1,5 +1,4 @@
-﻿<?xml version="1.0" encoding="utf-8"?>
-<Page
+﻿<Page
     x:Class="GameLocker.WidgetPage"
     xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
     xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
@@ -23,25 +22,17 @@
             </Button>
         </Grid>
 
-        <!-- 组件列表：三列等宽（Grid * 列），一排 3 个不错位；第 4 张卡片换行到第二行左对齐 -->
+        <!-- 组件列表：磁贴式自适应排布 —— 卡片尺寸固定，列数按可用宽度算（侧边栏 3 列、全屏/居中更多列），
+             整块水平居中；实际坐标由 WidgetPage.LayoutCards() 写入，与主页磁贴同一套做法 -->
         <ScrollViewer x:Name="FormScroll" Grid.Row="1" Padding="12,8"
+                      HorizontalContentAlignment="Left"
                       VerticalScrollMode="Auto" VerticalScrollBarVisibility="Hidden"
                       HorizontalScrollMode="Disabled" HorizontalScrollBarVisibility="Disabled">
-            <Grid x:Name="FormPanel">
-                <Grid.ColumnDefinitions>
-                    <ColumnDefinition Width="*"/>
-                    <ColumnDefinition Width="*"/>
-                    <ColumnDefinition Width="*"/>
-                </Grid.ColumnDefinitions>
-                <Grid.RowDefinitions>
-                    <RowDefinition Height="Auto"/>
-                    <RowDefinition Height="Auto"/>
-                    <RowDefinition Height="Auto"/>
-                </Grid.RowDefinitions>
+            <Canvas x:Name="FormPanel">
 
                 <!-- 音乐控制器组件卡片：缩小磁贴预览（样式与主页一致）+ 名称 + 简述 -->
-                <Button x:Name="MusicWidgetCard" Grid.Row="0" Grid.Column="0" Tag="music" Background="#14FFFFFF" BorderThickness="1"
-                        BorderBrush="Transparent" Margin="6" Height="204" VerticalAlignment="Top"
+                <Button x:Name="MusicWidgetCard" Tag="music" Background="#14FFFFFF" BorderThickness="1"
+                        BorderBrush="Transparent" VerticalAlignment="Top"
                         HorizontalContentAlignment="Center" VerticalContentAlignment="Top" Padding="10" Click="OnAddClick">
                     <StackPanel Spacing="8">
                         <Viewbox MaxHeight="116" Stretch="Uniform" HorizontalAlignment="Center">
@@ -56,8 +47,8 @@
                 </Button>
 
                 <!-- 图片组组件卡片：缩小磁贴预览（占位样式）+ 名称 + 简述 -->
-                <Button x:Name="PhotoWidgetCard" Grid.Row="0" Grid.Column="1" Tag="photo" Background="#14FFFFFF" BorderThickness="1"
-                        BorderBrush="Transparent" Margin="6" Height="204" VerticalAlignment="Top"
+                <Button x:Name="PhotoWidgetCard" Tag="photo" Background="#14FFFFFF" BorderThickness="1"
+                        BorderBrush="Transparent" VerticalAlignment="Top"
                         HorizontalContentAlignment="Center" VerticalContentAlignment="Top" Padding="10" Click="OnAddClick">
                     <StackPanel Spacing="8">
                         <Viewbox MaxHeight="116" Stretch="Uniform" HorizontalAlignment="Center">
@@ -71,25 +62,9 @@
                     </StackPanel>
                 </Button>
 
-                <!-- 磁贴集组件卡片：缩小磁贴预览（集合 glyph）+ 名称 + 简述 -->
-                <Button x:Name="TileSetWidgetCard" Grid.Row="0" Grid.Column="2" Tag="tileset" Background="#14FFFFFF" BorderThickness="1"
-                        BorderBrush="Transparent" Margin="6" Height="204" VerticalAlignment="Top"
-                        HorizontalContentAlignment="Center" VerticalContentAlignment="Top" Padding="10" Click="OnAddClick">
-                    <StackPanel Spacing="8">
-                        <Viewbox MaxHeight="116" Stretch="Uniform" HorizontalAlignment="Center">
-                            <ContentPresenter x:Name="TileSetPreviewHost"/>
-                        </Viewbox>
-                        <StackPanel Spacing="3">
-                            <TextBlock Text="磁贴集" FontSize="14" FontWeight="Bold" HorizontalAlignment="Center"/>
-                            <TextBlock Text="复制当前主页磁贴"
-                                       FontSize="11" Opacity="0.7" TextWrapping="Wrap" TextAlignment="Center"/>
-                        </StackPanel>
-                    </StackPanel>
-                </Button>
-
                 <!-- 天气组件卡片：缩小天气磁贴预览（显示当前位置当天天气）+ 名称 + 简述 -->
-                <Button x:Name="WeatherWidgetCard" Grid.Row="1" Grid.Column="0" Tag="weather" Background="#14FFFFFF" BorderThickness="1"
-                        BorderBrush="Transparent" Margin="6" Height="204" VerticalAlignment="Top"
+                <Button x:Name="WeatherWidgetCard" Tag="weather" Background="#14FFFFFF" BorderThickness="1"
+                        BorderBrush="Transparent" VerticalAlignment="Top"
                         HorizontalContentAlignment="Center" VerticalContentAlignment="Top" Padding="10" Click="OnAddClick">
                     <StackPanel Spacing="8">
                         <Viewbox MaxHeight="116" Stretch="Uniform" HorizontalAlignment="Center">
@@ -104,8 +79,8 @@
                 </Button>
 
                 <!-- 映射组件卡片：缩小映射磁贴预览（显示已映射按键）+ 名称 + 简述 -->
-                <Button x:Name="MappingWidgetCard" Grid.Row="1" Grid.Column="1" Tag="mapping" Background="#14FFFFFF" BorderThickness="1"
-                        BorderBrush="Transparent" Margin="6" Height="204" VerticalAlignment="Top"
+                <Button x:Name="MappingWidgetCard" Tag="mapping" Background="#14FFFFFF" BorderThickness="1"
+                        BorderBrush="Transparent" VerticalAlignment="Top"
                         HorizontalContentAlignment="Center" VerticalContentAlignment="Top" Padding="10" Click="OnAddClick">
                     <StackPanel Spacing="8">
                         <Viewbox MaxHeight="116" Stretch="Uniform" HorizontalAlignment="Center">
@@ -120,8 +95,8 @@
                 </Button>
 
                 <!-- 修改器组件卡片：缩小修改器磁贴预览（扳手图标）+ 名称 + 简述 -->
-                <Button x:Name="TrainerWidgetCard" Grid.Row="1" Grid.Column="2" Tag="trainer" Background="#14FFFFFF" BorderThickness="1"
-                        BorderBrush="Transparent" Margin="6" Height="204" VerticalAlignment="Top"
+                <Button x:Name="TrainerWidgetCard" Tag="trainer" Background="#14FFFFFF" BorderThickness="1"
+                        BorderBrush="Transparent" VerticalAlignment="Top"
                         HorizontalContentAlignment="Center" VerticalContentAlignment="Top" Padding="10" Click="OnAddClick">
                     <StackPanel Spacing="8">
                         <Viewbox MaxHeight="116" Stretch="Uniform" HorizontalAlignment="Center">
@@ -136,8 +111,8 @@
                 </Button>
 
                 <!-- 游戏存档组件卡片：缩小游戏存档磁贴预览（保存图标）+ 名称 + 简述 -->
-                <Button x:Name="BackupWidgetCard" Grid.Row="2" Grid.Column="0" Tag="backup" Background="#14FFFFFF" BorderThickness="1"
-                        BorderBrush="Transparent" Margin="6" Height="204" VerticalAlignment="Top"
+                <Button x:Name="BackupWidgetCard" Tag="backup" Background="#14FFFFFF" BorderThickness="1"
+                        BorderBrush="Transparent" VerticalAlignment="Top"
                         HorizontalContentAlignment="Center" VerticalContentAlignment="Top" Padding="10" Click="OnAddClick">
                     <StackPanel Spacing="8">
                         <Viewbox MaxHeight="116" Stretch="Uniform" HorizontalAlignment="Center">
@@ -152,8 +127,8 @@
                 </Button>
 
                 <!-- 手柄映射组件卡片：缩小手柄映射磁贴预览（手柄图标 + 开关状态）+ 名称 + 简述 -->
-                <Button x:Name="GamepadMapWidgetCard" Grid.Row="2" Grid.Column="1" Tag="gamepadmap" Background="#14FFFFFF" BorderThickness="1"
-                        BorderBrush="Transparent" Margin="6" Height="204" VerticalAlignment="Top"
+                <Button x:Name="GamepadMapWidgetCard" Tag="gamepadmap" Background="#14FFFFFF" BorderThickness="1"
+                        BorderBrush="Transparent" VerticalAlignment="Top"
                         HorizontalContentAlignment="Center" VerticalContentAlignment="Top" Padding="10" Click="OnAddClick">
                     <StackPanel Spacing="8">
                         <Viewbox MaxHeight="116" Stretch="Uniform" HorizontalAlignment="Center">
@@ -168,8 +143,8 @@
                 </Button>
 
                 <!-- OptiScaler 组件卡片：缩小 OptiScaler 磁贴预览（图像图标 + 名称）+ 名称 + 简述 -->
-                <Button x:Name="OptiScalerWidgetCard" Grid.Row="2" Grid.Column="2" Tag="optiscaler" Background="#14FFFFFF" BorderThickness="1"
-                        BorderBrush="Transparent" Margin="6" Height="204" VerticalAlignment="Top"
+                <Button x:Name="OptiScalerWidgetCard" Tag="optiscaler" Background="#14FFFFFF" BorderThickness="1"
+                        BorderBrush="Transparent" VerticalAlignment="Top"
                         HorizontalContentAlignment="Center" VerticalContentAlignment="Top" Padding="10" Click="OnAddClick">
                     <StackPanel Spacing="8">
                         <Viewbox MaxHeight="116" Stretch="Uniform" HorizontalAlignment="Center">
@@ -182,7 +157,55 @@
                         </StackPanel>
                     </StackPanel>
                 </Button>
-            </Grid>
+
+                <!-- 回收站组件卡片：缩小回收站磁贴预览（垃圾桶图标）+ 名称 + 简述 -->
+                <Button x:Name="RecycleBinWidgetCard" Tag="recyclebin" Background="#14FFFFFF" BorderThickness="1"
+                        BorderBrush="Transparent" VerticalAlignment="Top"
+                        HorizontalContentAlignment="Center" VerticalContentAlignment="Top" Padding="10" Click="OnAddClick">
+                    <StackPanel Spacing="8">
+                        <Viewbox MaxHeight="116" Stretch="Uniform" HorizontalAlignment="Center">
+                            <ContentPresenter x:Name="RecycleBinPreviewHost"/>
+                        </Viewbox>
+                        <StackPanel Spacing="3">
+                            <TextBlock Text="回收站" FontSize="14" FontWeight="Bold" HorizontalAlignment="Center"/>
+                            <TextBlock Text="A 打开回收站，Y 一键清空"
+                                       FontSize="11" Opacity="0.7" TextWrapping="Wrap" TextAlignment="Center"/>
+                        </StackPanel>
+                    </StackPanel>
+                </Button>
+
+                <!-- 前台应用监测组件卡片：缩小前台应用磁贴预览（应用图标 + 进程名 + 状态）+ 名称 + 简述 -->
+                <Button x:Name="ForegroundWidgetCard" Tag="foreground" Background="#14FFFFFF" BorderThickness="1"
+                        BorderBrush="Transparent" VerticalAlignment="Top"
+                        HorizontalContentAlignment="Center" VerticalContentAlignment="Top" Padding="10" Click="OnAddClick">
+                    <StackPanel Spacing="8">
+                        <Viewbox MaxHeight="116" Stretch="Uniform" HorizontalAlignment="Center">
+                            <ContentPresenter x:Name="ForegroundPreviewHost"/>
+                        </Viewbox>
+                        <StackPanel Spacing="3">
+                            <TextBlock Text="前台应用" FontSize="14" FontWeight="Bold" HorizontalAlignment="Center"/>
+                            <TextBlock Text="监测当前前台应用，A 冻结/解冻，Y 结束进程"
+                                       FontSize="11" Opacity="0.7" TextWrapping="Wrap" TextAlignment="Center"/>
+                        </StackPanel>
+                    </StackPanel>
+                </Button>
+
+                <!-- 系统组件卡片：缩小系统磁贴预览 + 名称 + 简述（右摇杆切换面板项） -->
+                <Button x:Name="SystemWidgetCard" Tag="system" Background="#14FFFFFF" BorderThickness="1"
+                        BorderBrush="Transparent" VerticalAlignment="Top"
+                        HorizontalContentAlignment="Center" VerticalContentAlignment="Top" Padding="10" Click="OnAddClick">
+                    <StackPanel Spacing="8">
+                        <Viewbox MaxHeight="116" Stretch="Uniform" HorizontalAlignment="Center">
+                            <ContentPresenter x:Name="SystemPreviewHost"/>
+                        </Viewbox>
+                        <StackPanel Spacing="3">
+                            <TextBlock Text="系统" FontSize="14" FontWeight="Bold" HorizontalAlignment="Center"/>
+                            <TextBlock Text="设置/我的电脑/资源管理器/音量/亮度/WiFi/蓝牙，右摇杆切换"
+                                       FontSize="11" Opacity="0.7" TextWrapping="Wrap" TextAlignment="Center"/>
+                        </StackPanel>
+                    </StackPanel>
+                </Button>
+            </Canvas>
         </ScrollViewer>
 
         <!-- 底部按键提示：手柄图标徽章，单行，透明背景 -->

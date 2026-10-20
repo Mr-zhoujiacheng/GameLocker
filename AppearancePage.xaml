@@ -131,7 +131,7 @@
                 </Button>
             </Grid>
 
-            <TextBlock Text="侧边栏宽度（占屏幕百分比）" FontSize="15" Opacity="0.9"/>
+            <TextBlock Text="侧边栏宽度（占屏幕百分比；居中模式按 38%≈70% 放大）" FontSize="15" Opacity="0.9"/>
             <Grid>
                 <Grid.ColumnDefinitions>
                     <ColumnDefinition Width="Auto"/>

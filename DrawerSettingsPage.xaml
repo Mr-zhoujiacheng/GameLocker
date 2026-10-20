@@ -1,0 +1,127 @@
+<?xml version="1.0" encoding="utf-8"?>
+<Page
+    x:Class="GameLocker.DrawerSettingsPage"
+    xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+    xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+    xmlns:ctl="using:GameLocker.Controls">
+
+    <Grid Background="Transparent"
+          RequestedTheme="Dark" XYFocusKeyboardNavigation="Enabled">
+
+        <Grid.RowDefinitions>
+            <RowDefinition Height="Auto"/>
+            <RowDefinition Height="*"/>
+            <RowDefinition Height="Auto"/>
+        </Grid.RowDefinitions>
+
+        <Grid Grid.Row="0" Padding="20,16">
+            <StackPanel Orientation="Horizontal" Spacing="10" VerticalAlignment="Center">
+                <Button x:Name="BackButton" Background="Transparent" BorderThickness="0" Click="OnBackClick" IsTabStop="False">
+                    <FontIcon Glyph="&#xE72B;" FontSize="16"/>
+                </Button>
+                <TextBlock Text="抽屉" FontSize="22" FontWeight="SemiBold" VerticalAlignment="Center"/>
+            </StackPanel>
+        </Grid>
+
+        <!-- 内容区可滚动：窄窗口下控件不被遮盖 -->
+        <ScrollViewer x:Name="ContentScroll" Grid.Row="1" Padding="24,8" VerticalScrollBarVisibility="Hidden">
+            <StackPanel Spacing="16">
+                <ToggleSwitch x:Name="DrawerToggle" Padding="14,10" Toggled="OnToggleChanged">
+                    <ToggleSwitch.Header>
+                        <StackPanel Spacing="2">
+                            <TextBlock Text="抽屉" FontSize="16"/>
+                            <TextBlock Text="在主页下方固定显示磁贴抽屉区域：↓ 进入，LB/RB 切抽屉。关闭后区域隐藏，抽屉内容保留"
+                                       FontSize="12" Opacity="0.6" TextWrapping="Wrap"/>
+                        </StackPanel>
+                    </ToggleSwitch.Header>
+                </ToggleSwitch>
+
+                <ToggleSwitch x:Name="UniformSmallToggle" Padding="14,10" Toggled="OnUniformSmallChanged">
+                    <ToggleSwitch.Header>
+                        <StackPanel Spacing="2">
+                            <TextBlock Text="统一磁贴大小" FontSize="16"/>
+                            <TextBlock Text="打开后抽屉内所有磁贴都按小磁贴（1×1）显示，忽略各自原本设定的大小"
+                                       FontSize="12" Opacity="0.6" TextWrapping="Wrap"/>
+                        </StackPanel>
+                    </ToggleSwitch.Header>
+                </ToggleSwitch>
+
+                <ToggleSwitch x:Name="AutoHideToggle" Padding="14,10" Toggled="OnAutoHideChanged">
+                    <ToggleSwitch.Header>
+                        <StackPanel Spacing="2">
+                            <TextBlock Text="自动隐藏" FontSize="16"/>
+                            <TextBlock Text="打开后抽屉平时收起在屏幕下方之外：手柄右摇杆 ↑/↓ 呼出与隐藏，触屏在软件底部上划/下划呼出与隐藏"
+                                       FontSize="12" Opacity="0.6" TextWrapping="Wrap"/>
+                        </StackPanel>
+                    </ToggleSwitch.Header>
+                </ToggleSwitch>
+
+                <TextBlock Text="抽屉颜色" FontSize="15" Opacity="0.9"/>
+                <!-- 3 列 × 2 行显式 Grid：每个 RadioButton 是 Grid 直接子元素，
+                     中心坐标可靠，手柄四方向临近选择才能命中颜色行（勿用 RadioButtons 容器） -->
+                <Grid>
+                    <Grid.ColumnDefinitions>
+                        <ColumnDefinition Width="*"/>
+                        <ColumnDefinition Width="*"/>
+                        <ColumnDefinition Width="*"/>
+                    </Grid.ColumnDefinitions>
+                    <Grid.RowDefinitions>
+                        <RowDefinition Height="Auto"/>
+                        <RowDefinition Height="Auto"/>
+                    </Grid.RowDefinitions>
+                    <RadioButton x:Name="DefaultColorRadio" Grid.Row="0" Grid.Column="0" GroupName="DrawerColor"
+                                 Padding="14,10" Margin="2" Checked="OnColorChanged">
+                        <StackPanel Orientation="Horizontal" Spacing="8">
+                            <Border Width="16" Height="16" CornerRadius="4" Background="#00000000"
+                                    BorderBrush="#66FFFFFF" BorderThickness="1"/>
+                            <TextBlock Text="默认"/>
+                        </StackPanel>
+                    </RadioButton>
+                    <RadioButton x:Name="DarkGrayRadio" Grid.Row="0" Grid.Column="1" GroupName="DrawerColor"
+                                 Padding="14,10" Margin="2" Checked="OnColorChanged">
+                        <StackPanel Orientation="Horizontal" Spacing="8">
+                            <Border Width="16" Height="16" CornerRadius="4" Background="#202020"
+                                    BorderBrush="#33FFFFFF" BorderThickness="1"/>
+                            <TextBlock Text="深灰"/>
+                        </StackPanel>
+                    </RadioButton>
+                    <RadioButton x:Name="BlackRadio" Grid.Row="0" Grid.Column="2" GroupName="DrawerColor"
+                                 Padding="14,10" Margin="2" Checked="OnColorChanged">
+                        <StackPanel Orientation="Horizontal" Spacing="8">
+                            <Border Width="16" Height="16" CornerRadius="4" Background="#000000"
+                                    BorderBrush="#33FFFFFF" BorderThickness="1"/>
+                            <TextBlock Text="黑色"/>
+                        </StackPanel>
+                    </RadioButton>
+                    <RadioButton x:Name="BlueRadio" Grid.Row="1" Grid.Column="0" GroupName="DrawerColor"
+                                 Padding="14,10" Margin="2" Checked="OnColorChanged">
+                        <StackPanel Orientation="Horizontal" Spacing="8">
+                            <Border Width="16" Height="16" CornerRadius="4" Background="#102A43"
+                                    BorderBrush="#33FFFFFF" BorderThickness="1"/>
+                            <TextBlock Text="深蓝"/>
+                        </StackPanel>
+                    </RadioButton>
+                    <RadioButton x:Name="PurpleRadio" Grid.Row="1" Grid.Column="1" GroupName="DrawerColor"
+                                 Padding="14,10" Margin="2" Checked="OnColorChanged">
+                        <StackPanel Orientation="Horizontal" Spacing="8">
+                            <Border Width="16" Height="16" CornerRadius="4" Background="#2D1B4E"
+                                    BorderBrush="#33FFFFFF" BorderThickness="1"/>
+                            <TextBlock Text="深紫"/>
+                        </StackPanel>
+                    </RadioButton>
+                    <RadioButton x:Name="GreenRadio" Grid.Row="1" Grid.Column="2" GroupName="DrawerColor"
+                                 Padding="14,10" Margin="2" Checked="OnColorChanged">
+                        <StackPanel Orientation="Horizontal" Spacing="8">
+                            <Border Width="16" Height="16" CornerRadius="4" Background="#1B3A2A"
+                                    BorderBrush="#33FFFFFF" BorderThickness="1"/>
+                            <TextBlock Text="墨绿"/>
+                        </StackPanel>
+                    </RadioButton>
+                </Grid>
+            </StackPanel>
+        </ScrollViewer>
+
+        <ctl:GamepadHintBar Grid.Row="2" Margin="0,8,0,12"
+                            Hints="DPAD:选择|A:切换|B:返回"/>
+    </Grid>
+</Page>

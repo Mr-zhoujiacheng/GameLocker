@@ -76,16 +76,20 @@
                     </ToggleSwitch.Header>
                 </ToggleSwitch>
 
-                <TextBlock Text="侧边栏停靠位置" FontSize="15" Opacity="0.9"/>
-                <!-- 左右并排显式 Grid（勿用 RadioButtons 容器，坐标不可靠）：手柄行感知导航左右跨列 -->
+                <TextBlock Text="窗口位置" FontSize="15" Opacity="0.9"/>
+                <TextBlock Text="居中时窗口不贴屏幕四边，边缘手势从顶边呼出；宽度按外观页的比例放大（38% ≈ 70% 屏宽）" FontSize="12" Opacity="0.6"/>
+                <!-- 三列并排显式 Grid（勿用 RadioButtons 容器，坐标不可靠）：手柄行感知导航左右跨列 -->
                 <Grid>
                     <Grid.ColumnDefinitions>
+                        <ColumnDefinition Width="*"/>
                         <ColumnDefinition Width="*"/>
                         <ColumnDefinition Width="*"/>
                     </Grid.ColumnDefinitions>
                     <RadioButton x:Name="LeftRadio" Grid.Column="0" GroupName="DockSide"
                                  Content="左侧" Padding="14,10" Margin="2" Checked="OnSideChanged"/>
-                    <RadioButton x:Name="RightRadio" Grid.Column="1" GroupName="DockSide"
+                    <RadioButton x:Name="CenterRadio" Grid.Column="1" GroupName="DockSide"
+                                 Content="居中" Padding="14,10" Margin="2" Checked="OnSideChanged"/>
+                    <RadioButton x:Name="RightRadio" Grid.Column="2" GroupName="DockSide"
                                  Content="右侧" Padding="14,10" Margin="2" Checked="OnSideChanged"/>
                 </Grid>
             </StackPanel>

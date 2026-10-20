@@ -188,7 +188,7 @@
                     </StackPanel>
                 </Border>
 
-                <!-- 主页 / 磁贴集：卡内首行即三列表头，图例本身就是表格的一部分 -->
+                <!-- 主页：卡内首行即三列表头，图例本身就是表格的一部分 -->
                 <Border x:Name="CardHome" Style="{StaticResource CardStyle}">
                     <StackPanel Spacing="9">
                         <Grid ColumnSpacing="10">
@@ -197,7 +197,7 @@
                                 <ColumnDefinition Width="*"/>
                             </Grid.ColumnDefinitions>
                             <Border Grid.Column="0" Style="{StaticResource PillStyle}">
-                                <TextBlock Style="{StaticResource PillTextStyle}" Text="主页 / 磁贴集"/>
+                                <TextBlock Style="{StaticResource PillTextStyle}" Text="主页"/>
                             </Border>
                             <TextBlock Grid.Column="1" Text="标「—」表示该操作无等价项"
                                        FontSize="11.5" Opacity="0.5" HorizontalAlignment="Right"

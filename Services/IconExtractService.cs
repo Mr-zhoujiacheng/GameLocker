@@ -42,6 +42,15 @@ public static class IconExtractService
         catch { return null; }
     }
 
+    /// <summary>目标已有缓存图标时返回其完整路径（不重新提取）；无缓存返回 null</summary>
+    public static string? CachedIconPath(string target)
+    {
+        if (string.IsNullOrWhiteSpace(target)) return null;
+        var path = Path.Combine(LaunchItem.IconsDir, Hash(target) + ".png");
+        try { return new FileInfo(path).Length > 0 ? path : null; }
+        catch { return null; }
+    }
+
     /// <summary>把任意位图文件解码后用 PNG 重新编码（保证扩展名与实际格式一致）</summary>
     private static async Task<bool> TranscodeImageToPngAsync(string srcPath, string outPath)
     {

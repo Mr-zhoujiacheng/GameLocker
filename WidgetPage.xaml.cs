@@ -2,12 +2,13 @@ using GameLocker.Models;
 using GameLocker.Services;
 using Microsoft.UI.Xaml;
 using Microsoft.UI.Xaml.Controls;
+using Microsoft.UI.Xaml.Media;
 using Microsoft.UI.Xaml.Navigation;
 
 namespace GameLocker;
 
 /// <summary>
-/// 小组件页：列出可添加的小组件（音乐控制器 / 图片组 / 磁贴集 / 天气 / 映射 / 修改器 / 游戏存档 / 手柄映射），磁贴预览完全复用主页磁贴样式。
+/// 小组件页：列出可添加的小组件（音乐控制器 / 图片组 / 天气 / 映射 / 修改器 / 游戏存档 / 手柄映射 / OptiScaler / 回收站 / 前台应用），磁贴预览完全复用主页磁贴样式。
 /// 手柄：方向=移动光标，A/X=添加到主页，B/View=返回主页。
 /// </summary>
 public sealed partial class WidgetPage : Page
@@ -32,16 +33,6 @@ public sealed partial class WidgetPage : Page
         Target = "widget:photos",
         Kind = LaunchKind.Widget,
         WidgetKind = WidgetKind.Photos,
-        Size = TileSize.Large
-    };
-
-    /// <summary>预览用固定磁贴集项（集合 glyph 标准磁贴）</summary>
-    private static readonly LaunchItem TileSetPreviewItem = new()
-    {
-        Name = "磁贴集",
-        Target = "widget:tileset",
-        Kind = LaunchKind.Widget,
-        WidgetKind = WidgetKind.TileSet,
         Size = TileSize.Large
     };
 
@@ -105,13 +96,79 @@ public sealed partial class WidgetPage : Page
         Size = TileSize.Large
     };
 
+    /// <summary>预览用固定回收站项（垃圾桶图标 + 名称，无实时状态；实际添加时为默认"长"尺寸）</summary>
+    private static readonly LaunchItem RecycleBinPreviewItem = new()
+    {
+        Name = "回收站",
+        Target = "widget:recyclebin",
+        Kind = LaunchKind.Widget,
+        WidgetKind = WidgetKind.RecycleBin,
+        Size = TileSize.Large
+    };
+
+    /// <summary>预览用固定前台应用项（显示当前前台应用的图标/进程名/状态；实际添加时为默认"长"尺寸）</summary>
+    private static readonly LaunchItem ForegroundPreviewItem = new()
+    {
+        Name = "前台应用",
+        Target = "widget:foreground",
+        Kind = LaunchKind.Widget,
+        WidgetKind = WidgetKind.Foreground,
+        Size = TileSize.Large
+    };
+
+    /// <summary>预览用固定系统项（默认显示"Win 设置"；实际添加时为默认"长"尺寸）</summary>
+    private static readonly LaunchItem SystemPreviewItem = new()
+    {
+        Name = "系统",
+        Target = "widget:system",
+        Kind = LaunchKind.Widget,
+        WidgetKind = WidgetKind.System,
+        Size = TileSize.Wide
+    };
+
     /// <summary>预览磁贴框架（订阅天气变化时刷新文字）</summary>
     private TileStyle.WeatherTileRefs? _weatherPreviewRefs;
 
     public WidgetPage()
     {
         InitializeComponent();
-        _formControls = [MusicWidgetCard, PhotoWidgetCard, TileSetWidgetCard, WeatherWidgetCard, MappingWidgetCard, TrainerWidgetCard, BackupWidgetCard, GamepadMapWidgetCard, OptiScalerWidgetCard];
+        _formControls = [MusicWidgetCard, PhotoWidgetCard, WeatherWidgetCard, MappingWidgetCard, TrainerWidgetCard, BackupWidgetCard, GamepadMapWidgetCard, OptiScalerWidgetCard, RecycleBinWidgetCard, ForegroundWidgetCard, SystemWidgetCard];
+        // 磁贴式自适应：窗口宽度变化（侧边栏 ↔ 全屏/居中）时按可用宽度重排列数
+        FormScroll.SizeChanged += (_, _) => LayoutCards();
+        Loaded += (_, _) => LayoutCards();
+    }
+
+    // ---- 卡片排布（仿主页 LayoutTiles：卡片尺寸固定，列数随可用宽度变，整块居中）----
+
+    /// <summary>卡片宽/高与间距：宽度取侧边栏下 3 列等宽时的值（约 142），窗口变宽就多排一列，卡片本身不变大</summary>
+    private const double CardW = 142;
+    private const double CardH = 204;
+    private const double CardGap = 12;
+
+    private void LayoutCards()
+    {
+        if (FormPanel is null || FormScroll is null) return;
+        var avail = FormScroll.ViewportWidth;   // 已扣除 ScrollViewer 的 Padding
+        if (avail <= 0) return;
+
+        var pitch = CardW + CardGap;
+        var cols = Math.Max(1, (int)((avail + CardGap) / pitch));
+        var offsetX = Math.Max(0, (avail - (cols * pitch - CardGap)) / 2);
+
+        double bottom = 0;
+        for (var i = 0; i < _formControls.Length; i++)
+        {
+            var c = _formControls[i];
+            var y = (double)(i / cols) * (CardH + CardGap);
+            c.Width = CardW;
+            c.Height = CardH;
+            Canvas.SetLeft(c, offsetX + i % cols * pitch);
+            Canvas.SetTop(c, y);
+            bottom = Math.Max(bottom, y + CardH);
+        }
+        // Canvas 需要显式尺寸，纵向滚动条才能算对可滚高度
+        FormPanel.Width = avail;
+        FormPanel.Height = bottom;
     }
 
     protected override void OnNavigatedTo(NavigationEventArgs e)
@@ -124,9 +181,6 @@ public sealed partial class WidgetPage : Page
             null, null, null).Tile;
         PhotoPreviewHost.Content = TileStyle.BuildPhotoTile(
             PhotoPreviewItem, w, h, null, "图片组\n按 R3 选择图片文件夹").Tile;
-        TileSetPreviewHost.Content = TileStyle.BuildStandardTile(
-            TileSetPreviewItem, null, w, h, TileStyle.AccentFor(TileSetPreviewItem),
-            TileStyle.IsNoColor(TileSetPreviewItem));
         // 天气预览：与主页同一构建 + 同一填充，数据变化时实时更新预览文字
         var (weatherTile, weatherRefs) = TileStyle.BuildWeatherTile(
             WeatherPreviewItem, w, h, TileStyle.AccentFor(WeatherPreviewItem),
@@ -156,6 +210,22 @@ public sealed partial class WidgetPage : Page
         OptiScalerPreviewHost.Content = TileStyle.BuildOptiScalerTile(
             OptiScalerPreviewItem, w, h, TileStyle.AccentFor(OptiScalerPreviewItem),
             TileStyle.IsNoColor(OptiScalerPreviewItem));
+        // 回收站预览：与主页同一构建（标准磁贴：垃圾桶图标 + 名称）
+        RecycleBinPreviewHost.Content = TileStyle.BuildStandardTile(
+            RecycleBinPreviewItem, null, w, h, TileStyle.AccentFor(RecycleBinPreviewItem),
+            TileStyle.IsNoColor(RecycleBinPreviewItem));
+        // 前台应用预览：与主页同一构建（应用图标 + 进程名 + 状态，实时取当前前台应用）
+        var (fgTile, fgRefs) = TileStyle.BuildForegroundTile(
+            ForegroundPreviewItem, w, h, TileStyle.AccentFor(ForegroundPreviewItem),
+            TileStyle.IsNoColor(ForegroundPreviewItem));
+        TileStyle.FillForegroundTile(fgRefs);
+        ForegroundPreviewHost.Content = fgTile;
+        // 系统预览：与主页同一构建（图标 + 面板项名称 + 读数）
+        var (sysTile, sysRefs) = TileStyle.BuildSystemTile(
+            SystemPreviewItem, w, h, TileStyle.AccentFor(SystemPreviewItem),
+            TileStyle.IsNoColor(SystemPreviewItem));
+        TileStyle.FillSystemTile(sysRefs, SystemPreviewItem);
+        SystemPreviewHost.Content = sysTile;
         WeatherService.StateChanged += OnWeatherChanged;
         WeatherService.EnsureFresh();
 
@@ -193,13 +263,15 @@ public sealed partial class WidgetPage : Page
     {
         var c = _formControls[_formIndex];
         if (ReferenceEquals(c, PhotoWidgetCard)) AddPhotoWidget();
-        else if (ReferenceEquals(c, TileSetWidgetCard)) AddTileSetWidget();
         else if (ReferenceEquals(c, WeatherWidgetCard)) AddWeatherWidget();
         else if (ReferenceEquals(c, MappingWidgetCard)) AddMappingWidget();
         else if (ReferenceEquals(c, TrainerWidgetCard)) AddTrainerWidget();
         else if (ReferenceEquals(c, BackupWidgetCard)) AddBackupWidget();
         else if (ReferenceEquals(c, GamepadMapWidgetCard)) AddGamepadMapWidget();
         else if (ReferenceEquals(c, OptiScalerWidgetCard)) AddOptiScalerWidget();
+        else if (ReferenceEquals(c, RecycleBinWidgetCard)) AddRecycleBinWidget();
+        else if (ReferenceEquals(c, ForegroundWidgetCard)) AddForegroundWidget();
+        else if (ReferenceEquals(c, SystemWidgetCard)) AddSystemWidget();
         else AddMusicWidget();
     }
 
@@ -328,87 +400,78 @@ public sealed partial class WidgetPage : Page
 
     // ---- 添加到主页 ----
 
+    /// <summary>新建小组件磁贴落盘并回主页；若存在"放进抽屉"的一次性请求（抽屉区域内按 X 添加），
+    /// 则直接放进该抽屉而不是主页顶层。返回 false 表示被拒（抽屉放不下等），此时不落盘、留在本页提示。</summary>
+    private bool CommitWidget(List<LaunchItem> items, LaunchItem it)
+    {
+        var req = App.Main?.PendingDrawerInsert;
+        if (req is not null)
+        {
+            App.Main!.PendingDrawerInsert = null;   // 一次性请求，消费即清
+            if (!DrawerService.TryInsert(items, req, it, out var error))
+            {
+                PageTitle.Text = error ?? "抽屉放不下这个磁贴";
+                return false;
+            }
+        }
+        else
+        {
+            items.Add(it);
+        }
+        ConfigService.Save(items);
+        App.Main?.ShowMainPage();
+        return true;
+    }
+
+    /// <summary>是否已存在该类小组件（顶层 + 抽屉内）——只允许一个的组件用它做守卫</summary>
+    private static bool ExistsWidget(List<LaunchItem> items, WidgetKind kind)
+        => DrawerService.Anywhere(items, it => it.Kind == LaunchKind.Widget && it.WidgetKind == kind);
+
     private void AddMusicWidget()
     {
         var items = ConfigService.Load();
-        if (items.Any(it => it.Kind == LaunchKind.Widget && it.WidgetKind == WidgetKind.Music))
-        {
-            PageTitle.Text = "音乐控制器已在主页";
-            return;
-        }
-        items.Add(new LaunchItem
+        if (ExistsWidget(items, WidgetKind.Music)) { PageTitle.Text = "音乐控制器已在主页"; return; }
+        CommitWidget(items, new LaunchItem
         {
             Name = "音乐控制器",
             Target = "widget:music",
             Kind = LaunchKind.Widget,
             WidgetKind = WidgetKind.Music,
+            PageIndex = App.Main?.CurrentHomePage ?? 0,   // 新磁贴归到主页当前所在页
             Size = TileSize.Large
         });
-        ConfigService.Save(items);
-        App.Main?.ShowMainPage();
     }
 
     private void AddPhotoWidget()
     {
         var items = ConfigService.Load();
-        if (items.Any(it => it.Kind == LaunchKind.Widget && it.WidgetKind == WidgetKind.Photos))
-        {
-            PageTitle.Text = "图片组已在主页";
-            return;
-        }
-        items.Add(new LaunchItem
+        if (ExistsWidget(items, WidgetKind.Photos)) { PageTitle.Text = "图片组已在主页"; return; }
+        CommitWidget(items, new LaunchItem
         {
             Name = "图片组",
             Target = "widget:photos",
             Kind = LaunchKind.Widget,
             WidgetKind = WidgetKind.Photos,
+            PageIndex = App.Main?.CurrentHomePage ?? 0,   // 新磁贴归到主页当前所在页
             Size = TileSize.Large
         });
-        ConfigService.Save(items);
-        App.Main?.ShowMainPage();
-    }
-
-    /// <summary>磁贴集：复制当前主页磁贴为快照（可添加多个；快照仅排除既有磁贴集避免递归，设置磁贴一并复制）</summary>
-    private void AddTileSetWidget()
-    {
-        var items = ConfigService.Load();
-        var snapshot = items
-            .Where(it => !(it.Kind == LaunchKind.Widget && it.WidgetKind == WidgetKind.TileSet))
-            .Select(it => it.Clone())
-            .ToList();
-        items.Add(new LaunchItem
-        {
-            Name = "磁贴集",
-            Target = "widget:tileset:" + Guid.NewGuid().ToString("N"),
-            Kind = LaunchKind.Widget,
-            WidgetKind = WidgetKind.TileSet,
-            Size = TileSize.Large,
-            Snapshot = snapshot
-        });
-        ConfigService.Save(items);
-        App.Main?.ShowMainPage();
     }
 
     /// <summary>天气组件：默认"长"尺寸（可后续编辑大小与颜色），只允许一个（避免多个显示同一份天气）</summary>
     private void AddWeatherWidget()
     {
         var items = ConfigService.Load();
-        if (items.Any(it => it.Kind == LaunchKind.Widget && it.WidgetKind == WidgetKind.Weather))
-        {
-            PageTitle.Text = "天气已在主页";
-            return;
-        }
-        items.Add(new LaunchItem
+        if (ExistsWidget(items, WidgetKind.Weather)) { PageTitle.Text = "天气已在主页"; return; }
+        if (!CommitWidget(items, new LaunchItem
         {
             Name = "天气",
             Target = "widget:weather",
             Kind = LaunchKind.Widget,
             WidgetKind = WidgetKind.Weather,
+            PageIndex = App.Main?.CurrentHomePage ?? 0,   // 新磁贴归到主页当前所在页
             Size = TileSize.Wide
-        });
-        ConfigService.Save(items);
+        })) return;
         WeatherService.EnsureFresh();
-        App.Main?.ShowMainPage();
     }
 
     /// <summary>映射小组件：默认"长"尺寸（可后续编辑大小、颜色与映射按键），可添加多个（各映射不同按键）。
@@ -416,16 +479,15 @@ public sealed partial class WidgetPage : Page
     private void AddMappingWidget()
     {
         var items = ConfigService.Load();
-        items.Add(new LaunchItem
+        CommitWidget(items, new LaunchItem
         {
             Name = "",
             Target = "widget:mapping:" + Guid.NewGuid().ToString("N"),
             Kind = LaunchKind.Widget,
             WidgetKind = WidgetKind.Mapping,
+            PageIndex = App.Main?.CurrentHomePage ?? 0,   // 新磁贴归到主页当前所在页
             Size = TileSize.Wide
         });
-        ConfigService.Save(items);
-        App.Main?.ShowMainPage();
     }
 
     /// <summary>修改器组件：默认"长"尺寸（可后续编辑大小与颜色），只允许一个——
@@ -433,21 +495,16 @@ public sealed partial class WidgetPage : Page
     private void AddTrainerWidget()
     {
         var items = ConfigService.Load();
-        if (items.Any(it => it.Kind == LaunchKind.Widget && it.WidgetKind == WidgetKind.Trainer))
-        {
-            PageTitle.Text = "修改器已在主页";
-            return;
-        }
-        items.Add(new LaunchItem
+        if (ExistsWidget(items, WidgetKind.Trainer)) { PageTitle.Text = "修改器已在主页"; return; }
+        CommitWidget(items, new LaunchItem
         {
             Name = "修改器",
             Target = "widget:trainer",
             Kind = LaunchKind.Widget,
             WidgetKind = WidgetKind.Trainer,
+            PageIndex = App.Main?.CurrentHomePage ?? 0,   // 新磁贴归到主页当前所在页
             Size = TileSize.Wide
         });
-        ConfigService.Save(items);
-        App.Main?.ShowMainPage();
     }
 
     /// <summary>游戏存档组件：默认"长"尺寸（可后续编辑大小、颜色、备份目标与保留份数），只允许一个——
@@ -455,21 +512,16 @@ public sealed partial class WidgetPage : Page
     private void AddBackupWidget()
     {
         var items = ConfigService.Load();
-        if (items.Any(it => it.Kind == LaunchKind.Widget && it.WidgetKind == WidgetKind.Backup))
-        {
-            PageTitle.Text = "游戏存档已在主页";
-            return;
-        }
-        items.Add(new LaunchItem
+        if (ExistsWidget(items, WidgetKind.Backup)) { PageTitle.Text = "游戏存档已在主页"; return; }
+        CommitWidget(items, new LaunchItem
         {
             Name = "游戏存档",
             Target = "widget:backup",
             Kind = LaunchKind.Widget,
             WidgetKind = WidgetKind.Backup,
+            PageIndex = App.Main?.CurrentHomePage ?? 0,   // 新磁贴归到主页当前所在页
             Size = TileSize.Wide
         });
-        ConfigService.Save(items);
-        App.Main?.ShowMainPage();
     }
 
     /// <summary>手柄映射组件：默认"长"尺寸（可后续编辑大小、颜色与映射列表），可添加多个
@@ -477,16 +529,15 @@ public sealed partial class WidgetPage : Page
     private void AddGamepadMapWidget()
     {
         var items = ConfigService.Load();
-        items.Add(new LaunchItem
+        CommitWidget(items, new LaunchItem
         {
             Name = "手柄映射",
             Target = "widget:gamepadmap:" + Guid.NewGuid().ToString("N"),
             Kind = LaunchKind.Widget,
             WidgetKind = WidgetKind.GamepadMap,
+            PageIndex = App.Main?.CurrentHomePage ?? 0,   // 新磁贴归到主页当前所在页
             Size = TileSize.Wide
         });
-        ConfigService.Save(items);
-        App.Main?.ShowMainPage();
     }
 
     /// <summary>OptiScaler 组件：默认"长"尺寸（可后续编辑大小、颜色、注入 DLL 与 ini 关键项），只允许一个——
@@ -494,21 +545,67 @@ public sealed partial class WidgetPage : Page
     private void AddOptiScalerWidget()
     {
         var items = ConfigService.Load();
-        if (items.Any(it => it.Kind == LaunchKind.Widget && it.WidgetKind == WidgetKind.OptiScaler))
-        {
-            PageTitle.Text = "OptiScaler 已在主页";
-            return;
-        }
-        items.Add(new LaunchItem
+        if (ExistsWidget(items, WidgetKind.OptiScaler)) { PageTitle.Text = "OptiScaler 已在主页"; return; }
+        CommitWidget(items, new LaunchItem
         {
             Name = "OptiScaler",
             Target = "widget:optiscaler",
             Kind = LaunchKind.Widget,
             WidgetKind = WidgetKind.OptiScaler,
+            PageIndex = App.Main?.CurrentHomePage ?? 0,   // 新磁贴归到主页当前所在页
             Size = TileSize.Wide
         });
-        ConfigService.Save(items);
-        App.Main?.ShowMainPage();
+    }
+
+    /// <summary>回收站组件：默认"长"尺寸（可后续编辑大小与颜色），只允许一个——
+    /// 其行为始终是"打开系统回收站 / 一键清空回收站"，多份没有区别。</summary>
+    private void AddRecycleBinWidget()
+    {
+        var items = ConfigService.Load();
+        if (ExistsWidget(items, WidgetKind.RecycleBin)) { PageTitle.Text = "回收站已在主页"; return; }
+        CommitWidget(items, new LaunchItem
+        {
+            Name = "回收站",
+            Target = "widget:recyclebin",
+            Kind = LaunchKind.Widget,
+            WidgetKind = WidgetKind.RecycleBin,
+            PageIndex = App.Main?.CurrentHomePage ?? 0,   // 新磁贴归到主页当前所在页
+            Size = TileSize.Wide
+        });
+    }
+
+    /// <summary>前台应用监测组件：默认"长"尺寸（可后续编辑大小与颜色），只允许一个——
+    /// 其行为始终是"监测当前前台应用并冻结/结束它"，多份没有区别。</summary>
+    private void AddForegroundWidget()
+    {
+        var items = ConfigService.Load();
+        if (ExistsWidget(items, WidgetKind.Foreground)) { PageTitle.Text = "前台应用已在主页"; return; }
+        CommitWidget(items, new LaunchItem
+        {
+            Name = "前台应用",
+            Target = "widget:foreground",
+            Kind = LaunchKind.Widget,
+            WidgetKind = WidgetKind.Foreground,
+            PageIndex = App.Main?.CurrentHomePage ?? 0,   // 新磁贴归到主页当前所在页
+            Size = TileSize.Wide
+        });
+    }
+
+    /// <summary>系统组件：默认"长"尺寸（可后续编辑大小与颜色），只允许一个——
+    /// 一个磁贴即可收纳全部系统入口与开关，多份没有意义（右摇杆←→切换面板项）。</summary>
+    private void AddSystemWidget()
+    {
+        var items = ConfigService.Load();
+        if (ExistsWidget(items, WidgetKind.System)) { PageTitle.Text = "系统已在主页"; return; }
+        CommitWidget(items, new LaunchItem
+        {
+            Name = "系统",
+            Target = "widget:system",
+            Kind = LaunchKind.Widget,
+            WidgetKind = WidgetKind.System,
+            PageIndex = App.Main?.CurrentHomePage ?? 0,   // 新磁贴归到主页当前所在页
+            Size = TileSize.Wide
+        });
     }
 
     // ---- 鼠标 ----
@@ -518,13 +615,15 @@ public sealed partial class WidgetPage : Page
     private void OnAddClick(object sender, RoutedEventArgs e)
     {
         if (sender is Button { Tag: "photo" }) AddPhotoWidget();
-        else if (sender is Button { Tag: "tileset" }) AddTileSetWidget();
         else if (sender is Button { Tag: "weather" }) AddWeatherWidget();
         else if (sender is Button { Tag: "mapping" }) AddMappingWidget();
         else if (sender is Button { Tag: "trainer" }) AddTrainerWidget();
         else if (sender is Button { Tag: "backup" }) AddBackupWidget();
         else if (sender is Button { Tag: "gamepadmap" }) AddGamepadMapWidget();
         else if (sender is Button { Tag: "optiscaler" }) AddOptiScalerWidget();
+        else if (sender is Button { Tag: "recyclebin" }) AddRecycleBinWidget();
+        else if (sender is Button { Tag: "foreground" }) AddForegroundWidget();
+        else if (sender is Button { Tag: "system" }) AddSystemWidget();
         else AddMusicWidget();
     }
 }

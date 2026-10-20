@@ -67,7 +67,8 @@ public sealed class EdgeGestureService : IDisposable
     /// <summary>边缘向内滑动被识别 → 请求呼出</summary>
     public event Action? SummonTriggered;
 
-    /// <summary>与呼出反向的滑动被识别（从窗口内部朝呼出边缘快滑，即手指反向离开边缘）→ 请求最小化。
+    /// <summary>从屏幕边缘起手、朝边缘外快滑被识别 → 请求最小化（中间横滑不再触发，
+    /// 主页中间横滑由 MainPage 用于切换副页）。
     /// 走 Raw Input 触摸通道：不受页面命中测试/列表框触摸捕获影响，任何页面都能触发</summary>
     public event Action? DismissTriggered;
 
@@ -314,8 +315,10 @@ public sealed class EdgeGestureService : IDisposable
                 try { BackTriggered?.Invoke(); Log("touch back dispatched"); }
                 catch (Exception ex) { Log($"back invoke EX: {ex.GetType().Name}: {ex.Message}"); }
             }
-            // 反向滑（呼出反方向）：起点在窗口内部、朝边缘方向快滑且够快（慢速滚动不误触）→ 最小化
-            else if (!nearEdge && -inward >= DismissThreshold && elapsed < 500 &&
+            // 滑到屏幕左/右边缘（终点在边缘带内、横向快滑且位移够大）→ 最小化；
+            // 起点在中间、停在中间的横滑不触发（留给主页切副页）
+            else if (!nearEdge && NearSideEdge(_tLastX) && Math.Abs(_tLastX - _tStartX) >= DismissThreshold &&
+                Math.Abs(_tLastY - _tStartY) < 80 && elapsed < 500 &&
                 (Environment.TickCount64 - _lastDismiss) > 600)
             {
                 _lastDismiss = Environment.TickCount64;
@@ -458,6 +461,13 @@ public sealed class EdgeGestureService : IDisposable
                         try { SummonTriggered?.Invoke(); Log("summon dispatched"); }
                         catch (Exception ex) { Log($"summon invoke EX: {ex.GetType().Name}: {ex.Message}"); }
                     }
+                    // 从屏幕边缘朝外滑 → 最小化（与从边缘内滑呼出相反方向）
+                    else if (-inward >= DismissThreshold && (Environment.TickCount64 - _lastDismiss) > 600)
+                    {
+                        _lastDismiss = Environment.TickCount64;
+                        try { DismissTriggered?.Invoke(); Log("dismiss dispatched"); }
+                        catch (Exception ex) { Log($"dismiss invoke EX: {ex.GetType().Name}: {ex.Message}"); }
+                    }
                 }
                 else if ((info.ptY - _downY) >= DismissThreshold && Math.Abs(info.ptX - _downX) < 80 &&
                     (Environment.TickCount64 - _lastBack) > 600)
@@ -466,15 +476,25 @@ public sealed class EdgeGestureService : IDisposable
                     try { BackTriggered?.Invoke(); Log("back dispatched"); }
                     catch (Exception ex) { Log($"back invoke EX: {ex.GetType().Name}: {ex.Message}"); }
                 }
-                else if (-inward >= DismissThreshold && (Environment.TickCount64 - _lastDismiss) > 600)
+                // 滑到屏幕左/右边缘 → 最小化（与触摸通道同一规则）
+                else if (NearSideEdge(info.ptX) && Math.Abs(info.ptX - _downX) >= DismissThreshold &&
+                    Math.Abs(info.ptY - _downY) < 80 &&
+                    (Environment.TickCount64 - _lastDismiss) > 600)
                 {
                     _lastDismiss = Environment.TickCount64;
-                    try { DismissTriggered?.Invoke(); Log("dismiss dispatched"); }
+                    try { DismissTriggered?.Invoke(); Log("dismiss dispatched (edge end)"); }
                     catch (Exception ex) { Log($"dismiss invoke EX: {ex.GetType().Name}: {ex.Message}"); }
                 }
             }
         }
         return CallNextHookEx(_hook, nCode, wParam, lParam);
+    }
+
+    /// <summary>抬起点是否落在屏幕左/右边缘带内（与呼出边无关：最小化统一看"滑到左右屏幕边缘"）</summary>
+    private bool NearSideEdge(int x)
+    {
+        var sw = GetSystemMetrics(0);
+        return x <= EdgeZone || x >= sw - EdgeZone;
     }
 
     /// <summary>按下点是否落在当前呼出边缘的感应带内</summary>

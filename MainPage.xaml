@@ -208,5 +208,117 @@
                 </StackPanel>
             </Border>
         </Grid>
+
+        <!-- 电源菜单遮罩：电源磁贴 A/点击打开 —— 手机电源菜单风格（深色玻璃卡 + 纵向操作列表）。
+             DPAD 选择、A 执行、B/点空白取消；点击某一项直接执行（选中项强调色描边高亮） -->
+        <Grid x:Name="PowerOverlay" Grid.Row="0" Grid.RowSpan="3" Visibility="Collapsed">
+            <Border x:Name="PowerMask" Background="#D80A0C10"/>
+
+            <Border x:Name="PowerPanel" HorizontalAlignment="Center" VerticalAlignment="Center"
+                    CornerRadius="24" Padding="18,20,18,14"
+                    BorderBrush="#2EFFFFFF" BorderThickness="1.2"
+                    RenderTransformOrigin="0.5,0.5">
+                <Border.Background>
+                    <LinearGradientBrush StartPoint="0,0" EndPoint="0.35,1">
+                        <GradientStop Color="#F22A2E36" Offset="0"/>
+                        <GradientStop Color="#F21A1D23" Offset="1"/>
+                    </LinearGradientBrush>
+                </Border.Background>
+                <Border.RenderTransform>
+                    <CompositeTransform x:Name="PowerPanelTransform" ScaleX="1" ScaleY="1"/>
+                </Border.RenderTransform>
+
+                <StackPanel Width="304" Spacing="10">
+                    <!-- 标题：红色电源徽章 + 标题/说明 -->
+                    <StackPanel Orientation="Horizontal" Spacing="12" Margin="2,0,0,6">
+                        <Border Width="44" Height="44" CornerRadius="22" Background="#26FF5B5B" VerticalAlignment="Center">
+                            <FontIcon Glyph="&#xE7E8;" FontSize="20" Foreground="#FF6B6B"/>
+                        </Border>
+                        <StackPanel VerticalAlignment="Center" Spacing="1">
+                            <TextBlock Text="电源" FontSize="21" FontWeight="SemiBold"/>
+                            <TextBlock Text="选择要执行的操作" FontSize="12" Opacity="0.55"/>
+                        </StackPanel>
+                    </StackPanel>
+
+                    <!-- 注销 -->
+                    <Border x:Name="PowerSignOut" Height="52" CornerRadius="14" Padding="14,0"
+                            Background="#14FFFFFF" BorderBrush="#1FFFFFFF" BorderThickness="1.5">
+                        <Grid>
+                            <StackPanel Orientation="Horizontal" Spacing="12" VerticalAlignment="Center">
+                                <Border Width="32" Height="32" CornerRadius="10" Background="#266FA8FF">
+                                    <FontIcon Glyph="&#xE77B;" FontSize="15" Foreground="#6FA8FF"/>
+                                </Border>
+                                <TextBlock Text="注销" FontSize="16" VerticalAlignment="Center"/>
+                            </StackPanel>
+                            <FontIcon Glyph="&#xE76C;" FontSize="11" Opacity="0.35"
+                                      HorizontalAlignment="Right" VerticalAlignment="Center"/>
+                        </Grid>
+                    </Border>
+
+                    <!-- 睡眠 -->
+                    <Border x:Name="PowerSleep" Height="52" CornerRadius="14" Padding="14,0"
+                            Background="#14FFFFFF" BorderBrush="#1FFFFFFF" BorderThickness="1.5">
+                        <Grid>
+                            <StackPanel Orientation="Horizontal" Spacing="12" VerticalAlignment="Center">
+                                <Border Width="32" Height="32" CornerRadius="10" Background="#269B7DFF">
+                                    <FontIcon Glyph="&#xE708;" FontSize="15" Foreground="#B9A2FF"/>
+                                </Border>
+                                <TextBlock Text="睡眠" FontSize="16" VerticalAlignment="Center"/>
+                            </StackPanel>
+                            <FontIcon Glyph="&#xE76C;" FontSize="11" Opacity="0.35"
+                                      HorizontalAlignment="Right" VerticalAlignment="Center"/>
+                        </Grid>
+                    </Border>
+
+                    <!-- 休眠 -->
+                    <Border x:Name="PowerHibernate" Height="52" CornerRadius="14" Padding="14,0"
+                            Background="#14FFFFFF" BorderBrush="#1FFFFFFF" BorderThickness="1.5">
+                        <Grid>
+                            <StackPanel Orientation="Horizontal" Spacing="12" VerticalAlignment="Center">
+                                <Border Width="32" Height="32" CornerRadius="10" Background="#264CC2FF">
+                                    <FontIcon Glyph="&#xE769;" FontSize="15" Foreground="#4CC2FF"/>
+                                </Border>
+                                <TextBlock Text="休眠" FontSize="16" VerticalAlignment="Center"/>
+                            </StackPanel>
+                            <FontIcon Glyph="&#xE76C;" FontSize="11" Opacity="0.35"
+                                      HorizontalAlignment="Right" VerticalAlignment="Center"/>
+                        </Grid>
+                    </Border>
+
+                    <!-- 重启 -->
+                    <Border x:Name="PowerRestart" Height="52" CornerRadius="14" Padding="14,0"
+                            Background="#14FFFFFF" BorderBrush="#1FFFFFFF" BorderThickness="1.5">
+                        <Grid>
+                            <StackPanel Orientation="Horizontal" Spacing="12" VerticalAlignment="Center">
+                                <Border Width="32" Height="32" CornerRadius="10" Background="#26FFC15E">
+                                    <FontIcon Glyph="&#xE72C;" FontSize="15" Foreground="#FFC15E"/>
+                                </Border>
+                                <TextBlock Text="重启" FontSize="16" VerticalAlignment="Center"/>
+                            </StackPanel>
+                            <FontIcon Glyph="&#xE76C;" FontSize="11" Opacity="0.35"
+                                      HorizontalAlignment="Right" VerticalAlignment="Center"/>
+                        </Grid>
+                    </Border>
+
+                    <!-- 关机 -->
+                    <Border x:Name="PowerShutdown" Height="52" CornerRadius="14" Padding="14,0"
+                            Background="#14FFFFFF" BorderBrush="#1FFFFFFF" BorderThickness="1.5">
+                        <Grid>
+                            <StackPanel Orientation="Horizontal" Spacing="12" VerticalAlignment="Center">
+                                <Border Width="32" Height="32" CornerRadius="10" Background="#26FF5B5B">
+                                    <FontIcon Glyph="&#xE7E8;" FontSize="15" Foreground="#FF6B6B"/>
+                                </Border>
+                                <TextBlock Text="关机" FontSize="16" VerticalAlignment="Center"/>
+                            </StackPanel>
+                            <FontIcon Glyph="&#xE76C;" FontSize="11" Opacity="0.35"
+                                      HorizontalAlignment="Right" VerticalAlignment="Center"/>
+                        </Grid>
+                    </Border>
+
+                    <ctl:GamepadHintBar HorizontalAlignment="Center" Margin="0,6,0,2"
+                                        Hints="DPAD:选择|A:执行|B:取消"/>
+                </StackPanel>
+            </Border>
+        </Grid>
     </Grid>
 </Page>

@@ -72,21 +72,38 @@ public static class ConfigService
     }
 
     /// <summary>
-    /// 保证设置磁贴常驻主页：缺失则补到列表末尾并落盘。
-    /// 主页删除/组合均拦截该磁贴（可移动改位置），此处兜底防止手改配置导致丢失。
+    /// 保证设置 / 电源磁贴常驻主页：缺失则补到列表末尾并落盘。
+    /// 主页删除/组合均拦截这两个磁贴（可移动改位置），此处兜底防止手改配置导致丢失。
     /// </summary>
     private static void EnsureSettingsTile(List<LaunchItem> items)
     {
-        if (items.Any(it => it.Kind == LaunchKind.Widget && it.WidgetKind == WidgetKind.Settings)) return;
-        items.Add(new LaunchItem
+        var changed = false;
+        if (!items.Any(it => it.Kind == LaunchKind.Widget && it.WidgetKind == WidgetKind.Settings))
         {
-            Name = "设置",
-            Target = "widget:settings",
-            Kind = LaunchKind.Widget,
-            WidgetKind = WidgetKind.Settings,
-            Size = TileSize.Small
-        });
-        Save(items);
+            items.Add(new LaunchItem
+            {
+                Name = "设置",
+                Target = "widget:settings",
+                Kind = LaunchKind.Widget,
+                WidgetKind = WidgetKind.Settings,
+                Size = TileSize.Small
+            });
+            changed = true;
+        }
+        if (!items.Any(it => it.Kind == LaunchKind.Widget && it.WidgetKind == WidgetKind.Power))
+        {
+            items.Add(new LaunchItem
+            {
+                Name = "电源",
+                Target = "widget:power",
+                Kind = LaunchKind.Widget,
+                WidgetKind = WidgetKind.Power,
+                Size = TileSize.Small,
+                TileColor = "#C42B1C" // 默认深红：一眼识别为电源入口（仍可在编辑页改色）
+            });
+            changed = true;
+        }
+        if (changed) Save(items);
     }
 
     public static void Save(List<LaunchItem> items)

@@ -3,8 +3,8 @@ using Microsoft.Win32;
 
 namespace GameLocker.Services;
 
-/// <summary>呼出手势所在屏幕边缘</summary>
-public enum SummonEdge { Left, Right, Top }
+/// <summary>呼出手势所在屏幕边缘（Bottom：任务栏在屏幕下方时，从底边向上滑呼出）</summary>
+public enum SummonEdge { Left, Right, Top, Bottom }
 
 /// <summary>
 /// 平板边缘手势呼出：双通道监听"从屏幕边缘向中心"的滑动即触发呼出。
@@ -295,6 +295,7 @@ public sealed class EdgeGestureService : IDisposable
             {
                 SummonEdge.Left => _tLastX - _tStartX,
                 SummonEdge.Right => _tStartX - _tLastX,
+                SummonEdge.Bottom => _tStartY - _tLastY,
                 _ => _tLastY - _tStartY
             };
             var nearEdge = NearEdge(_tStartX, _tStartY);
@@ -506,6 +507,7 @@ public sealed class EdgeGestureService : IDisposable
         {
             SummonEdge.Right => x >= sw - EdgeZone,
             SummonEdge.Top => y <= EdgeZone,
+            SummonEdge.Bottom => y >= sh - EdgeZone,
             _ => x <= EdgeZone
         };
     }
@@ -515,6 +517,7 @@ public sealed class EdgeGestureService : IDisposable
     {
         SummonEdge.Left => upX - _downX,   // 向右（向中心）
         SummonEdge.Right => _downX - upX,  // 向左（向中心）
+        SummonEdge.Bottom => _downY - upY, // 向上（向中心）
         _ => upY - _downY                  // 向下（向中心）
     };
 

@@ -186,6 +186,31 @@ public static class KeySendService
     }
 
     /// <summary>
+    /// 只注入一次按键按下或抬起（不配对），并带上标记值 dwExtraInfo。
+    /// 供键盘钩子在"Win 键被吞掉后补发"时使用：标记让钩子能识别自己注入的事件并放行，避免自吞。
+    /// </summary>
+    public static void SendKeyOnly(int vk, bool up, IntPtr extraInfo)
+    {
+        if (vk == 0) return;
+        var input = new INPUT
+        {
+            type = INPUT_KEYBOARD,
+            U = new InputUnion
+            {
+                ki = new KEYBDINPUT
+                {
+                    wVk = (ushort)vk,
+                    wScan = 0,
+                    dwFlags = up ? KEYEVENTF_KEYUP : 0,
+                    time = 0,
+                    dwExtraInfo = extraInfo
+                }
+            }
+        };
+        SendInput(1, [input], Marshal.SizeOf<INPUT>());
+    }
+
+    /// <summary>
     /// 把鼠标按键（左/右/中/侧键/滚轮）注入到当前前台窗口（SendInput）。
     /// 与键盘一致：调用前应先把 GameLocker 窗口收起，否则事件会落在自己身上。
     /// </summary>

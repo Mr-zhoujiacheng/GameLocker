@@ -38,6 +38,22 @@ public sealed partial class MainWindow : Window
     /// <summary>手柄是否派发到页面（与 Gamepad.RoutingEnabled 同步；仅窗口已呼出显示时为 true）</summary>
     private bool _routing;
 
+    /// <summary>开始菜单模式：失焦后延迟自动收起（点击面板外部即收起）</summary>
+    private readonly Microsoft.UI.Xaml.DispatcherTimer _startMenuAutoHide =
+        new() { Interval = TimeSpan.FromMilliseconds(600) };
+
+    /// <summary>任务栏位置/尺寸监视：开始菜单模式下任务栏被改边、改高、自动隐藏切换后，
+    /// 重新计算面板停靠位置、滑入方向与边缘呼出手势所在边</summary>
+    private readonly Microsoft.UI.Xaml.DispatcherTimer _taskbarWatch =
+        new() { Interval = TimeSpan.FromMilliseconds(1000) };
+    private (SummonEdge edge, int x, int y, int w, int h) _taskbarSeen;
+    /// <summary>上次看到的开始按钮矩形：任务栏"图标左对齐/居中"切换时任务栏矩形不变，
+    /// 只有按钮位置变，靠它触发重排</summary>
+    private (int x, int y, int w, int h) _startBtnSeen;
+
+    /// <summary>开始菜单模式呼出/收起的去抖时间戳：一次操作可能经多条通道同时到达</summary>
+    private long _lastStartMenuToggle;
+
     /// <summary>窗口是否已呼出显示：由 ShowFromTray / HideToTray 维护。
     /// 不用 Window.Visible——AppWindow.Hide() 后它不一定同步翻转；
     /// 更不能用 GetForegroundWindow()——本进程在托盘期间拿不到前台权限，呼出后可能始终不是前台，
@@ -68,12 +84,103 @@ public sealed partial class MainWindow : Window
 
     private SummonEdge CurrentSummonEdge()
     {
+        // 开始菜单模式：呼出手势跟着任务栏走（任务栏在下方就从屏幕底边向上滑）
+        if (SettingsService.Current.StartMenuMode) return TaskbarEdge();
         // 全屏与居中都是"上方悬浮"形态，边缘手势统一走顶边
         if (_fullscreen || SettingsService.Current.SidebarSide == DockSide.Center) return SummonEdge.Top;
         return SettingsService.Current.SidebarSide == DockSide.Right
             ? SummonEdge.Right
             : SummonEdge.Left;
     }
+
+    /// <summary>
+    /// 任务栏的当前位置与屏幕矩形。用 Shell 的 ABM_GETTASKBARPOS 查询（任务栏移到哪条边、
+    /// 多高、自动隐藏都能拿到），取不到时退回"整屏减工作区"的推断。
+    /// </summary>
+    private static (SummonEdge edge, int x, int y, int w, int h) TaskbarState()
+    {
+        var abd = new APPBARDATA { cbSize = (uint)Marshal.SizeOf<APPBARDATA>() };
+        if (SHAppBarMessage(ABM_GETTASKBARPOS, ref abd) != IntPtr.Zero)
+        {
+            var edge = abd.uEdge switch
+            {
+                ABE_LEFT => SummonEdge.Left,
+                ABE_TOP => SummonEdge.Top,
+                ABE_RIGHT => SummonEdge.Right,
+                _ => SummonEdge.Bottom
+            };
+            return (edge, abd.rc.Left, abd.rc.Top, abd.rc.Right - abd.rc.Left, abd.rc.Bottom - abd.rc.Top);
+        }
+        var area = Microsoft.UI.Windowing.DisplayArea.Primary;
+        var outer = area.OuterBounds;
+        var work = area.WorkArea;
+        var fallback = SummonEdge.Bottom;
+        if (work.Y > outer.Y) fallback = SummonEdge.Top;
+        else if (work.X > outer.X) fallback = SummonEdge.Left;
+        else if (work.X + work.Width < outer.X + outer.Width) fallback = SummonEdge.Right;
+        return (fallback, work.X, work.Y, work.Width, work.Height);
+    }
+
+    /// <summary>任务栏所在的屏幕边缘</summary>
+    private static SummonEdge TaskbarEdge() => TaskbarState().edge;
+
+    /// <summary>
+    /// 开始按钮在任务栏长度方向上的归属：靠左（起始端） / 居中 / 靠右（末端）。
+    /// 任务栏横排（顶/底）按水平轴判定，竖排（左/右）按垂直轴判定；
+    /// 开始菜单模式下用它决定面板的摆放位置——按钮居中则面板居中，按钮靠某一端则面板同端。
+    /// </summary>
+    private static DockSide StartButtonSide()
+    {
+        var bar = TaskbarState();
+        var btn = KeyboardHookService.StartButtonBounds();
+        if (btn.w <= 0 || btn.h <= 0) return DockSide.Center;
+        var vertical = bar.edge is SummonEdge.Left or SummonEdge.Right;
+        var start = vertical ? bar.y : bar.x;
+        var span = vertical ? bar.h : bar.w;
+        if (span <= 0) return DockSide.Center;
+        var center = vertical ? btn.y + btn.h / 2.0 : btn.x + btn.w / 2.0;
+        var rel = (center - start) / span;
+        if (rel < 0.34) return DockSide.Left;
+        if (rel > 0.66) return DockSide.Right;
+        return DockSide.Center;
+    }
+
+    /// <summary>把长度为 <paramref name="len"/> 的面板放在 [<paramref name="start"/>, start+span] 内做起始端/居中/末端对齐。
+    /// 靠端对齐时留 <paramref name="margin"/> 的屏幕边距（完全贴边会把 DWM 圆角切在屏幕边缘之外）</summary>
+    private static int AlignAxis(int start, int span, int len, DockSide side, int margin) => side switch
+    {
+        DockSide.Left => start + margin,
+        DockSide.Right => start + span - len - margin,
+        _ => start + (span - len) / 2
+    };
+
+    [StructLayout(LayoutKind.Sequential)]
+    private struct APPBARDATA
+    {
+        public uint cbSize;
+        public IntPtr hWnd;
+        public uint uCallbackMessage;
+        public uint uEdge;
+        public NativeRect rc;
+        public IntPtr lParam;
+    }
+
+    [StructLayout(LayoutKind.Sequential)]
+    private struct NativeRect
+    {
+        public int Left;
+        public int Top;
+        public int Right;
+        public int Bottom;
+    }
+
+    private const uint ABM_GETTASKBARPOS = 0x00000005;
+    private const uint ABE_LEFT = 0;
+    private const uint ABE_TOP = 1;
+    private const uint ABE_RIGHT = 2;
+
+    [DllImport("shell32.dll", CallingConvention = CallingConvention.StdCall)]
+    private static extern IntPtr SHAppBarMessage(uint dwMessage, ref APPBARDATA pData);
 
     public MainWindow()
     {
@@ -101,6 +208,7 @@ public sealed partial class MainWindow : Window
 
         Closed += (_, _) =>
         {
+            MonitorService.Stop();     // 销毁置顶悬浮条并停止 ETW 会话
             KeyboardHook.Dispose();
             if (_exiting)
                 Microsoft.UI.Xaml.Application.Current?.Exit();
@@ -135,7 +243,28 @@ public sealed partial class MainWindow : Window
         // 键盘呼出键：命中即刻呼出（对比：手柄呼出键需长按 1 秒）
         SyncKeyboardHook();
         KeyboardHook.Triggered += () => DispatcherQueue.TryEnqueue(SummonFromHotkey);
+        // 开始菜单模式：Win 键抬起 / 任务栏开始按钮点击 → 切换本启动器显隐
+        KeyboardHook.StartMenuToggle += () => DispatcherQueue.TryEnqueue(ToggleStartMenu);
+        // 触屏点开始按钮抓不到鼠标消息 → 由前台监听把系统开始菜单隐藏后走同一切换
+        KeyboardHook.StartMenuOpened += () => DispatcherQueue.TryEnqueue(ToggleStartMenu);
         KeyboardHook.Start();
+
+        // 任务栏被移动/改高后自动跟随（面板停靠位置、滑入方向、边缘手势所在边）；
+        // 任务栏图标对齐方式改变时只有开始按钮位置变，也一并跟随
+        _taskbarSeen = TaskbarState();
+        _startBtnSeen = KeyboardHookService.StartButtonBounds();
+        _taskbarWatch.Tick += (_, _) =>
+        {
+            if (!SettingsService.Current.StartMenuMode) return;
+            var now = TaskbarState();
+            var btn = KeyboardHookService.StartButtonBounds();
+            if (_taskbarSeen == now && _startBtnSeen == btn) return;
+            if (_animating) return; // 动画中不打断，下个 tick 再来
+            _taskbarSeen = now;
+            _startBtnSeen = btn;
+            ApplySidebarLayout();
+        };
+        if (SettingsService.Current.StartMenuMode) _taskbarWatch.Start();
 
         // 平板边缘手势呼出
         _edgeGesture = new EdgeGestureService();
@@ -163,7 +292,16 @@ public sealed partial class MainWindow : Window
 
         Root.Navigate(typeof(MainPage));
 
-        if (SettingsService.Current.StartFullscreen && !_fullscreen) ToggleFullscreen();
+        if (SettingsService.Current.StartFullscreen && !SettingsService.Current.StartMenuMode && !_fullscreen)
+            ToggleFullscreen();
+
+        // 开始菜单模式：失焦后延迟自动收起（避免呼出瞬间的焦点抖动误收）
+        _startMenuAutoHide.Tick += (_, _) =>
+        {
+            _startMenuAutoHide.Stop();
+            if (SettingsService.Current.StartMenuMode && _shown && GetForegroundWindow() != _hwnd)
+                HideToTray();
+        };
 
         // 启动：先把窗口移到屏外，App.Activate 显示时不在原位（无虚影），Activated 后滑入
         PrepareSummon();
@@ -171,6 +309,7 @@ public sealed partial class MainWindow : Window
         {
             if (e.WindowActivationState != WindowActivationState.Deactivated)
             {
+                _startMenuAutoHide.Stop();
                 // 本窗口成为前台：隐藏边缘条（否则会吞掉本窗口边缘的触摸）
                 _edgeGesture?.SetStripVisible(false);
                 // 可见时重申手柄路由；失去前台（Deactivated）不动门控——
@@ -179,13 +318,15 @@ public sealed partial class MainWindow : Window
             }
             else
             {
+                // 开始菜单模式：点到面板外部即自动收起
+                if (SettingsService.Current.StartMenuMode && _shown) _startMenuAutoHide.Start();
                 // 任何其他应用成为前台（含被最小化/遮盖）：恢复边缘条，保证任意前台都能触摸呼出
                 _edgeGesture?.SetStripVisible(true);
             }
             if (!_summonPending || e.WindowActivationState == WindowActivationState.Deactivated) return;
             _summonPending = false;
             // 滑入结束再抢一次前台：Activate 是在窗口还在屏外时调的，系统有时因此不给键盘焦点
-            AnimateMove(_summonStart, _summonTarget, 260, easeOut: true, BringToForeground);
+            AnimateMove(_summonStart, _summonTarget, 260, easeOut: true, OnSummonDone);
         };
     }
 
@@ -487,10 +628,23 @@ public sealed partial class MainWindow : Window
     private int _animMs;
     private Action? _animDone;
 
-    /// <summary>目标位置对应的屏外起点：左停靠=左侧屏外，右停靠=右侧屏外，全屏/居中=上方屏外</summary>
+    /// <summary>目标位置对应的屏外起点：开始菜单=任务栏外侧（从任务栏后方滑出），
+    /// 左停靠=左侧屏外，右停靠=右侧屏外，全屏/居中=上方屏外</summary>
     private Windows.Graphics.PointInt32 OffscreenPos(
         Windows.Graphics.PointInt32 target, Windows.Graphics.SizeInt32 size)
     {
+        if (SettingsService.Current.StartMenuMode)
+        {
+            var outer = Microsoft.UI.Windowing.DisplayArea.Primary.OuterBounds;
+            return TaskbarEdge() switch
+            {
+                SummonEdge.Top => new Windows.Graphics.PointInt32(target.X, outer.Y - size.Height),
+                SummonEdge.Left => new Windows.Graphics.PointInt32(outer.X - size.Width, target.Y),
+                SummonEdge.Right => new Windows.Graphics.PointInt32(outer.X + outer.Width, target.Y),
+                // 任务栏在下方：起点落在屏幕底边之外，向上滑入
+                _ => new Windows.Graphics.PointInt32(target.X, outer.Y + outer.Height)
+            };
+        }
         if (_fullscreen || SettingsService.Current.SidebarSide == Models.DockSide.Center)
             return new Windows.Graphics.PointInt32(target.X, target.Y - size.Height);
         return SettingsService.Current.SidebarSide == Models.DockSide.Right
@@ -511,9 +665,18 @@ public sealed partial class MainWindow : Window
             _summonPending = false;
             return;
         }
+        // 开始菜单模式：滑入期间临时取消置顶，让任务栏压住窗口下沿，形成"从任务栏后方升起"的观感；
+        // 动画结束由 ShowFromTray 的完成回调恢复置顶
+        if (SettingsService.Current.StartMenuMode) SetAlwaysOnTop(false);
         _summonStart = OffscreenPos(_summonTarget, size);
         MoveWindowTo(_summonStart);
         _summonPending = true;
+    }
+
+    /// <summary>切换窗口置顶（开始菜单模式动画期间需要临时降置顶，露出任务栏）</summary>
+    private void SetAlwaysOnTop(bool on)
+    {
+        if (AppWindow.Presenter is OverlappedPresenter p) p.IsAlwaysOnTop = on;
     }
 
     /// <summary>移动窗口：优先直调 SetWindowPos（轻量），hwnd 未就绪时回退 AppWindow.Move</summary>
@@ -587,18 +750,28 @@ public sealed partial class MainWindow : Window
         _edgeGesture?.SetStripVisible(false);
         PrepareSummon();
         Activate();
-        BringToForeground();
+        // 开始菜单模式的滑入要保持在任务栏后方：先把置顶/前台抢回推迟到动画结束（OnSummonDone），
+        // 否则 BringToForeground 会立刻把窗口提到任务栏之上，失去"从任务栏后方升起"的观感
+        if (!SettingsService.Current.StartMenuMode) BringToForeground();
         // 窗口已处于激活状态时 Activated 不会再触发，这里兜底启动滑入动画
         if (_summonPending)
         {
             _summonPending = false;
             // 滑入结束再抢一次前台：Activate 是在窗口还在屏外时调的，系统有时因此不给键盘焦点
-            AnimateMove(_summonStart, _summonTarget, 260, easeOut: true, BringToForeground);
+            AnimateMove(_summonStart, _summonTarget, 260, easeOut: true, OnSummonDone);
         }
+        else if (SettingsService.Current.StartMenuMode) BringToForeground(); // 无动画时没有完成回调，直接抢前台
         (Root.Content as MainPage)?.FocusGrid();
         // 已呼出显示：恢复手柄对启动器的操作。只跟显示状态走，不依赖抢前台是否成功
         // （抢前台失败时窗口照样显示，若不在这里打开门控，手柄就会永久失效）
         SetGamepadRouting(true);
+    }
+
+    /// <summary>滑入动画结束：开始菜单模式恢复置顶（动画期间临时取消），再抢一次前台焦点</summary>
+    private void OnSummonDone()
+    {
+        if (SettingsService.Current.StartMenuMode) SetAlwaysOnTop(true);
+        BringToForeground();
     }
 
     /// <summary>按当前设置同步键盘呼出键（控制页捕获保存后调用）</summary>
@@ -606,6 +779,42 @@ public sealed partial class MainWindow : Window
     {
         KeyboardHook.Key = SettingsService.Current.KeyboardSummonKey;
         KeyboardHook.Mods = SettingsService.Current.KeyboardSummonMods;
+        KeyboardHook.StartMenuMode = SettingsService.Current.StartMenuMode;
+    }
+
+    /// <summary>
+    /// 开始菜单模式的呼出/收起切换（Win 键、任务栏开始按钮点击、系统开始菜单被拦截共用）。
+    /// 按窗口当前显隐状态决定方向，并做 400ms 去抖：同一次操作可能同时经鼠标钩子与前台监听到达。
+    /// </summary>
+    private void ToggleStartMenu()
+    {
+        var now = Environment.TickCount64;
+        if (now - _lastStartMenuToggle < 400) return;
+        _lastStartMenuToggle = now;
+        if (_shown) HideToTray();
+        else ShowFromTray();
+    }
+
+    /// <summary>
+    /// 开始菜单模式开关变更后调用：需要时退出全屏、按新模式重排布局，并同步键盘钩子的接管状态。
+    /// </summary>
+    public void ApplyStartMenuMode()
+    {
+        if (SettingsService.Current.StartMenuMode)
+        {
+            _taskbarSeen = TaskbarState();
+            _taskbarWatch.Start();
+        }
+        else _taskbarWatch.Stop();
+        if (SettingsService.Current.StartMenuMode && _fullscreen)
+        {
+            ToggleFullscreen(); // 内部会再调 ApplySidebarLayout
+            SyncKeyboardHook();
+            return;
+        }
+        _startMenuAutoHide.Stop();
+        ApplySidebarLayout();
+        SyncKeyboardHook();
     }
 
     /// <summary>键盘呼出键命中（开关）：窗口未显示或被其他窗口遮盖时置顶呼出；已显示且在前台时收起。
@@ -674,6 +883,8 @@ public sealed partial class MainWindow : Window
         var target = AppWindow.Position;
         var size = AppWindow.Size;
         var off = OffscreenPos(target, size);
+        // 开始菜单模式：滑出期间临时取消置顶，让窗口从任务栏后方消失（任务栏压住下沿）
+        if (SettingsService.Current.StartMenuMode) SetAlwaysOnTop(false);
         AnimateMove(target, off, 260, easeOut: false, () =>
         {
             AppWindow.Hide();
@@ -699,10 +910,59 @@ public sealed partial class MainWindow : Window
         // OuterBounds 是整屏（含任务栏占用的下沿）；WorkArea 会少掉任务栏那条，
         // 导致窗口上下铺不满且下沿露出任务栏。
         var bounds = Microsoft.UI.Windowing.DisplayArea.Primary.OuterBounds;
+        var area = Microsoft.UI.Windowing.DisplayArea.Primary;
         var pct = Math.Clamp(SettingsService.Current.SidebarWidthPercent, 0.38, 0.5);
 
-        int x, y, width;
-        if (SettingsService.Current.SidebarSide == Models.DockSide.Center)
+        int x, y, width, height;
+        if (SettingsService.Current.StartMenuMode)
+        {
+            // 开始菜单模式：面板贴住任务栏所在的那条屏幕边（留 12px 缝），对面留边距，
+            // 看起来就是从任务栏后方升起的整块面板。宽度沿用居中模式的倍率换算（38% ≈ 70% 屏宽）
+            var menuPct = Math.Min(pct / 0.38 * 0.70, 0.96);
+            var work = area.WorkArea;
+            const int gap = 12; // 与任务栏之间的缝
+            const int sideGap = 16; // 靠边对齐时与屏幕左右边缘的留白
+            var inset = Math.Max(24, (int)(work.Height * 0.06)); // 与任务栏相对一侧的留边
+            width = Math.Min(Math.Max(360, (int)(work.Width * menuPct)), work.Width - sideGap * 2);
+            // 面板位置跟随开始按钮在任务栏长轴上的位置：居中→居中，靠某端→同端（留少量屏幕边距）
+            var side = StartButtonSide();
+            var alignX = AlignAxis(work.X, work.Width, width, side, sideGap);
+            switch (TaskbarEdge())
+            {
+                case SummonEdge.Top: // 任务栏在上方：面板贴顶，下方留边
+                    height = work.Height - inset - gap;
+                    x = alignX;
+                    y = work.Y + gap;
+                    break;
+                case SummonEdge.Left: // 任务栏在左侧：面板贴左，沿垂直轴跟随开始按钮（按钮靠上→面板居上）
+                    height = work.Height - inset - gap;
+                    x = work.X + gap;
+                    y = side switch
+                    {
+                        DockSide.Left => work.Y + gap,   // 与按钮同端：只留缝
+                        DockSide.Right => work.Y + inset, // 反端留大边
+                        _ => AlignAxis(work.Y, work.Height, height, side, sideGap)
+                    };
+                    break;
+                case SummonEdge.Right: // 任务栏在右侧：面板贴右，沿垂直轴跟随开始按钮
+                    height = work.Height - inset - gap;
+                    x = work.X + work.Width - width - gap;
+                    y = side switch
+                    {
+                        DockSide.Left => work.Y + gap,
+                        DockSide.Right => work.Y + inset,
+                        _ => AlignAxis(work.Y, work.Height, height, side, sideGap)
+                    };
+                    break;
+                default: // 任务栏在下方：面板贴底（本机常见形态），上方留边
+                    height = work.Height - inset - gap;
+                    x = alignX;
+                    y = work.Y + inset;
+                    break;
+            }
+            AppWindow.Resize(new Windows.Graphics.SizeInt32(width, height));
+        }
+        else if (SettingsService.Current.SidebarSide == Models.DockSide.Center)
         {
             // 居中模式宽度换算：设置里的最小值 38% 对应实际 70% 屏宽（居中比贴边需要占更大一块），
             // 按同一倍率往上放大；上限 96% 保证左右始终留边
@@ -712,7 +972,7 @@ public sealed partial class MainWindow : Window
             // 水平居中；窗口高度仍为屏高的 88%（上下各留 6% 的量），但整体比正居中往上靠一点：
             // 上边距取屏高的 3%（至少 24px），多出来的空间留给下边距
             var topInset = Math.Max(24, (int)(bounds.Height * 0.03));
-            var height = bounds.Height - Math.Max(48, (int)(bounds.Height * 0.06)) * 2;
+            height = bounds.Height - Math.Max(48, (int)(bounds.Height * 0.06)) * 2;
             AppWindow.Resize(new Windows.Graphics.SizeInt32(width, height));
             x = bounds.X + (bounds.Width - width) / 2;
             y = bounds.Y + topInset;
@@ -720,7 +980,8 @@ public sealed partial class MainWindow : Window
         else
         {
             width = Math.Max(360, (int)(bounds.Width * pct));
-            AppWindow.Resize(new Windows.Graphics.SizeInt32(width, bounds.Height));
+            height = bounds.Height;
+            AppWindow.Resize(new Windows.Graphics.SizeInt32(width, height));
             x = SettingsService.Current.SidebarSide == Models.DockSide.Right
                 ? bounds.X + bounds.Width - width
                 : bounds.X;
@@ -748,12 +1009,13 @@ public sealed partial class MainWindow : Window
 
     /// <summary>
     /// 窗口圆角：用系统 DWM 圆角（仅 Win11 支持，Win10 上该属性无效、保持方形）。
-    /// 只有居中模式需要圆角（四周都有留白），贴边与全屏必须方形。
+    /// 开始菜单模式的悬浮面板与居中模式都圆角；贴边与全屏必须方形。
     /// </summary>
     private void ApplyWindowCorners()
     {
         if (_hwnd == IntPtr.Zero) return;
-        var round = !_fullscreen && SettingsService.Current.SidebarSide == DockSide.Center;
+        var round = !_fullscreen && (SettingsService.Current.StartMenuMode
+            || SettingsService.Current.SidebarSide == DockSide.Center);
         var pref = round ? DWMWCP_ROUND : DWMWCP_DONOTROUND;
         DwmSetWindowAttribute(_hwnd, DWMWA_WINDOW_CORNER_PREFERENCE, ref pref, sizeof(int));
     }
@@ -993,8 +1255,8 @@ public sealed partial class MainWindow : Window
         }
         else if (buttons.HasFlag(GamepadButtons.RightThumb))
         {
-            // R3（右摇杆按下）：编辑当前选中的快捷项
-            if (Root.Content is MainPage mp && mp.SelectedItem is { } item)
+            // R3（右摇杆按下）：编辑当前选中的快捷项；设置/电源常驻磁贴不可编辑
+            if (Root.Content is MainPage mp && mp.SelectedItem is { } item && !TileStyle.IsFixedTile(item))
                 Root.Navigate(typeof(AddItemPage), item);
         }
         else if (buttons.HasFlag(GamepadButtons.B)) HideToTray();

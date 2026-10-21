@@ -12,6 +12,17 @@ public partial class App : Application
 
     protected override void OnLaunched(LaunchActivatedEventArgs args)
     {
+        // 提权监控助手模式（--monitor-helper <父进程PID>）：只跑 ETW 帧率采集并写共享内存，
+        // 不创建主窗口，父进程退出或发出停止事件后自行结束。
+        var argv = Environment.GetCommandLineArgs();
+        var helperIndex = Array.IndexOf(argv, "--monitor-helper");
+        if (helperIndex >= 0 && helperIndex + 1 < argv.Length
+            && int.TryParse(argv[helperIndex + 1], out var parentPid))
+        {
+            MonitorHelperHost.Run(parentPid);
+            Environment.Exit(0);
+        }
+
         InstallCrashLogging();
         MigrateLegacyConfig();
         Main = new MainWindow();

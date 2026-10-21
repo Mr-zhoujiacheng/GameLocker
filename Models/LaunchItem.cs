@@ -50,9 +50,13 @@ public enum WidgetKind
     RecycleBin,
     /// <summary>前台应用监测（持续监测当前前台窗口所属进程，换前台窗口即刷新；A=冻结/解冻，Y=强制结束）</summary>
     Foreground,
-    /// <summary>系统（一个磁贴收纳系统入口与开关：设置/我的电脑/资源管理器/音量/亮度/WiFi/蓝牙；
+    /// <summary>系统（一个磁贴收纳系统入口与开关：设置/我的电脑/音量/亮度/WiFi/蓝牙/移动热点/夜间模式；
     /// 右摇杆←→切换，A=打开或开关，LB/RB=调整）</summary>
-    System
+    System,
+    /// <summary>电源（常驻主页，A/点击弹出电源菜单：注销/睡眠/休眠/重启/关机；不可删除/组合，可移动与改颜色大小）</summary>
+    Power,
+    /// <summary>性能监控（A/点击=开启/关闭置顶悬浮监控条，屏幕上方居中显示帧率/帧延迟/帧波动/CPU/GPU/电池/内存）</summary>
+    Monitor
 }
 
 /// <summary>手柄映射的目标类型（仅 GamepadMapping 使用）</summary>
@@ -117,6 +121,17 @@ public enum PhotoSpeed
     Slow,
     /// <summary>艺术风格：30 分钟</summary>
     Art
+}
+
+/// <summary>性能监控悬浮条在屏幕上的位置（六选一）</summary>
+public enum MonitorPosition
+{
+    TopLeft,
+    TopCenter,
+    TopRight,
+    BottomLeft,
+    BottomCenter,
+    BottomRight
 }
 
 /// <summary>磁贴尺寸（Win10 磁贴风格）</summary>
@@ -236,6 +251,15 @@ public class LaunchItem
     /// beta=社区镜像的最新预览版（OptiScaler-Betas）。两者 ini 与用法一致，只是包更新更快。</summary>
     public string OptiChannel { get; set; } = "stable";
 
+    /// <summary>性能监控悬浮条位置（仅 WidgetKind.Monitor 使用）</summary>
+    public MonitorPosition MonitorPos { get; set; } = MonitorPosition.TopCenter;
+
+    /// <summary>性能监控悬浮条大小倍率（仅 WidgetKind.Monitor 使用；叠加在自动适配之上，0.6~1.6）</summary>
+    public double MonitorScale { get; set; } = 1.0;
+
+    /// <summary>性能监控悬浮条不透明度（仅 WidgetKind.Monitor 使用；0~1，0 表示无外框只剩文字）</summary>
+    public double MonitorOpacity { get; set; } = 1.0;
+
     /// <summary>深拷贝一个快捷项（含组成员），用于复制/迁移时与源数据隔离</summary>
     public LaunchItem Clone() => new()
     {
@@ -269,6 +293,9 @@ public class LaunchItem
         OptiFsr4Files = OptiFsr4Files,
         OptiLocalPackage = OptiLocalPackage,
         OptiChannel = OptiChannel,
+        MonitorPos = MonitorPos,
+        MonitorScale = MonitorScale,
+        MonitorOpacity = MonitorOpacity,
         GamepadMappings = [.. GamepadMappings.Select(m => m.Clone())],
         Members = [.. Members.Select(m => m.Clone())],
         Drawers = Drawers is null ? null : [.. Drawers.Select(d => d.Clone())]
@@ -300,6 +327,8 @@ public class LaunchItem
             WidgetKind.RecycleBin => "\uE74D", // 垃圾桶（回收站）
             WidgetKind.Foreground => "\uE769", // 暂停（前台应用监测：冻结）
             WidgetKind.System => "\uE713", // 设置（系统小组件：默认停在 Win 设置）
+            WidgetKind.Power => "\uE7E8",  // 电源（电源菜单）
+            WidgetKind.Monitor => "\uE9D9", // 诊断（性能监控）
             _ => "\uE8D6"                  // 音乐（音乐控制器）
         },
         _ => "\uE7F8"                  // desktop

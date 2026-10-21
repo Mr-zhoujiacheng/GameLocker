@@ -56,6 +56,16 @@
                     </ToggleSwitch.Header>
                 </ToggleSwitch>
 
+                <ToggleSwitch x:Name="TransparentToggle" Padding="14,10" Toggled="OnTransparentChanged">
+                    <ToggleSwitch.Header>
+                        <StackPanel Spacing="2">
+                            <TextBlock Text="透明" FontSize="16"/>
+                            <TextBlock Text="打开后抽屉不再铺玻璃底色与投影，直接与窗口背景一致；边框加粗，仍能看清抽屉范围"
+                                       FontSize="12" Opacity="0.6" TextWrapping="Wrap"/>
+                        </StackPanel>
+                    </ToggleSwitch.Header>
+                </ToggleSwitch>
+
                 <TextBlock Text="抽屉颜色" FontSize="15" Opacity="0.9"/>
                 <!-- 3 列 × 2 行显式 Grid：每个 RadioButton 是 Grid 直接子元素，
                      中心坐标可靠，手柄四方向临近选择才能命中颜色行（勿用 RadioButtons 容器） -->

@@ -11,8 +11,6 @@ public enum SystemPanel
     WindowsSettings,
     /// <summary>我的电脑（此电脑）：A = 打开</summary>
     ThisPc,
-    /// <summary>资源管理器：A = 打开</summary>
-    Explorer,
     /// <summary>音量：A = 静音/取消静音，LB/RB = 减小/增大</summary>
     Volume,
     /// <summary>亮度：A = 熄屏（降到最低）/ 还原，LB/RB = 减小/增大</summary>
@@ -20,7 +18,11 @@ public enum SystemPanel
     /// <summary>WiFi：A = 开/关射频（系统拒绝时退化为打开设置页）</summary>
     Wifi,
     /// <summary>蓝牙：A = 开/关射频（系统拒绝时退化为打开设置页）</summary>
-    Bluetooth
+    Bluetooth,
+    /// <summary>移动热点：A = 开/关（系统拒绝时退化为打开设置页）</summary>
+    MobileHotspot,
+    /// <summary>夜间模式：A = 开/关暖色滤镜（显示伽马表实现，等效降低蓝光）</summary>
+    NightLight
 }
 
 /// <summary>
@@ -35,8 +37,9 @@ public static class SystemPanelService
     /// <summary>切换顺序（与磁贴显示顺序一致）</summary>
     public static readonly SystemPanel[] Order =
     [
-        SystemPanel.WindowsSettings, SystemPanel.ThisPc, SystemPanel.Explorer,
-        SystemPanel.Volume, SystemPanel.Brightness, SystemPanel.Wifi, SystemPanel.Bluetooth
+        SystemPanel.WindowsSettings, SystemPanel.ThisPc,
+        SystemPanel.Volume, SystemPanel.Brightness, SystemPanel.Wifi, SystemPanel.Bluetooth,
+        SystemPanel.MobileHotspot, SystemPanel.NightLight
     ];
 
     /// <summary>由持久化的选项序号取面板项（越界自动收敛到合法范围）</summary>
@@ -70,7 +73,7 @@ public static class SystemPanelService
 
     /// <summary>是否为"打开某个入口"的项（打开后按设置可收起启动器窗口）</summary>
     public static bool IsLauncher(SystemPanel p) =>
-        p is SystemPanel.WindowsSettings or SystemPanel.ThisPc or SystemPanel.Explorer;
+        p is SystemPanel.WindowsSettings or SystemPanel.ThisPc;
 
     /// <summary>是否支持 LB/RB 调整</summary>
     public static bool SupportsAdjust(SystemPanel p) => p is SystemPanel.Volume or SystemPanel.Brightness;
@@ -80,11 +83,12 @@ public static class SystemPanelService
     {
         SystemPanel.WindowsSettings => "Win 设置",
         SystemPanel.ThisPc => "我的电脑",
-        SystemPanel.Explorer => "资源管理器",
         SystemPanel.Volume => "音量",
         SystemPanel.Brightness => "亮度",
         SystemPanel.Wifi => "WiFi",
-        _ => "蓝牙"
+        SystemPanel.Bluetooth => "蓝牙",
+        SystemPanel.MobileHotspot => "移动热点",
+        _ => "夜间模式"
     };
 
     /// <summary>面板项图标字形（Segoe MDL2 Assets）</summary>
@@ -92,22 +96,25 @@ public static class SystemPanelService
     {
         SystemPanel.WindowsSettings => "\uE713", // 齿轮
         SystemPanel.ThisPc => "\uE7F8",          // 电脑
-        SystemPanel.Explorer => "\uE8B7",        // 文件夹
         SystemPanel.Volume => "\uE767",          // 音量
         SystemPanel.Brightness => "\uE706",      // 亮度
         SystemPanel.Wifi => "\uE701",            // 无线网络
-        _ => "\uE702"                            // 蓝牙
+        SystemPanel.Bluetooth => "\uE702",       // 蓝牙
+        SystemPanel.MobileHotspot => "\uE704",   // 网络共享（热点）
+        _ => "\uE708"                            // 月亮（夜间模式）
     };
 
-    /// <summary>当前读数文案（同步、无副作用）：入口类=提示按键，音量/亮度=百分比，WiFi/蓝牙=开关或连接状态。
+    /// <summary>当前读数文案（同步、无副作用）：入口类=提示按键，音量/亮度=百分比，WiFi/蓝牙/热点/夜间=开关状态。
     /// 亮度读 WMI 较重且不能在 UI 线程调用，这里只返回后台刷新好的缓存文案</summary>
     public static string Reading(SystemPanel p) => p switch
     {
-        SystemPanel.WindowsSettings or SystemPanel.ThisPc or SystemPanel.Explorer => "按 A 打开",
+        SystemPanel.WindowsSettings or SystemPanel.ThisPc => "按 A 打开",
         SystemPanel.Volume => ReadVolumeText(),
         SystemPanel.Brightness => _brightnessText ?? "—",
         SystemPanel.Wifi => WifiText(),
-        _ => BluetoothText()
+        SystemPanel.Bluetooth => BluetoothText(),
+        SystemPanel.MobileHotspot => HotspotText(),
+        _ => _nightLightOn ? "已开启" : "已关闭"
     };
 
     /// <summary>亮度读数文案缓存（后台线程写，UI 线程读）</summary>
@@ -146,6 +153,11 @@ public static class SystemPanelService
         ? (_btOn.Value ? "已开启" : "已关闭")
         : (NetworkService.IsBluetoothConnected() ? "已连接" : "未连接");
 
+    /// <summary>移动热点状态文案（首次读取前显示"按 A 切换"）</summary>
+    private static string HotspotText() => _hotspotOn.HasValue
+        ? (_hotspotOn.Value ? "已开启" : "已关闭")
+        : "按 A 切换";
+
     // ---- 交互 ----
 
     /// <summary>A 键语义：打开入口 / 切换开关。返回给用户看的结果文案（由调用方显示在提示条上）</summary>
@@ -159,9 +171,6 @@ public static class SystemPanelService
             case SystemPanel.ThisPc:
                 Open("shell:MyComputerFolder");
                 return "已打开此电脑";
-            case SystemPanel.Explorer:
-                Open("");
-                return "已打开资源管理器";
             case SystemPanel.Volume:
                 return ToggleMute();
             case SystemPanel.Brightness:
@@ -171,8 +180,12 @@ public static class SystemPanelService
                 return msg;
             case SystemPanel.Wifi:
                 return await ToggleRadioAsync(Windows.Devices.Radios.RadioKind.WiFi, "WiFi", "network-wifi");
-            default:
+            case SystemPanel.Bluetooth:
                 return await ToggleRadioAsync(Windows.Devices.Radios.RadioKind.Bluetooth, "蓝牙", "bluetooth");
+            case SystemPanel.MobileHotspot:
+                return await ToggleHotspotAsync();
+            default:
+                return ToggleNightLight();
         }
     }
 
@@ -205,6 +218,11 @@ public static class SystemPanelService
             }
             if (_wifiRadio is not null) _wifiOn = _wifiRadio.State == Windows.Devices.Radios.RadioState.On;
             if (_btRadio is not null) _btOn = _btRadio.State == Windows.Devices.Radios.RadioState.On;
+            // 移动热点状态：管理器对象缓存，失败时保持原值（按 A 仍可走打开设置页的降级路径）
+            var hotspot = GetHotspotManager();
+            if (hotspot is not null)
+                _hotspotOn = hotspot.TetheringOperationalState ==
+                    Windows.Networking.NetworkOperators.TetheringOperationalState.On;
         }
         catch (Exception ex)
         {
@@ -532,6 +550,109 @@ public static class SystemPanelService
         return $"系统不允许直接开关{name}，已打开设置页";
     }
 
+    // ---- 移动热点（WinRT NetworkOperatorTetheringManager）----
+
+    private static Windows.Networking.NetworkOperators.NetworkOperatorTetheringManager? _hotspotManager;
+    private static bool? _hotspotOn;
+    private static bool _hotspotFailed; // 系统拒绝/无网络配置：记住失败，不再每次按 A 重复尝试
+
+    private static Windows.Networking.NetworkOperators.NetworkOperatorTetheringManager? GetHotspotManager()
+    {
+        if (_hotspotManager is not null || _hotspotFailed) return _hotspotManager;
+        try
+        {
+            var profile = Windows.Networking.Connectivity.NetworkInformation.GetInternetConnectionProfile();
+            if (profile is null) { _hotspotFailed = true; return null; }
+            _hotspotManager = Windows.Networking.NetworkOperators.NetworkOperatorTetheringManager
+                .CreateFromConnectionProfile(profile);
+        }
+        catch (Exception ex)
+        {
+            // 非打包应用缺少网络操作权限时系统会拒绝：记下失败并退化为打开设置页
+            _hotspotFailed = true;
+            Debug.WriteLine($"[SystemPanel] 获取热点管理器失败 {ex.GetType().Name}: {ex.Message}");
+        }
+        return _hotspotManager;
+    }
+
+    /// <summary>A 键：开/关移动热点；系统拒绝时退化为打开"移动热点"设置页</summary>
+    private static async Task<string> ToggleHotspotAsync()
+    {
+        var mgr = GetHotspotManager();
+        if (mgr is not null)
+        {
+            try
+            {
+                var on = mgr.TetheringOperationalState ==
+                    Windows.Networking.NetworkOperators.TetheringOperationalState.On;
+                await (on ? mgr.StopTetheringAsync() : mgr.StartTetheringAsync());
+                _hotspotOn = !on;
+                return on ? "移动热点已关闭" : "移动热点已开启";
+            }
+            catch (Exception ex)
+            {
+                Debug.WriteLine($"[SystemPanel] 切换移动热点失败 {ex.GetType().Name}: {ex.Message}");
+            }
+        }
+        Open("ms-settings:network-mobilehotspot");
+        return "系统不允许直接开关热点，已打开设置页";
+    }
+
+    // ---- 夜间模式（屏幕色温滤镜）----
+    // 系统夜间模式没有公开 API，且注册表二进制格式随版本变化、写入有损坏设置的风险；
+    // 这里用显示伽马表降低蓝/绿通道实现等效的暖色效果：A 切换，首次开启时备份原始伽马表，关闭时还原。
+
+    private static bool _nightLightOn;
+    private static ushort[]? _gammaBackup;
+
+    private static string ToggleNightLight()
+    {
+        if (!_nightLightOn)
+        {
+            var ok = WithDisplayGamma((hdc, cur) =>
+            {
+                _gammaBackup ??= (ushort[])cur.Clone();
+                var warm = (ushort[])cur.Clone();
+                for (var i = 0; i < 256; i++)
+                {
+                    warm[256 + i] = (ushort)(cur[256 + i] * 0.92); // 绿：轻微压低
+                    warm[512 + i] = (ushort)(cur[512 + i] * 0.70); // 蓝：明显压低 → 暖色
+                }
+                return SetDeviceGammaRamp(hdc, warm);
+            });
+            if (!ok) return "当前显示器不支持色温调节";
+            _nightLightOn = true;
+            return "夜间模式已开启";
+        }
+
+        var offOk = _gammaBackup is not null &&
+                    WithDisplayGamma((hdc, cur) => SetDeviceGammaRamp(hdc, _gammaBackup));
+        if (!offOk) return "恢复色温失败";
+        _nightLightOn = false;
+        return "夜间模式已关闭";
+    }
+
+    /// <summary>在主显示器 DC 上执行伽马表操作（成功后立即释放 DC）</summary>
+    private static bool WithDisplayGamma(Func<IntPtr, ushort[], bool> action)
+    {
+        var hdc = GetDC(IntPtr.Zero);
+        if (hdc == IntPtr.Zero) return false;
+        try
+        {
+            var ramp = new ushort[3 * 256];
+            return GetDeviceGammaRamp(hdc, ramp) && action(hdc, ramp);
+        }
+        catch (Exception ex)
+        {
+            Debug.WriteLine($"[SystemPanel] 伽马表操作失败 {ex.GetType().Name}: {ex.Message}");
+            return false;
+        }
+        finally
+        {
+            ReleaseDC(IntPtr.Zero, hdc);
+        }
+    }
+
     // ---- P/Invoke：CoreAudio ----
 
     private const int EDataFlowRender = 0;      // eRender（扬声器）
@@ -624,4 +745,18 @@ public static class SystemPanelService
 
     [DllImport("dxva2.dll", SetLastError = true)]
     private static extern bool DestroyPhysicalMonitor(IntPtr hMonitor);
+
+    // ---- P/Invoke：显示伽马表（夜间模式）----
+
+    [DllImport("user32.dll")]
+    private static extern IntPtr GetDC(IntPtr hWnd);
+
+    [DllImport("user32.dll")]
+    private static extern int ReleaseDC(IntPtr hWnd, IntPtr hDC);
+
+    [DllImport("gdi32.dll", SetLastError = true)]
+    private static extern bool GetDeviceGammaRamp(IntPtr hdc, ushort[] lpRamp);
+
+    [DllImport("gdi32.dll", SetLastError = true)]
+    private static extern bool SetDeviceGammaRamp(IntPtr hdc, ushort[] lpRamp);
 }

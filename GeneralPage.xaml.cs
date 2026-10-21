@@ -29,13 +29,34 @@ public sealed partial class GeneralPage : Page, ISettingsGamepad
         AnimationToggle.IsOn = s.SummonAnimation;
         EdgeGestureToggle.IsOn = s.EdgeGestureSummon;
         TabletModeToggle.IsOn = s.TabletMode;
+        StartMenuToggle.IsOn = s.StartMenuMode;
         if (s.SidebarSide == DockSide.Right) RightRadio.IsChecked = true;
         else if (s.SidebarSide == DockSide.Center) CenterRadio.IsChecked = true;
         else LeftRadio.IsChecked = true;
 
-        _controls = [AutoStartToggle, HideAfterLaunchToggle, StartFullscreenToggle,
-                     AnimationToggle, EdgeGestureToggle, TabletModeToggle,
-                     LeftRadio, CenterRadio, RightRadio];
+        UpdateDockVisibility();
+        RebuildControls();
+    }
+
+    /// <summary>按开关状态重建导航控件表：开始菜单模式下「窗口位置」整组折叠，不参与手柄导航</summary>
+    private void RebuildControls()
+    {
+        var list = new List<Control>
+        {
+            AutoStartToggle, HideAfterLaunchToggle, StartFullscreenToggle,
+            AnimationToggle, EdgeGestureToggle, TabletModeToggle, StartMenuToggle
+        };
+        if (!StartMenuToggle.IsOn) list.AddRange([LeftRadio, CenterRadio, RightRadio]);
+        _controls = list.ToArray();
+    }
+
+    /// <summary>开始菜单模式下窗口固定居中停靠，隐藏「窗口位置」三选项</summary>
+    private void UpdateDockVisibility()
+    {
+        var show = !StartMenuToggle.IsOn;
+        DockSideTitle.Visibility = show ? Visibility.Visible : Visibility.Collapsed;
+        DockSideHint.Visibility = show ? Visibility.Visible : Visibility.Collapsed;
+        DockSidePanel.Visibility = show ? Visibility.Visible : Visibility.Collapsed;
     }
 
     protected override void OnNavigatedTo(NavigationEventArgs e)
@@ -43,6 +64,7 @@ public sealed partial class GeneralPage : Page, ISettingsGamepad
         base.OnNavigatedTo(e);
         _ready = true;
         _index = 0;
+        RebuildControls();
         FocusIndex(0);
     }
 
@@ -267,6 +289,23 @@ public sealed partial class GeneralPage : Page, ISettingsGamepad
         HintBar.Visibility = TabletModeToggle.IsOn ? Visibility.Collapsed : Visibility.Visible;
     }
 
+    /// <summary>替代 Windows 开始菜单开关 → 保存并立即切换窗口形态 + 重挂键盘钩子</summary>
+    private void OnStartMenuChanged(object sender, Microsoft.UI.Xaml.RoutedEventArgs e)
+    {
+        if (!_ready) return;
+        var on = StartMenuToggle.IsOn;
+        SettingsService.Update(s =>
+        {
+            s.StartMenuMode = on;
+            if (on) s.SidebarSide = DockSide.Center; // 开始菜单模式固定居中停靠
+        });
+        UpdateDockVisibility();
+        RebuildControls();
+        _index = Math.Clamp(_index, 0, _controls.Length - 1);
+        FocusIndex(_index);
+        App.Main?.ApplyStartMenuMode();
+    }
+
     private void Persist()
     {
         SettingsService.Update(s =>
@@ -275,7 +314,9 @@ public sealed partial class GeneralPage : Page, ISettingsGamepad
             s.HideAfterLaunch = HideAfterLaunchToggle.IsOn;
             s.StartFullscreen = StartFullscreenToggle.IsOn;
             s.SummonAnimation = AnimationToggle.IsOn;
-            s.SidebarSide = RightRadio.IsChecked == true ? DockSide.Right
+            s.StartMenuMode = StartMenuToggle.IsOn;
+            s.SidebarSide = StartMenuToggle.IsOn ? DockSide.Center
+                : RightRadio.IsChecked == true ? DockSide.Right
                 : CenterRadio.IsChecked == true ? DockSide.Center
                 : DockSide.Left;
         });

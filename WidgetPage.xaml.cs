@@ -126,13 +126,23 @@ public sealed partial class WidgetPage : Page
         Size = TileSize.Wide
     };
 
+    /// <summary>预览用固定性能监控项（状态点 + 已停止；实际添加时为默认"长"尺寸）</summary>
+    private static readonly LaunchItem MonitorPreviewItem = new()
+    {
+        Name = "性能监控",
+        Target = "widget:monitor",
+        Kind = LaunchKind.Widget,
+        WidgetKind = WidgetKind.Monitor,
+        Size = TileSize.Wide
+    };
+
     /// <summary>预览磁贴框架（订阅天气变化时刷新文字）</summary>
     private TileStyle.WeatherTileRefs? _weatherPreviewRefs;
 
     public WidgetPage()
     {
         InitializeComponent();
-        _formControls = [MusicWidgetCard, PhotoWidgetCard, WeatherWidgetCard, MappingWidgetCard, TrainerWidgetCard, BackupWidgetCard, GamepadMapWidgetCard, OptiScalerWidgetCard, RecycleBinWidgetCard, ForegroundWidgetCard, SystemWidgetCard];
+        _formControls = [MusicWidgetCard, PhotoWidgetCard, WeatherWidgetCard, MappingWidgetCard, TrainerWidgetCard, BackupWidgetCard, GamepadMapWidgetCard, OptiScalerWidgetCard, RecycleBinWidgetCard, ForegroundWidgetCard, SystemWidgetCard, MonitorWidgetCard];
         // 磁贴式自适应：窗口宽度变化（侧边栏 ↔ 全屏/居中）时按可用宽度重排列数
         FormScroll.SizeChanged += (_, _) => LayoutCards();
         Loaded += (_, _) => LayoutCards();
@@ -226,6 +236,12 @@ public sealed partial class WidgetPage : Page
             TileStyle.IsNoColor(SystemPreviewItem));
         TileStyle.FillSystemTile(sysRefs, SystemPreviewItem);
         SystemPreviewHost.Content = sysTile;
+        // 性能监控预览：与主页同一构建（状态点 + 运行状态，预览显示"已停止"）
+        var (monTile, monRefs) = TileStyle.BuildMonitorTile(
+            MonitorPreviewItem, w, h, TileStyle.AccentFor(MonitorPreviewItem),
+            TileStyle.IsNoColor(MonitorPreviewItem));
+        TileStyle.FillMonitorState(monRefs, MonitorPreviewItem);
+        MonitorPreviewHost.Content = monTile;
         WeatherService.StateChanged += OnWeatherChanged;
         WeatherService.EnsureFresh();
 
@@ -272,6 +288,7 @@ public sealed partial class WidgetPage : Page
         else if (ReferenceEquals(c, RecycleBinWidgetCard)) AddRecycleBinWidget();
         else if (ReferenceEquals(c, ForegroundWidgetCard)) AddForegroundWidget();
         else if (ReferenceEquals(c, SystemWidgetCard)) AddSystemWidget();
+        else if (ReferenceEquals(c, MonitorWidgetCard)) AddMonitorWidget();
         else AddMusicWidget();
     }
 
@@ -608,6 +625,23 @@ public sealed partial class WidgetPage : Page
         });
     }
 
+    /// <summary>性能监控组件：默认"长"尺寸（可后续编辑大小与颜色），只允许一个——
+    /// 一个置顶监控条即可覆盖全部指标，多份只会重复显示。</summary>
+    private void AddMonitorWidget()
+    {
+        var items = ConfigService.Load();
+        if (ExistsWidget(items, WidgetKind.Monitor)) { PageTitle.Text = "性能监控已在主页"; return; }
+        CommitWidget(items, new LaunchItem
+        {
+            Name = "性能监控",
+            Target = "widget:monitor",
+            Kind = LaunchKind.Widget,
+            WidgetKind = WidgetKind.Monitor,
+            PageIndex = App.Main?.CurrentHomePage ?? 0,   // 新磁贴归到主页当前所在页
+            Size = TileSize.Wide
+        });
+    }
+
     // ---- 鼠标 ----
 
     private void OnBackClick(object sender, RoutedEventArgs e) => App.Main?.ShowMainPage();
@@ -624,6 +658,7 @@ public sealed partial class WidgetPage : Page
         else if (sender is Button { Tag: "recyclebin" }) AddRecycleBinWidget();
         else if (sender is Button { Tag: "foreground" }) AddForegroundWidget();
         else if (sender is Button { Tag: "system" }) AddSystemWidget();
+        else if (sender is Button { Tag: "monitor" }) AddMonitorWidget();
         else AddMusicWidget();
     }
 }

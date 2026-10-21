@@ -76,10 +76,19 @@
                     </ToggleSwitch.Header>
                 </ToggleSwitch>
 
-                <TextBlock Text="窗口位置" FontSize="15" Opacity="0.9"/>
-                <TextBlock Text="居中时窗口不贴屏幕四边，边缘手势从顶边呼出；宽度按外观页的比例放大（38% ≈ 70% 屏宽）" FontSize="12" Opacity="0.6"/>
+                <ToggleSwitch x:Name="StartMenuToggle" Padding="14,10" Toggled="OnStartMenuChanged">
+                    <ToggleSwitch.Header>
+                        <StackPanel Spacing="2">
+                            <TextBlock Text="替代 Windows 开始菜单" FontSize="16"/>
+                            <TextBlock Text="窗口居中停靠在任务栏上方；Win 键与任务栏开始按钮改为呼出/收起本启动器" FontSize="12" Opacity="0.6" TextWrapping="Wrap"/>
+                        </StackPanel>
+                    </ToggleSwitch.Header>
+                </ToggleSwitch>
+
+                <TextBlock x:Name="DockSideTitle" Text="窗口位置" FontSize="15" Opacity="0.9"/>
+                <TextBlock x:Name="DockSideHint" Text="居中时窗口不贴屏幕四边，边缘手势从顶边呼出；宽度按外观页的比例放大（38% ≈ 70% 屏宽）" FontSize="12" Opacity="0.6"/>
                 <!-- 三列并排显式 Grid（勿用 RadioButtons 容器，坐标不可靠）：手柄行感知导航左右跨列 -->
-                <Grid>
+                <Grid x:Name="DockSidePanel">
                     <Grid.ColumnDefinitions>
                         <ColumnDefinition Width="*"/>
                         <ColumnDefinition Width="*"/>

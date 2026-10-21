@@ -206,8 +206,8 @@ public sealed partial class AddItemPage : Page, ISettingsGamepad
     public AddItemPage()
     {
         InitializeComponent();
-        _sysOptBoxes = [SysOptSettings, SysOptThisPc, SysOptExplorer, SysOptVolume, SysOptBrightness, SysOptWifi, SysOptBluetooth];
-        _sysOptMarks = [SysOptSettingsMark, SysOptThisPcMark, SysOptExplorerMark, SysOptVolumeMark, SysOptBrightnessMark, SysOptWifiMark, SysOptBluetoothMark];
+        _sysOptBoxes = [SysOptSettings, SysOptThisPc, SysOptVolume, SysOptBrightness, SysOptWifi, SysOptBluetooth, SysOptHotspot, SysOptNightLight];
+        _sysOptMarks = [SysOptSettingsMark, SysOptThisPcMark, SysOptVolumeMark, SysOptBrightnessMark, SysOptWifiMark, SysOptBluetoothMark, SysOptHotspotMark, SysOptNightLightMark];
         for (var i = 0; i < _sysOptBoxes.Length; i++)
         {
             var chip = _sysOptBoxes[i];
@@ -308,6 +308,22 @@ public sealed partial class AddItemPage : Page, ISettingsGamepad
         if (MappingRow.Visibility == vis) list.Add(MappingCaptureButton);
         // 修改器小组件：打开已下载修改器目录按钮
         if (TrainerRow.Visibility == vis) list.Add(OpenTrainerFolderButton);
+        // 性能监控：悬浮条位置（六选一）/ 大小 / 不透明度
+        if (MonitorRow.Visibility == vis)
+        {
+            list.Add(MonSizeSmall);
+            list.Add(MonSizeNormal);
+            list.Add(MonSizeLarge);
+            list.Add(MonOpaque100);
+            list.Add(MonOpaque50);
+            list.Add(MonOpaque0);
+            list.Add(MonPosTopLeft);
+            list.Add(MonPosTopCenter);
+            list.Add(MonPosTopRight);
+            list.Add(MonPosBottomLeft);
+            list.Add(MonPosBottomCenter);
+            list.Add(MonPosBottomRight);
+        }
         // 游戏存档小组件：备份方式 / 保留份数，以及按方式显示的本地面板或云端面板
         if (BackupRow.Visibility == vis)
         {
@@ -481,9 +497,9 @@ public sealed partial class AddItemPage : Page, ISettingsGamepad
             IconRow.Visibility = w;
             CoverHeaderText.Visibility = w;
             CoverRow.Visibility = w;
-            // 音乐固定 2×2、系统固定"长"不可改大小；其余小组件（图片组/设置/天气/映射/修改器/游戏存档/手柄映射）可编辑大小。
+            // 音乐固定 2×2、系统固定"长"不可改大小；其余小组件（图片组/设置/电源/天气/映射/修改器/游戏存档/手柄映射）可编辑大小。
             // 颜色：图片组不需要（整块铺图）
-            SizeColumn.Visibility = isPhoto || item.WidgetKind is WidgetKind.Settings or WidgetKind.Weather or WidgetKind.Mapping or WidgetKind.Trainer or WidgetKind.Backup or WidgetKind.GamepadMap or WidgetKind.OptiScaler or WidgetKind.RecycleBin or WidgetKind.Foreground
+            SizeColumn.Visibility = isPhoto || item.WidgetKind is WidgetKind.Settings or WidgetKind.Power or WidgetKind.Weather or WidgetKind.Mapping or WidgetKind.Trainer or WidgetKind.Backup or WidgetKind.GamepadMap or WidgetKind.OptiScaler or WidgetKind.RecycleBin or WidgetKind.Foreground or WidgetKind.Monitor
                 ? Microsoft.UI.Xaml.Visibility.Visible : w;
             ColorColumn.Visibility = isPhoto ? w : Microsoft.UI.Xaml.Visibility.Visible;
             PhotoFolderRow.Visibility = isPhoto
@@ -510,6 +526,15 @@ public sealed partial class AddItemPage : Page, ISettingsGamepad
                 Keep10Radio.IsChecked = item.BackupKeep == 10;
                 Keep5Radio.IsChecked = item.BackupKeep is not 3 and not 10; // 兜底：非 3/10 一律按 5
                 UpdateBackupPanels();
+            }
+            // 性能监控：大小、颜色 + 悬浮条位置 / 大小 / 透明度（磁贴固定显示“性能监控”，无需自定义名称）
+            var isMonitor = item.WidgetKind == WidgetKind.Monitor;
+            MonitorRow.Visibility = isMonitor ? Microsoft.UI.Xaml.Visibility.Visible : w;
+            if (isMonitor)
+            {
+                if (string.IsNullOrWhiteSpace(NameBox.Text)) NameBox.Text = "性能监控";
+                NameBox.Visibility = w;
+                CheckMonitorSettings(item.MonitorPos, item.MonitorScale, item.MonitorOpacity);
             }
             // OptiScaler：名称、大小、颜色 + 注入 DLL 名 / ini 关键项 / 本地包 / 一键还原
             var isOptiScaler = item.WidgetKind == WidgetKind.OptiScaler;
@@ -615,6 +640,7 @@ public sealed partial class AddItemPage : Page, ISettingsGamepad
             BackupRow.Visibility = Microsoft.UI.Xaml.Visibility.Collapsed;
             GamepadMapRow.Visibility = Microsoft.UI.Xaml.Visibility.Collapsed;
             OptiScalerRow.Visibility = Microsoft.UI.Xaml.Visibility.Collapsed;
+            MonitorRow.Visibility = Microsoft.UI.Xaml.Visibility.Collapsed;
         }
     }
 
@@ -630,6 +656,7 @@ public sealed partial class AddItemPage : Page, ISettingsGamepad
             PageTitle.Text = _isWidget
                 ? (item.WidgetKind == WidgetKind.Photos ? "编辑图片组"
                     : item.WidgetKind == WidgetKind.Settings ? "编辑设置磁贴"
+                    : item.WidgetKind == WidgetKind.Power ? "编辑电源磁贴"
                     : item.WidgetKind == WidgetKind.Weather ? "编辑天气小组件"
                     : item.WidgetKind == WidgetKind.Mapping ? "编辑映射小组件"
                     : item.WidgetKind == WidgetKind.Trainer ? "编辑修改器小组件"
@@ -639,6 +666,7 @@ public sealed partial class AddItemPage : Page, ISettingsGamepad
                     : item.WidgetKind == WidgetKind.RecycleBin ? "编辑回收站小组件"
                     : item.WidgetKind == WidgetKind.Foreground ? "编辑前台应用小组件"
                     : item.WidgetKind == WidgetKind.System ? "编辑系统小组件"
+                    : item.WidgetKind == WidgetKind.Monitor ? "编辑性能监控小组件"
                     : item.WidgetKind == WidgetKind.Drawer ? "编辑磁贴抽屉" : "编辑音乐小组件")
                 : _isGroup ? "编辑磁贴组" : "编辑快捷项";
         }
@@ -661,6 +689,7 @@ public sealed partial class AddItemPage : Page, ISettingsGamepad
             BackupRow.Visibility = Microsoft.UI.Xaml.Visibility.Collapsed;
             GamepadMapRow.Visibility = Microsoft.UI.Xaml.Visibility.Collapsed;
             OptiScalerRow.Visibility = Microsoft.UI.Xaml.Visibility.Collapsed;
+            MonitorRow.Visibility = Microsoft.UI.Xaml.Visibility.Collapsed;
             DrawerRow.Visibility = Microsoft.UI.Xaml.Visibility.Collapsed;
             _pendingDrawers = [];
             _drawerCursor = 0;
@@ -811,6 +840,43 @@ public sealed partial class AddItemPage : Page, ISettingsGamepad
         WideSizeRadio.IsChecked = size == TileSize.Wide;
         LargeSizeRadio.IsChecked = size == TileSize.Large;
     }
+
+    /// <summary>按配置回填监控悬浮条的位置 / 大小 / 不透明度（旧配置无这些字段时走默认值）</summary>
+    private void CheckMonitorSettings(MonitorPosition pos, double scale, double opacity)
+    {
+        MonPosTopLeft.IsChecked = pos == MonitorPosition.TopLeft;
+        MonPosTopCenter.IsChecked = pos == MonitorPosition.TopCenter;
+        MonPosTopRight.IsChecked = pos == MonitorPosition.TopRight;
+        MonPosBottomLeft.IsChecked = pos == MonitorPosition.BottomLeft;
+        MonPosBottomCenter.IsChecked = pos == MonitorPosition.BottomCenter;
+        MonPosBottomRight.IsChecked = pos == MonitorPosition.BottomRight;
+
+        MonSizeSmall.IsChecked = scale < 0.88;
+        MonSizeLarge.IsChecked = scale > 1.15;
+        MonSizeNormal.IsChecked = MonSizeSmall.IsChecked != true && MonSizeLarge.IsChecked != true;
+
+        MonOpaque100.IsChecked = opacity >= 0.72;
+        MonOpaque50.IsChecked = MonOpaque100.IsChecked != true && opacity >= 0.25;
+        MonOpaque0.IsChecked = MonOpaque100.IsChecked != true && MonOpaque50.IsChecked != true;
+    }
+
+    private MonitorPosition SelectedMonitorPos()
+    {
+        if (MonPosTopLeft.IsChecked == true) return MonitorPosition.TopLeft;
+        if (MonPosTopRight.IsChecked == true) return MonitorPosition.TopRight;
+        if (MonPosBottomLeft.IsChecked == true) return MonitorPosition.BottomLeft;
+        if (MonPosBottomCenter.IsChecked == true) return MonitorPosition.BottomCenter;
+        if (MonPosBottomRight.IsChecked == true) return MonitorPosition.BottomRight;
+        return MonitorPosition.TopCenter;
+    }
+
+    private double SelectedMonitorScale() =>
+        MonSizeSmall.IsChecked == true ? 0.75 :
+        MonSizeLarge.IsChecked == true ? 1.3 : 1.0;
+
+    private double SelectedMonitorOpacity() =>
+        MonOpaque100.IsChecked == true ? 1.0 :
+        MonOpaque50.IsChecked == true ? 0.5 : 0.0;
 
     private PhotoSpeed SelectedSpeed()
     {
@@ -1227,8 +1293,9 @@ public sealed partial class AddItemPage : Page, ISettingsGamepad
                             SlideshowService.IntervalOf(it.SlideshowSpeed)); // 换文件夹后立即重扫
                     }
                 }
-                else if (it.WidgetKind == WidgetKind.Settings)
+                else if (it.WidgetKind is WidgetKind.Settings or WidgetKind.Power)
                 {
+                    // 设置 / 电源：常驻磁贴，可改名称、大小与颜色（不可删除）
                     it.Size = SelectedSize();
                     it.TileColor = SelectedColor();
                 }
@@ -1237,6 +1304,15 @@ public sealed partial class AddItemPage : Page, ISettingsGamepad
                     // 天气：改名称、大小与颜色（数据由服务刷新，无其他配置）
                     it.Size = SelectedSize();
                     it.TileColor = SelectedColor();
+                }
+                else if (it.WidgetKind == WidgetKind.Monitor)
+                {
+                    // 性能监控：改名称、大小、颜色，以及悬浮条位置 / 大小 / 不透明度
+                    it.Size = SelectedSize();
+                    it.TileColor = SelectedColor();
+                    it.MonitorPos = SelectedMonitorPos();
+                    it.MonitorScale = SelectedMonitorScale();
+                    it.MonitorOpacity = SelectedMonitorOpacity();
                 }
                 else if (it.WidgetKind == WidgetKind.Mapping)
                 {
@@ -1390,6 +1466,7 @@ public sealed partial class AddItemPage : Page, ISettingsGamepad
         }
 
         ConfigService.Save(items);
+        MonitorService.ApplySettings(); // 监控正在运行时：位置/大小/透明度立即生效
         App.Main?.ShowMainPage();
     }
 

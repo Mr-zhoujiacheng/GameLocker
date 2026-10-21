@@ -62,6 +62,9 @@ public class AppSettings
     /// 作用于当前标签的淡底与下划线、焦点进入抽屉时的焦点环，以及"+"按钮；面板本身无底色无边框</summary>
     public string DrawerColor { get; set; } = "none";
 
+    /// <summary>抽屉透明：开启后去掉玻璃渐变底与投影，抽屉与窗口背景完全一致，仅靠加重的描边区分范围</summary>
+    public bool DrawerTransparent { get; set; }
+
     /// <summary>抽屉内磁贴统一大小：开启后抽屉内所有磁贴忽略自身设定的大小，一律按小磁贴（1×1）显示</summary>
     public bool DrawerUniformSmall { get; set; }
 
@@ -95,6 +98,10 @@ public class AppSettings
 
     /// <summary>平板模式：开启后所有页面隐藏底部手柄按键提示条</summary>
     public bool TabletMode { get; set; }
+
+    /// <summary>替代 Windows 开始菜单：窗口居中停靠在任务栏上方；
+    /// Win 键与任务栏开始按钮改为呼出/收起本启动器</summary>
+    public bool StartMenuMode { get; set; }
 
     /// <summary>呼出组合键（长按 1 秒唤起窗口），默认 LT+RT</summary>
     public GamepadButtons SummonCombo { get; set; } =

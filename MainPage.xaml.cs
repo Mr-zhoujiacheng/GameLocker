@@ -113,6 +113,9 @@ public sealed partial class MainPage : Page
     /// <summary>当前显示的系统小组件磁贴引用（重排时重建；右摇杆切换面板项/读数变化时只改内容）</summary>
     private readonly Dictionary<TileStyle.SystemTileRefs, LaunchItem> _sysRefs = [];
 
+    /// <summary>当前显示的性能监控磁贴引用（重排时重建；开关或读数变化时只改文字）</summary>
+    private readonly Dictionary<TileStyle.MonitorTileRefs, LaunchItem> _monRefs = [];
+
     /// <summary>长按目标=手柄映射磁贴时记录（长按=关闭映射）</summary>
     private LaunchItem? _lpRemapItem;
 
@@ -170,6 +173,15 @@ public sealed partial class MainPage : Page
         // 抽屉改名遮罩：点击面板外空白（遮罩层）取消
         RenameMask.Tapped += (_, _) => CancelRenameDrawerTab();
 
+        // 电源菜单遮罩：点空白取消，点某一项直接执行对应电源操作
+        PowerMask.Tapped += (_, _) => ClosePowerMenu();
+        _powerCards = [PowerSignOut, PowerSleep, PowerHibernate, PowerRestart, PowerShutdown];
+        for (var i = 0; i < _powerCards.Length; i++)
+        {
+            var index = i;
+            _powerCards[i].Tapped += (_, _) => ChoosePower(index);
+        }
+
         // 页码圆点：切页时短暂显示，3 秒无操作自动隐藏
         _pageDotsTimer.Tick += (_, _) =>
         {
@@ -203,6 +215,8 @@ public sealed partial class MainPage : Page
         _tickCount++;
         // 音乐磁贴进度秒级刷新
         if (_musicRefs.Count > 0) RefreshMusicTiles();
+        // 性能监控磁贴读数秒级刷新
+        if (_monRefs.Count > 0) RefreshMonitorTiles();
     }
 
     private int _tickCount;
@@ -428,6 +442,8 @@ public sealed partial class MainPage : Page
         _drawerHidden = !show;
         if (_drawerHidden && _inDrawer) ExitDrawer(); // 收起时焦点不能留在屏幕外的面板上
         AnimateDrawerSlide(_drawerHidden, animate: true);
+        // 呼出后选中框直接落在抽屉上（抽屉层），不用再按 ↓ 才能对焦
+        if (show) EnterDrawer();
     }
 
     /// <summary>抽屉面板下移/复位：hidden=true 滑出窗口下缘，false 滑回原位。
@@ -585,9 +601,9 @@ public sealed partial class MainPage : Page
     /// <summary>主页总页数（含主主页，至少 1 页）</summary>
     private static int PageCount() => Math.Max(1, SettingsService.Current.HomePageCount);
 
-    /// <summary>项所属页号；设置磁贴固定在第 0 页（保证任意页都能进设置）</summary>
+    /// <summary>项所属页号；设置/电源磁贴固定在第 0 页（保证任意页都能进设置/电源菜单）</summary>
     private static int PageIndexOf(LaunchItem it) =>
-        it.Kind == LaunchKind.Widget && it.WidgetKind == WidgetKind.Settings ? 0 : it.PageIndex;
+        it.Kind == LaunchKind.Widget && it.WidgetKind is WidgetKind.Settings or WidgetKind.Power ? 0 : it.PageIndex;
 
     // ---- 桌面拖入：快捷方式/程序/网站/文件夹 → 自动识别生成磁贴 ----
 
@@ -759,9 +775,10 @@ public sealed partial class MainPage : Page
     /// </summary>
     public bool HandleGamepad(GamepadButtons buttons)
     {
-        // 添加方式选择遮罩 / 抽屉改名遮罩打开：按键优先交给遮罩
+        // 添加方式选择遮罩 / 抽屉改名遮罩 / 电源菜单 打开：按键优先交给遮罩
         if (_choiceOpen) return HandleChoice(buttons);
         if (_renaming) return HandleRename(buttons);
+        if (_powerOpen) return HandlePower(buttons);
 
         // LT/RT：左右循环切换主页（副页），带滑动动画；本身不参与其它语义
         if (buttons.HasFlag(GamepadButtons.LeftTrigger)) { SwitchPage(-1); return true; }
@@ -1055,6 +1072,7 @@ public sealed partial class MainPage : Page
         _remapRefs.Clear();
         _fgRefs.Clear();
         _sysRefs.Clear();
+        _monRefs.Clear();
         // 磁贴重建：旧的徽章引用失效
         _settingsTile = null;
         _badge = SettingsBadge.None;
@@ -1076,11 +1094,13 @@ public sealed partial class MainPage : Page
         for (var i = 0; i < _display.Count; i++)
         {
             var (item, group) = _display[i];
-            // 组成员保持自身原有尺寸/样式；音乐小组件固定 2×2，系统小组件固定 2×1，其余可编辑尺寸
+            // 组成员保持自身原有尺寸/样式；音乐小组件固定 2×2，系统小组件固定 2×1，
+            // 设置/电源常驻磁贴固定 1×1，其余可编辑尺寸
             var (w, h) = item.Kind == LaunchKind.Widget && item.WidgetKind == WidgetKind.Music
                 ? (2, 2)
                 : item.Kind == LaunchKind.Widget && item.WidgetKind == WidgetKind.System
                     ? (2, 1)
+                    : TileStyle.IsFixedTile(item) ? (1, 1)
                     : CellsOf(item.Size);
 
             (int c, int r) spot = (0, 0);
@@ -1327,6 +1347,19 @@ public sealed partial class MainPage : Page
             return sysTile;
         }
 
+        // 性能监控小组件磁贴：A/点击 = 开启/关闭置顶监控条，磁贴显示运行状态与读数摘要
+        if (item.Kind == LaunchKind.Widget && item.WidgetKind == WidgetKind.Monitor)
+        {
+            var (monTile, monRefs) = TileStyle.BuildMonitorTile(item, width, height, accent, noColor);
+            monTile.Tag = index;
+            _monRefs[monRefs] = item;
+            monTile.Tapped += (_, _) => OnTileTapped(index, () => ActivateAt(index));
+            monTile.DoubleTapped += (_, _) => HandleDoubleTap(index);
+            AttachEditGestures(monTile, item, group, index, false);
+            TileStyle.FillMonitorState(monRefs, item); // 建好即显示当前开关状态
+            return monTile;
+        }
+
         // 标准磁贴（背景图片铺满 / 强调色底+图标+名称）：与小组件页预览共用同一构建
         var tile = TileStyle.BuildStandardTile(item, group, width, height, accent, noColor);
         tile.Tag = index;
@@ -1435,8 +1468,9 @@ public sealed partial class MainPage : Page
             HorizontalScrollBarVisibility = ScrollBarVisibility.Hidden,
             VerticalScrollMode = ScrollMode.Disabled,
             VerticalScrollBarVisibility = ScrollBarVisibility.Disabled,
-            // 左内边距 2（+ 标签自身 10 的内边距 = 文字与内容区左对齐于 DrawerPadH）；标签贴基线靠下
-            Padding = new Thickness(2, 0, DrawerPadH, 0)
+            // 左内边距 2（+ 标签自身 10 的内边距 = 文字与内容区左对齐于 DrawerPadH）；标签贴基线靠下。
+            // 右侧只留少量空隙："+"单独放在标题行最右侧（见下方 header），标签再多也挤不走它
+            Padding = new Thickness(2, 0, 8, 0)
         };
         strip.Content = new StackPanel
         {
@@ -1444,21 +1478,37 @@ public sealed partial class MainPage : Page
             Spacing = 8,
             VerticalAlignment = VerticalAlignment.Bottom
         };
-        Grid.SetRow(strip, 0);
+
+        // 标题行：标签条（占满剩余宽度） + 最右侧"+"新增按钮
+        var header = new Grid();
+        header.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
+        header.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
+        Grid.SetRow(header, 0);
+        Grid.SetColumn(strip, 0);
+        header.Children.Add(strip);
+        var addButton = CreateDrawerAddButton();
+        Grid.SetColumn(addButton, 1);
+        addButton.Margin = new Thickness(6, 0, DrawerPadH, 0);
+        addButton.VerticalAlignment = VerticalAlignment.Center;
+        header.Children.Add(addButton);
 
         // 标签条基线：贴标签条底部、两端留内边距的细分隔线，把抽屉与上方磁贴区分开。
-        // 先加入（在标签条之下），让当前标签的强调色下划线能压在这条线上
+        // 先加入（在标签条之下），让当前标签的强调色下划线能压在这条线上；
+        // 透明模式下抽屉没有玻璃底，基线与外框一起加重，避免整块区域"糊"进窗口
+        var strong = SettingsService.Current.DrawerTransparent;
         var divider = new Border
         {
-            Height = 1,
+            Height = strong ? 2 : 1,
             Margin = new Thickness(DrawerPadH, 0, DrawerPadH, 0),
             VerticalAlignment = VerticalAlignment.Bottom,
-            Background = new SolidColorBrush(Windows.UI.Color.FromArgb(0x24, 0xFF, 0xFF, 0xFF)),
+            Background = new SolidColorBrush(strong
+                ? Windows.UI.Color.FromArgb(0x5A, 0xFF, 0xFF, 0xFF)
+                : Windows.UI.Color.FromArgb(0x24, 0xFF, 0xFF, 0xFF)),
             IsHitTestVisible = false
         };
         Grid.SetRow(divider, 0);
         grid.Children.Add(divider);
-        grid.Children.Add(strip);
+        grid.Children.Add(header);
 
         var inner = new Canvas
         {
@@ -1474,6 +1524,7 @@ public sealed partial class MainPage : Page
         DrawerHost.Visibility = Visibility.Visible;
         // 面板整体跟随"磁贴透明度"设置淡出（留 0.6 下限：面板是容器底，过淡会看不清标签）
         DrawerHost.Opacity = Math.Max(0.6, TileStyle.Opacity);
+        ApplyDrawerSurface(); // 玻璃渐变底 / 透明模式
         ResetDrawerFrame(); // 面板描边：默认弱描边，或设置里指定的抽屉颜色
 
         _drawerRegion = DrawerHost;
@@ -1495,8 +1546,9 @@ public sealed partial class MainPage : Page
         }
     }
 
-    /// <summary>重建标签条：每个抽屉一个标签（名称 + 当前项强调色下划线），末尾一个"+"。
-    /// 观感：常态标签无底色（干净），悬停微亮，当前项用所选颜色淡底 + 贴基线实色下划线（3px 视觉基线）</summary>
+    /// <summary>重建标签条：每个抽屉一个标签（名称 + 当前项强调色下划线）。
+    /// 观感：常态标签无底色（干净），悬停微亮，当前项用所选颜色淡底 + 贴基线实色下划线（3px 视觉基线）。
+    /// "+"按钮不在这里，固定在标题行最右侧（见 CreateDrawerAddButton）</summary>
     private void LayoutDrawerTabStrip(LaunchItem item)
     {
         if (_drawerTabStrip?.Content is not StackPanel row) return;
@@ -1567,8 +1619,12 @@ public sealed partial class MainPage : Page
             row.Children.Add(tab);
             if (selected) _drawerSelectedPill = tab;
         }
+    }
 
-        // "+"：新增抽屉（鼠标/触摸直达；手柄用编辑页增删或 X 添加流程）——中性扁平小按钮，不抢标签
+    /// <summary>"+"新增抽屉按钮（鼠标/触摸直达；手柄用编辑页增删或 X 添加流程）——中性扁平小按钮，不抢标签。
+    /// 固定在标题行最右侧，不随标签滚动</summary>
+    private Border CreateDrawerAddButton()
+    {
         var addFill = new SolidColorBrush(Windows.UI.Color.FromArgb(0x00, 0xFF, 0xFF, 0xFF));
         var add = new Border
         {
@@ -1591,7 +1647,7 @@ public sealed partial class MainPage : Page
         add.PointerExited += (_, _) => addFill.Color = Windows.UI.Color.FromArgb(0x00, 0xFF, 0xFF, 0xFF);
         add.Tapped += (_, e) => { e.Handled = true; AddDrawerTab(); };
         add.DoubleTapped += (_, e) => e.Handled = true; // 双击"+"不冒泡到面板（避免误弹重命名遮罩）
-        row.Children.Add(add);
+        return add;
     }
 
     /// <summary>按当前抽屉重绘内层磁贴：内容区列数随面板宽度自适应，贪心装箱，整块水平居中；面板高度随内容增长。</summary>
@@ -1869,10 +1925,11 @@ public sealed partial class MainPage : Page
         return hint;
     }
 
-    /// <summary>抽屉内磁贴占格（音乐固定 2×2、系统固定 2×1，与主页一致）</summary>
+    /// <summary>抽屉内磁贴占格（音乐固定 2×2、系统固定 2×1、设置/电源固定 1×1，与主页一致）</summary>
     private static (int Cols, int Rows) InnerCellsOf(LaunchItem it)
         => it.Kind == LaunchKind.Widget && it.WidgetKind == WidgetKind.Music ? (2, 2)
          : it.Kind == LaunchKind.Widget && it.WidgetKind == WidgetKind.System ? (2, 1)
+         : TileStyle.IsFixedTile(it) ? (1, 1)
          : CellsOf(it.Size);
 
     /// <summary>进入抽屉区域：选中框停在"抽屉本身"（抽屉层），此时按键只作用于抽屉；按 A 才进入内层磁贴。无抽屉组件时不做任何事。</summary>
@@ -2207,8 +2264,9 @@ public sealed partial class MainPage : Page
         if (_dragOverDrawer || _drawerRegion is not { } shell) return;
         if (_inDrawer && _drawerOwner is { } owner)
         {
-            // 焦点环：焦点进入抽屉层时描边换成实色强调色（玻璃卡片上的"当前操作对象"提示）
-            shell.BorderThickness = new Thickness(2);
+            // 焦点环：焦点进入抽屉层时描边换成实色强调色（"当前操作对象"提示），并加粗到 3px；
+            // 透明模式下底板已去掉，焦点环再粗一点（3.5px）保持区分度
+            shell.BorderThickness = new Thickness(SettingsService.Current.DrawerTransparent ? 3.5 : 3);
             shell.BorderBrush = new SolidColorBrush(DrawerColorSetting ?? TileStyle.AccentFor(owner));
         }
         else
@@ -2217,13 +2275,49 @@ public sealed partial class MainPage : Page
         }
     }
 
-    /// <summary>区域描边复位：玻璃浮层的常态 1px 高光描边（焦点进入抽屉层时由 UpdateDrawerSelection 换强调色）</summary>
+    /// <summary>抽屉面板表面：常态=玻璃渐变底 + 投影；透明模式=与窗口一致的透明底、去掉投影，
+    /// 仅靠加重的外框与标签基线区分范围</summary>
+    private void ApplyDrawerSurface()
+    {
+        if (SettingsService.Current.DrawerTransparent)
+        {
+            // 用 Transparent 而不是 null：空白处仍参与命中测试（点面板空白可进入抽屉区域）
+            DrawerHost.Background = new SolidColorBrush(Microsoft.UI.Colors.Transparent);
+            DrawerHost.Shadow = null;
+            DrawerHost.Translation = new System.Numerics.Vector3(0, 0, 0);
+            return;
+        }
+
+        var brush = new LinearGradientBrush
+        {
+            StartPoint = new Windows.Foundation.Point(0, 0),
+            EndPoint = new Windows.Foundation.Point(0, 1)
+        };
+        brush.GradientStops.Add(new GradientStop
+        {
+            Color = Windows.UI.Color.FromArgb(0x1E, 0xFF, 0xFF, 0xFF),
+            Offset = 0
+        });
+        brush.GradientStops.Add(new GradientStop
+        {
+            Color = Windows.UI.Color.FromArgb(0x0D, 0xFF, 0xFF, 0xFF),
+            Offset = 1
+        });
+        DrawerHost.Background = brush;
+        DrawerHost.Shadow ??= new ThemeShadow();
+        DrawerHost.Translation = new System.Numerics.Vector3(0, 0, 32);
+    }
+
+    /// <summary>区域描边复位：玻璃浮层的常态 1px 高光描边；透明模式加重到 2px 更亮描边（焦点进入时由 UpdateDrawerSelection 换强调色）</summary>
     private void ResetDrawerFrame()
     {
         if (_drawerRegion is { } shell)
         {
-            shell.BorderThickness = new Thickness(1);
-            shell.BorderBrush = new SolidColorBrush(Windows.UI.Color.FromArgb(0x2E, 0xFF, 0xFF, 0xFF));
+            var strong = SettingsService.Current.DrawerTransparent;
+            shell.BorderThickness = new Thickness(strong ? 2 : 1);
+            shell.BorderBrush = new SolidColorBrush(strong
+                ? Windows.UI.Color.FromArgb(0x80, 0xFF, 0xFF, 0xFF)
+                : Windows.UI.Color.FromArgb(0x2E, 0xFF, 0xFF, 0xFF));
         }
     }
 
@@ -2302,6 +2396,12 @@ public sealed partial class MainPage : Page
     private void HandleDoubleTap(int index)
     {
         if (_moving) return;
+        // 设置/电源常驻磁贴不可编辑：双击按普通单击处理（不取消挂起的 A/点击动作）
+        if (index >= 0 && index < _display.Count)
+        {
+            var (fixedItem, _) = _display[index];
+            if (TileStyle.IsFixedTile(fixedItem)) return;
+        }
         if ((DateTime.Now - _lastDoubleAt).TotalMilliseconds < 100) return;
         _lastDoubleAt = DateTime.Now;
         CancelPendingTap();
@@ -2321,6 +2421,7 @@ public sealed partial class MainPage : Page
         if (index < 0 || index >= _display.Count) return;
         var (item, group) = _display[index];
         if (group is not null) return;
+        if (TileStyle.IsFixedTile(item)) return; // 设置/电源常驻磁贴不可编辑
         App.Main?.NavigateEditItem(item);
     }
 
@@ -2345,12 +2446,12 @@ public sealed partial class MainPage : Page
             if (_choiceOpen) return;
             var p = e.GetCurrentPoint(TileHost).Position;
 
-            // 普通模式长按：设置磁贴=进入编辑模式；程序/网站/文件夹磁贴=关闭其前台窗口（等同 Y 键）；
+            // 普通模式长按：程序/网站/文件夹磁贴=关闭其前台窗口（等同 Y 键）；
             // 修改器小组件磁贴=关闭正在运行的修改器（等同 Y 键）；游戏存档小组件磁贴=同步存档（等同 Y 键）；
             // 手柄映射小组件磁贴=关闭映射（等同长按关闭）；OptiScaler 小组件磁贴=注入（等同 Y 键）；
-            // 前台应用磁贴=强制结束当前前台应用（等同 Y 键）
+            // 前台应用磁贴=强制结束当前前台应用（等同 Y 键）；设置/电源常驻磁贴不支持编辑，长按不响应
             if (!_moving && group is null &&
-                (isSettings || item.Kind is LaunchKind.App or LaunchKind.Url or LaunchKind.Folder
+                (item.Kind is LaunchKind.App or LaunchKind.Url or LaunchKind.Folder
                  || (item.Kind == LaunchKind.Widget && item.WidgetKind is WidgetKind.Trainer or WidgetKind.Backup or WidgetKind.GamepadMap or WidgetKind.OptiScaler or WidgetKind.Foreground)))
             {
                 _lpTimer ??= new Microsoft.UI.Xaml.DispatcherTimer { Interval = TimeSpan.FromMilliseconds(600) };
@@ -2361,7 +2462,7 @@ public sealed partial class MainPage : Page
                 var isBackup = item.Kind == LaunchKind.Widget && item.WidgetKind == WidgetKind.Backup;
                 var isRemap = item.Kind == LaunchKind.Widget && item.WidgetKind == WidgetKind.GamepadMap;
                 var isOpti = item.Kind == LaunchKind.Widget && item.WidgetKind == WidgetKind.OptiScaler;
-                _lpCloseItem = isSettings || isBackup || isRemap || isOpti ? null : item;
+                _lpCloseItem = isBackup || isRemap || isOpti ? null : item;
                 _lpSyncItem = isBackup ? item : null;
                 _lpRemapItem = isRemap ? item : null;
                 _lpOptiItem = isOpti ? item : null;
@@ -2542,7 +2643,8 @@ public sealed partial class MainPage : Page
             return;
         }
 
-        var draggedIsSettings = dragged.Kind == LaunchKind.Widget && dragged.WidgetKind == WidgetKind.Settings;
+        var draggedIsFixed = dragged.Kind == LaunchKind.Widget &&
+                             dragged.WidgetKind is WidgetKind.Settings or WidgetKind.Power;
 
         LaunchItem? tItem = null;
         LaunchItem? tGroup = null;
@@ -2562,7 +2664,7 @@ public sealed partial class MainPage : Page
             var targetIsSettings = tItem.Kind == LaunchKind.Widget && tItem.WidgetKind == WidgetKind.Settings;
             if (targetIsSettings)
             {
-                if (draggedIsSettings) return; // 设置磁贴拖到自身：不动
+                if (draggedIsFixed) return; // 设置/电源磁贴拖到设置磁贴：不动
                 // 垃圾桶：组按展开状态区分（展开=仅删组本体，收起=整组删除）；普通磁贴=删除
                 DeleteItem(dragged, null);
                 ShowToast(string.IsNullOrWhiteSpace(dragged.Name) ? "已删除磁贴" : $"已删除 {dragged.Name}");
@@ -2795,6 +2897,30 @@ public sealed partial class MainPage : Page
         {
             // 系统小组件：A/点击 = 打开入口（设置/我的电脑/资源管理器）或切换开关（静音/熄屏/WiFi/蓝牙）
             ActivateSystemPanel(item);
+        }
+        else if (item.WidgetKind == WidgetKind.Power)
+        {
+            // 电源磁贴：A/点击 = 弹出电源菜单（注销/睡眠/休眠/重启/关机）
+            OpenPowerMenu();
+        }
+        else if (item.WidgetKind == WidgetKind.Monitor)
+        {
+            // 性能监控小组件：A/点击 = 开启/关闭置顶悬浮监控条
+            MonitorService.Toggle();
+            RefreshMonitorTiles();
+            if (!MonitorService.IsRunning)
+            {
+                ShowToast("监控已关闭", ToastKind.Warning);
+            }
+            else if (MonitorService.LastError.Length > 0)
+            {
+                // 未提权且用户取消了 UAC：其余指标正常，仅帧率不可用
+                ShowToast("监控已开启（" + MonitorService.LastError + "）", ToastKind.Warning);
+            }
+            else
+            {
+                ShowToast("监控已开启", ToastKind.Success);
+            }
         }
         else
         {
@@ -3034,6 +3160,18 @@ public sealed partial class MainPage : Page
         if (item.Kind == LaunchKind.Widget && item.WidgetKind == WidgetKind.RecycleBin) { EmptyRecycleBin(); return; }
         if (item.Kind == LaunchKind.Widget && item.WidgetKind == WidgetKind.Foreground) { CloseForegroundApp(); return; }
         if (item.Kind == LaunchKind.Widget && item.WidgetKind == WidgetKind.System) return; // 系统小组件没有"可关闭"的对象
+        if (item.Kind == LaunchKind.Widget && item.WidgetKind == WidgetKind.Power) return;  // 电源磁贴没有"可关闭"的对象
+        if (item.Kind == LaunchKind.Widget && item.WidgetKind == WidgetKind.Monitor)
+        {
+            // 性能监控：Y 键直接关闭监控（未开启时无动作）
+            if (MonitorService.IsRunning)
+            {
+                MonitorService.Stop();
+                RefreshMonitorTiles();
+                ShowToast("监控已关闭", ToastKind.Warning);
+            }
+            return;
+        }
         CloseItem(item);
     }
 
@@ -3115,6 +3253,14 @@ public sealed partial class MainPage : Page
         if (_selected < 0 || _selected >= _display.Count) return false;
         var (item, group) = _display[_selected];
         return group is null && item.Kind == LaunchKind.Widget && item.WidgetKind == WidgetKind.OptiScaler;
+    }
+
+    /// <summary>当前选中的是否为顶层性能监控小组件磁贴（决定 A 键是开/关监控、Y 键是关闭监控）</summary>
+    private bool IsMonitorSelected()
+    {
+        if (_selected < 0 || _selected >= _display.Count) return false;
+        var (item, group) = _display[_selected];
+        return group is null && item.Kind == LaunchKind.Widget && item.WidgetKind == WidgetKind.Monitor;
     }
 
     /// <summary>当前选中磁贴定向的图片文件夹（未选中/无文件夹返回空串）</summary>
@@ -3233,6 +3379,114 @@ public sealed partial class MainPage : Page
         else App.Main?.RootNavigateAddItem();
     }
 
+    // ---- 电源菜单遮罩（电源磁贴 A/点击打开：注销/睡眠/休眠/重启/关机） ----
+
+    private bool _powerOpen;
+    private bool _powerBusy;   // 已确认某项、正在执行（防止重复触发）
+    private int _powerIndex;
+    private Storyboard? _powerIn;
+    private Border[] _powerCards = [];
+
+    /// <summary>打开电源菜单：默认停在第一项（最温和的"注销"），A 才执行</summary>
+    private void OpenPowerMenu()
+    {
+        if (_powerOpen) return;
+        _powerOpen = true;
+        _powerBusy = false;
+        _powerIndex = 0;
+        PowerOverlay.Visibility = Visibility.Visible;
+        UpdatePowerCursor();
+        PlayPowerIn();
+    }
+
+    private void ClosePowerMenu()
+    {
+        _powerIn?.Stop();
+        PowerPanel.Opacity = 1;
+        PowerOverlay.Visibility = Visibility.Collapsed;
+        _powerOpen = false;
+    }
+
+    /// <summary>电源菜单入场：遮罩淡入 + 面板淡入、轻微放大并自下而上归位（手机电源菜单的弹出感）</summary>
+    private void PlayPowerIn()
+    {
+        var maskFade = new DoubleAnimation { From = 0, To = 1, Duration = TimeSpan.FromMilliseconds(150) };
+        Storyboard.SetTarget(maskFade, PowerMask);
+        Storyboard.SetTargetProperty(maskFade, "Opacity");
+
+        var panelFade = new DoubleAnimation { From = 0, To = 1, Duration = TimeSpan.FromMilliseconds(180) };
+        Storyboard.SetTarget(panelFade, PowerPanel);
+        Storyboard.SetTargetProperty(panelFade, "Opacity");
+
+        var ease = new CubicEase { EasingMode = EasingMode.EaseOut };
+        var scaleX = new DoubleAnimation { From = 0.92, To = 1, Duration = TimeSpan.FromMilliseconds(230), EasingFunction = ease };
+        Storyboard.SetTarget(scaleX, PowerPanelTransform);
+        Storyboard.SetTargetProperty(scaleX, "ScaleX");
+        var scaleY = new DoubleAnimation { From = 0.92, To = 1, Duration = TimeSpan.FromMilliseconds(230), EasingFunction = ease };
+        Storyboard.SetTarget(scaleY, PowerPanelTransform);
+        Storyboard.SetTargetProperty(scaleY, "ScaleY");
+        var rise = new DoubleAnimation { From = 26, To = 0, Duration = TimeSpan.FromMilliseconds(260), EasingFunction = ease };
+        Storyboard.SetTarget(rise, PowerPanelTransform);
+        Storyboard.SetTargetProperty(rise, "TranslateY");
+
+        var sb = new Storyboard();
+        sb.Children.Add(maskFade);
+        sb.Children.Add(panelFade);
+        sb.Children.Add(scaleX);
+        sb.Children.Add(scaleY);
+        sb.Children.Add(rise);
+        _powerIn?.Stop();
+        _powerIn = sb;
+        sb.Begin();
+    }
+
+    /// <summary>电源菜单内手柄按键：↑/← 上一项，↓/→ 下一项，A 执行，B/View/X 取消</summary>
+    private bool HandlePower(GamepadButtons b)
+    {
+        if (b.HasFlag(GamepadButtons.DPadUp) || b.HasFlag(GamepadButtons.DPadLeft))
+        { _powerIndex = (_powerIndex + _powerCards.Length - 1) % _powerCards.Length; UpdatePowerCursor(); return true; }
+        if (b.HasFlag(GamepadButtons.DPadDown) || b.HasFlag(GamepadButtons.DPadRight))
+        { _powerIndex = (_powerIndex + 1) % _powerCards.Length; UpdatePowerCursor(); return true; }
+        if (b.HasFlag(GamepadButtons.A)) { ChoosePower(_powerIndex); return true; }
+        if (b.HasFlag(GamepadButtons.B) || b.HasFlag(GamepadButtons.View) || b.HasFlag(GamepadButtons.X))
+        { ClosePowerMenu(); return true; }
+        return true; // 遮罩打开时吞掉其余按键，避免误触发主页操作
+    }
+
+    private void UpdatePowerCursor()
+    {
+        var accentBr = new SolidColorBrush(Windows.UI.Color.FromArgb(0xFF, 0x4C, 0xC2, 0xFF));
+        var idleBr = new SolidColorBrush(Windows.UI.Color.FromArgb(0x1F, 0xFF, 0xFF, 0xFF));
+        var accentBg = new SolidColorBrush(Windows.UI.Color.FromArgb(0x26, 0x4C, 0xC2, 0xFF));
+        var idleBg = new SolidColorBrush(Windows.UI.Color.FromArgb(0x14, 0xFF, 0xFF, 0xFF));
+        for (var i = 0; i < _powerCards.Length; i++)
+        {
+            var on = i == _powerIndex;
+            _powerCards[i].BorderBrush = on ? accentBr : idleBr;
+            _powerCards[i].BorderThickness = new Thickness(on ? 2 : 1.5);
+            _powerCards[i].Background = on ? accentBg : idleBg;
+        }
+    }
+
+    /// <summary>选中某项：先关遮罩（让画面刷新），再执行电源操作；失败时用提示条说明原因</summary>
+    private void ChoosePower(int index)
+    {
+        if (!_powerOpen || _powerBusy) return;
+        if (index < 0 || index >= _powerCards.Length) return;
+        _powerBusy = true;
+        ClosePowerMenu();
+        _ = RunPowerActionAsync((PowerAction)index);
+    }
+
+    private async Task RunPowerActionAsync(PowerAction action)
+    {
+        // 关机/重启后窗口不会再有刷新机会，先等遮罩收起这一帧
+        await Task.Delay(280);
+        var (ok, message) = await Task.Run(() => PowerService.Execute(action));
+        _powerBusy = false;
+        if (!ok) ShowToast(message, ToastKind.Warning);
+    }
+
     /// <summary>副页块：主页多一页（可添加多个）。新增后直接在主页切到新页并提示（本页即主页，无需导航）。</summary>
     private void AddSubPage()
     {
@@ -3325,6 +3579,12 @@ public sealed partial class MainPage : Page
     private void RefreshSystemTiles()
     {
         foreach (var (refs, item) in _sysRefs) TileStyle.FillSystemTile(refs, item);
+    }
+
+    /// <summary>刷新所有性能监控磁贴的开关状态与读数摘要</summary>
+    private void RefreshMonitorTiles()
+    {
+        foreach (var (refs, item) in _monRefs) TileStyle.FillMonitorState(refs, item);
     }
 
     /// <summary>当前焦点所在的系统小组件磁贴项（磁贴区选中 或 抽屉内层焦点）；不是系统小组件返回 null</summary>
@@ -3544,12 +3804,24 @@ public sealed partial class MainPage : Page
             HintBar.SetHints("DPAD:切换选择|A:开启/关闭映射|R3:编辑|L3:排列|B:隐藏");
         else if (IsOptiSelected())
             HintBar.SetHints("DPAD:切换选择|A:呼出OptiScaler菜单|Y:注入|R3:编辑|L3:排列|B:隐藏");
+        else if (IsMonitorSelected())
+            HintBar.SetHints("DPAD:切换选择|A:开启/关闭监控|R3:编辑|L3:排列|B:隐藏");
+        else if (IsFixedSelected())
+            HintBar.SetHints("DPAD:选择|A:打开|L3:排列|VIEW:设置|B:隐藏"); // 设置/电源常驻磁贴不可编辑
         else if (IsClosableSelected())
             HintBar.SetHints("DPAD:选择|A:启动|Y:关闭|X:添加|R3:编辑|L3:排列|VIEW:设置|B:隐藏");
         else
             HintBar.SetHints(DrawerService.FindDrawer(_items.ToList()) is null
                 ? "DPAD:选择|A:启动|X:添加|R3:编辑|L3:排列|VIEW:设置|B:隐藏"
                 : "DPAD:选择(↓:抽屉)|A:启动|X:添加|R3:编辑|L3:排列|VIEW:设置|B:隐藏");
+    }
+
+    /// <summary>选中磁贴是否为设置/电源常驻磁贴（固定小尺寸+固定配色，不可编辑）</summary>
+    private bool IsFixedSelected()
+    {
+        if (_selected < 0 || _selected >= _display.Count) return false;
+        var (item, group) = _display[_selected];
+        return group is null && TileStyle.IsFixedTile(item);
     }
 
     /// <summary>选中磁贴是否可 Y 关闭（程序/网站/文件夹=可；组/小组件=不可）</summary>
@@ -3637,7 +3909,7 @@ public sealed partial class MainPage : Page
         if (_selected < 0 || _selected >= _display.Count) return;
         var (item, group) = _display[_selected];
         if (group is not null || item.Kind == LaunchKind.Group) return; // 组成员/组本体不参与
-        if (item.Kind == LaunchKind.Widget && item.WidgetKind == WidgetKind.Settings) return; // 设置磁贴不参与组合
+        if (item.Kind == LaunchKind.Widget && item.WidgetKind is WidgetKind.Settings or WidgetKind.Power) return; // 设置/电源磁贴不参与组合
         if (DrawerService.IsDrawer(item)) return; // 抽屉组件不参与标记/组合（避免自指容器）
         if (_marked.Contains(item)) _marked.Remove(item);
         else _marked.Add(item);
@@ -3705,7 +3977,7 @@ public sealed partial class MainPage : Page
     /// <summary>删除指定磁贴（Y 键/拖到设置磁贴上共用）：组=拆分组；成员=移出组；普通=删除</summary>
     private void DeleteItem(LaunchItem item, LaunchItem? group)
     {
-        if (item.Kind == LaunchKind.Widget && item.WidgetKind == WidgetKind.Settings) return; // 设置磁贴不可删除
+        if (item.Kind == LaunchKind.Widget && item.WidgetKind is WidgetKind.Settings or WidgetKind.Power) return; // 设置/电源磁贴不可删除
         if (group is not null)
         {
             group.Members.Remove(item);

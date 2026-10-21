@@ -200,7 +200,23 @@
                         </Viewbox>
                         <StackPanel Spacing="3">
                             <TextBlock Text="系统" FontSize="14" FontWeight="Bold" HorizontalAlignment="Center"/>
-                            <TextBlock Text="设置/我的电脑/资源管理器/音量/亮度/WiFi/蓝牙，右摇杆切换"
+                            <TextBlock Text="设置/电脑/音量/亮度&#x0A;WiFi/蓝牙/热点/夜间"
+                                       FontSize="11" Opacity="0.7" TextWrapping="Wrap" TextAlignment="Center"/>
+                        </StackPanel>
+                    </StackPanel>
+                </Button>
+
+                <!-- 性能监控组件卡片：缩小监控磁贴预览（状态点 + 运行状态）+ 名称 + 简述 -->
+                <Button x:Name="MonitorWidgetCard" Tag="monitor" Background="#14FFFFFF" BorderThickness="1"
+                        BorderBrush="Transparent" VerticalAlignment="Top"
+                        HorizontalContentAlignment="Center" VerticalContentAlignment="Top" Padding="10" Click="OnAddClick">
+                    <StackPanel Spacing="8">
+                        <Viewbox MaxHeight="116" Stretch="Uniform" HorizontalAlignment="Center">
+                            <ContentPresenter x:Name="MonitorPreviewHost"/>
+                        </Viewbox>
+                        <StackPanel Spacing="3">
+                            <TextBlock Text="性能监控" FontSize="14" FontWeight="Bold" HorizontalAlignment="Center"/>
+                            <TextBlock Text="A 开启置顶条：帧率/CPU/GPU/电池/内存"
                                        FontSize="11" Opacity="0.7" TextWrapping="Wrap" TextAlignment="Center"/>
                         </StackPanel>
                     </StackPanel>

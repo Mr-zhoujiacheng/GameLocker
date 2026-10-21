@@ -36,11 +36,12 @@ public sealed partial class DrawerSettingsPage : Page, ISettingsGamepad
         DrawerToggle.IsOn = s.DrawerEnabled;
         UniformSmallToggle.IsOn = s.DrawerUniformSmall;
         AutoHideToggle.IsOn = s.DrawerAutoHide;
+        TransparentToggle.IsOn = s.DrawerTransparent;
         CheckColor(s.DrawerColor);
 
         _controls =
         [
-            DrawerToggle, UniformSmallToggle, AutoHideToggle,
+            DrawerToggle, UniformSmallToggle, AutoHideToggle, TransparentToggle,
             DefaultColorRadio, DarkGrayRadio, BlackRadio, BlueRadio, PurpleRadio, GreenRadio
         ];
     }
@@ -264,6 +265,14 @@ public sealed partial class DrawerSettingsPage : Page, ISettingsGamepad
         if (!_ready) return;
         SettingsService.Update(s => s.DrawerAutoHide = AutoHideToggle.IsOn);
         // 即时应用：打开立即收起抽屉（带动画），关闭恢复常驻显示
+        App.Main?.ApplyDrawerSettings();
+    }
+
+    private void OnTransparentChanged(object sender, Microsoft.UI.Xaml.RoutedEventArgs e)
+    {
+        if (!_ready) return;
+        SettingsService.Update(s => s.DrawerTransparent = TransparentToggle.IsOn);
+        // 即时应用：切换玻璃底/透明底与描边粗细
         App.Main?.ApplyDrawerSettings();
     }
 

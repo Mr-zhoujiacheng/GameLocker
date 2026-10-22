@@ -633,19 +633,15 @@ internal sealed class MonitorOverlayWindow : IDisposable
 
     private static string FormatBattery(MonitorSnapshot s)
     {
-        var pct = double.IsNaN(s.BatteryPercent) ? "" : $"{s.BatteryPercent:0}%";
         if (s.Charging)
-        {
-            var charging = double.IsNaN(s.BatteryPower) ? "充电中" : $"{s.BatteryPower:0.0}W 充电";
-            return pct.Length > 0 ? $"{charging} · {pct}" : charging;
-        }
-        // 接电源且未充电（电池已满）：Windows 不提供功率，显示电量
-        if (s.OnAc) return pct.Length > 0 ? $"接电源 · {pct}" : "接电源";
+            return double.IsNaN(s.BatteryPower) ? "充电中" : $"{s.BatteryPower:0.0}W 充电";
+        // 接电源且未充电（电池已满）：Windows 不提供功率
+        if (s.OnAc) return "接电源";
         var power = double.IsNaN(s.BatteryPower) ? "" : $"{s.BatteryPower:0.0}W";
         var time = double.IsNaN(s.BatteryMinutes)
             ? ""
             : $"{(int)(s.BatteryMinutes / 60)}h{(int)(s.BatteryMinutes % 60):00}m";
-        var parts = new[] { power, time, pct }.Where(p => p.Length > 0).ToArray();
+        var parts = new[] { power, time }.Where(p => p.Length > 0).ToArray();
         return parts.Length > 0 ? string.Join(" · ", parts) : "—";
     }
 

@@ -30,6 +30,11 @@ internal sealed class PresentEtwListener : IDisposable
     private const int FrameWindow = 600;
     /// <summary>帧率统计窗口（毫秒）</summary>
     private const double FpsWindowMs = 1000;
+    /// <summary>同一帧重复事件的合并窗口（100ns 单位，1ms）：Present 与 PresentMultiplaneOverlay
+    /// 等事件会在同一帧几乎同时各发一条，若不合并帧率会翻倍（如实际 120 显示 240）；
+    /// 2ms 仍小于 240Hz 的帧间隔（4.2ms），不会误合并真实帧</summary>
+    private const long DedupeTicks = 20_000;
+
     /// <summary>输出给悬浮条绘制的帧时间样本数</summary>
     private const int HistoryMax = 180;
 
@@ -203,7 +208,16 @@ internal sealed class PresentEtwListener : IDisposable
             if (eventTimestamp <= 0) return;
             if (_lastTimestamp > 0)
             {
-                var ms = (eventTimestamp - _lastTimestamp) / 10000.0;
+                var delta = eventTimestamp - _lastTimestamp;
+                // 时间戳回退：视为重新开始统计
+                if (delta <= 0)
+                {
+                    _lastTimestamp = eventTimestamp;
+                    return;
+                }
+                // 同一帧的重复事件（相隔不足 1ms）不再计入
+                if (delta < DedupeTicks) return;
+                var ms = delta / 10000.0;
                 // 过滤异常间隔（暂停/切换窗口导致的秒级空档）
                 if (ms is > 0.2 and < 500)
                 {

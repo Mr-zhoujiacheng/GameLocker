@@ -177,8 +177,14 @@ public static class TileStyle
 
         var grid = new Grid();
 
-        // 图标：居中（组磁贴用应用网格 glyph；成员与原样式一致）
+        // 名称开关关闭 / 无颜色磁贴时不显示名称；小磁贴从图标下方居中显示标题
+        var showName = SettingsService.Current.ShowTileName && !noColor;
+        var smallWithName = small && showName;
+
+        // 图标：默认居中；小磁贴上要留出标题位置，图标整体上移
         double iconSize = small ? 40 : 48;
+        var iconMargin = smallWithName ? new Thickness(0, 10, 0, 0) : new Thickness(0);
+        var iconAlign = smallWithName ? VerticalAlignment.Top : VerticalAlignment.Center;
         UIElement icon = item.HasIcon
             ? new Image
             {
@@ -186,14 +192,16 @@ public static class TileStyle
                 Width = iconSize,
                 Height = iconSize,
                 HorizontalAlignment = HorizontalAlignment.Center,
-                VerticalAlignment = VerticalAlignment.Center
+                VerticalAlignment = iconAlign,
+                Margin = iconMargin
             }
             : new FontIcon
             {
                 Glyph = item.Glyph,
                 FontSize = small ? 30 : 40,
                 HorizontalAlignment = HorizontalAlignment.Center,
-                VerticalAlignment = VerticalAlignment.Center
+                VerticalAlignment = iconAlign,
+                Margin = iconMargin
             };
         grid.Children.Add(icon);
 
@@ -218,18 +226,19 @@ public static class TileStyle
                 IsHitTestVisible = false
             });
 
-        // 名称：左下角（磁贴标题开关关闭、小磁贴空间不足、或无颜色磁贴时不显示；组成员同样显示）
-        if (SettingsService.Current.ShowTileName && !noColor && !small)
+        // 名称：小磁贴底部居中（字号略小），其余磁贴左下角；组成员同样显示
+        if (showName)
             grid.Children.Add(new TextBlock
             {
                 Text = item.Name,
-                FontSize = 13,
+                FontSize = small ? 11 : 13,
                 Foreground = new SolidColorBrush(Microsoft.UI.Colors.White),
-                Margin = new Thickness(10, 0, 8, 8),
-                HorizontalAlignment = HorizontalAlignment.Left,
+                Margin = small ? new Thickness(6, 0, 6, 6) : new Thickness(10, 0, 8, 8),
+                HorizontalAlignment = small ? HorizontalAlignment.Center : HorizontalAlignment.Left,
                 VerticalAlignment = VerticalAlignment.Bottom,
+                TextAlignment = small ? Microsoft.UI.Xaml.TextAlignment.Center : Microsoft.UI.Xaml.TextAlignment.Left,
                 TextTrimming = TextTrimming.CharacterEllipsis,
-                MaxWidth = width - 20
+                MaxWidth = width - (small ? 12 : 20)
             });
 
         var tile = new Border

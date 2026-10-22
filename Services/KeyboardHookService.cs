@@ -321,13 +321,41 @@ public sealed class KeyboardHookService : IDisposable
         if (!_startMenuMode) return;
         if (idObject != OBJID_WINDOW || idChild != 0 || hwnd == IntPtr.Zero) return;
         if (!IsStartMenuWindow(hwnd)) return;
-        ShowWindow(hwnd, SW_HIDE); // 先隐藏，尽量不闪出系统开始菜单
+        CloseStartMenuWindows(hwnd);
         StartMenuOpened?.Invoke();
     }
 
-    /// <summary>该窗口是否属于系统开始菜单进程（StartMenuExperienceHost.exe）</summary>
-    private static bool IsStartMenuWindow(IntPtr hwnd)
+    /// <summary>
+    /// 关掉系统开始菜单：先发一次 ESC 让它自行收起，再把 StartMenuExperienceHost 进程的
+    /// 所有可见顶层窗口隐藏。只隐藏触发的那一个窗口不够——Win11 开始菜单还有别的窗口
+    /// 会继续吃手柄/键盘输入，表现为"启动器开着，按键却在操作系统开始菜单"。
+    /// </summary>
+    private static void CloseStartMenuWindows(IntPtr trigger)
     {
+        GetWindowThreadProcessId(trigger, out var pid);
+        if (pid == 0) return;
+        try
+        {
+            // 只在系统开始菜单确实在前台时才发 ESC，避免误关刚呼出的启动器
+            if (IsStartMenuProcessWindow(GetForegroundWindow()))
+            {
+                KeySendService.SendKeyOnly(VK_ESCAPE, up: false, InjectMarker);
+                KeySendService.SendKeyOnly(VK_ESCAPE, up: true, InjectMarker);
+            }
+        }
+        catch { }
+        EnumWindows((h, _) =>
+        {
+            GetWindowThreadProcessId(h, out var p);
+            if (p == pid && IsWindowVisible(h)) ShowWindow(h, SW_HIDE);
+            return true;
+        }, IntPtr.Zero);
+    }
+
+    /// <summary>指定窗口是否属于系统开始菜单进程（StartMenuExperienceHost.exe）</summary>
+    public static bool IsStartMenuProcessWindow(IntPtr hwnd)
+    {
+        if (hwnd == IntPtr.Zero) return false;
         GetWindowThreadProcessId(hwnd, out var pid);
         if (pid == 0) return false;
         var h = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, false, pid);
@@ -341,6 +369,9 @@ public sealed class KeyboardHookService : IDisposable
         }
         finally { CloseHandle(h); }
     }
+
+    /// <summary>该窗口是否属于系统开始菜单进程（StartMenuExperienceHost.exe）</summary>
+    private static bool IsStartMenuWindow(IntPtr hwnd) => IsStartMenuProcessWindow(hwnd);
 
     /// <summary>鼠标钩子：开始菜单模式下吞掉任务栏开始按钮的点击，抬起时触发呼出/收起</summary>
     private IntPtr MouseCallback(int nCode, IntPtr wParam, IntPtr lParam)
@@ -406,20 +437,29 @@ public sealed class KeyboardHookService : IDisposable
     /// <summary>
     /// 任务栏开始按钮的屏幕矩形（取不到时宽高为 0）。
     /// 供主窗口按开始按钮位置决定面板的水平对齐（按钮居中→面板居中，按钮靠左→面板贴左）。
+    /// 任务栏重建的瞬间枚举可能失败或拿到空矩形，这时返回上次的有效值，
+    /// 避免面板在"居中/靠边"之间来回跳。
     /// </summary>
     public static (int x, int y, int w, int h) StartButtonBounds()
     {
         var tray = FindWindow("Shell_TrayWnd", null);
-        if (tray == IntPtr.Zero) return default;
+        if (tray == IntPtr.Zero) return _lastStartBtn;
         IntPtr found = IntPtr.Zero;
         EnumChildWindows(tray, (h, _) =>
         {
             if (found == IntPtr.Zero && GetClassNameString(h) == "Start") found = h;
             return true;
         }, IntPtr.Zero);
-        if (found == IntPtr.Zero || !GetWindowRect(found, out var r)) return default;
-        return (r.Left, r.Top, r.Right - r.Left, r.Bottom - r.Top);
+        if (found == IntPtr.Zero || !GetWindowRect(found, out var r)) return _lastStartBtn;
+        var w = r.Right - r.Left;
+        var h = r.Bottom - r.Top;
+        if (w <= 0 || h <= 0) return _lastStartBtn;
+        _lastStartBtn = (r.Left, r.Top, w, h);
+        return _lastStartBtn;
     }
+
+    /// <summary>上次解析到的有效开始按钮矩形（任务栏重建期间回落用）</summary>
+    private static (int x, int y, int w, int h) _lastStartBtn;
 
     /// <summary>窗口本身或往上数层的父窗口是否为开始按钮（类名 "Start"）</summary>
     private static bool IsStartButtonClass(IntPtr hwnd)
@@ -467,6 +507,7 @@ public sealed class KeyboardHookService : IDisposable
     private const int VK_SHIFT = 0x10;
     private const int VK_CONTROL = 0x11;
     private const int VK_MENU = 0x12;
+    private const int VK_ESCAPE = 0x1B;
     private const int VK_LWIN = 0x5B;
     private const int VK_RWIN = 0x5C;
     private const uint EVENT_SYSTEM_FOREGROUND = 0x0003;
@@ -613,7 +654,16 @@ public sealed class KeyboardHookService : IDisposable
     private static extern IntPtr FindWindow(string? lpClassName, string? lpWindowName);
 
     [DllImport("user32.dll")]
+    private static extern IntPtr GetForegroundWindow();
+
+    [DllImport("user32.dll")]
     private static extern bool EnumChildWindows(IntPtr hWndParent, EnumWindowsProc lpEnumFunc, IntPtr lParam);
+
+    [DllImport("user32.dll")]
+    private static extern bool EnumWindows(EnumWindowsProc lpEnumFunc, IntPtr lParam);
+
+    [DllImport("user32.dll")]
+    private static extern bool IsWindowVisible(IntPtr hWnd);
 
     [DllImport("user32.dll")]
     private static extern bool GetWindowRect(IntPtr hWnd, out RECT lpRect);

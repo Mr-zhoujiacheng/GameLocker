@@ -33,8 +33,6 @@ public sealed class MonitorSnapshot
     public double BatteryPower = double.NaN;
     /// <summary>预计可用/充满时间（分钟，NaN=不可用）</summary>
     public double BatteryMinutes = double.NaN;
-    /// <summary>电池电量（%，NaN=不可用）</summary>
-    public double BatteryPercent = double.NaN;
     /// <summary>是否正在充电</summary>
     public bool Charging;
     /// <summary>是否已接外接电源</summary>
@@ -549,7 +547,6 @@ public static class MonitorService
         if (!GetSystemPowerStatus(out var p)) return;
         s.OnAc = p.ACLineStatus == 1;
         s.Charging = (p.BatteryFlag & 0x08) != 0; // 8 = 正在充电
-        if (p.BatteryLifePercent != 255) s.BatteryPercent = p.BatteryLifePercent; // 255 = 未知
         if (p.BatteryLifeTime > 0 && p.BatteryLifeTime != -1)
             s.BatteryMinutes = p.BatteryLifeTime / 60.0;
 
@@ -632,26 +629,32 @@ public static class MonitorService
     private static double ReadGpuPower()
     {
         EnsureNvml();
-        if (_nvmlDevice == IntPtr.Zero) return double.NaN;
-        try
+        if (_nvmlDevice != IntPtr.Zero)
         {
-            if (nvmlDeviceGetPowerUsage(_nvmlDevice, out var milliwatts) != 0) return double.NaN;
-            return milliwatts > 0 ? milliwatts / 1000.0 : double.NaN;
+            try
+            {
+                if (nvmlDeviceGetPowerUsage(_nvmlDevice, out var milliwatts) == 0 && milliwatts > 0)
+                    return milliwatts / 1000.0;
+            }
+            catch { }
         }
-        catch { return double.NaN; }
+        return ReadAdlPower();
     }
 
     private static double ReadGpuClock()
     {
         EnsureNvml();
-        if (_nvmlDevice == IntPtr.Zero) return double.NaN;
-        try
+        if (_nvmlDevice != IntPtr.Zero)
         {
-            // NVML_CLOCK_GRAPHICS = 0
-            if (nvmlDeviceGetClockInfo(_nvmlDevice, 0, out var mhz) != 0) return double.NaN;
-            return mhz > 0 ? mhz : double.NaN;
+            try
+            {
+                // NVML_CLOCK_GRAPHICS = 0
+                if (nvmlDeviceGetClockInfo(_nvmlDevice, 0, out var mhz) == 0 && mhz > 0)
+                    return mhz;
+            }
+            catch { }
         }
-        catch { return double.NaN; }
+        return ReadAdlClock();
     }
 
     [DllImport("nvml.dll", EntryPoint = "nvmlInit_v2")]
@@ -668,6 +671,101 @@ public static class MonitorService
 
     [DllImport("nvml.dll", EntryPoint = "nvmlDeviceGetClockInfo")]
     private static extern int nvmlDeviceGetClockInfo(IntPtr device, int clockType, out uint mhz);
+
+    // ---- GPU 频率 / 功耗（AMD：ADL，atiadlxx.dll 由 AMD 显卡驱动提供）----
+
+    private static bool _adlTried;
+    private static bool _adlReady;
+    private static int _adlAdapter = -1;
+    private static int _adlActivitySize = 44;
+    private static AdlAlloc? _adlAlloc;
+
+    private delegate IntPtr AdlAlloc(int size);
+
+    /// <summary>
+    /// 初始化 ADL 并找到能读出核心频率的适配器。
+    /// 不同版本 ADL 的 ADLPMActivity 结构大小不同，这里逐个尺寸试探，避免结构体布局不一致导致失败。
+    /// </summary>
+    private static void EnsureAdl()
+    {
+        if (_adlTried) return;
+        _adlTried = true;
+        try
+        {
+            _adlAlloc = size => Marshal.AllocHGlobal(size);
+            if (ADL_Main_Control_Create(_adlAlloc, 1) != 0) return;
+
+            var buffer = Marshal.AllocHGlobal(160);
+            try
+            {
+                for (var i = 0; i < 8 && _adlAdapter < 0; i++)
+                {
+                    foreach (var size in new[] { 44, 40, 48, 64, 68, 80, 160 })
+                    {
+                        for (var off = 0; off < 160; off += 4) Marshal.WriteInt32(buffer, off, 0);
+                        Marshal.WriteInt32(buffer, 0, size);
+                        if (ADL_Overdrive5_CurrentActivity_Get(i, buffer) != 0) continue;
+                        _adlAdapter = i;
+                        _adlActivitySize = size;
+                        break;
+                    }
+                }
+            }
+            finally
+            {
+                Marshal.FreeHGlobal(buffer);
+            }
+
+            _adlReady = _adlAdapter >= 0;
+        }
+        catch
+        {
+            // 无 atiadlxx.dll（NVIDIA / Intel 机器）：保持不可用
+            _adlReady = false;
+        }
+    }
+
+    /// <summary>AMD 核心频率（ADL 返回单位 10kHz，换算为 MHz）</summary>
+    private static double ReadAdlClock()
+    {
+        EnsureAdl();
+        if (!_adlReady) return double.NaN;
+
+        var buffer = Marshal.AllocHGlobal(160);
+        try
+        {
+            for (var off = 0; off < 160; off += 4) Marshal.WriteInt32(buffer, off, 0);
+            Marshal.WriteInt32(buffer, 0, _adlActivitySize);
+            if (ADL_Overdrive5_CurrentActivity_Get(_adlAdapter, buffer) != 0) return double.NaN;
+            var clock = Marshal.ReadInt32(buffer, 4); // iEngineClock
+            return clock > 0 ? clock / 100.0 : double.NaN;
+        }
+        catch { return double.NaN; }
+        finally { Marshal.FreeHGlobal(buffer); }
+    }
+
+    /// <summary>AMD 整卡功耗（ADL OD6，单位 mW；APU 上驱动可能不支持，此时返回 NaN）</summary>
+    private static double ReadAdlPower()
+    {
+        EnsureAdl();
+        if (!_adlReady) return double.NaN;
+        try
+        {
+            // ADL_OD6_POWER_NOW = 0
+            if (ADL_Overdrive6_CurrentPower_Get(_adlAdapter, 0, out var milliwatts) != 0) return double.NaN;
+            return milliwatts > 0 ? milliwatts / 1000.0 : double.NaN;
+        }
+        catch { return double.NaN; }
+    }
+
+    [DllImport("atiadlxx.dll")]
+    private static extern int ADL_Main_Control_Create(AdlAlloc alloc, int enumConnectedAdapters);
+
+    [DllImport("atiadlxx.dll")]
+    private static extern int ADL_Overdrive5_CurrentActivity_Get(int adapterIndex, IntPtr activity);
+
+    [DllImport("atiadlxx.dll")]
+    private static extern int ADL_Overdrive6_CurrentPower_Get(int adapterIndex, int powerType, out int power);
 
     // ---- CPU 功耗 ----
 

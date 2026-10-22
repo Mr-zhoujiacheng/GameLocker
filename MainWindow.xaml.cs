@@ -47,9 +47,8 @@ public sealed partial class MainWindow : Window
     private readonly Microsoft.UI.Xaml.DispatcherTimer _taskbarWatch =
         new() { Interval = TimeSpan.FromMilliseconds(1000) };
     private (SummonEdge edge, int x, int y, int w, int h) _taskbarSeen;
-    /// <summary>上次看到的开始按钮矩形：任务栏"图标左对齐/居中"切换时任务栏矩形不变，
-    /// 只有按钮位置变，靠它触发重排</summary>
-    private (int x, int y, int w, int h) _startBtnSeen;
+    /// <summary>上次生效的开始按钮归属端：只有它真正变化时才重排，防止面板左右跳</summary>
+    private DockSide _menuSide = DockSide.Center;
 
     /// <summary>开始菜单模式呼出/收起的去抖时间戳：一次操作可能经多条通道同时到达</summary>
     private long _lastStartMenuToggle;
@@ -140,10 +139,18 @@ public sealed partial class MainWindow : Window
         if (span <= 0) return DockSide.Center;
         var center = vertical ? btn.y + btn.h / 2.0 : btn.x + btn.w / 2.0;
         var rel = (center - start) / span;
-        if (rel < 0.34) return DockSide.Left;
-        if (rel > 0.66) return DockSide.Right;
-        return DockSide.Center;
+        // 带回差判定：已判定为贴端时放宽保持条件，避免数值在阈值附近抖动导致面板左右跳
+        var next = _lastStartSide switch
+        {
+            DockSide.Left => rel < 0.38 ? DockSide.Left : rel > 0.70 ? DockSide.Right : DockSide.Center,
+            DockSide.Right => rel > 0.62 ? DockSide.Right : rel < 0.30 ? DockSide.Left : DockSide.Center,
+            _ => rel < 0.30 ? DockSide.Left : rel > 0.70 ? DockSide.Right : DockSide.Center
+        };
+        _lastStartSide = next;
+        return next;
     }
+
+    private static DockSide _lastStartSide = DockSide.Center;
 
     /// <summary>把长度为 <paramref name="len"/> 的面板放在 [<paramref name="start"/>, start+span] 内做起始端/居中/末端对齐。
     /// 靠端对齐时留 <paramref name="margin"/> 的屏幕边距（完全贴边会把 DWM 圆角切在屏幕边缘之外）</summary>
@@ -245,23 +252,27 @@ public sealed partial class MainWindow : Window
         KeyboardHook.Triggered += () => DispatcherQueue.TryEnqueue(SummonFromHotkey);
         // 开始菜单模式：Win 键抬起 / 任务栏开始按钮点击 → 切换本启动器显隐
         KeyboardHook.StartMenuToggle += () => DispatcherQueue.TryEnqueue(ToggleStartMenu);
-        // 触屏点开始按钮抓不到鼠标消息 → 由前台监听把系统开始菜单隐藏后走同一切换
-        KeyboardHook.StartMenuOpened += () => DispatcherQueue.TryEnqueue(ToggleStartMenu);
+        // 触屏点开始按钮抓不到鼠标消息 → 由前台监听把系统开始菜单关掉后呼出本启动器。
+        // 这里只"确保显示"不切换：否则系统菜单反复抢前台会变成 呼出→收起→再呼出
+        KeyboardHook.StartMenuOpened += () => DispatcherQueue.TryEnqueue(EnsureStartMenuShown);
         KeyboardHook.Start();
 
         // 任务栏被移动/改高后自动跟随（面板停靠位置、滑入方向、边缘手势所在边）；
         // 任务栏图标对齐方式改变时只有开始按钮位置变，也一并跟随
         _taskbarSeen = TaskbarState();
-        _startBtnSeen = KeyboardHookService.StartButtonBounds();
+        _menuSide = KeyboardHookService.StartButtonBounds().w > 0 ? StartButtonSide() : _menuSide;
         _taskbarWatch.Tick += (_, _) =>
         {
             if (!SettingsService.Current.StartMenuMode) return;
             var now = TaskbarState();
-            var btn = KeyboardHookService.StartButtonBounds();
-            if (_taskbarSeen == now && _startBtnSeen == btn) return;
+            var side = StartButtonSide();
+            // 只按"停靠边/开始按钮归属端"的实质变化重排，忽略任务栏重建时的像素级抖动，
+            // 避免面板在居中与靠边之间来回跳
+            if (now.edge == _taskbarSeen.edge && side == _menuSide
+                && Math.Abs(now.w - _taskbarSeen.w) < 40 && Math.Abs(now.h - _taskbarSeen.h) < 40) return;
             if (_animating) return; // 动画中不打断，下个 tick 再来
             _taskbarSeen = now;
-            _startBtnSeen = btn;
+            _menuSide = side;
             ApplySidebarLayout();
         };
         if (SettingsService.Current.StartMenuMode) _taskbarWatch.Start();
@@ -299,8 +310,14 @@ public sealed partial class MainWindow : Window
         _startMenuAutoHide.Tick += (_, _) =>
         {
             _startMenuAutoHide.Stop();
-            if (SettingsService.Current.StartMenuMode && _shown && GetForegroundWindow() != _hwnd)
-                HideToTray();
+            if (!SettingsService.Current.StartMenuMode || !_shown) return;
+            // 系统开始菜单抢到前台时不要收起，而是把焦点抢回来（否则会切成"呼出又关闭"）
+            if (KeyboardHookService.IsStartMenuProcessWindow(GetForegroundWindow()))
+            {
+                BringToForeground();
+                return;
+            }
+            if (GetForegroundWindow() != _hwnd) HideToTray();
         };
 
         // 启动：先把窗口移到屏外，App.Activate 显示时不在原位（无虚影），Activated 后滑入
@@ -796,6 +813,35 @@ public sealed partial class MainWindow : Window
     }
 
     /// <summary>
+    /// 系统开始菜单被拦截后：确保本启动器处于显示状态（不切换），
+    /// 并在系统菜单抢前台后补抢一次焦点，防止手柄按键落到系统开始菜单上。
+    /// </summary>
+    private void EnsureStartMenuShown()
+    {
+        if (!SettingsService.Current.StartMenuMode) return;
+        _startMenuAutoHide.Stop();
+        if (!_shown) ShowFromTray();
+        else BringToForeground();
+        _ = ReclaimForegroundAsync();
+    }
+
+    private async Task ReclaimForegroundAsync()
+    {
+        try
+        {
+            await Task.Delay(150);
+            if (SettingsService.Current.StartMenuMode && _shown &&
+                KeyboardHookService.IsStartMenuProcessWindow(GetForegroundWindow()))
+                BringToForeground();
+            await Task.Delay(250);
+            if (SettingsService.Current.StartMenuMode && _shown &&
+                KeyboardHookService.IsStartMenuProcessWindow(GetForegroundWindow()))
+                BringToForeground();
+        }
+        catch { }
+    }
+
+    /// <summary>
     /// 开始菜单模式开关变更后调用：需要时退出全屏、按新模式重排布局，并同步键盘钩子的接管状态。
     /// </summary>
     public void ApplyStartMenuMode()
@@ -813,6 +859,7 @@ public sealed partial class MainWindow : Window
             return;
         }
         _startMenuAutoHide.Stop();
+        _menuSide = StartButtonSide();
         ApplySidebarLayout();
         SyncKeyboardHook();
     }

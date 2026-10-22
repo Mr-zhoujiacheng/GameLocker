@@ -447,16 +447,35 @@ public sealed partial class MainPage : Page
     }
 
     /// <summary>抽屉面板下移/复位：hidden=true 滑出窗口下缘，false 滑回原位。
-    /// animate=false 直接摆位（重绘后校正用，避免闪回可见）</summary>
+    /// animate=false 直接摆位（重绘后校正用，避免闪回可见）。
+    /// 收起动画结束后把抽屉行高度归零并折叠，让磁贴区铺满整屏、底部不再被空白条遮住。</summary>
     private void AnimateDrawerSlide(bool hidden, bool animate)
     {
         UpdateToastOffset();
-        var target = hidden ? DrawerHideOffset() : 0;
+
         if (!animate)
         {
-            DrawerSlide.Y = target;
+            if (hidden)
+            {
+                DrawerSlide.Y = DrawerHideOffset();
+                CollapseDrawerRow();
+            }
+            else
+            {
+                ExpandDrawerRow();
+                DrawerSlide.Y = 0;
+            }
             return;
         }
+
+        if (!hidden)
+        {
+            // 先恢复布局占位并摆到窗口下方，再滑入，避免从屏幕中间闪出
+            ExpandDrawerRow();
+            DrawerSlide.Y = DrawerHideOffset();
+        }
+
+        var target = hidden ? DrawerHideOffset() : 0;
         var sb = new Storyboard();
         var anim = new DoubleAnimation
         {
@@ -468,7 +487,32 @@ public sealed partial class MainPage : Page
         Storyboard.SetTarget(anim, DrawerSlide);
         Storyboard.SetTargetProperty(anim, "Y");
         sb.Children.Add(anim);
+        if (hidden)
+        {
+            // 滑出完成后再收回抽屉行，磁贴区随即铺满整屏
+            sb.Completed += (_, _) =>
+            {
+                if (!_drawerHidden) return;
+                DrawerSlide.Y = 0;
+                CollapseDrawerRow();
+            };
+        }
         sb.Begin();
+    }
+
+    /// <summary>收起抽屉：撤销行占位并折叠面板（不参与布局与命中测试）</summary>
+    private void CollapseDrawerRow()
+    {
+        DrawerRow.Height = new GridLength(0);
+        DrawerHost.Visibility = Visibility.Collapsed;
+        UpdateToastOffset(); // 底部提示条随磁贴区一起落到底部
+    }
+
+    /// <summary>展开抽屉：恢复 Auto 行高并显示面板</summary>
+    private void ExpandDrawerRow()
+    {
+        DrawerRow.Height = GridLength.Auto;
+        DrawerHost.Visibility = Visibility.Visible;
     }
 
     /// <summary>把面板整体移出窗口下缘所需的向下平移量：面板顶行落到页面底边。

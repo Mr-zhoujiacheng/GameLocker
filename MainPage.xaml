@@ -40,7 +40,8 @@
         <Grid x:Name="TileArea" Grid.Row="1">
             <Grid.RowDefinitions>
                 <RowDefinition Height="*"/>
-                <RowDefinition Height="Auto"/>
+                <!-- 抽屉行：自动隐藏收起时由代码把高度置 0，让磁贴区铺满整屏 -->
+                <RowDefinition x:Name="DrawerRow" Height="Auto"/>
             </Grid.RowDefinitions>
 
             <!-- 磁贴画布：ScrollViewer + Canvas 手动布局（靠上排布，从上往下）。

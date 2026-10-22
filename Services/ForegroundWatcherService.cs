@@ -5,19 +5,24 @@ using System.Text;
 namespace GameLocker.Services;
 
 /// <summary>
-/// 前台应用监测小组件（WidgetKind.Foreground）的领域逻辑：后台定时轮询当前前台窗口，解析其所属进程，
-/// 换前台窗口即更新 <see cref="Current"/> 并触发 <see cref="StateChanged"/>（调用方 marshal 回 UI 线程刷新磁贴）。
-/// 启动器自身与桌面/任务栏窗口不算"前台应用"，遇到时保留上一次检测到的真实应用。
-/// 交互：A/点击=冻结/解冻（NtSuspendProcess / NtResumeProcess，解冻用 A 再按一次）；
-/// Y=强制结束（TerminateProcess，冻结状态下同样有效）。关键系统进程与启动器自身不可操作。
-/// </summary>
-public static class ForegroundWatcherService
-{
-    /// <summary>前台应用信息：进程号、进程名、可执行文件路径（用于取图标）、窗口标题</summary>
-    public sealed record ForegroundApp(int ProcessId, string ProcessName, string? ExePath, string Title);
+/// <summary>前台应用监测小组件（WidgetKind.Foreground）的领域逻辑：后台定时轮询当前前台窗口，解析其所属进程，
+    /// 换前台窗口即更新 <see cref="Current"/> 并触发 <see cref="StateChanged"/>（调用方 marshal 回 UI 线程刷新磁贴）。
+    /// 启动器自身与桌面/任务栏窗口不算"前台应用"，遇到时保留上一次检测到的真实应用。
+    /// 交互：A/点击=冻结/解冻（NtSuspendProcess / NtResumeProcess，解冻用 A 再按一次）；
+    /// Y=强制结束（TerminateProcess，冻结状态下同样有效）。关键系统进程与启动器自身不可操作。
+    /// </summary>
+    public static class ForegroundWatcherService
+    {
+        /// <summary>前台应用信息：进程号、进程名、可执行文件路径（用于取图标）、窗口标题</summary>
+        public sealed record ForegroundApp(int ProcessId, string ProcessName, string? ExePath, string Title);
 
-    /// <summary>轮询间隔（毫秒）：换前台窗口后最迟一个周期内被检测到</summary>
-    private const int PollMs = 400;
+        /// <summary>前台时的轮询间隔（毫秒）：换前台窗口后最迟一个周期内被检测到</summary>
+        private const int PollMsForeground = 400;
+        /// <summary>后台时的轮询间隔（毫秒）：前台进程变化少，降频到 3s 足够，省 CPU</summary>
+        private const int PollMsBackground = 3000;
+
+        /// <summary>当前实际生效的轮询间隔</summary>
+        private static int _pollMs = PollMsForeground;
 
     /// <summary>当前监测到的前台应用（null=尚未检测到任何应用）</summary>
     public static ForegroundApp? Current { get; private set; }
@@ -44,7 +49,7 @@ public static class ForegroundWatcherService
     private static int _polling;   // 重入保护：上一轮未结束则跳过本轮
 
     /// <summary>启动轮询（重复调用无副作用；由主页进入时调用）</summary>
-    public static void Start() => _timer ??= new System.Threading.Timer(_ => Poll(), null, 0, PollMs);
+    public static void Start() => _timer ??= new System.Threading.Timer(_ => Poll(), null, 0, _pollMs);
 
     /// <summary>停止轮询并清除当前状态（离开主页时调用）</summary>
     public static void Stop()
@@ -53,6 +58,16 @@ public static class ForegroundWatcherService
         _timer = null;
         Current = null;
         lock (_frozen) _frozen.Clear();
+    }
+
+    /// <summary>主窗口切换前台/后台时动态调整轮询间隔：
+    /// 前台 400ms 即时响应切换，后台 3000ms 降频省 CPU。Timer 已创建时直接 Change，不重建</summary>
+    public static void SetForeground(bool foreground)
+    {
+        var target = foreground ? PollMsForeground : PollMsBackground;
+        if (_pollMs == target) return;
+        _pollMs = target;
+        if (_timer is not null) _timer.Change(0, target);
     }
 
     /// <summary>冻结/解冻当前前台应用，返回（是否成功，操作后是否处于冻结态）</summary>

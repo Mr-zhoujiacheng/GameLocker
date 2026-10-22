@@ -136,13 +136,23 @@ public sealed partial class WidgetPage : Page
         Size = TileSize.Wide
     };
 
+    /// <summary>预览用固定文件传输项（发送图标 + 名称；实际添加时为默认"长"尺寸）</summary>
+    private static readonly LaunchItem FileTransferPreviewItem = new()
+    {
+        Name = "文件传输",
+        Target = "widget:filetransfer",
+        Kind = LaunchKind.Widget,
+        WidgetKind = WidgetKind.FileTransfer,
+        Size = TileSize.Wide
+    };
+
     /// <summary>预览磁贴框架（订阅天气变化时刷新文字）</summary>
     private TileStyle.WeatherTileRefs? _weatherPreviewRefs;
 
     public WidgetPage()
     {
         InitializeComponent();
-        _formControls = [MusicWidgetCard, PhotoWidgetCard, WeatherWidgetCard, MappingWidgetCard, TrainerWidgetCard, BackupWidgetCard, GamepadMapWidgetCard, OptiScalerWidgetCard, RecycleBinWidgetCard, ForegroundWidgetCard, SystemWidgetCard, MonitorWidgetCard];
+        _formControls = [MusicWidgetCard, PhotoWidgetCard, WeatherWidgetCard, MappingWidgetCard, TrainerWidgetCard, BackupWidgetCard, GamepadMapWidgetCard, OptiScalerWidgetCard, RecycleBinWidgetCard, ForegroundWidgetCard, SystemWidgetCard, MonitorWidgetCard, FileTransferWidgetCard];
         // 磁贴式自适应：窗口宽度变化（侧边栏 ↔ 全屏/居中）时按可用宽度重排列数
         FormScroll.SizeChanged += (_, _) => LayoutCards();
         Loaded += (_, _) => LayoutCards();
@@ -242,6 +252,10 @@ public sealed partial class WidgetPage : Page
             TileStyle.IsNoColor(MonitorPreviewItem));
         TileStyle.FillMonitorState(monRefs, MonitorPreviewItem);
         MonitorPreviewHost.Content = monTile;
+        // 文件传输预览：标准磁贴外观（发送图标 + 名称）
+        FileTransferPreviewHost.Content = TileStyle.BuildStandardTile(
+            FileTransferPreviewItem, null, w, h, TileStyle.AccentFor(FileTransferPreviewItem),
+            TileStyle.IsNoColor(FileTransferPreviewItem));
         WeatherService.StateChanged += OnWeatherChanged;
         WeatherService.EnsureFresh();
 
@@ -289,6 +303,7 @@ public sealed partial class WidgetPage : Page
         else if (ReferenceEquals(c, ForegroundWidgetCard)) AddForegroundWidget();
         else if (ReferenceEquals(c, SystemWidgetCard)) AddSystemWidget();
         else if (ReferenceEquals(c, MonitorWidgetCard)) AddMonitorWidget();
+        else if (ReferenceEquals(c, FileTransferWidgetCard)) AddFileTransferWidget();
         else AddMusicWidget();
     }
 
@@ -642,6 +657,22 @@ public sealed partial class WidgetPage : Page
         });
     }
 
+    /// <summary>文件传输组件：默认"长"尺寸（可后续编辑大小与颜色）；一个浮层即可发起/接收，只允许一个</summary>
+    private void AddFileTransferWidget()
+    {
+        var items = ConfigService.Load();
+        if (ExistsWidget(items, WidgetKind.FileTransfer)) { PageTitle.Text = "文件传输已在主页"; return; }
+        CommitWidget(items, new LaunchItem
+        {
+            Name = "文件传输",
+            Target = "widget:filetransfer",
+            Kind = LaunchKind.Widget,
+            WidgetKind = WidgetKind.FileTransfer,
+            PageIndex = App.Main?.CurrentHomePage ?? 0,   // 新磁贴归到主页当前所在页
+            Size = TileSize.Wide
+        });
+    }
+
     // ---- 鼠标 ----
 
     private void OnBackClick(object sender, RoutedEventArgs e) => App.Main?.ShowMainPage();
@@ -659,6 +690,7 @@ public sealed partial class WidgetPage : Page
         else if (sender is Button { Tag: "foreground" }) AddForegroundWidget();
         else if (sender is Button { Tag: "system" }) AddSystemWidget();
         else if (sender is Button { Tag: "monitor" }) AddMonitorWidget();
+        else if (sender is Button { Tag: "filetransfer" }) AddFileTransferWidget();
         else AddMusicWidget();
     }
 }

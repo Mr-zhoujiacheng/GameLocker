@@ -13,7 +13,7 @@
     <EnableMsixTooling>false</EnableMsixTooling>
     <ApplicationManifest>app.manifest</ApplicationManifest>
     <AssemblyName>GameLocker</AssemblyName>
-    <Version>1.6.1</Version>
+    <Version>1.6.5</Version>
     <ApplicationIcon>Assets\GameLocker.ico</ApplicationIcon>
     <NoWarn>$(NoWarn);CA1416</NoWarn>
     <!-- dotnet CLI 构建时指向 VS BuildTools 的 AppxPackage 任务目录（生成 PRI 所需） -->
@@ -23,6 +23,7 @@
   <ItemGroup>
     <PackageReference Include="Microsoft.WindowsAppSDK" Version="1.6.*" />
     <PackageReference Include="Microsoft.Windows.SDK.BuildTools" Version="10.0.26100.422" />
+    <PackageReference Include="SharpCompress" Version="0.39.0" />
     <PackageReference Include="System.Management" Version="8.0.0" />
     <!-- 存档位置清单（ludusavi manifest）的流式 YAML 解析 -->
     <PackageReference Include="YamlDotNet" Version="18.1.0" />

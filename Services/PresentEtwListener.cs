@@ -13,9 +13,9 @@ internal sealed class PresentEtwListener : IDisposable
     /// <summary>DXGI 提供程序 GUID（CA11C036-0102-4A2D-A6AD-F03CFED5D3C9）</summary>
     private static readonly Guid DxgiProviderId = new("CA11C036-0102-4A2D-A6AD-F03CFED5D3C9");
 
-    /// <summary>Present / PresentMultiplaneOverlay 事件 ID</summary>
+    /// <summary>Present 事件 ID。只统计 42：43（PresentMultiplaneOverlay）与 42 成对出现，
+    /// 两条都计数会让帧率翻倍；它也不是普通游戏提交流程的帧计数依据</summary>
     private const ushort PresentEventId = 42;
-    private const ushort PresentOverlayEventId = 43;
 
     private const string SessionName = "GameLocker-Monitor";
     private const uint EVENT_TRACE_REAL_TIME_MODE = 0x00000100;
@@ -30,13 +30,83 @@ internal sealed class PresentEtwListener : IDisposable
     private const int FrameWindow = 600;
     /// <summary>帧率统计窗口（毫秒）</summary>
     private const double FpsWindowMs = 1000;
-    /// <summary>同一帧重复事件的合并窗口（100ns 单位，1ms）：Present 与 PresentMultiplaneOverlay
-    /// 等事件会在同一帧几乎同时各发一条，若不合并帧率会翻倍（如实际 120 显示 240）；
-    /// 2ms 仍小于 240Hz 的帧间隔（4.2ms），不会误合并真实帧</summary>
-    private const long DedupeTicks = 20_000;
+    /// <summary>重复事件合并窗口的下限/上限（100ns）：1ms~5ms。
+    /// 真实重复事件的间隔因驱动而异（可能 0.5ms，也可能 4ms），固定窗口要么漏合并导致帧率翻倍，
+    /// 要么误合并 240Hz 的真实帧；这里按已统计的平均帧间隔自适应（见 RecordFrame）</summary>
+    private const long DedupeMinTicks = 10_000;
+    private const long DedupeMaxTicks = 50_000;
 
     /// <summary>输出给悬浮条绘制的帧时间样本数</summary>
     private const int HistoryMax = 180;
+
+    // ---- 帧率排障日志：%APPDATA%\GameLocker\fps-diag.txt，按秒记录目标进程的
+    //      Present(42)/MultiplaneOverlay(43) 事件数与相邻间隔，用于定位帧率翻倍来源 ----
+    private static readonly string DiagPath = Path.Combine(
+        Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData), "GameLocker", "fps-diag.txt");
+    private readonly object _diagGate = new();
+    private readonly List<long> _diagStamps = new();
+    private readonly List<string> _diagPayload = new();
+    private long _diagSecond;
+    private int _diagPid, _diag42, _diag43, _diagOther, _diagPayloadCount, _diagLines;
+
+    private void DiagInit()
+    {
+        try
+        {
+            Directory.CreateDirectory(Path.GetDirectoryName(DiagPath)!);
+            File.WriteAllText(DiagPath, $"[GameLocker 帧率诊断] {DateTime.Now:yyyy-MM-dd HH:mm:ss}\n");
+        }
+        catch { }
+    }
+
+    private void DiagCount(in EVENT_RECORD record, ushort id)
+    {
+        lock (_diagGate)
+        {
+            var stamp = record.EventHeader.TimeStamp;
+            var sec = stamp / 10_000_000;
+            if (_diagSecond != 0 && sec != _diagSecond) DiagFlushLocked();
+            _diagSecond = sec;
+            _diagPid = (int)record.EventHeader.ProcessId;
+            if (id == PresentEventId)
+            {
+                _diag42++;
+                if (_diagStamps.Count < 48) _diagStamps.Add(stamp);
+            }
+            else if (id == 43) _diag43++;
+            else _diagOther++;
+            // 记录前几条事件的载荷头（第一个字段通常是交换链指针），看是否两条事件对应同一交换链
+            if (_diagPayloadCount < 4 && record.UserData != IntPtr.Zero && record.UserDataLength >= 8)
+            {
+                var b = new byte[8];
+                Marshal.Copy(record.UserData, b, 0, 8);
+                _diagPayload.Add($"id{id}:{BitConverter.ToString(b)}");
+                _diagPayloadCount++;
+            }
+        }
+    }
+
+    private void DiagFlushLocked()
+    {
+        // 最多保留约 5 分钟样本，避免长期运行把日志写大
+        if (_diagLines >= 300) return;
+        try
+        {
+            var deltas = new List<string>();
+            for (var i = 1; i < _diagStamps.Count && i <= 12; i++)
+                deltas.Add(((_diagStamps[i] - _diagStamps[i - 1]) / 10000.0).ToString("0.00"));
+            var line = $"{DateTime.Now:HH:mm:ss} pid={_diagPid} 42={_diag42} 43={_diag43} 其他={_diagOther}"
+                + $" 间隔(ms)={string.Join(",", deltas)}";
+            if (_diagPayload.Count > 0) line += " 载荷=" + string.Join(" ", _diagPayload);
+            File.AppendAllText(DiagPath, line + "\n");
+            _diagLines++;
+            _diag42 = _diag43 = _diagOther = 0;
+            _diagStamps.Clear();
+            _diagPayload.Clear();
+            _diagPayloadCount = 0;
+        }
+        catch { }
+    }
 
     private ulong _sessionHandle;
     private ulong _traceHandle;
@@ -50,6 +120,8 @@ internal sealed class PresentEtwListener : IDisposable
     private int _count;
     private int _head;
     private long _lastTimestamp;
+    /// <summary>已计入帧的平均事件间隔（100ns，指数滑动平均），用于自适应去重窗口</summary>
+    private double _avgDelta;
     private long _lastCallbackTick;
 
     /// <summary>被统计的目标进程（前台进程；0=无目标）</summary>
@@ -139,6 +211,7 @@ internal sealed class PresentEtwListener : IDisposable
             }
 
             _running = true;
+            DiagInit();
             _traceThread = new Thread(TraceThread)
             {
                 IsBackground = true,
@@ -185,10 +258,11 @@ internal sealed class PresentEtwListener : IDisposable
             var record = Marshal.PtrToStructure<EVENT_RECORD>(recordPtr);
             if (record.EventHeader.ProviderId != DxgiProviderId) return;
             var id = record.EventHeader.EventDescriptor.Id;
-            if (id != PresentEventId && id != PresentOverlayEventId) return;
             RawEvents++;
             var pid = TargetPid;
-            if (pid <= 0 || record.EventHeader.ProcessId != (uint)pid) return;
+            var mine = pid > 0 && record.EventHeader.ProcessId == (uint)pid;
+            if (mine) DiagCount(record, id);
+            if (!mine || id != PresentEventId) return;
             RecordFrame(record.EventHeader.TimeStamp);
         }
         catch { }
@@ -215,8 +289,11 @@ internal sealed class PresentEtwListener : IDisposable
                     _lastTimestamp = eventTimestamp;
                     return;
                 }
-                // 同一帧的重复事件（相隔不足 1ms）不再计入
-                if (delta < DedupeTicks) return;
+                // 同一帧的重复事件：间隔明显小于平均帧间隔的不计入（自适应窗口）
+                var dedupe = _avgDelta > 0
+                    ? Math.Clamp((long)(_avgDelta * 0.55), DedupeMinTicks, DedupeMaxTicks)
+                    : 20_000;
+                if (delta < dedupe) return;
                 var ms = delta / 10000.0;
                 // 过滤异常间隔（暂停/切换窗口导致的秒级空档）
                 if (ms is > 0.2 and < 500)
@@ -225,6 +302,7 @@ internal sealed class PresentEtwListener : IDisposable
                     _timestamps[_head] = eventTimestamp;
                     _head = (_head + 1) % FrameWindow;
                     if (_count < FrameWindow) _count++;
+                    _avgDelta = _avgDelta > 0 ? _avgDelta * 0.9 + delta * 0.1 : delta;
                 }
             }
             _lastTimestamp = eventTimestamp;

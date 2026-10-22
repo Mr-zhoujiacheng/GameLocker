@@ -57,6 +57,26 @@ public static class MonitorService
     private static int _ticking;
     private static int _tickCount;
 
+    /// <summary>主窗口当前是否处于前台（Activated 且非 Deactivated）。MainWindow 在 Activated/Deactivated 里驱动。
+    /// 后台时降低采样/重绘频率以省资源，但 ETW 帧率会话保持全速（后台玩游戏仍要显示真实帧数据）</summary>
+    private static int _appIsForeground = 1;
+    private static int _backgroundTick;
+    private static int _gcDoneThisBackground;
+
+    /// <summary>主窗口切换前台/后台；由 MainWindow 在 Activated/Deactivated 时调用</summary>
+    public static void SetAppForeground(bool foreground)
+    {
+        var prev = Interlocked.Exchange(ref _appIsForeground, foreground ? 1 : 0);
+        if (prev == (foreground ? 1 : 0)) return;
+        if (foreground)
+        {
+            _backgroundTick = 0;
+            _gcDoneThisBackground = 0;
+            // 重新切到前台立刻全功率采样一次，避免回来后看到的还是后台低频的旧数据
+            _timer?.Change(200, 1000);
+        }
+    }
+
     private static ulong _lastIdle, _lastKernel, _lastUser;
 
     private static double _gpuUsage = double.NaN;
@@ -148,6 +168,7 @@ public static class MonitorService
         catch { _overlay = null; }
 
         _timer = new Timer(Tick, null, 250, 1000);
+        _ = Task.Run(WriteGpuDiagnostics);
         StateChanged?.Invoke();
     }
 
@@ -270,9 +291,34 @@ public static class MonitorService
         {
             var snapshot = Sample();
             lock (Gate) _snapshot = snapshot;
+
+            // 悬浮条显示策略：主窗口前台时永远显示；主窗口后台时只有全屏游戏才显示（避免白白消耗 GPU）
+            var appFg = Volatile.Read(ref _appIsForeground) == 1;
+            var fullscreen = FullscreenDetector.IsForegroundFullscreen();
+            _overlay?.SetForeground(appFg, fullscreen);
+
+            if (!appFg && !fullscreen)
+            {
+                // 后台累计 10 秒后主动 GC 一次（不频繁触发）
+                var bg = Interlocked.Increment(ref _backgroundTick);
+                if (bg == 10 && Interlocked.CompareExchange(ref _gcDoneThisBackground, 1, 0) == 0)
+                {
+                    _ = Task.Run(() =>
+                    {
+                        try { GC.Collect(2, GCCollectionMode.Optimized, true, true); } catch { }
+                    });
+                }
+                // 后台每 3 秒重绘一次（Tick 每 1s 到，所以隔 3 轮真正 Update 一次）
+                if (bg % 3 != 0) return;
+            }
+            else
+            {
+                _backgroundTick = 0;
+                _gcDoneThisBackground = 0;
+            }
+
             _overlay?.Update(snapshot);
-            // 全屏游戏切前后，DWM 可能把悬浮条降级到普通层；前台全屏时每秒重新置顶
-            if (FullscreenDetector.IsForegroundFullscreen()) _overlay?.ReassertTopmost();
+            if (fullscreen) _overlay?.ReassertTopmost();
         }
         catch { }
         finally
@@ -638,7 +684,11 @@ public static class MonitorService
             }
             catch { }
         }
-        return ReadAdlPower();
+        var adlPower = ReadAdlPower();
+        if (!double.IsNaN(adlPower)) return adlPower;
+        // Intel 核显：WDDM 适配器性能数据的 Power 字段单位是"最大功耗的百分比"，
+        // 无法换算为瓦特（本机恒为 0），因此不做兜底，界面省略功耗段
+        return double.NaN;
     }
 
     private static double ReadGpuClock()
@@ -654,7 +704,9 @@ public static class MonitorService
             }
             catch { }
         }
-        return ReadAdlClock();
+        var adl = ReadAdlClock();
+        if (!double.IsNaN(adl)) return adl;
+        return ReadKmtClock();
     }
 
     [DllImport("nvml.dll", EntryPoint = "nvmlInit_v2")]
@@ -676,11 +728,243 @@ public static class MonitorService
 
     private static bool _adlTried;
     private static bool _adlReady;
+    private static int _adlCreateResult = int.MinValue;
     private static int _adlAdapter = -1;
     private static int _adlActivitySize = 44;
     private static AdlAlloc? _adlAlloc;
+    private static readonly System.Text.StringBuilder _adlProbeLog = new();
 
     private delegate IntPtr AdlAlloc(int size);
+
+    // ---- GPU 频率兜底：WDDM 节点性能数据（D3DKMT）
+    //      Intel 核显没有 NVML/ADL，但 WDDM 会通过节点性能数据给出 GPU 引擎时钟 ----
+
+    private static int _kmtTries;
+    private static uint _kmtAdapter;
+    private static uint _kmtNode;
+    private static string _kmtDiag = "";
+
+    private static void EnsureKmt()
+    {
+        if (_kmtAdapter != 0 || _kmtTries >= 3) return;
+        _kmtTries++;
+        try
+        {
+            var dd = new DISPLAY_DEVICE { cb = Marshal.SizeOf<DISPLAY_DEVICE>() };
+            for (uint i = 0; EnumDisplayDevices(null, i, ref dd, 0); i++)
+            {
+                if (!dd.DeviceString.Contains("Intel", StringComparison.OrdinalIgnoreCase))
+                {
+                    dd = new DISPLAY_DEVICE { cb = Marshal.SizeOf<DISPLAY_DEVICE>() };
+                    continue;
+                }
+                var hdc = CreateDC(null, dd.DeviceName, null, IntPtr.Zero);
+                if (hdc == IntPtr.Zero)
+                {
+                    _kmtDiag += $"CreateDC({dd.DeviceName})=0 ";
+                    dd = new DISPLAY_DEVICE { cb = Marshal.SizeOf<DISPLAY_DEVICE>() };
+                    continue;
+                }
+                var open = new KMT_OPEN_FROM_HDC { hDc = hdc };
+                var st = D3DKMTOpenAdapterFromHdc(ref open);
+                DeleteDC(hdc);
+                if (st != 0)
+                {
+                    _kmtDiag += $"Open={st} ";
+                    dd = new DISPLAY_DEVICE { cb = Marshal.SizeOf<DISPLAY_DEVICE>() };
+                    continue;
+                }
+
+                // 各节点的 Frequency 是同一个 GT 时钟，取 MaxFrequency 最大的节点作为读数来源
+                ulong bestMax = 0;
+                uint bestNode = 0;
+                for (uint node = 0; node < 8; node++)
+                {
+                    var (ret, perf) = QueryNodePerf(open.hAdapter, node);
+                    if (ret != 0) continue;
+                    if (perf.MaxFrequency > bestMax)
+                    {
+                        bestMax = perf.MaxFrequency;
+                        bestNode = node;
+                    }
+                }
+                if (bestMax > 0)
+                {
+                    _kmtAdapter = open.hAdapter;
+                    _kmtNode = bestNode;
+                    _kmtDiag += $"adapter={open.hAdapter} node={bestNode} max={bestMax / 1_000_000}MHz";
+                }
+                else
+                {
+                    _kmtDiag += "所有节点 MaxFrequency=0 ";
+                }
+                break;
+            }
+            if (_kmtAdapter == 0 && _kmtDiag.Length == 0) _kmtDiag = "未找到 Intel 显示设备";
+        }
+        catch (Exception ex) { _kmtDiag = "异常：" + ex.Message; }
+    }
+
+    private static (int ret, KMT_NODE_PERF perf) QueryNodePerf(uint adapter, uint node)
+    {
+        var size = Marshal.SizeOf<KMT_NODE_PERF>();
+        var buf = Marshal.AllocHGlobal(size);
+        try
+        {
+            for (var o = 0; o < size; o += 4) Marshal.WriteInt32(buf, o, 0);
+            Marshal.StructureToPtr(new KMT_NODE_PERF { NodeOrdinal = node, PhysicalAdapterIndex = 0 }, buf, false);
+            var q = new KMT_QUERY_ADAPTER_INFO { hAdapter = adapter, Type = 61, pData = buf, Size = (uint)size };
+            var ret = D3DKMTQueryAdapterInfo(ref q);
+            return (ret, ret == 0 ? Marshal.PtrToStructure<KMT_NODE_PERF>(buf) : default);
+        }
+        finally { Marshal.FreeHGlobal(buf); }
+    }
+
+    /// <summary>WDDM 节点时钟（Hz→MHz）；接口调用失败返回 NaN，读得到 0 也返回 0（空闲时照实显示 0MHz）</summary>
+    private static double ReadKmtClock()
+    {
+        EnsureKmt();
+        if (_kmtAdapter == 0) return double.NaN;
+        var (ret, perf) = QueryNodePerf(_kmtAdapter, _kmtNode);
+        if (ret != 0) return double.NaN;
+        return perf.Frequency / 1_000_000.0;
+    }
+
+    /// <summary>WDDM 适配器性能数据（仅用于诊断输出；Power 单位不是瓦特）</summary>
+    private static (int ret, KMT_ADAPTER_PERF perf) QueryAdapterPerf(uint adapter)
+    {
+        var size = Marshal.SizeOf<KMT_ADAPTER_PERF>();
+        var buf = Marshal.AllocHGlobal(size);
+        try
+        {
+            for (var o = 0; o < size; o += 4) Marshal.WriteInt32(buf, o, 0);
+            var q = new KMT_QUERY_ADAPTER_INFO { hAdapter = adapter, Type = 62, pData = buf, Size = (uint)size };
+            var ret = D3DKMTQueryAdapterInfo(ref q);
+            return (ret, ret == 0 ? Marshal.PtrToStructure<KMT_ADAPTER_PERF>(buf) : default);
+        }
+        finally { Marshal.FreeHGlobal(buf); }
+    }
+
+    [StructLayout(LayoutKind.Sequential)]
+    private struct KMT_ADAPTER_PERF
+    {
+        public uint PhysicalAdapterIndex;
+        public ulong MemoryFrequency;
+        public ulong MaxMemoryFrequency;
+        public ulong MaxMemoryFrequencyOC;
+        public ulong MemoryBandwidth;
+        public ulong PCIEBandwidth;
+        public uint FanRPM;
+        public uint Power;
+        public uint Temperature;
+        public byte PowerStateOverride;
+    }
+
+    [StructLayout(LayoutKind.Sequential, CharSet = CharSet.Unicode)]
+    private struct DISPLAY_DEVICE
+    {
+        public int cb;
+        [MarshalAs(UnmanagedType.ByValTStr, SizeConst = 32)] public string DeviceName;
+        [MarshalAs(UnmanagedType.ByValTStr, SizeConst = 128)] public string DeviceString;
+        public int StateFlags;
+        [MarshalAs(UnmanagedType.ByValTStr, SizeConst = 128)] public string DeviceID;
+        [MarshalAs(UnmanagedType.ByValTStr, SizeConst = 128)] public string DeviceKey;
+    }
+
+    [StructLayout(LayoutKind.Sequential)]
+    private struct KMT_OPEN_FROM_HDC
+    {
+        public IntPtr hDc;
+        public uint hAdapter;
+        public long AdapterLuid;
+        public uint VidPnSourceId;
+    }
+
+    [StructLayout(LayoutKind.Sequential)]
+    private struct KMT_QUERY_ADAPTER_INFO
+    {
+        public uint hAdapter;
+        public int Type;
+        public IntPtr pData;
+        public uint Size;
+    }
+
+    [StructLayout(LayoutKind.Sequential)]
+    private struct KMT_NODE_PERF
+    {
+        public uint NodeOrdinal;
+        public uint PhysicalAdapterIndex;
+        public ulong Frequency;
+        public ulong MaxFrequency;
+        public ulong MaxFrequencyOC;
+        public uint Voltage;
+        public uint VoltageMax;
+        public uint VoltageMaxOC;
+        public ulong MaxTransitionLatency;
+    }
+
+    [DllImport("user32.dll", CharSet = CharSet.Unicode)]
+    private static extern bool EnumDisplayDevices(string? lpDevice, uint iDevNum, ref DISPLAY_DEVICE lpDisplayDevice, uint dwFlags);
+
+    [DllImport("gdi32.dll", CharSet = CharSet.Unicode)]
+    private static extern IntPtr CreateDC(string? driver, string device, string? port, IntPtr initData);
+
+    [DllImport("gdi32.dll")]
+    private static extern bool DeleteDC(IntPtr hdc);
+
+    [DllImport("gdi32.dll")]
+    private static extern int D3DKMTOpenAdapterFromHdc(ref KMT_OPEN_FROM_HDC data);
+
+    [DllImport("gdi32.dll")]
+    private static extern int D3DKMTQueryAdapterInfo(ref KMT_QUERY_ADAPTER_INFO data);
+
+    private static bool _diagWritten;
+
+    /// <summary>
+    /// 把显卡数据源探测结果写到 %APPDATA%\GameLocker\monitor-diag.txt（每次启动写一次），
+    /// 方便在没有开发环境的掌机上排查"读不到 GPU 频率/功耗"。
+    /// </summary>
+    private static void WriteGpuDiagnostics()
+    {
+        if (_diagWritten) return;
+        _diagWritten = true;
+        try
+        {
+            EnsureNvml();
+            EnsureAdl();
+            var sb = new System.Text.StringBuilder();
+            sb.AppendLine($"[GameLocker GPU 诊断] {DateTime.Now:yyyy-MM-dd HH:mm:ss}");
+            sb.AppendLine($"OS {Environment.OSVersion.VersionString} / x64={Environment.Is64BitProcess} / 管理员={IsElevated()}");
+            var adlPath = Path.Combine(Environment.SystemDirectory, "atiadlxx.dll");
+            var nvmlPath = Path.Combine(Environment.SystemDirectory, "nvml.dll");
+            sb.AppendLine($"atiadlxx.dll={(File.Exists(adlPath) ? "存在" : "缺失")} ({adlPath})");
+            sb.AppendLine($"nvml.dll={(File.Exists(nvmlPath) ? "存在" : "缺失")}");
+            try
+            {
+                using var searcher = new ManagementObjectSearcher("SELECT Name, DriverVersion FROM Win32_VideoController");
+                foreach (var o in searcher.Get())
+                    sb.AppendLine($"显卡: {o["Name"]} / 驱动 {o["DriverVersion"]}");
+            }
+            catch (Exception ex) { sb.AppendLine("WMI 显卡枚举失败: " + ex.Message); }
+            sb.AppendLine($"ADL: create={_adlCreateResult} ready={_adlReady} adapter={_adlAdapter} activitySize={_adlActivitySize}");
+            sb.AppendLine($"ADL 探测: {_adlProbeLog}");
+            sb.AppendLine($"ADL 读数: clock={ReadAdlClock()} MHz, power={ReadAdlPower()} W");
+            sb.AppendLine($"NVML: device={(_nvmlDevice != IntPtr.Zero ? "已找到" : "无")}");
+            var kmtClock = ReadKmtClock();
+            sb.AppendLine($"WDDM(KMT): {(_kmtDiag.Length > 0 ? _kmtDiag : "未尝试")}, node={_kmtNode}, clock={kmtClock} MHz");
+            if (_kmtAdapter != 0)
+            {
+                var (aret, aperf) = QueryAdapterPerf(_kmtAdapter);
+                sb.AppendLine($"WDDM 适配器: ret={aret} memFreq={aperf.MemoryFrequency} maxMem={aperf.MaxMemoryFrequency}"
+                    + $" power(0.1%)={aperf.Power} temp(0.1C)={aperf.Temperature} fan={aperf.FanRPM}");
+            }
+            sb.AppendLine($"GPU 最终读数: clock={ReadGpuClock()} MHz, power={ReadGpuPower()} W");
+            var dir = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData), "GameLocker");
+            Directory.CreateDirectory(dir);
+            File.WriteAllText(Path.Combine(dir, "monitor-diag.txt"), sb.ToString());
+        }
+        catch { }
+    }
 
     /// <summary>
     /// 初始化 ADL 并找到能读出核心频率的适配器。
@@ -693,7 +977,8 @@ public static class MonitorService
         try
         {
             _adlAlloc = size => Marshal.AllocHGlobal(size);
-            if (ADL_Main_Control_Create(_adlAlloc, 1) != 0) return;
+            _adlCreateResult = ADL_Main_Control_Create(_adlAlloc, 1);
+            if (_adlCreateResult != 0) return;
 
             var buffer = Marshal.AllocHGlobal(160);
             try
@@ -704,7 +989,9 @@ public static class MonitorService
                     {
                         for (var off = 0; off < 160; off += 4) Marshal.WriteInt32(buffer, off, 0);
                         Marshal.WriteInt32(buffer, 0, size);
-                        if (ADL_Overdrive5_CurrentActivity_Get(i, buffer) != 0) continue;
+                        var ret = ADL_Overdrive5_CurrentActivity_Get(i, buffer);
+                        if (_adlProbeLog.Length < 600) _adlProbeLog.Append($"[{i}/{size}]={ret} ");
+                        if (ret != 0) continue;
                         _adlAdapter = i;
                         _adlActivitySize = size;
                         break;

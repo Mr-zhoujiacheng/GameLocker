@@ -326,6 +326,10 @@ public sealed partial class MainWindow : Window
         {
             if (e.WindowActivationState != WindowActivationState.Deactivated)
             {
+                MonitorService.SetAppForeground(true);
+                ForegroundWatcherService.SetForeground(true);
+                _trainerTracker.Interval = TimeSpan.FromMilliseconds(1200);
+                _taskbarWatch.Interval = TimeSpan.FromMilliseconds(1000);
                 _startMenuAutoHide.Stop();
                 // 本窗口成为前台：隐藏边缘条（否则会吞掉本窗口边缘的触摸）
                 _edgeGesture?.SetStripVisible(false);
@@ -335,6 +339,10 @@ public sealed partial class MainWindow : Window
             }
             else
             {
+                MonitorService.SetAppForeground(false);
+                ForegroundWatcherService.SetForeground(false);
+                _trainerTracker.Interval = TimeSpan.FromMilliseconds(5000);
+                _taskbarWatch.Interval = TimeSpan.FromMilliseconds(5000);
                 // 开始菜单模式：点到面板外部即自动收起
                 if (SettingsService.Current.StartMenuMode && _shown) _startMenuAutoHide.Start();
                 // 任何其他应用成为前台（含被最小化/遮盖）：恢复边缘条，保证任意前台都能触摸呼出
@@ -1283,6 +1291,8 @@ public sealed partial class MainWindow : Window
                 return;
             }
             page.HandleGamepad(buttons);
+            // 页面已消费本次按键（如下拉框展开时 B 只收起下拉）→ 不再执行返回
+            if (page.ConsumedBack) return;
             if (buttons.HasFlag(GamepadButtons.View) || buttons.HasFlag(GamepadButtons.B))
             {
                 if (page is SettingsPage) SettingsBack();

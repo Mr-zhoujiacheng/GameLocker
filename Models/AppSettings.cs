@@ -10,6 +10,13 @@ public enum DockSide
     Center
 }
 
+/// <summary>磁贴主题：彩色磁贴（按指定色/随机配色，圆角）或 Win10 磁贴（无颜色、方形，隐藏颜色设置）</summary>
+public enum TileTheme
+{
+    Colorful,
+    Win10
+}
+
 /// <summary>应用设置（JSON 持久化，见 SettingsService）</summary>
 public class AppSettings
 {
@@ -40,8 +47,8 @@ public class AppSettings
     /// <summary>主页总页数（含主主页；副页块在添加方式（X 键）里新增，主页用 LT/RT 循环切换）</summary>
     public int HomePageCount { get; set; } = 1;
 
-    /// <summary>磁贴立体效果（渐变受光 + 投影）</summary>
-    public bool Tile3D { get; set; }
+    /// <summary>磁贴主题（彩色磁贴 / Win10 磁贴）</summary>
+    public TileTheme TileTheme { get; set; } = TileTheme.Colorful;
 
     /// <summary>磁贴透明度（0.3~1.0，1 为完全不透明）</summary>
     public double TileOpacity { get; set; } = 1.0;

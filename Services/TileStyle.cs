@@ -14,8 +14,15 @@ public static class TileStyle
     /// <summary>磁贴基本单位（1×1 格边长，像素）</summary>
     public const double Unit = 84;
 
-    /// <summary>磁贴圆角</summary>
-    public const double Radius = 6;
+    /// <summary>磁贴圆角（Win10 磁贴为直角）</summary>
+    public static double Radius => IsWin10Theme ? 0 : 6;
+
+    /// <summary>是否为 Win10 磁贴主题（无颜色、方形，并隐藏磁贴颜色设置）</summary>
+    public static bool IsWin10Theme => SettingsService.Current.TileTheme == TileTheme.Win10;
+
+    /// <summary>Win10 磁贴的固定底色（不随磁贴颜色设置变化）</summary>
+    public static readonly Windows.UI.Color Win10TileColor =
+        Windows.UI.Color.FromArgb(0xFF, 0x2B, 0x2B, 0x2B);
 
     /// <summary>磁贴间距（像素，可在外观设置调节）</summary>
     public static double Gap => Math.Clamp(SettingsService.Current.TileSpacing, 0, 30);
@@ -46,9 +53,11 @@ public static class TileStyle
     /// <summary>电源磁贴独有红色（固定，不随随机配色/无颜色设置变化）</summary>
     public static readonly Windows.UI.Color PowerAccent = Windows.UI.Color.FromArgb(0xFF, 0xC4, 0x2B, 0x1C);
 
-    /// <summary>无颜色磁贴：显式选"none"，或未指定颜色且随机配色开关关闭（只显示图标或图片）；常驻磁贴始终有色</summary>
+    /// <summary>无颜色磁贴：显式选"none"，或未指定颜色且随机配色开关关闭（只显示图标或图片）；
+    /// 常驻磁贴始终有色；Win10 主题统一无颜色（但保留名称）</summary>
     public static bool IsNoColor(LaunchItem item) =>
-        !IsFixedTile(item)
+        !IsWin10Theme
+        && !IsFixedTile(item)
         && (string.Equals(item.TileColor, "none", StringComparison.OrdinalIgnoreCase)
             || (string.IsNullOrEmpty(item.TileColor) && !SettingsService.Current.RandomTileColor));
 
@@ -91,53 +100,9 @@ public static class TileStyle
         return c;
     }
 
-    /// <summary>磁贴填充：立体开关开启时用顶部微亮、底部微暗的对角渐变模拟受光；关闭时纯色</summary>
-    public static Brush TileFill(Windows.UI.Color accent)
-    {
-        if (!SettingsService.Current.Tile3D) return new SolidColorBrush(accent);
-        return new LinearGradientBrush
-        {
-            StartPoint = new Windows.Foundation.Point(0, 0),
-            EndPoint = new Windows.Foundation.Point(0.6, 1),
-            GradientStops =
-            {
-                new GradientStop { Color = Lighten(accent, 0.18), Offset = 0.0 },
-                new GradientStop { Color = accent, Offset = 0.45 },
-                new GradientStop { Color = Lighten(accent, -0.16), Offset = 1.0 }
-            }
-        };
-    }
-
-    /// <summary>按 amount（-1~1）提亮/压暗颜色</summary>
-    public static Windows.UI.Color Lighten(Windows.UI.Color c, double amount)
-    {
-        static byte Adj(int v) => (byte)Math.Clamp(v, 0, 255);
-        return Windows.UI.Color.FromArgb(c.A,
-            Adj(c.R + (int)(c.R * amount)), Adj(c.G + (int)(c.G * amount)), Adj(c.B + (int)(c.B * amount)));
-    }
-
-    /// <summary>立体边缘：顶部一条半透明白高光、底部一条半透明黑阴影，模拟凸起受光</summary>
-    public static void Add3DEdge(Grid host)
-    {
-        host.Children.Add(new Border
-        {
-            Height = 2,
-            VerticalAlignment = VerticalAlignment.Top,
-            Margin = new Thickness(1, 1, 1, 0),
-            Background = new SolidColorBrush(Windows.UI.Color.FromArgb(0x33, 0xFF, 0xFF, 0xFF)),
-            CornerRadius = new CornerRadius(5, 5, 0, 0),
-            IsHitTestVisible = false
-        });
-        host.Children.Add(new Border
-        {
-            Height = 3,
-            VerticalAlignment = VerticalAlignment.Bottom,
-            Margin = new Thickness(1, 0, 1, 1),
-            Background = new SolidColorBrush(Windows.UI.Color.FromArgb(0x4D, 0, 0, 0)),
-            CornerRadius = new CornerRadius(0, 0, 5, 5),
-            IsHitTestVisible = false
-        });
-    }
+    /// <summary>磁贴填充：彩色磁贴用强调色纯色块；Win10 磁贴统一无颜色固定底色</summary>
+    public static Brush TileFill(Windows.UI.Color accent) =>
+        new SolidColorBrush(IsWin10Theme ? Win10TileColor : accent);
 
     /// <summary>
     /// 构建标准磁贴（主页 / 小组件页预览共用）：背景图片铺满 或 强调色底+图标+名称，
@@ -165,12 +130,6 @@ public static class TileStyle
                 BorderBrush = new SolidColorBrush(Windows.UI.Color.FromArgb(0x40, 0xFF, 0xFF, 0xFF)),
                 BorderThickness = new Thickness(1)
             };
-            if (SettingsService.Current.Tile3D)
-            {
-                var edge = new Grid();
-                Add3DEdge(edge);
-                coverTile.Child = edge;
-            }
             coverTile.Opacity = Opacity;
             return coverTile;
         }
@@ -252,7 +211,6 @@ public static class TileStyle
             Child = grid,
             RenderTransformOrigin = new Windows.Foundation.Point(0.5, 0.5)
         };
-        if (SettingsService.Current.Tile3D && !noColor) Add3DEdge(grid);
         tile.Opacity = Opacity;
         return tile;
     }
@@ -297,7 +255,6 @@ public static class TileStyle
         var grid = new Grid();
         grid.Children.Add(refs.Img);
         grid.Children.Add(refs.Placeholder);
-        if (SettingsService.Current.Tile3D) Add3DEdge(grid);
 
         var tile = new Border
         {
@@ -421,7 +378,6 @@ public static class TileStyle
             BorderThickness = new Thickness(1),
             Child = grid
         };
-        if (SettingsService.Current.Tile3D && !noColor) Add3DEdge(grid);
         tile.Opacity = Opacity;
         return (tile, refs);
     }
@@ -571,7 +527,6 @@ public static class TileStyle
             BorderThickness = new Thickness(1),
             Child = grid
         };
-        if (SettingsService.Current.Tile3D && !noColor) Add3DEdge(grid);
         tile.Opacity = Opacity;
         return (tile, refs);
     }
@@ -722,7 +677,6 @@ public static class TileStyle
             BorderThickness = new Thickness(1),
             Child = grid
         };
-        if (SettingsService.Current.Tile3D && !noColor) Add3DEdge(grid);
         tile.Opacity = Opacity;
         return tile;
     }
@@ -851,7 +805,6 @@ public static class TileStyle
             BorderThickness = new Thickness(1),
             Child = grid
         };
-        if (SettingsService.Current.Tile3D && !noColor) Add3DEdge(grid);
         tile.Opacity = Opacity;
         return tile;
     }
@@ -977,7 +930,6 @@ public static class TileStyle
             BorderThickness = new Thickness(1),
             Child = grid
         };
-        if (SettingsService.Current.Tile3D && !noColor) Add3DEdge(grid);
         tile.Opacity = Opacity;
         return tile;
     }
@@ -1106,7 +1058,6 @@ public static class TileStyle
             BorderThickness = new Thickness(1),
             Child = grid
         };
-        if (SettingsService.Current.Tile3D && !noColor) Add3DEdge(grid);
         tile.Opacity = Opacity;
         return tile;
     }
@@ -1267,7 +1218,6 @@ public static class TileStyle
             BorderThickness = new Thickness(1),
             Child = grid
         };
-        if (SettingsService.Current.Tile3D && !noColor) Add3DEdge(grid);
         tile.Opacity = Opacity;
         refs.Tile = tile;
         return (tile, refs);
@@ -1446,7 +1396,6 @@ public static class TileStyle
             BorderThickness = new Thickness(1),
             Child = grid
         };
-        if (SettingsService.Current.Tile3D && !noColor) Add3DEdge(grid);
         tile.Opacity = Opacity;
         refs.Tile = tile;
         return (tile, refs);
@@ -1618,7 +1567,6 @@ public static class TileStyle
             BorderThickness = new Thickness(1),
             Child = grid
         };
-        if (SettingsService.Current.Tile3D && !noColor) Add3DEdge(grid);
         tile.Opacity = Opacity;
         refs.Tile = tile;
         return (tile, refs);
@@ -1750,7 +1698,6 @@ public static class TileStyle
             BorderThickness = new Thickness(1),
             Child = grid
         };
-        if (SettingsService.Current.Tile3D && !noColor) Add3DEdge(grid);
         tile.Opacity = Opacity;
         refs.Tile = tile;
         return (tile, refs);

@@ -653,8 +653,19 @@ public sealed partial class MainPage : Page
 
     private void OnDragOver(object sender, Microsoft.UI.Xaml.DragEventArgs e)
     {
+        var hasFiles = e.DataView.Contains(Windows.ApplicationModel.DataTransfer.StandardDataFormats.StorageItems);
+        // 文件传输浮层打开时：拖入 = 加入待发送列表，不再创建主页磁贴
+        if (_fileTransferOpen)
+        {
+            e.AcceptedOperation = hasFiles
+                ? Windows.ApplicationModel.DataTransfer.DataPackageOperation.Copy
+                : Windows.ApplicationModel.DataTransfer.DataPackageOperation.None;
+            HighlightFileTransferDrop(hasFiles);
+            if (e.DragUIOverride != null) e.DragUIOverride.Caption = "释放以加入待发送";
+            return;
+        }
         // 仅接受文件拖放（从桌面/资源管理器拖入）
-        e.AcceptedOperation = e.DataView.Contains(Windows.ApplicationModel.DataTransfer.StandardDataFormats.StorageItems)
+        e.AcceptedOperation = hasFiles
             ? Windows.ApplicationModel.DataTransfer.DataPackageOperation.Copy
             : Windows.ApplicationModel.DataTransfer.DataPackageOperation.None;
         // 落在下方抽屉面板上 → 文件进当前抽屉（不是主页网格）：高亮面板 + 改拖拽提示文案
@@ -668,7 +679,26 @@ public sealed partial class MainPage : Page
         }
     }
 
-    private void OnDragLeave(object sender, Microsoft.UI.Xaml.DragEventArgs e) => HighlightDrawerFileDrop(false);
+    private void OnDragLeave(object sender, Microsoft.UI.Xaml.DragEventArgs e)
+    {
+        if (_fileTransferOpen) { HighlightFileTransferDrop(false); return; }
+        HighlightDrawerFileDrop(false);
+    }
+
+    /// <summary>文件传输浮层拖动文件时的描边反馈</summary>
+    private void HighlightFileTransferDrop(bool on)
+    {
+        if (on)
+        {
+            FileTransferPanel.BorderBrush = new SolidColorBrush(Windows.UI.Color.FromArgb(0xFF, 0x4C, 0xC2, 0xFF));
+            FileTransferPanel.BorderThickness = new Thickness(2);
+        }
+        else
+        {
+            FileTransferPanel.BorderBrush = new SolidColorBrush(Windows.UI.Color.FromArgb(0x2E, 0xFF, 0xFF, 0xFF));
+            FileTransferPanel.BorderThickness = new Thickness(1.2);
+        }
+    }
 
     /// <summary>外部文件拖到（离开）抽屉面板时的描边反馈</summary>
     private void HighlightDrawerFileDrop(bool on)
@@ -690,6 +720,16 @@ public sealed partial class MainPage : Page
         if (!e.DataView.Contains(Windows.ApplicationModel.DataTransfer.StandardDataFormats.StorageItems)) return;
         var items = await e.DataView.GetStorageItemsAsync();
         if (items.Count == 0) return;
+
+        // 文件传输浮层打开时：拖入的文件直接加入待发送列表
+        if (_fileTransferOpen)
+        {
+            HighlightFileTransferDrop(false);
+            AddDroppedFiles(items
+                .Where(x => x.IsOfType(Windows.Storage.StorageItemTypes.File))
+                .Select(x => x.Path));
+            return;
+        }
 
         // 落点在下方抽屉面板上：条目放进当前抽屉；否则照旧进主页当前页
         var overDrawer = PointInDrawer(e.GetPosition(TileHost));
@@ -819,10 +859,11 @@ public sealed partial class MainPage : Page
     /// </summary>
     public bool HandleGamepad(GamepadButtons buttons)
     {
-        // 添加方式选择遮罩 / 抽屉改名遮罩 / 电源菜单 打开：按键优先交给遮罩
+        // 添加方式选择遮罩 / 抽屉改名遮罩 / 电源菜单 / 文件传输浮层 打开：按键优先交给遮罩
         if (_choiceOpen) return HandleChoice(buttons);
         if (_renaming) return HandleRename(buttons);
         if (_powerOpen) return HandlePower(buttons);
+        if (_fileTransferOpen) return HandleFileTransfer(buttons);
 
         // LT/RT：左右循环切换主页（副页），带滑动动画；本身不参与其它语义
         if (buttons.HasFlag(GamepadButtons.LeftTrigger)) { SwitchPage(-1); return true; }
@@ -2490,12 +2531,12 @@ public sealed partial class MainPage : Page
             if (_choiceOpen) return;
             var p = e.GetCurrentPoint(TileHost).Position;
 
-            // 普通模式长按：程序/网站/文件夹磁贴=关闭其前台窗口（等同 Y 键）；
+            // 普通模式长按：设置磁贴=进入编辑模式；程序/网站/文件夹磁贴=关闭其前台窗口（等同 Y 键）；
             // 修改器小组件磁贴=关闭正在运行的修改器（等同 Y 键）；游戏存档小组件磁贴=同步存档（等同 Y 键）；
             // 手柄映射小组件磁贴=关闭映射（等同长按关闭）；OptiScaler 小组件磁贴=注入（等同 Y 键）；
-            // 前台应用磁贴=强制结束当前前台应用（等同 Y 键）；设置/电源常驻磁贴不支持编辑，长按不响应
+            // 前台应用磁贴=强制结束当前前台应用（等同 Y 键）；电源常驻磁贴不支持编辑，长按不响应
             if (!_moving && group is null &&
-                (item.Kind is LaunchKind.App or LaunchKind.Url or LaunchKind.Folder
+                (isSettings || item.Kind is LaunchKind.App or LaunchKind.Url or LaunchKind.Folder
                  || (item.Kind == LaunchKind.Widget && item.WidgetKind is WidgetKind.Trainer or WidgetKind.Backup or WidgetKind.GamepadMap or WidgetKind.OptiScaler or WidgetKind.Foreground)))
             {
                 _lpTimer ??= new Microsoft.UI.Xaml.DispatcherTimer { Interval = TimeSpan.FromMilliseconds(600) };
@@ -2506,7 +2547,7 @@ public sealed partial class MainPage : Page
                 var isBackup = item.Kind == LaunchKind.Widget && item.WidgetKind == WidgetKind.Backup;
                 var isRemap = item.Kind == LaunchKind.Widget && item.WidgetKind == WidgetKind.GamepadMap;
                 var isOpti = item.Kind == LaunchKind.Widget && item.WidgetKind == WidgetKind.OptiScaler;
-                _lpCloseItem = isBackup || isRemap || isOpti ? null : item;
+                _lpCloseItem = isSettings || isBackup || isRemap || isOpti ? null : item;
                 _lpSyncItem = isBackup ? item : null;
                 _lpRemapItem = isRemap ? item : null;
                 _lpOptiItem = isOpti ? item : null;
@@ -2966,6 +3007,11 @@ public sealed partial class MainPage : Page
                 ShowToast("监控已开启", ToastKind.Success);
             }
         }
+        else if (item.WidgetKind == WidgetKind.FileTransfer)
+        {
+            // 文件传输小组件：A/点击 = 打开局域网传输浮层（搜索设备 / 勾选文件 / 发送与接收）
+            OpenFileTransfer(item);
+        }
         else
         {
             // 音乐小组件：A = 播放/暂停系统当前媒体
@@ -3205,6 +3251,7 @@ public sealed partial class MainPage : Page
         if (item.Kind == LaunchKind.Widget && item.WidgetKind == WidgetKind.Foreground) { CloseForegroundApp(); return; }
         if (item.Kind == LaunchKind.Widget && item.WidgetKind == WidgetKind.System) return; // 系统小组件没有"可关闭"的对象
         if (item.Kind == LaunchKind.Widget && item.WidgetKind == WidgetKind.Power) return;  // 电源磁贴没有"可关闭"的对象
+        if (item.Kind == LaunchKind.Widget && item.WidgetKind == WidgetKind.FileTransfer) return; // 文件传输：Y 已用于浮层内刷新列表
         if (item.Kind == LaunchKind.Widget && item.WidgetKind == WidgetKind.Monitor)
         {
             // 性能监控：Y 键直接关闭监控（未开启时无动作）
@@ -3482,6 +3529,256 @@ public sealed partial class MainPage : Page
         _powerIn?.Stop();
         _powerIn = sb;
         sb.Begin();
+    }
+
+    // ==================== 文件传输浮层（WidgetKind.FileTransfer）====================
+
+    private bool _fileTransferOpen;
+    private int _ftIndex;
+    /// <summary>拖入浮层的待发送文件（绝对路径，按拖入顺序）</summary>
+    private readonly List<string> _ftDropped = [];
+
+    /// <summary>打开文件传输浮层：启动 UDP 发现 + TCP 监听，并订阅状态变化</summary>
+    private void OpenFileTransfer(LaunchItem item)
+    {
+        if (_fileTransferOpen) return;
+        _fileTransferOpen = true;
+        _ftIndex = 0;
+        _ftDropped.Clear();
+        FileTransferOverlay.Visibility = Visibility.Visible;
+        PlayFileTransferIn();
+        FileTransferService.StateChanged += OnFileTransferChanged;
+        FileTransferService.Start(item.FileTransferSendFolder, item.FileTransferRecvFolder);
+        RenderFileTransfer();
+    }
+
+    private void CloseFileTransfer()
+    {
+        if (!_fileTransferOpen) return;
+        _fileTransferOpen = false;
+        FileTransferService.StateChanged -= OnFileTransferChanged;
+        FileTransferService.Stop();
+        _ftDropped.Clear();
+        FileTransferOverlay.Visibility = Visibility.Collapsed;
+    }
+
+    private void OnFileTransferChanged() =>
+        DispatcherQueue.TryEnqueue(() => { if (_fileTransferOpen) RenderFileTransfer(); });
+
+    /// <summary>入场：遮罩淡入 + 面板轻微放大并自下而上归位（与电源菜单一致的手感）</summary>
+    private Storyboard? _ftIn;
+
+    private void PlayFileTransferIn()
+    {
+        var maskFade = new DoubleAnimation { From = 0, To = 1, Duration = TimeSpan.FromMilliseconds(150) };
+        Storyboard.SetTarget(maskFade, FileTransferMask);
+        Storyboard.SetTargetProperty(maskFade, "Opacity");
+
+        var panelFade = new DoubleAnimation { From = 0, To = 1, Duration = TimeSpan.FromMilliseconds(180) };
+        Storyboard.SetTarget(panelFade, FileTransferPanel);
+        Storyboard.SetTargetProperty(panelFade, "Opacity");
+
+        var ease = new CubicEase { EasingMode = EasingMode.EaseOut };
+        var scaleX = new DoubleAnimation { From = 0.94, To = 1, Duration = TimeSpan.FromMilliseconds(220), EasingFunction = ease };
+        Storyboard.SetTarget(scaleX, FileTransferPanelTransform);
+        Storyboard.SetTargetProperty(scaleX, "ScaleX");
+        var scaleY = new DoubleAnimation { From = 0.94, To = 1, Duration = TimeSpan.FromMilliseconds(220), EasingFunction = ease };
+        Storyboard.SetTarget(scaleY, FileTransferPanelTransform);
+        Storyboard.SetTargetProperty(scaleY, "ScaleY");
+        var rise = new DoubleAnimation { From = 24, To = 0, Duration = TimeSpan.FromMilliseconds(250), EasingFunction = ease };
+        Storyboard.SetTarget(rise, FileTransferPanelTransform);
+        Storyboard.SetTargetProperty(rise, "TranslateY");
+
+        var sb = new Storyboard();
+        sb.Children.Add(maskFade);
+        sb.Children.Add(panelFade);
+        sb.Children.Add(scaleX);
+        sb.Children.Add(scaleY);
+        sb.Children.Add(rise);
+        _ftIn?.Stop();
+        _ftIn = sb;
+        sb.Begin();
+    }
+
+    /// <summary>重建设备/文件列表并刷新状态、进度（状态变化时调用，频率已被服务端节流）</summary>
+    private void RenderFileTransfer()
+    {
+        if (!_fileTransferOpen) return;
+
+        var peers = FileTransferService.DiscoveredPeers;
+        var offer = FileTransferService.PendingOffer;
+        if (_ftIndex >= peers.Count) _ftIndex = 0;
+
+        var status = FileTransferService.Status;
+        if (string.IsNullOrWhiteSpace(status))
+            status = peers.Count > 0 ? $"发现 {peers.Count} 台设备" : "正在搜索局域网设备…";
+        FileTransferStatusText.Text = status;
+
+        FileTransferOfferBar.Visibility = offer is null ? Visibility.Collapsed : Visibility.Visible;
+        if (offer is not null)
+            FileTransferOfferText.Text = $"{offer.PeerName} 想发送 {offer.Count} 个文件"
+                + $"（{FileTransferService.SizeText(offer.TotalBytes)}）· A 接受 · B 拒绝";
+
+        // 设备行
+        FileTransferPeerList.Children.Clear();
+        if (peers.Count == 0)
+        {
+            FileTransferPeerList.Children.Add(new TextBlock
+            {
+                Text = "未发现设备 · 请确认对方也打开了「文件传输」且在同一局域网",
+                FontSize = 12, Opacity = 0.45, Margin = new Thickness(4, 2, 0, 2)
+            });
+        }
+        else
+        {
+            for (var i = 0; i < peers.Count; i++)
+            {
+                var index = i;
+                var row = MakeFileTransferRow($"📶 {peers[i].Name}", peers[i].Address,
+                    selected: false, highlight: index == _ftIndex);
+                row.Tapped += (_, _) =>
+                {
+                    _ftIndex = index;
+                    _ = FileTransferService.ConnectAsync(peers[index]);
+                    RenderFileTransfer();
+                };
+                FileTransferPeerList.Children.Add(row);
+            }
+        }
+
+        // 待发送文件行（全部来自拖入，无需勾选；X 直接发送）
+        FileTransferFileList.Children.Clear();
+        FileTransferFilesHeader.Text = _ftDropped.Count > 0
+            ? $"待发送文件（{_ftDropped.Count} 个 · X 发送）"
+            : "待发送文件（把文件拖进窗口）";
+        if (_ftDropped.Count == 0)
+        {
+            FileTransferFileList.Children.Add(new TextBlock
+            {
+                Text = "从资源管理器或桌面把文件拖进本窗口 · X 发送 · Y 清空",
+                FontSize = 12, Opacity = 0.45, Margin = new Thickness(4, 2, 0, 2)
+            });
+        }
+        else
+        {
+            foreach (var path in _ftDropped)
+            {
+                string name;
+                string size;
+                try
+                {
+                    var fi = new FileInfo(path);
+                    name = fi.Name;
+                    size = FileTransferService.SizeText(fi.Length);
+                }
+                catch
+                {
+                    name = Path.GetFileName(path);
+                    size = "—";
+                }
+                FileTransferFileList.Children.Add(MakeFileTransferRow(name, size, selected: false, highlight: false));
+            }
+        }
+
+        // 进度
+        var busy = FileTransferService.Busy;
+        FileTransferProgressBox.Visibility = busy ? Visibility.Visible : Visibility.Collapsed;
+        if (busy)
+        {
+            var p = FileTransferService.Progress;
+            FileTransferProgressBar.Value = Math.Clamp(p, 0, 1);
+            FileTransferProgressText.Text = p > 0 ? $"传输中 {p * 100:0}%" : "等待确认…";
+        }
+    }
+
+    private static Border MakeFileTransferRow(string title, string subtitle, bool selected, bool highlight)
+    {
+        var accent = Windows.UI.Color.FromArgb(0xFF, 0x4C, 0xC2, 0xFF);
+        var border = new Border
+        {
+            Height = 46,
+            CornerRadius = new CornerRadius(12),
+            Padding = new Thickness(12, 0, 10, 0),
+            Background = new SolidColorBrush(highlight
+                ? Windows.UI.Color.FromArgb(0x26, 0x4C, 0xC2, 0xFF)
+                : Windows.UI.Color.FromArgb((byte)(selected ? 0x20 : 0x10), 0xFF, 0xFF, 0xFF)),
+            BorderBrush = new SolidColorBrush(highlight ? accent : Windows.UI.Color.FromArgb(0x1F, 0xFF, 0xFF, 0xFF)),
+            BorderThickness = new Thickness(highlight ? 2 : 1)
+        };
+        var grid = new Grid();
+        grid.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
+        grid.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
+        var text = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 8, VerticalAlignment = VerticalAlignment.Center };
+        text.Children.Add(new TextBlock { Text = title, FontSize = 14, MaxWidth = 380, TextTrimming = TextTrimming.CharacterEllipsis });
+        var sub = new TextBlock { Text = subtitle, FontSize = 12, Opacity = 0.5, VerticalAlignment = VerticalAlignment.Center };
+        Grid.SetColumn(sub, 1);
+        grid.Children.Add(text);
+        grid.Children.Add(sub);
+        border.Child = grid;
+        return border;
+    }
+
+    /// <summary>把拖入的文件加入待发送列表（去重；文件夹与不存在的路径忽略）</summary>
+    private void AddDroppedFiles(IEnumerable<string> paths)
+    {
+        var added = 0;
+        foreach (var path in paths)
+        {
+            if (string.IsNullOrWhiteSpace(path) || !File.Exists(path)) continue;
+            if (_ftDropped.Any(p => string.Equals(p, path, StringComparison.OrdinalIgnoreCase))) continue;
+            _ftDropped.Add(path);
+            added++;
+        }
+        if (added > 0)
+        {
+            ShowToast($"已加入 {added} 个文件，按 X 发送", ToastKind.Success);
+            RenderFileTransfer();
+        }
+    }
+
+    /// <summary>浮层内手柄按键：DPad 选设备，A 连接，X 发送拖入的文件，Y 清空，B 关闭（有接收请求时 A 接受、B 拒绝）</summary>
+    private bool HandleFileTransfer(GamepadButtons b)
+    {
+        if (FileTransferService.PendingOffer is not null)
+        {
+            if (b.HasFlag(GamepadButtons.A)) FileTransferService.AcceptOffer();
+            else if (b.HasFlag(GamepadButtons.B) || b.HasFlag(GamepadButtons.View)) FileTransferService.RejectOffer();
+            return true; // 等待确认期间吞掉其它按键，避免误发
+        }
+
+        var peers = FileTransferService.DiscoveredPeers;
+
+        if (b.HasFlag(GamepadButtons.DPadUp) || b.HasFlag(GamepadButtons.DPadLeft))
+        {
+            if (peers.Count > 0) _ftIndex = (_ftIndex + peers.Count - 1) % Math.Max(peers.Count, 1);
+            RenderFileTransfer();
+            return true;
+        }
+        if (b.HasFlag(GamepadButtons.DPadDown) || b.HasFlag(GamepadButtons.DPadRight))
+        {
+            if (peers.Count > 0) _ftIndex = (_ftIndex + 1) % peers.Count;
+            RenderFileTransfer();
+            return true;
+        }
+        if (b.HasFlag(GamepadButtons.A))
+        {
+            if (_ftIndex < peers.Count) _ = FileTransferService.ConnectAsync(peers[_ftIndex]);
+            RenderFileTransfer();
+            return true;
+        }
+        if (b.HasFlag(GamepadButtons.X))
+        {
+            if (_ftDropped.Count == 0) ShowToast("先把文件拖进这个窗口", ToastKind.Warning);
+            else _ = FileTransferService.SendAsync(_ftDropped.ToList());
+            return true;
+        }
+        if (b.HasFlag(GamepadButtons.Y))
+        {
+            if (_ftDropped.Count > 0) { _ftDropped.Clear(); RenderFileTransfer(); }
+            return true;
+        }
+        if (b.HasFlag(GamepadButtons.B) || b.HasFlag(GamepadButtons.View)) { CloseFileTransfer(); return true; }
+        return true; // 吞掉其余按键，避免误触发主页操作
     }
 
     /// <summary>电源菜单内手柄按键：↑/← 上一项，↓/→ 下一项，A 执行，B/View/X 取消</summary>
@@ -3876,33 +4173,71 @@ public sealed partial class MainPage : Page
         return group is null && item.Kind is LaunchKind.App or LaunchKind.Url or LaunchKind.Folder;
     }
 
-    /// <summary>方向选择：按磁贴中心坐标找指定方向最近邻。返回 true=发生了移动（供"最底行 ↓ 进入抽屉"判断）</summary>
+    /// <summary>方向选择：按磁贴矩形找指定方向最近邻。返回 true=发生了移动（供"最底行 ↓ 进入抽屉"判断）</summary>
     private bool MoveSelection(int dx, int dy)
     {
         if (_tiles.Count == 0) return false;
         var cur = Math.Clamp(_selected, 0, _tiles.Count - 1);
-        var (cx, cy) = Center(_tiles[cur]);
+        var best = FindNearestTile(cur, dx, dy);
+        if (best < 0) return false;
+        _selected = best;
+        UpdateSelection();
+        return true;
+    }
 
-        int best = -1;
-        double bestScore = double.MaxValue;
+    private static Windows.Foundation.Rect TileRect(Border b) =>
+        new(Canvas.GetLeft(b), Canvas.GetTop(b), b.Width, b.Height);
+
+    /// <summary>
+    /// 方向最近邻（磁贴尺寸不一也只会走到紧邻的磁贴）：
+    /// 用矩形边缘的推进距离 + 侧向重叠量评分，而不是中心点距离——
+    /// 大磁贴中心偏得远，中心距离会跳过紧挨着的小磁贴。返回 -1 表示该方向没有候选。
+    /// </summary>
+    private int FindNearestTile(int from, int dx, int dy, Func<int, bool>? exclude = null)
+    {
+        if (from < 0 || from >= _tiles.Count) return -1;
+        var cr = TileRect(_tiles[from]);
+        var curX = cr.X + cr.Width / 2;
+        var curY = cr.Y + cr.Height / 2;
+        var horizontal = dx != 0;
+        var sign = horizontal ? dx : dy;
+
+        var best = -1;
+        var bestScore = double.MaxValue;
+        var bestPrimary = double.MaxValue;
         for (var i = 0; i < _tiles.Count; i++)
         {
-            if (i == cur) continue;
-            var (x, y) = Center(_tiles[i]);
-            var along = dx != 0 ? (x - cx) * dx : (y - cy) * dy;
-            if (along <= 1) continue;
-            var cross = dx != 0 ? Math.Abs(y - cy) : Math.Abs(x - cx);
-            var score = cross * 10 + along;
-            if (score < bestScore) { bestScore = score; best = i; }
-        }
+            if (i == from) continue;
+            if (exclude is not null && exclude(i)) continue;
+            var r = TileRect(_tiles[i]);
+            var cx = r.X + r.Width / 2;
+            var cy = r.Y + r.Height / 2;
 
-        if (best >= 0)
-        {
-            _selected = best;
-            UpdateSelection();
-            return true;
+            // 中心必须在移动方向前方
+            var centerDelta = horizontal ? (cx - curX) * sign : (cy - curY) * sign;
+            if (centerDelta < 1) continue;
+
+            // 边缘推进距离（<=0 = 紧贴或轻微重叠）
+            var edge = horizontal
+                ? (sign > 0 ? r.X - (cr.X + cr.Width) : cr.X - (r.X + r.Width))
+                : (sign > 0 ? r.Y - (cr.Y + cr.Height) : cr.Y - (r.Y + r.Height));
+
+            // 侧向重叠：>0 正对；<=0 错开，按间隙惩罚
+            var crossOverlap = horizontal
+                ? Math.Min(cr.Y + cr.Height, r.Y + r.Height) - Math.Max(cr.Y, r.Y)
+                : Math.Min(cr.X + cr.Width, r.X + r.Width) - Math.Max(cr.X, r.X);
+            var crossGap = crossOverlap > 0 ? 0 : -crossOverlap;
+
+            var score = Math.Max(0, edge) + crossGap * 3;
+            if (score < bestScore - 0.001 ||
+                (Math.Abs(score - bestScore) <= 0.001 && centerDelta < bestPrimary))
+            {
+                bestScore = score;
+                bestPrimary = centerDelta;
+                best = i;
+            }
         }
-        return false;
+        return best;
     }
 
     private static (double X, double Y) Center(Border b) =>
@@ -3914,22 +4249,10 @@ public sealed partial class MainPage : Page
         if (_grabbed is null || _tiles.Count == 0) return;
         var gi = _display.IndexOf((_grabbed, null));
         if (gi < 0) return;
-        var (gx, gy) = Center(_tiles[gi]);
 
-        int best = -1;
-        double bestScore = double.MaxValue;
-        for (var i = 0; i < _tiles.Count && i < _display.Count; i++)
-        {
-            if (i == gi) continue;
-            var (itemB, groupB) = _display[i];
-            if (groupB is not null) continue; // 组成员不参与交换
-            var (x, y) = Center(_tiles[i]);
-            var along = dx != 0 ? (x - gx) * dx : (y - gy) * dy;
-            if (along <= 1) continue;
-            var cross = dx != 0 ? Math.Abs(y - gy) : Math.Abs(x - gx);
-            var score = cross * 10 + along;
-            if (score < bestScore) { bestScore = score; best = i; }
-        }
+        // 组成员不参与交换
+        var best = FindNearestTile(gi, dx, dy,
+            i => i >= _display.Count || _display[i].group is not null);
         if (best < 0) return;
 
         // 交换 _items 中两个顶层磁贴的位置，选中跟随抓取项

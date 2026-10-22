@@ -6,6 +6,8 @@ using System.Text;
 using System.Text.Json;
 using System.Text.RegularExpressions;
 using GameLocker.Models;
+using SharpCompress.Archives;
+using SharpCompress.Common;
 
 namespace GameLocker.Services;
 
@@ -38,6 +40,15 @@ public sealed class OptiScalerInspection
     public string Inputs { get; set; } = "";
 }
 
+/// <summary>GitHub 上的一个可选 Release（供编辑页"具体版本"下拉使用）</summary>
+public sealed record RemoteRelease(string Tag, string Url, long Size, string? Digest, bool Prerelease)
+{
+    /// <summary>下拉框显示文案：版本号（预览版标注）· 体积</summary>
+    public string Label => Size > 0
+        ? $"{Tag}{(Prerelease ? "（预览）" : "")} · {Math.Max(1, Size / 1048576)}MB"
+        : Tag;
+}
+
 /// <summary>
 /// OptiScaler 小组件服务：检测当前正在运行的游戏 → 抓取 OptiScaler 官方 wiki 兼容列表，
 /// 按游戏名模糊匹配给出适配性与建议注入的代理 DLL 名 → 用户确认后，关闭游戏、把 OptiScaler
@@ -58,15 +69,22 @@ public static class OptiScalerService
     /// <summary>测试版（Beta）包目录：与正式版分开缓存，切换渠道时不会互相覆盖</summary>
     private static readonly string BetaPackageDir = Path.Combine(RootDir, "package-beta");
 
-    /// <summary>本地包解压目录：与自动下载缓存分开，避免本地包污染某个渠道的缓存</summary>
+    /// <summary>本地包文件夹：用户把 zip / 7z / rar 或已解压目录放在这里（选择"本地包"时自动取用）</summary>
     private static readonly string LocalPackageDir = Path.Combine(RootDir, "local");
+
+    /// <summary>本地包解压目录：与用户放包的文件夹分开，避免解压时清空用户目录</summary>
+    private static readonly string LocalExtractDir = Path.Combine(RootDir, "local-extracted");
+
+    /// <summary>本地包文件夹路径（供编辑页显示与打开）</summary>
+    public static string LocalPackageFolder => LocalPackageDir;
 
     /// <summary>OptiScaler 版本渠道（值, 显示名）：正式版取官方仓库 latest Release，
     /// 测试版取社区镜像的 pre 版本（OptiScaler-Betas）。ini 内容与用法完全一致，只是包更新更快。</summary>
     public static readonly (string Value, string Label)[] VersionChannelOptions =
     [
         ("stable", "正式版"),
-        ("beta", "测试版")
+        ("beta", "测试版"),
+        ("local", "本地包")
     ];
 
     /// <summary>渠道 → 最近一次下载到的版本号（如 0.9.4 / 0.9.5-pre4），持久化在 channels.json</summary>
@@ -186,11 +204,11 @@ public static class OptiScalerService
         "amd_fidelityfx_dx12.dll"                    // FSR3.1 单体 DLL（部分游戏硬编码此名 → 也作为替换目标）
     ];
 
-    /// <summary>FSR4 附加包的来源仓库（variant → Release API / 显示名）</summary>
-    private static readonly Dictionary<string, (string Api, string Label)> Fsr4Sources = new()
+    /// <summary>FSR4 附加包的来源仓库（variant → 仓库 API / 显示名）</summary>
+    private static readonly Dictionary<string, (string Repo, string Label)> Fsr4Sources = new()
     {
-        ["int8"] = ("https://api.github.com/repos/Optiscaler-Client/OptiScaler-Extras/releases/latest", "INT8"),
-        ["fp8"] = ("https://api.github.com/repos/Optiscaler-Client/Optiscaler-Extras-FP8/releases/latest", "FP8")
+        ["int8"] = ("https://api.github.com/repos/Optiscaler-Client/OptiScaler-Extras", "INT8"),
+        ["fp8"] = ("https://api.github.com/repos/Optiscaler-Client/Optiscaler-Extras-FP8", "FP8")
     };
 
     /// <summary>OptiScaler.ini 里 FrameGen.FGInput 的可选值（值, 显示名），对齐 0.9.x 稳定版示例 ini。
@@ -233,8 +251,8 @@ public static class OptiScalerService
     // 兼容列表来源：优先 raw markdown（结构干净），失败再回退渲染后的 HTML 页
     private const string WikiMdUrl = "https://raw.githubusercontent.com/wiki/optiscaler/OptiScaler/Compatibility-List.md";
     private const string WikiHtmlUrl = "https://github.com/optiscaler/OptiScaler/wiki/Compatibility-List";
-    private const string ReleaseApiUrl = "https://api.github.com/repos/optiscaler/OptiScaler/releases/latest";
-    private const string BetaReleaseApiUrl = "https://api.github.com/repos/Optiscaler-Client/OptiScaler-Betas/releases/latest";
+    private const string StableRepoApi = "https://api.github.com/repos/optiscaler/OptiScaler";
+    private const string BetaRepoApi = "https://api.github.com/repos/Optiscaler-Client/OptiScaler-Betas";
 
     /// <summary>兼容列表缓存有效期（超过则尝试重新抓取）</summary>
     private static readonly TimeSpan CompatTtl = TimeSpan.FromDays(7);
@@ -243,10 +261,11 @@ public static class OptiScalerService
 
     private static HttpClient CreateHttp()
     {
-        // 跟随 GitHub Release 的 302 跳转；带 UA 降低被拒概率
+        // 跟随 GitHub Release 的 302 跳转；带 UA 降低被拒概率。
+        // 不设总超时：55MB 包在慢速镜像下可能要十几分钟，用各请求自己的 CTS 控制等待响应头
         var http = new HttpClient(new HttpClientHandler { AllowAutoRedirect = true })
         {
-            Timeout = TimeSpan.FromMinutes(5)
+            Timeout = Timeout.InfiniteTimeSpan
         };
         try { http.DefaultRequestHeaders.UserAgent.ParseAdd("GameLocker-OptiScaler/1.0"); }
         catch { /* UA 设置失败不影响使用 */ }
@@ -335,7 +354,7 @@ public static class OptiScalerService
         var variant = Fsr4VariantOf(item);
         if (variant.Length == 0) return null;
         Report($"正在准备 FSR4 文件（OptiScaler 官方包不含，需单独下载）…");
-        return await EnsureFsr4Async(variant);
+        return await GetFsr4Async(variant, item.OptiFsr4VersionTag);
     }
 
     /// <summary>用户在确认弹窗里选择"注入"后调用：关闭游戏 → 注入 → 重新打开游戏（后台执行）</summary>
@@ -404,12 +423,13 @@ public static class OptiScalerService
         }
     }
 
-    /// <summary>一键还原：优先还原当前游戏、否则还原最近一次注入的备份（同步，返回给 UI 展示的一句话结果）</summary>
-    public static string Restore()
+    /// <summary>一键还原：还原指定备份（key=备份目录名）；key 为空时回退到"当前游戏优先、否则最近一次"。
+    /// 同步，返回给 UI 展示的一句话结果。</summary>
+    public static string Restore(string? key = null)
     {
         try
         {
-            var dir = ChooseBackupDir();
+            var dir = string.IsNullOrEmpty(key) ? ChooseBackupDir() : FindBackupDir(key);
             if (dir is null) return "没有可还原的 OptiScaler 备份";
             var manifestPath = Path.Combine(dir, "manifest.json");
             if (!File.Exists(manifestPath)) return "备份缺少清单，无法还原";
@@ -614,9 +634,10 @@ public static class OptiScalerService
     {
         try
         {
-            using var resp = await Http.GetAsync(url);
+            using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(20));
+            using var resp = await Http.GetAsync(url, cts.Token);
             if (!resp.IsSuccessStatusCode) return null;
-            return await resp.Content.ReadAsStringAsync();
+            return await resp.Content.ReadAsStringAsync(cts.Token);
         }
         catch { return null; }
     }
@@ -766,92 +787,376 @@ public static class OptiScalerService
     /// <summary>该项是否选了"测试版"渠道（默认/空值=正式版）</summary>
     private static bool IsBeta(LaunchItem item) => Blank(item.OptiChannel) == "beta";
 
-    /// <summary>取得解压后的 OptiScaler 包根目录（含 OptiScaler.dll）；失败返回 null</summary>
+    /// <summary>该项是否选了"本地包"渠道（不联网，直接用本地包文件夹里的包）</summary>
+    private static bool IsLocal(LaunchItem item) => Blank(item.OptiChannel) == "local";
+
+    /// <summary>取得解压后的 OptiScaler 包根目录（含 OptiScaler.dll）；失败返回 null。
+    /// 指定了具体版本（OptiVersionTag）就取那个 Release，否则取该渠道最新版。</summary>
     private static async Task<string?> EnsurePackageAsync(LaunchItem item)
     {
-        // 本地包覆盖
-        var local = item.OptiLocalPackage;
-        if (!string.IsNullOrWhiteSpace(local))
+        // 本地包渠道：显式选过包就用它，否则扫描"本地包文件夹"；失败直接报错，不回退联网下载
+        if (IsLocal(item))
         {
-            var localDir = await MaterializeLocalAsync(local!);
-            if (localDir is not null) return localDir;
-            Report("本地 OptiScaler 包不可用，改用自动下载", true);
-        }
-
-        // 按渠道分开缓存：正式版/测试版各自的包目录，切换渠道时不会复用另一渠道的包
-        var beta = IsBeta(item);
-        var dir = beta ? BetaPackageDir : PackageDir;
-        if (File.Exists(Path.Combine(dir, "OptiScaler.dll"))) return dir;
-
-        // 查询最新 Release
-        Report($"正在获取 OptiScaler{(beta ? " 测试版" : "")}版本信息…");
-        var asset = await GetLatestAssetAsync(beta ? BetaReleaseApiUrl : ReleaseApiUrl);
-        if (asset is null)
-        {
-            Report($"无法获取 OptiScaler{(beta ? " 测试版" : "")}版本（GitHub 访问失败）", true);
+            if (!string.IsNullOrWhiteSpace(item.OptiLocalPackage))
+            {
+                var localDir = await MaterializeLocalAsync(item.OptiLocalPackage!);
+                if (localDir is not null) return localDir;
+                Report("本地包不可用：请检查本地包文件夹里的包", true);
+                return null;
+            }
+            var scanned = await FindPackageInLocalFolderAsync();
+            if (scanned is not null) return scanned;
+            Report("本地包文件夹里没有可用的包：请放入 zip / 7z / rar 或已解压目录", true);
             return null;
         }
 
-        // 下载到本地临时文件
-        var tmp = Path.Combine(RootDir, asset.Value.Name);
-        Report($"正在下载 OptiScaler{(beta ? " 测试版" : "")}（{asset.Value.Name}，约 {asset.Value.Size / 1048576}MB）…", progress: 0);
-        Directory.CreateDirectory(RootDir);
+        return await GetPackageAsync(IsBeta(item), item.OptiVersionTag);
+    }
+
+    /// <summary>按渠道 + 版本标签取包（tag 为空=最新版）：已缓存直接用，否则从 GitHub 下载并解压。
+    /// 每个版本一个缓存目录（package\{tag} / package-beta\{tag}），切换版本不会互相覆盖；
+    /// 旧版直接解压在渠道根目录上的缓存仍可复用。</summary>
+    private static async Task<string?> GetPackageAsync(bool beta, string? versionTag)
+    {
+        var label = beta ? "OptiScaler 测试版" : "OptiScaler";
+        var channel = beta ? "beta" : "stable";
+        var repo = beta ? BetaRepoApi : StableRepoApi;
+        var rootBase = beta ? BetaPackageDir : PackageDir;
+        var tag = (versionTag ?? "").Trim();
+
+        Report($"正在获取 {label} 版本信息…");
+        var asset = await GetReleaseAsync(repo, tag);
+        if (asset is null)
+        {
+            // 离线/接口失败兜底：已有缓存照样能用（旧版根目录或任一版本目录）
+            if (File.Exists(Path.Combine(rootBase, "OptiScaler.dll"))) return rootBase;
+            if (LatestCachedRoot(rootBase, ["OptiScaler.dll"]) is { } cached)
+            {
+                DebugLog.Write($"OptiScaler: 无法访问 GitHub，复用已缓存包 {cached}");
+                return cached;
+            }
+            Report($"无法获取 {label} 版本（GitHub 访问失败）", true);
+            return null;
+        }
+
+        var dir = Path.Combine(rootBase, SafeFolderName(asset.Tag));
+        if (File.Exists(Path.Combine(dir, "OptiScaler.dll"))) return dir;
+        // 旧版把包直接解压在渠道根目录：只有记录的版本号正好是最新版时才复用，避免一直用旧包
+        if (tag.Length == 0 && File.Exists(Path.Combine(rootBase, "OptiScaler.dll")) &&
+            ChannelVersions.TryGetValue(channel, out var cachedVer) &&
+            string.Equals(cachedVer, asset.Tag.TrimStart('v', 'V'), StringComparison.OrdinalIgnoreCase))
+            return rootBase;
+
+        Directory.CreateDirectory(rootBase);
+        var tmp = Path.Combine(rootBase, Path.GetFileName(new Uri(asset.Url).LocalPath));
+        Report($"正在下载 {label} {asset.Tag}（约 {Math.Max(1, asset.Size / 1048576)}MB，自动选最快源）…", progress: 0);
         try
         {
-            using var resp = await Http.GetAsync(asset.Value.Url, HttpCompletionOption.ResponseHeadersRead);
-            if (!resp.IsSuccessStatusCode) { Report("OptiScaler 下载失败", true); return null; }
-            await using var net = await resp.Content.ReadAsStreamAsync();
-            await using var fs = File.Create(tmp);
-            await DownloadProgress.CopyAsync(net, resp.Content.Headers.ContentLength, fs,
-                (got, total) => ReportDownload("OptiScaler", got, total));
+            var ok = await DownloadAssetAsync(asset.Url, tmp, asset.Size, asset.Digest,
+                (got, total) => ReportDownload($"{label} {asset.Tag}", got, total));
+            if (!ok) { Report($"{label} 下载失败，请检查网络后重试", true); return null; }
         }
         catch (Exception ex)
         {
             DebugLog.Write($"OptiScaler: 下载异常 {ex.Message}");
-            Report("OptiScaler 下载失败，请检查网络后重试", true);
+            Report($"{label} 下载失败，请检查网络后重试", true);
             return null;
         }
 
-        // 解压
-        Report("正在解压 OptiScaler…");
+        Report($"正在解压 {label}…");
         var root = await ExtractAsync(tmp, dir);
         try { File.Delete(tmp); } catch { /* 临时包删不掉无害 */ }
         if (root is null)
         {
-            Report("OptiScaler 包解压失败（需要系统 tar.exe；可改在编辑页指定本地已解压目录）", true);
+            Report($"{label} 包解压失败（需要系统 tar.exe；可改用「本地包」渠道）", true);
             return null;
         }
-        // 包可用了：记下这个渠道的实际版本号，下次进编辑页时在"正式版 / 测试版"后显示
-        RememberChannelVersion(beta ? "beta" : "stable", asset.Value.Tag);
+        // 包可用了：记下这个渠道实际用的版本号，供版本下拉显示
+        RememberChannelVersion(channel, asset.Tag);
         return root;
     }
 
-    /// <summary>查询 GitHub Release 最新资产（名称/地址/大小 + Release 版本号）；失败返回 null</summary>
-    private static async Task<(string Name, string Url, long Size, string Tag)?> GetLatestAssetAsync(string apiUrl = ReleaseApiUrl)
+    /// <summary>版本标签 → 可用作目录名的字符串（去掉非法字符）</summary>
+    private static string SafeFolderName(string tag)
     {
+        var sb = new StringBuilder(tag.Length);
+        foreach (var ch in tag.Trim())
+            sb.Append(Array.IndexOf(Path.GetInvalidFileNameChars(), ch) >= 0 ? '_' : ch);
+        var name = sb.ToString().Trim('.', ' ');
+        return name.Length == 0 ? "latest" : name;
+    }
+
+    /// <summary>在版本缓存根目录下找最新的、含指定标志文件的已解压包（离线兜底用）</summary>
+    private static string? LatestCachedRoot(string baseDir, string[] markers)
+    {
+        if (!Directory.Exists(baseDir)) return null;
         try
         {
-            using var resp = await Http.GetAsync(apiUrl);
-            if (!resp.IsSuccessStatusCode) return null;
-            using var doc = JsonDocument.Parse(await resp.Content.ReadAsStringAsync());
-            if (!doc.RootElement.TryGetProperty("assets", out var assets)) return null;
-            var tag = doc.RootElement.TryGetProperty("tag_name", out var t) ? t.GetString() ?? "" : "";
-            foreach (var a in assets.EnumerateArray())
+            foreach (var d in Directory.GetDirectories(baseDir)
+                         .OrderByDescending(Directory.GetLastWriteTimeUtc))
             {
-                var name = a.GetProperty("name").GetString() ?? "";
-                var url = a.GetProperty("browser_download_url").GetString() ?? "";
-                var size = a.TryGetProperty("size", out var s) ? s.GetInt64() : 0L;
-                if (name.Length > 0 && url.Length > 0) return (name, url, size, tag); // 取第一个资产（通常是唯一的主包）
+                if (FindRootContaining(d, markers) is { } root) return root;
             }
         }
         catch (Exception ex)
         {
-            DebugLog.Write($"OptiScaler: Release 查询异常 {ex.Message}");
+            DebugLog.Write($"OptiScaler: 扫描缓存失败 {ex.Message}");
         }
         return null;
     }
 
-    /// <summary>把本地包（目录 / zip / 7z）物化成含 OptiScaler.dll 的目录；失败返回 null</summary>
+    /// <summary>查询指定 Release 的下载资产（tag 为空=最新正式版）；失败返回 null。
+    /// preferToken 用于一个 Release 带多个资产的仓库（FSR4），优先挑名字里含该标记的包。</summary>
+    private static async Task<RemoteRelease?> GetReleaseAsync(string repo, string tag, string? preferToken = null)
+    {
+        var url = tag.Length == 0
+            ? repo + "/releases/latest"
+            : repo + "/releases/tags/" + Uri.EscapeDataString(tag);
+        var json = await GetStringAsync(url);
+        if (json is null) return null;
+        try
+        {
+            using var doc = JsonDocument.Parse(json);
+            return ReadRelease(doc.RootElement, preferToken);
+        }
+        catch (Exception ex)
+        {
+            DebugLog.Write($"OptiScaler: Release 解析异常 {ex.Message}");
+            return null;
+        }
+    }
+
+    /// <summary>从 Release JSON 里挑出可下载的包（zip / 7z；tar.gz 不在支持范围）</summary>
+    private static RemoteRelease? ReadRelease(JsonElement release, string? preferToken = null)
+    {
+        var tag = release.TryGetProperty("tag_name", out var t) ? t.GetString() ?? "" : "";
+        if (tag.Length == 0) return null;
+        var prerelease = release.TryGetProperty("prerelease", out var p) && p.ValueKind == JsonValueKind.True;
+        if (!release.TryGetProperty("assets", out var assets) || assets.ValueKind != JsonValueKind.Array)
+            return null;
+
+        RemoteRelease? best = null;
+        var bestScore = -1;
+        foreach (var a in assets.EnumerateArray())
+        {
+            var name = a.TryGetProperty("name", out var n) ? n.GetString() ?? "" : "";
+            var url = a.TryGetProperty("browser_download_url", out var u) ? u.GetString() ?? "" : "";
+            var lower = name.ToLowerInvariant();
+            if (name.Length == 0 || url.Length == 0) continue;
+            if (!lower.EndsWith(".zip") && !lower.EndsWith(".7z")) continue;
+
+            var score = lower.EndsWith(".zip") ? 2 : 1;
+            if (!string.IsNullOrEmpty(preferToken) &&
+                lower.Contains(preferToken.ToLowerInvariant(), StringComparison.Ordinal)) score += 10;
+            if (score <= bestScore) continue;
+            bestScore = score;
+
+            var size = a.TryGetProperty("size", out var s) ? s.GetInt64() : 0L;
+            var digest = a.TryGetProperty("digest", out var d) ? d.GetString() : null;
+            best = new RemoteRelease(tag, url, size, digest, prerelease);
+        }
+        return best;
+    }
+
+    /// <summary>Release 列表缓存（10 分钟），避免反复切下拉框时打 GitHub API</summary>
+    private static readonly TimeSpan ReleaseListTtl = TimeSpan.FromMinutes(10);
+    private static readonly Dictionary<string, (DateTime At, RemoteRelease[] List)> ReleaseCache = [];
+
+    /// <summary>列出仓库的 Release（最多 30 个）；失败返回空数组</summary>
+    private static async Task<RemoteRelease[]> GetReleasesAsync(string repo, string? preferToken = null)
+    {
+        var key = repo + "|" + (preferToken ?? "");
+        lock (ReleaseCache)
+        {
+            if (ReleaseCache.TryGetValue(key, out var hit) && DateTime.UtcNow - hit.At < ReleaseListTtl)
+                return hit.List;
+        }
+
+        var json = await GetStringAsync(repo + "/releases?per_page=30");
+        if (json is null) return [];
+        var list = new List<RemoteRelease>();
+        try
+        {
+            using var doc = JsonDocument.Parse(json);
+            if (doc.RootElement.ValueKind == JsonValueKind.Array)
+            {
+                foreach (var e in doc.RootElement.EnumerateArray())
+                    if (ReadRelease(e, preferToken) is { } r) list.Add(r);
+            }
+        }
+        catch (Exception ex)
+        {
+            DebugLog.Write($"OptiScaler: Release 列表解析异常 {ex.Message}");
+            return [];
+        }
+
+        var arr = list.ToArray();
+        lock (ReleaseCache) ReleaseCache[key] = (DateTime.UtcNow, arr);
+        return arr;
+    }
+
+    /// <summary>GET 文本（20 秒等响应头；失败返回 null）</summary>
+    private static async Task<string?> GetStringAsync(string url)
+    {
+        try
+        {
+            using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(20));
+            using var resp = await Http.GetAsync(url, cts.Token);
+            if (!resp.IsSuccessStatusCode) return null;
+            return await resp.Content.ReadAsStringAsync(cts.Token);
+        }
+        catch (Exception ex)
+        {
+            DebugLog.Write($"OptiScaler: 请求 {url} 失败 {ex.Message}");
+            return null;
+        }
+    }
+
+    /// <summary>编辑页「具体版本」下拉项：首项"最新版"（空值）+ 该渠道可下载的 Release。
+    /// 正式版渠道只列非预览 Release；本地包渠道没有版本概念，返回空。</summary>
+    public static async Task<(string Value, string Label)[]> GetVersionOptionsAsync(string channel)
+    {
+        if (channel.Equals("local", StringComparison.OrdinalIgnoreCase)) return [];
+        var beta = channel.Equals("beta", StringComparison.OrdinalIgnoreCase);
+        var list = await GetReleasesAsync(beta ? BetaRepoApi : StableRepoApi);
+        var items = list.Where(r => beta || !r.Prerelease).Select(r => (r.Tag, r.Label));
+        return [("", "最新版（自动）"), .. items];
+    }
+
+    /// <summary>编辑页「FSR4 版本」下拉项：首项"最新版"（空值）+ 该变体仓库可下载的 Release</summary>
+    public static async Task<(string Value, string Label)[]> GetFsr4VersionOptionsAsync(string variant)
+    {
+        if (!Fsr4Sources.TryGetValue(variant, out var src)) return [];
+        var list = await GetReleasesAsync(src.Repo, variant);
+        var items = list.Select(r => (r.Tag, r.Label));
+        return [("", "最新版（自动）"), .. items];
+    }
+
+    /// <summary>编辑页选定版本后调用的预下载（后台进行；失败只记日志，不打扰编辑流程）</summary>
+    public static async Task PrefetchAsync(string channel, string tag)
+    {
+        if (channel.Equals("local", StringComparison.OrdinalIgnoreCase)) return;
+        try { await GetPackageAsync(channel.Equals("beta", StringComparison.OrdinalIgnoreCase), tag); }
+        catch (Exception ex) { DebugLog.Write($"OptiScaler: 预下载失败 {ex.Message}"); }
+    }
+
+    /// <summary>编辑页选定 FSR4 版本后调用的预下载</summary>
+    public static async Task PrefetchFsr4Async(string variant, string tag)
+    {
+        if (!Fsr4Sources.ContainsKey(variant)) return;
+        try { await GetFsr4Async(variant, tag); }
+        catch (Exception ex) { DebugLog.Write($"OptiScaler: FSR4 预下载失败 {ex.Message}"); }
+    }
+
+    /// <summary>GitHub 下载加速镜像（按顺序尝试；均为 GitHub 文件转发，下载后按 API 给出的 SHA256 校验）</summary>
+    private static readonly string[] DownloadMirrors =
+    [
+        "https://gh-proxy.com/",
+        "https://ghproxy.net/",
+        "https://ghfast.top/"
+    ];
+
+    /// <summary>下载 Release 资产：镜像优先、直连兜底；镜像失效或明显过慢（6 秒内不足 300KB）自动换下一个源</summary>
+    private static async Task<bool> DownloadAssetAsync(
+        string url, string destPath, long expectedSize, string? digest,
+        Action<long, long?> onProgress, CancellationToken token = default)
+    {
+        var candidates = DownloadMirrors.Select(m => m + url).Append(url);
+        foreach (var candidate in candidates)
+        {
+            try
+            {
+                if (await DownloadOnceAsync(candidate, destPath, expectedSize, digest, onProgress, token))
+                    return true;
+            }
+            catch (OperationCanceledException) when (token.IsCancellationRequested)
+            {
+                return false;
+            }
+            catch (Exception ex)
+            {
+                DebugLog.Write($"OptiScaler: 下载源 {candidate} 失败 {ex.Message}");
+            }
+            // 保留已下载的部分：下一个源 / 下次运行可断点续传
+        }
+        return false;
+    }
+
+    /// <summary>从单个 URL 下载并校验（支持续传）；速度过慢/长度不符/哈希不符返回 false</summary>
+    private static async Task<bool> DownloadOnceAsync(
+        string url, string destPath, long expectedSize, string? digest,
+        Action<long, long?> onProgress, CancellationToken token)
+    {
+        // 上次中断/换源留下的部分文件：直接用 Range 续传，不必从 0 重下
+        long have = 0;
+        try { if (File.Exists(destPath)) have = new FileInfo(destPath).Length; } catch { }
+        if (expectedSize > 0 && have >= expectedSize)
+            return VerifyDigest(destPath, digest);
+
+        using var cts = CancellationTokenSource.CreateLinkedTokenSource(token);
+        cts.CancelAfter(TimeSpan.FromSeconds(20)); // 等待响应头（镜像失联时不至于卡满）
+        using var request = new HttpRequestMessage(HttpMethod.Get, url);
+        if (have > 0) request.Headers.Range = new System.Net.Http.Headers.RangeHeaderValue(have, null);
+        using var resp = await Http.SendAsync(request, HttpCompletionOption.ResponseHeadersRead, cts.Token);
+        if (!resp.IsSuccessStatusCode) return false;
+        cts.CancelAfter(Timeout.InfiniteTimeSpan);
+
+        // 只有 206 才能接着写；服务器不支持 Range（返回 200）就重头下
+        var append = have > 0 && resp.StatusCode == System.Net.HttpStatusCode.PartialContent;
+        if (!append) have = 0;
+        var length = resp.Content.Headers.ContentLength;
+        var total = length is null ? (expectedSize > 0 ? expectedSize : (long?)null) : have + length;
+
+        await using var net = await resp.Content.ReadAsStreamAsync(cts.Token);
+        await using var fs = new FileStream(destPath, append ? FileMode.Append : FileMode.Create,
+            FileAccess.Write, FileShare.None, 1 << 16, useAsync: true);
+        var buffer = new byte[1 << 16];
+        long got = have;
+        var start = Environment.TickCount64;
+        var last = start;
+        while (true)
+        {
+            var read = await net.ReadAsync(buffer, cts.Token);
+            if (read == 0) break;
+            await fs.WriteAsync(buffer.AsMemory(0, read), cts.Token);
+            got += read;
+            var now = Environment.TickCount64;
+            // 连接建立很快但被限速时（国内直连常见），6 秒还不到 300KB 就换源
+            if (now - start >= 6000 && got - have < 300 * 1024)
+            {
+                DebugLog.Write($"OptiScaler: {url} 速度过慢（{(got - have) / 1024.0:0}KB/6s），切换下载源");
+                return false;
+            }
+            if (now - last >= 200) { last = now; onProgress(got, total); }
+        }
+        onProgress(got, total);
+
+        if (expectedSize > 0 && got != expectedSize) return false;
+        return VerifyDigest(destPath, digest);
+    }
+
+    /// <summary>按 SHA256 校验（API 有 digest 时）；不符则删除坏文件，避免下次续传垃圾</summary>
+    private static bool VerifyDigest(string path, string? digest)
+    {
+        if (string.IsNullOrEmpty(digest)) return true;
+        var actual = Sha256File(path);
+        if (string.Equals(actual, digest, StringComparison.OrdinalIgnoreCase)) return true;
+        DebugLog.Write("OptiScaler: SHA256 校验失败，删除已下载内容");
+        try { File.Delete(path); } catch { }
+        return false;
+    }
+
+    private static string? Sha256File(string path)
+    {
+        try
+        {
+            using var stream = File.OpenRead(path);
+            return Convert.ToHexString(System.Security.Cryptography.SHA256.HashData(stream)).ToLowerInvariant();
+        }
+        catch { return null; }
+    }
+
+    /// <summary>把本地包（目录 / zip / 7z / rar）物化成含 OptiScaler.dll 的目录；失败返回 null</summary>
     private static async Task<string?> MaterializeLocalAsync(string path)
     {
         try
@@ -865,9 +1170,9 @@ public static class OptiScalerService
             if (!File.Exists(path)) return null;
 
             var ext = Path.GetExtension(path).ToLowerInvariant();
-            if (ext is not (".zip" or ".7z")) return null;
+            if (ext is not (".zip" or ".7z" or ".rar")) return null;
             Report("正在解压本地 OptiScaler 包…");
-            return await ExtractAsync(path, LocalPackageDir);
+            return await ExtractAsync(path, LocalExtractDir);
         }
         catch (Exception ex)
         {
@@ -876,40 +1181,80 @@ public static class OptiScalerService
         }
     }
 
+    /// <summary>扫描"本地包文件夹"：优先已解压好的目录，其次取最新的 zip / 7z / rar 解压
+    /// （解压到独立目录，不删用户放的包）</summary>
+    private static async Task<string?> FindPackageInLocalFolderAsync()
+    {
+        try
+        {
+            Directory.CreateDirectory(LocalPackageDir);
+            if (FindPackageRoot(LocalPackageDir) is { } dir) return dir;
+            var archive = Directory.EnumerateFiles(LocalPackageDir)
+                .Where(p => Path.GetExtension(p).ToLowerInvariant() is ".zip" or ".7z" or ".rar")
+                .OrderByDescending(File.GetLastWriteTimeUtc)
+                .FirstOrDefault();
+            if (archive is null) return null;
+            Report("正在解压本地包…");
+            return await ExtractAsync(archive, LocalExtractDir);
+        }
+        catch (Exception ex)
+        {
+            DebugLog.Write($"OptiScaler: 本地包文件夹扫描异常 {ex.Message}");
+            return null;
+        }
+    }
+
+    /// <summary>打开本地包文件夹（不存在则创建）</summary>
+    public static void OpenLocalFolder()
+    {
+        try
+        {
+            Directory.CreateDirectory(LocalPackageDir);
+            Process.Start(new ProcessStartInfo
+            {
+                FileName = "explorer.exe",
+                Arguments = $"\"{LocalPackageDir}\"",
+                UseShellExecute = true
+            });
+        }
+        catch { /* 打不开就算了，不打断编辑流程 */ }
+    }
+
     /// <summary>
-    /// 取 FSR4 附加文件（OptiScaler 官方包里没有）：已缓存则直接用，否则拉对应社区仓库的最新 Release
-    /// 并解压，返回含 FSR4 DLL 的目录；失败返回 null。
+    /// 取 FSR4 附加文件（OptiScaler 官方包里没有）：已缓存则直接用，否则拉对应社区仓库的
+    /// 指定 Release（tag 为空=最新版）并解压，返回含 FSR4 DLL 的目录；失败返回 null。
     /// </summary>
-    private static async Task<string?> EnsureFsr4Async(string variant)
+    private static async Task<string?> GetFsr4Async(string variant, string? versionTag)
     {
         if (!Fsr4Sources.TryGetValue(variant, out var src)) return null;
-
-        var dir = Path.Combine(Fsr4Dir, variant);
-        if (FindRootContaining(dir, Fsr4KnownNames) is { } cached)
-        {
-            DebugLog.Write($"OptiScaler: 复用已缓存的 FSR4 {src.Label} 文件（{cached}）");
-            return cached;
-        }
+        var baseDir = Path.Combine(Fsr4Dir, variant);
+        var tag = (versionTag ?? "").Trim();
 
         Report($"正在获取 FSR4 {src.Label} 版本信息…");
-        var asset = await GetLatestAssetAsync(src.Api);
+        var asset = await GetReleaseAsync(src.Repo, tag, variant);
         if (asset is null)
         {
+            // 离线兜底：任一已缓存版本都能用
+            if (FindRootContaining(baseDir, Fsr4KnownNames) is { } cached)
+            {
+                DebugLog.Write($"OptiScaler: 无法访问 GitHub，复用已缓存的 FSR4 {src.Label} 文件（{cached}）");
+                return cached;
+            }
             Report($"无法获取 FSR4 {src.Label} 版本（GitHub 访问失败）", true);
             return null;
         }
 
-        Directory.CreateDirectory(Fsr4Dir);
-        var tmp = Path.Combine(Fsr4Dir, asset.Value.Name);
-        Report($"正在下载 FSR4 {src.Label}（{asset.Value.Name}，约 {asset.Value.Size / 1048576}MB）…", progress: 0);
+        var dir = Path.Combine(baseDir, SafeFolderName(asset.Tag));
+        if (FindRootContaining(dir, Fsr4KnownNames) is { } hit) return hit;
+
+        Directory.CreateDirectory(baseDir);
+        var tmp = Path.Combine(baseDir, Path.GetFileName(new Uri(asset.Url).LocalPath));
+        Report($"正在下载 FSR4 {src.Label} {asset.Tag}（约 {Math.Max(1, asset.Size / 1048576)}MB，自动选最快源）…", progress: 0);
         try
         {
-            using var resp = await Http.GetAsync(asset.Value.Url, HttpCompletionOption.ResponseHeadersRead);
-            if (!resp.IsSuccessStatusCode) { Report("FSR4 下载失败", true); return null; }
-            await using var net = await resp.Content.ReadAsStreamAsync();
-            await using var fs = File.Create(tmp);
-            await DownloadProgress.CopyAsync(net, resp.Content.Headers.ContentLength, fs,
-                (got, total) => ReportDownload($"FSR4 {src.Label}", got, total));
+            var ok = await DownloadAssetAsync(asset.Url, tmp, asset.Size, asset.Digest,
+                (got, total) => ReportDownload($"FSR4 {src.Label} {asset.Tag}", got, total));
+            if (!ok) { Report("FSR4 下载失败，请检查网络后重试", true); return null; }
         }
         catch (Exception ex)
         {
@@ -929,7 +1274,7 @@ public static class OptiScalerService
         return root;
     }
 
-    /// <summary>解压 zip / 7z 到 destDir，并返回其中含指定标志文件的目录；失败返回 null</summary>
+    /// <summary>解压 zip / 7z / rar 到 destDir，并返回其中含指定标志文件的目录；失败返回 null</summary>
     private static async Task<string?> ExtractAsync(string archive, string destDir, string[]? markers = null)
     {
         markers ??= ["OptiScaler.dll"];
@@ -954,9 +1299,41 @@ public static class OptiScalerService
         {
             if (!await Task.Run(() => RunBsdtar(archive, destDir))) return null;
         }
+        else if (ext == ".rar")
+        {
+            // 系统 tar.exe 不保证支持 RAR，改用 SharpCompress（RAR4 / RAR5 均可解）
+            if (!await Task.Run(() => RunRarExtract(archive, destDir))) return null;
+        }
         else return null;
 
         return FindRootContaining(destDir, markers);
+    }
+
+    /// <summary>用 SharpCompress 解压 RAR（支持 RAR4 / RAR5；加密包需要密码，会失败）</summary>
+    private static bool RunRarExtract(string archive, string destDir)
+    {
+        try
+        {
+            var root = Path.GetFullPath(destDir);
+            using var ar = ArchiveFactory.Open(archive);
+            foreach (var entry in ar.Entries)
+            {
+                if (entry.IsDirectory || string.IsNullOrEmpty(entry.Key)) continue;
+                var full = Path.GetFullPath(Path.Combine(root, entry.Key));
+                // 防目录穿越：只解到 destDir 之内
+                if (!full.StartsWith(root + Path.DirectorySeparatorChar, StringComparison.OrdinalIgnoreCase)
+                    && !string.Equals(full, root, StringComparison.OrdinalIgnoreCase)) continue;
+                var parent = Path.GetDirectoryName(full);
+                if (parent is not null) Directory.CreateDirectory(parent);
+                entry.WriteToFile(full, new ExtractionOptions { ExtractFullPath = false, Overwrite = true });
+            }
+            return true;
+        }
+        catch (Exception ex)
+        {
+            DebugLog.Write($"OptiScaler: rar 解压失败 {ex.Message}");
+            return false;
+        }
     }
 
     /// <summary>用系统自带 bsdtar（libarchive，支持 7z）解压</summary>
@@ -1218,6 +1595,72 @@ public static class OptiScalerService
         }
         lines.Add($"{key}={value}");
         return string.Join("\r\n", lines);
+    }
+
+    /// <summary>列出可还原的备份（值=备份目录名，显示名=游戏名（进程名）· 备份时间），按时间倒序</summary>
+    public static (string Value, string Label)[] GetBackupOptions()
+    {
+        try
+        {
+            if (!Directory.Exists(BackupDir)) return [];
+            var list = new List<(string Value, string Label, DateTime Time)>();
+            foreach (var dir in Directory.GetDirectories(BackupDir))
+            {
+                var manifest = Path.Combine(dir, "manifest.json");
+                if (!File.Exists(manifest)) continue;
+
+                var key = Path.GetFileName(dir);
+                var game = key;
+                var exe = "";
+                var time = DateTime.MinValue;
+                try
+                {
+                    var m = JsonSerializer.Deserialize<OptiBackupManifest>(File.ReadAllText(manifest));
+                    if (m is not null)
+                    {
+                        if (!string.IsNullOrWhiteSpace(m.Game)) game = m.Game;
+                        exe = m.ExeName;
+                        time = m.Time;
+                    }
+                }
+                catch { /* 清单损坏：用目录名兜底 */ }
+
+                // 窗口标题里常已含进程名，避免重复成"游戏名（游戏名）"
+                var name = exe.Length > 0 && !game.Contains(exe, StringComparison.OrdinalIgnoreCase)
+                    ? $"{game}（{exe}）"
+                    : game;
+                var label = time == default ? name : $"{name} · {time:MM-dd HH:mm}";
+                list.Add((key, label, time));
+            }
+            return [.. list.OrderByDescending(x => x.Time).Select(x => (x.Value, x.Label))];
+        }
+        catch (Exception ex)
+        {
+            DebugLog.Write($"OptiScaler: 备份列表读取失败 {ex.Message}");
+            return [];
+        }
+    }
+
+    /// <summary>默认选中的备份：当前游戏优先，否则最新一份；没有备份返回空串</summary>
+    public static string DefaultBackupKey()
+    {
+        var options = GetBackupOptions();
+        if (options.Length == 0) return "";
+        var key = Sanitize(TrainerService.LastExeName ?? "");
+        return options.Any(o => string.Equals(o.Value, key, StringComparison.OrdinalIgnoreCase))
+            ? key
+            : options[0].Value;
+    }
+
+    /// <summary>按备份目录名定位备份目录（校验清单存在）</summary>
+    private static string? FindBackupDir(string key)
+    {
+        try
+        {
+            var dir = Path.Combine(BackupDir, Sanitize(key));
+            return Directory.Exists(dir) && File.Exists(Path.Combine(dir, "manifest.json")) ? dir : null;
+        }
+        catch { return null; }
     }
 
     /// <summary>选中要还原的备份目录：当前游戏优先，否则最近一次注入</summary>

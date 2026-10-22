@@ -25,9 +25,7 @@ public enum BrowseMode
     /// <summary>选图标（exe/ico/图片）</summary>
     Icon,
     /// <summary>选磁贴背景图片（仅图片）</summary>
-    Cover,
-    /// <summary>选 OptiScaler 包（文件夹 / zip / 7z）</summary>
-    Archive
+    Cover
 }
 
 /// <summary>
@@ -79,6 +77,14 @@ public sealed partial class AddItemPage : Page, ISettingsGamepad
     /// <summary>当前浏览是否为"游戏存档选文件夹"</summary>
     private bool _pickingBackupFolder;
 
+    /// <summary>文件传输：本次会话选定的可发送/接收目录（null=未改动；""=恢复默认下载文件夹）</summary>
+    private string? _pendingFtSendFolder;
+    private string? _pendingFtRecvFolder;
+
+    /// <summary>当前浏览是在给"文件传输"选可发送目录还是接收目录</summary>
+    private bool _pickingFtSendFolder;
+    private bool _pickingFtRecvFolder;
+
     /// <summary>系统小组件：启用的面板项胶囊按钮（下标 = SystemPanelService.Order 的序号）</summary>
     private ToggleButton[] _sysOptBoxes = [];
 
@@ -92,12 +98,6 @@ public sealed partial class AddItemPage : Page, ISettingsGamepad
     private static readonly Microsoft.UI.Xaml.Media.SolidColorBrush SysChipOffTextBrush = MakeBrush(0xE6, 0xEE, 0xF9);
     private static readonly Microsoft.UI.Xaml.Media.SolidColorBrush SysChipOnMarkBrush = MakeBrush(0xBB, 0xD8, 0xFF);
     private static readonly Microsoft.UI.Xaml.Media.SolidColorBrush SysChipOffMarkBrush = MakeBrush(0x59, 0xFF, 0xFF, 0xFF);
-
-    /// <summary>OptiScaler：本次会话选定的本地包路径（null=未改动；""=清除改用自动下载）</summary>
-    private string? _pendingOptiLocalPack;
-
-    /// <summary>当前浏览是否为"选 OptiScaler 本地包"</summary>
-    private bool _pickingOptiPack;
 
     // ---- 映射小组件的按键捕获状态（实现 ISettingsGamepad，MainWindow 据此转发原始手柄按键） ----
 
@@ -218,8 +218,16 @@ public sealed partial class AddItemPage : Page, ISettingsGamepad
         BuildGamepadMapDiagram();
         // OptiScaler 下拉框选项来自服务层数组，保证与写入配置的值一致
         FillOptiCombo(OptiDllCombo, OptiScalerService.ProxyOptions);
-        // 版本渠道下拉项带"已下载到的版本号"后缀，故每次进页面都重新灌一次
+        // 版本渠道下拉项带"已下载到的版本号"后缀，故每次进页面都重新灌一次；默认选"正式版"
         FillOptiCombo(OptiVersionCombo, OptiScalerService.GetVersionChannelOptions());
+        // 具体版本先只放"最新版"，进编辑页后异步补上 GitHub 上可下载的版本列表
+        FillOptiCombo(OptiVersionTagCombo, [("", "最新版（自动）")]);
+        FillOptiCombo(OptiFsr4VersionCombo, [("", "最新版（自动）")]);
+        _suppressOptiTagEvent = true;
+        OptiVersionTagCombo.SelectedIndex = 0;
+        OptiFsr4VersionCombo.SelectedIndex = 0;
+        _suppressOptiTagEvent = false;
+        OptiVersionCombo.SelectedIndex = 0;
         FillOptiCombo(OptiUpscalerCombo, OptiScalerService.UpscalerOptions);
         FillOptiCombo(OptiFgInputCombo, OptiScalerService.FgInputOptions);
         FillOptiCombo(OptiFgOutputCombo, OptiScalerService.FgOutputOptions);
@@ -264,6 +272,21 @@ public sealed partial class AddItemPage : Page, ISettingsGamepad
     /// <summary>展开下拉前的已选索引（B 取消时回滚）</summary>
     private int _comboBackupIndex;
 
+    /// <summary>程序内回填"具体版本 / FSR4 版本"下拉时，抑制 SelectionChanged 触发的后台下载</summary>
+    private bool _suppressOptiTagEvent;
+
+    /// <summary>编辑初始化时要回填的版本标签（各自用一次）</summary>
+    private string _savedOptiTag = "";
+    private string _savedFsr4Tag = "";
+
+    /// <summary>版本列表请求代次：渠道/变体快速切换时只采纳最后一次请求的结果</summary>
+    private int _optiVersionGen;
+    private int _fsr4VersionGen;
+
+    /// <summary>编辑初始化时程序内回填下拉，抑制 SelectionChanged 的副作用（加载/下载）</summary>
+    private bool _suppressOptiVersionEvent;
+    private bool _suppressFsr4FilesEvent;
+
     /// <summary>把 OptiScalerService 里的选项数组灌进下拉框（Tag=写入配置的值）</summary>
     private static void FillOptiCombo(ComboBox cb, (string Value, string Label)[] options)
     {
@@ -303,6 +326,12 @@ public sealed partial class AddItemPage : Page, ISettingsGamepad
             list.Add(SpeedSlowRadio);
             list.Add(SpeedArtRadio);
             list.Add(AnimationToggle);
+        }
+        // 文件传输：可发送目录 / 接收目录
+        if (FileTransferRow.Visibility == vis)
+        {
+            list.Add(FtSendFolderButton);
+            list.Add(FtRecvFolderButton);
         }
         // 映射小组件：按键捕获按钮
         if (MappingRow.Visibility == vis) list.Add(MappingCaptureButton);
@@ -353,25 +382,29 @@ public sealed partial class AddItemPage : Page, ISettingsGamepad
                 list.Add(GamepadMapDeleteButton);
             }
         }
-        // OptiScaler 小组件：注入 DLL 名 / ini 关键项 / 本地包 / 一键还原与打开目录
+        // OptiScaler 小组件：注入 DLL 名 / 画质提升（含 FSR4 子项）/ 版本渠道 + 具体版本 / 本地包 / 一键还原与打开目录
         if (OptiScalerRow.Visibility == vis)
         {
             list.Add(OptiDllCombo);
-            list.Add(OptiVersionCombo);
             list.Add(OptiUpscalerCombo);
-            // 仅"画质提升"选到 FSR4 时才显示 FSR4 画质档 / FSR4 文件 → 收起时不纳入导航
+            // 仅"画质提升"选到 FSR4 时才显示 FSR4 画质档 / 文件 / 版本 → 收起时不纳入导航
             if (OptiFsr4Cell.Visibility == vis)
             {
                 list.Add(OptiFsr4PresetCombo);
                 list.Add(OptiFsr4FilesCombo);
+                if (OptiFsr4VersionCell.Visibility == vis) list.Add(OptiFsr4VersionCombo);
             }
+            list.Add(OptiVersionCombo);
+            // 本地包渠道没有网上版本可选 → "具体版本"已收起，不纳入导航
+            if (OptiVersionTagCell.Visibility == vis) list.Add(OptiVersionTagCombo);
+            if (OptiLocalRow.Visibility == vis) list.Add(OptiLocalFolderButton);
             list.Add(OptiFrameGenToggle);
             // 两列并排的视觉顺序：帧生成 → 输入 → 输出 → 倍数；关闭时后三格收起，不纳入导航
             if (OptiFgInputCell.Visibility == vis) list.Add(OptiFgInputCombo);
             if (OptiFgOutputCell.Visibility == vis) list.Add(OptiFgOutputCombo);
             if (OptiFgMultiplierCell.Visibility == vis) list.Add(OptiFgMultiplierCombo);
-            list.Add(OptiLocalPackButton);
-            list.Add(OptiLocalPackClearButton);
+            // 一键还原：有备份时先选游戏（下拉），再按还原按钮
+            if (OptiRestoreCombo.Items.Count > 0) list.Add(OptiRestoreCombo);
             list.Add(OptiRestoreButton);
             list.Add(OptiOpenFolderButton);
         }
@@ -467,6 +500,8 @@ public sealed partial class AddItemPage : Page, ISettingsGamepad
         _isWidget = item.Kind == LaunchKind.Widget;
         _pendingPhotoFolder = null;
         _pendingBackupFolder = null;
+        _pendingFtSendFolder = null;
+        _pendingFtRecvFolder = null;
         NameBox.Visibility = Microsoft.UI.Xaml.Visibility.Visible;
         NameBox.Header = "显示名称";
         NameBox.PlaceholderText = "例如：Steam";
@@ -501,7 +536,8 @@ public sealed partial class AddItemPage : Page, ISettingsGamepad
             // 颜色：图片组不需要（整块铺图）
             SizeColumn.Visibility = isPhoto || item.WidgetKind is WidgetKind.Settings or WidgetKind.Power or WidgetKind.Weather or WidgetKind.Mapping or WidgetKind.Trainer or WidgetKind.Backup or WidgetKind.GamepadMap or WidgetKind.OptiScaler or WidgetKind.RecycleBin or WidgetKind.Foreground or WidgetKind.Monitor
                 ? Microsoft.UI.Xaml.Visibility.Visible : w;
-            ColorColumn.Visibility = isPhoto ? w : Microsoft.UI.Xaml.Visibility.Visible;
+            ColorColumn.Visibility = isPhoto || TileStyle.IsWin10Theme
+                ? w : Microsoft.UI.Xaml.Visibility.Visible;
             PhotoFolderRow.Visibility = isPhoto
                 ? Microsoft.UI.Xaml.Visibility.Visible : w;
             PhotoSettingsPanel.Visibility = isPhoto
@@ -536,6 +572,17 @@ public sealed partial class AddItemPage : Page, ISettingsGamepad
                 NameBox.Visibility = w;
                 CheckMonitorSettings(item.MonitorPos, item.MonitorScale, item.MonitorOpacity);
             }
+            // 文件传输：名称、大小、颜色 + 可发送目录 / 接收目录（留空=系统下载文件夹）
+            var isFileTransfer = item.WidgetKind == WidgetKind.FileTransfer;
+            FileTransferRow.Visibility = isFileTransfer ? Microsoft.UI.Xaml.Visibility.Visible : w;
+            if (isFileTransfer)
+            {
+                if (string.IsNullOrWhiteSpace(NameBox.Text)) NameBox.Text = "文件传输";
+                FtSendFolderText.Text = string.IsNullOrWhiteSpace(item.FileTransferSendFolder)
+                    ? "未设置（默认：下载文件夹）" : item.FileTransferSendFolder!;
+                FtRecvFolderText.Text = string.IsNullOrWhiteSpace(item.FileTransferRecvFolder)
+                    ? "未设置（默认：下载文件夹）" : item.FileTransferRecvFolder!;
+            }
             // OptiScaler：名称、大小、颜色 + 注入 DLL 名 / ini 关键项 / 本地包 / 一键还原
             var isOptiScaler = item.WidgetKind == WidgetKind.OptiScaler;
             OptiScalerRow.Visibility = isOptiScaler ? Microsoft.UI.Xaml.Visibility.Visible : w;
@@ -546,20 +593,38 @@ public sealed partial class AddItemPage : Page, ISettingsGamepad
                 if (string.IsNullOrWhiteSpace(NameBox.Text)) NameBox.Text = "OptiScaler";
                 NameBox.Visibility = w;
                 SelectOptiCombo(OptiDllCombo, OptiScalerService.ProxyOptions, item.OptiDllName);
+                // 保存过的具体版本先记下，等版本列表拉回来后回填（下拉里一开始只有"最新版"）
+                _savedOptiTag = item.OptiVersionTag ?? "";
+                _savedFsr4Tag = item.OptiFsr4VersionTag ?? "";
+                _suppressOptiVersionEvent = true;
                 SelectOptiCombo(OptiVersionCombo, OptiScalerService.GetVersionChannelOptions(), item.OptiChannel);
+                _suppressOptiVersionEvent = false;
                 SelectOptiCombo(OptiUpscalerCombo, OptiScalerService.UpscalerOptions, item.OptiDx12Upscaler);
                 SelectOptiCombo(OptiFgInputCombo, OptiScalerService.FgInputOptions, item.OptiFgInput);
                 SelectOptiCombo(OptiFgOutputCombo, OptiScalerService.FgOutputOptions, item.OptiFgOutput);
                 SelectOptiCombo(OptiFgMultiplierCombo, OptiScalerService.FgMultiplierOptions, item.OptiFgMultiplier);
                 SelectOptiCombo(OptiFsr4PresetCombo, OptiScalerService.Fsr4PresetOptions, item.OptiFsr4Preset);
+                _suppressFsr4FilesEvent = true;
                 SelectOptiCombo(OptiFsr4FilesCombo, OptiScalerService.Fsr4FilesOptions, item.OptiFsr4Files);
+                _suppressFsr4FilesEvent = false;
                 UpdateOptiFsr4Row();  // 按"画质提升"的取值决定 FSR4 画质档是否展开
                 OptiFrameGenToggle.IsOn = item.OptiFrameGen;
-                _pendingOptiLocalPack = null;
-                OptiLocalPackText.Text = string.IsNullOrEmpty(item.OptiLocalPackage)
-                    ? "自动下载最新版" : item.OptiLocalPackage!;
+                UpdateOptiLocalRow(); // 版本渠道选"本地包"时展开文件夹提示
+                // 版本列表：渠道/变体没变化时 SelectionChanged 不会触发，这里主动加载并按保存值回填
+                _ = ReloadOptiVersionsAsync();
+                var fsr4Variant = OptiComboValue(OptiFsr4FilesCombo);
+                if (fsr4Variant is "int8" or "fp8")
+                {
+                    OptiFsr4VersionCell.Visibility = Microsoft.UI.Xaml.Visibility.Visible;
+                    _ = ReloadFsr4VersionsAsync(fsr4Variant);
+                }
+                else
+                {
+                    OptiFsr4VersionCell.Visibility = Microsoft.UI.Xaml.Visibility.Collapsed;
+                }
                 OptiRestoreStatus.Text = OptiScalerService.HasBackup()
-                    ? "检测到已有注入备份，可一键还原。" : "";
+                    ? "选择上面下拉里的游戏，再按「一键还原」。" : "";
+                RefreshOptiBackups();
             }
             // 手柄映射：标题、大小、颜色 + 可视化手柄图（点击手柄键 → 键盘/鼠标/手柄输出）
             var isGamepadMap = item.WidgetKind == WidgetKind.GamepadMap;
@@ -628,7 +693,8 @@ public sealed partial class AddItemPage : Page, ISettingsGamepad
             TitleColumn.Visibility = Microsoft.UI.Xaml.Visibility.Collapsed;
             SystemOptionsPanel.Visibility = Microsoft.UI.Xaml.Visibility.Collapsed;
             SizeColumn.Visibility = Microsoft.UI.Xaml.Visibility.Visible;
-            ColorColumn.Visibility = Microsoft.UI.Xaml.Visibility.Visible;
+            ColorColumn.Visibility = TileStyle.IsWin10Theme
+                ? Microsoft.UI.Xaml.Visibility.Collapsed : Microsoft.UI.Xaml.Visibility.Visible;
             IconHeaderText.Visibility = Microsoft.UI.Xaml.Visibility.Visible;
             IconRow.Visibility = Microsoft.UI.Xaml.Visibility.Visible;
             CoverHeaderText.Visibility = Microsoft.UI.Xaml.Visibility.Visible;
@@ -641,6 +707,7 @@ public sealed partial class AddItemPage : Page, ISettingsGamepad
             GamepadMapRow.Visibility = Microsoft.UI.Xaml.Visibility.Collapsed;
             OptiScalerRow.Visibility = Microsoft.UI.Xaml.Visibility.Collapsed;
             MonitorRow.Visibility = Microsoft.UI.Xaml.Visibility.Collapsed;
+            FileTransferRow.Visibility = Microsoft.UI.Xaml.Visibility.Collapsed;
         }
     }
 
@@ -667,6 +734,7 @@ public sealed partial class AddItemPage : Page, ISettingsGamepad
                     : item.WidgetKind == WidgetKind.Foreground ? "编辑前台应用小组件"
                     : item.WidgetKind == WidgetKind.System ? "编辑系统小组件"
                     : item.WidgetKind == WidgetKind.Monitor ? "编辑性能监控小组件"
+                    : item.WidgetKind == WidgetKind.FileTransfer ? "编辑文件传输小组件"
                     : item.WidgetKind == WidgetKind.Drawer ? "编辑磁贴抽屉" : "编辑音乐小组件")
                 : _isGroup ? "编辑磁贴组" : "编辑快捷项";
         }
@@ -690,10 +758,10 @@ public sealed partial class AddItemPage : Page, ISettingsGamepad
             GamepadMapRow.Visibility = Microsoft.UI.Xaml.Visibility.Collapsed;
             OptiScalerRow.Visibility = Microsoft.UI.Xaml.Visibility.Collapsed;
             MonitorRow.Visibility = Microsoft.UI.Xaml.Visibility.Collapsed;
+            FileTransferRow.Visibility = Microsoft.UI.Xaml.Visibility.Collapsed;
             DrawerRow.Visibility = Microsoft.UI.Xaml.Visibility.Collapsed;
             _pendingDrawers = [];
             _drawerCursor = 0;
-            _pendingOptiLocalPack = null;
             TitleColumn.Visibility = Microsoft.UI.Xaml.Visibility.Collapsed;
             SystemOptionsPanel.Visibility = Microsoft.UI.Xaml.Visibility.Collapsed;
             WidgetTitleBox.Text = "";
@@ -759,8 +827,9 @@ public sealed partial class AddItemPage : Page, ISettingsGamepad
 
     /// <summary>
     /// 方向最近邻导航（实时取控件在页面中的实际矩形，滚动/缩放后依然准确）：
-    /// 只在移动方向一侧的控件里，选"主方向投影距离"最小者；垂直方向与之有重叠的视为正对，优先选中。
-    /// 手柄图热区是二维散布布局，行式分组不适用，故改为该算法；找不到候选时可向下落到保存按钮。
+    /// 只在移动方向一侧的控件里，按"边缘推进距离 + 侧向错开量"取最近者。
+    /// 不用中心点距离——新版面两列宽窄不一，中心距离会把旁边更宽的控件算远、跳过紧邻的小控件。
+    /// 找不到候选时可向下落到保存按钮。
     /// </summary>
     private void MoveDirection(int dx, int dy)
     {
@@ -785,21 +854,27 @@ public sealed partial class AddItemPage : Page, ISettingsGamepad
             var cx = r.X + r.Width / 2;
             var cy = r.Y + r.Height / 2;
 
-            // 主方向投影：<=0 说明不在移动方向上，跳过
-            var primary = horizontal ? (cx - curX) * sign : (cy - curY) * sign;
-            if (primary < 1) continue;
+            // 中心必须在移动方向前方：同排/同行的控件（中心几乎对齐）不算"前方"
+            var centerDelta = horizontal ? (cx - curX) * sign : (cy - curY) * sign;
+            if (centerDelta < 1) continue;
 
-            var perp = horizontal ? Math.Abs(cy - curY) : Math.Abs(cx - curX);
-            var overlap = horizontal
-                ? cy >= cr.Y - 1 && cy <= cr.Y + cr.Height + 1
-                : cx >= cr.X - 1 && cx <= cr.X + cr.Width + 1;
+            // 从当前控件边缘到候选近边的推进距离（<=0 表示紧贴或轻微重叠）
+            var edge = horizontal
+                ? (sign > 0 ? r.X - (cr.X + cr.Width) : cr.X - (r.X + r.Width))
+                : (sign > 0 ? r.Y - (cr.Y + cr.Height) : cr.Y - (r.Y + r.Height));
 
-            var score = overlap ? primary : primary + perp * 2;
+            // 侧向重叠量：>0 表示正对（有交叠带），<=0 表示错开，按错开间隙惩罚
+            var crossOverlap = horizontal
+                ? Math.Min(cr.Y + cr.Height, r.Y + r.Height) - Math.Max(cr.Y, r.Y)
+                : Math.Min(cr.X + cr.Width, r.X + r.Width) - Math.Max(cr.X, r.X);
+            var crossGap = crossOverlap > 0 ? 0 : -crossOverlap;
+
+            var score = Math.Max(0, edge) + crossGap * 3;
             if (score < bestScore - 0.001 ||
-                (Math.Abs(score - bestScore) <= 0.001 && primary < bestPrimary))
+                (Math.Abs(score - bestScore) <= 0.001 && centerDelta < bestPrimary))
             {
                 bestScore = score;
-                bestPrimary = primary;
+                bestPrimary = centerDelta;
                 best = i;
             }
         }
@@ -1035,6 +1110,38 @@ public sealed partial class AddItemPage : Page, ISettingsGamepad
             case Button btn when ReferenceEquals(btn, OpenTrainerFolderButton):
                 // 修改器：A 键打开已下载修改器目录
                 TrainerService.OpenTrainersFolder();
+                break;
+            // OptiScaler：打开本地包文件夹 / 一键还原 / 打开数据目录
+            case Button btn when ReferenceEquals(btn, OptiLocalFolderButton):
+                OptiScalerService.OpenLocalFolder();
+                break;
+            case Button btn when ReferenceEquals(btn, OptiRestoreButton):
+                RestoreSelectedOptiBackup();
+                break;
+            case Button btn when ReferenceEquals(btn, OptiOpenFolderButton):
+                OptiScalerService.OpenFolder();
+                break;
+            // 文件传输：选择发送目录 / 接收目录
+            case Button btn when ReferenceEquals(btn, FtSendFolderButton):
+                _pickingFtSendFolder = true;
+                EnterBrowse(BrowseMode.Folder);
+                break;
+            case Button btn when ReferenceEquals(btn, FtRecvFolderButton):
+                _pickingFtRecvFolder = true;
+                EnterBrowse(BrowseMode.Folder);
+                break;
+            // 磁贴抽屉：上一个 / 下一个 / 新增 / 删除
+            case Button btn when ReferenceEquals(btn, DrawerPrevButton):
+                MoveDrawerCursor(-1);
+                break;
+            case Button btn when ReferenceEquals(btn, DrawerNextButton):
+                MoveDrawerCursor(1);
+                break;
+            case Button btn when ReferenceEquals(btn, DrawerAddButton):
+                OnDrawerAddClick(btn, new RoutedEventArgs());
+                break;
+            case Button btn when ReferenceEquals(btn, DrawerDeleteButton):
+                OnDrawerDeleteClick(btn, new RoutedEventArgs());
                 break;
             case Button btn when ReferenceEquals(btn, BackupFolderButton):
                 // 游戏存档：进入文件夹浏览，结果写入 _pendingBackupFolder（不改 TargetBox/类型）
@@ -1314,6 +1421,16 @@ public sealed partial class AddItemPage : Page, ISettingsGamepad
                     it.MonitorScale = SelectedMonitorScale();
                     it.MonitorOpacity = SelectedMonitorOpacity();
                 }
+                else if (it.WidgetKind == WidgetKind.FileTransfer)
+                {
+                    // 文件传输：改名称、大小、颜色，以及可发送目录 / 接收目录（空=系统下载文件夹）
+                    it.Size = SelectedSize();
+                    it.TileColor = SelectedColor();
+                    if (_pendingFtSendFolder != null)
+                        it.FileTransferSendFolder = _pendingFtSendFolder.Length == 0 ? null : _pendingFtSendFolder;
+                    if (_pendingFtRecvFolder != null)
+                        it.FileTransferRecvFolder = _pendingFtRecvFolder.Length == 0 ? null : _pendingFtRecvFolder;
+                }
                 else if (it.WidgetKind == WidgetKind.Mapping)
                 {
                     // 映射：改标题、大小、颜色与映射按键（手柄键或键盘键二选一）；
@@ -1360,11 +1477,13 @@ public sealed partial class AddItemPage : Page, ISettingsGamepad
                 }
                 else if (it.WidgetKind == WidgetKind.OptiScaler)
                 {
-                    // OptiScaler：改名称、大小、颜色、注入 DLL 名、ini 关键项与本地包（空=自动）
+                    // OptiScaler：改名称、大小、颜色、注入 DLL 名、版本与 ini 关键项（空=自动/最新版）
                     it.Size = SelectedSize();
                     it.TileColor = SelectedColor();
                     it.OptiDllName = SelectedOptiDll();
                     it.OptiChannel = OptiComboValue(OptiVersionCombo);
+                    // 本地包不联网，不存在"具体版本"
+                    it.OptiVersionTag = it.OptiChannel == "local" ? "" : OptiComboValue(OptiVersionTagCombo);
                     it.OptiDx12Upscaler = SelectedOptiUpscaler();
                     it.OptiFrameGen = OptiFrameGenToggle.IsOn;
                     it.OptiFgInput = OptiComboValue(OptiFgInputCombo);
@@ -1372,8 +1491,8 @@ public sealed partial class AddItemPage : Page, ISettingsGamepad
                     it.OptiFgMultiplier = OptiComboValue(OptiFgMultiplierCombo);
                     it.OptiFsr4Preset = OptiComboValue(OptiFsr4PresetCombo);
                     it.OptiFsr4Files = OptiComboValue(OptiFsr4FilesCombo);
-                    if (_pendingOptiLocalPack != null)
-                        it.OptiLocalPackage = _pendingOptiLocalPack.Length == 0 ? null : _pendingOptiLocalPack;
+                    it.OptiFsr4VersionTag = it.OptiFsr4Files is "int8" or "fp8"
+                        ? OptiComboValue(OptiFsr4VersionCombo) : "";
                 }
                 else if (it.WidgetKind == WidgetKind.RecycleBin)
                 {
@@ -1479,6 +1598,19 @@ public sealed partial class AddItemPage : Page, ISettingsGamepad
         _pickingPhotoFolder = true;
         EnterBrowse(BrowseMode.Folder);
     }
+
+    // 文件传输：可发送目录 / 接收目录
+    private void OnFtSendFolderClick(object sender, Microsoft.UI.Xaml.RoutedEventArgs e)
+    {
+        _pickingFtSendFolder = true;
+        EnterBrowse(BrowseMode.Folder);
+    }
+
+    private void OnFtRecvFolderClick(object sender, Microsoft.UI.Xaml.RoutedEventArgs e)
+    {
+        _pickingFtRecvFolder = true;
+        EnterBrowse(BrowseMode.Folder);
+    }
     private void OnCoverClick(object sender, Microsoft.UI.Xaml.RoutedEventArgs e) => EnterBrowse(BrowseMode.Cover);
     private void OnCoverClearClick(object sender, Microsoft.UI.Xaml.RoutedEventArgs e) => ClearCover();
     // 修改器编辑：「已下载修改器」一键跳转到存放修改器的目录
@@ -1491,21 +1623,187 @@ public sealed partial class AddItemPage : Page, ISettingsGamepad
     }
     private void OnOpenBackupFolderClick(object sender, Microsoft.UI.Xaml.RoutedEventArgs e) => OpenBackupFolder();
 
-    // OptiScaler 编辑：选本地包（文件夹/zip/7z）/ 清除（改用自动下载）/ 一键还原 / 打开数据目录
-    private void OnOptiLocalPackClick(object sender, Microsoft.UI.Xaml.RoutedEventArgs e)
+    // OptiScaler 编辑：版本渠道（正式版/测试版/本地包，本地包展开文件夹）+ 具体版本浏览下载 /
+    // FSR4 版本浏览下载 / 一键还原 / 打开数据目录
+    private void OnOptiVersionChanged(object sender, Microsoft.UI.Xaml.Controls.SelectionChangedEventArgs e)
     {
-        _pickingOptiPack = true;
-        EnterBrowse(BrowseMode.Archive);
+        if (OptiLocalRow is null || OptiVersionTagCombo is null) return; // XAML 解析阶段
+        UpdateOptiLocalRow();
+        if (_suppressOptiVersionEvent) return;
+        _ = ReloadOptiVersionsAsync();
     }
 
-    private void OnOptiLocalPackClearClick(object sender, Microsoft.UI.Xaml.RoutedEventArgs e)
+    /// <summary>版本渠道选到"本地包"时展开本地包文件夹行（紧跟版本下拉下方），并重建手柄导航序列</summary>
+    private void UpdateOptiLocalRow()
     {
-        _pendingOptiLocalPack = "";
-        OptiLocalPackText.Text = "自动下载最新版";
+        var isLocal = string.Equals(OptiComboValue(OptiVersionCombo), "local", StringComparison.OrdinalIgnoreCase);
+        OptiLocalRow.Visibility = isLocal ? Microsoft.UI.Xaml.Visibility.Visible : Microsoft.UI.Xaml.Visibility.Collapsed;
+        // 本地包没有"网上版本"可选 → 收起"具体版本"
+        OptiVersionTagCell.Visibility = isLocal ? Microsoft.UI.Xaml.Visibility.Collapsed : Microsoft.UI.Xaml.Visibility.Visible;
+        if (isLocal) OptiLocalFolderText.Text = OptiScalerService.LocalPackageFolder;
+        RebuildFormControls();
     }
+
+    /// <summary>按当前渠道拉取 GitHub 上可下载的版本列表灌进"具体版本"下拉；失败只保留"最新版"</summary>
+    private async Task ReloadOptiVersionsAsync()
+    {
+        if (OptiVersionCombo is null || OptiVersionTagCombo is null) return;
+        var channel = OptiComboValue(OptiVersionCombo);
+        var want = _savedOptiTag;   // 仅编辑初始化时非空
+        _savedOptiTag = "";
+        var gen = ++_optiVersionGen;
+
+        // 当前页不是 OptiScaler 小组件：不联网，避免每开一次编辑页都打 GitHub API
+        if (OptiScalerRow.Visibility != Microsoft.UI.Xaml.Visibility.Visible) return;
+
+        if (channel == "local")
+        {
+            _suppressOptiTagEvent = true;
+            OptiVersionTagCombo.Items.Clear();
+            _suppressOptiTagEvent = false;
+            OptiVersionStatus.Text = "本地包不联网，直接使用文件夹里的包";
+            return;
+        }
+
+        OptiVersionStatus.Text = "正在获取可下载版本…";
+        var options = await OptiScalerService.GetVersionOptionsAsync(channel);
+        if (gen != _optiVersionGen) return;   // 已切换渠道，丢弃过期结果
+
+        if (options.Length == 0) options = [("", "最新版（自动）")];
+        _suppressOptiTagEvent = true;
+        FillOptiCombo(OptiVersionTagCombo, options);
+        SelectOptiCombo(OptiVersionTagCombo, options, want);
+        _suppressOptiTagEvent = false;
+
+        OptiVersionStatus.Text = options.Length <= 1
+            ? "无法获取版本列表（请检查网络；注入时仍会尝试最新版）"
+            : $"共 {options.Length - 1} 个可下载版本，选中后自动下载";
+    }
+
+    /// <summary>用户选定"具体版本"：后台预下载，注入时直接用缓存</summary>
+    private async void OnOptiVersionTagChanged(object sender, Microsoft.UI.Xaml.Controls.SelectionChangedEventArgs e)
+    {
+        if (_suppressOptiTagEvent || OptiVersionStatus is null) return;
+        var channel = OptiComboValue(OptiVersionCombo);
+        var tag = OptiComboValue(OptiVersionTagCombo);
+        await PrefetchAsync(channel, tag, OptiVersionStatus);
+    }
+
+    /// <summary>FSR4 文件变体切换：int8/fp8 才需要选版本，并拉取该仓库可下载的 Release</summary>
+    private async void OnOptiFsr4FilesChanged(object sender, Microsoft.UI.Xaml.Controls.SelectionChangedEventArgs e)
+    {
+        if (OptiFsr4VersionCell is null) return;
+        var variant = OptiComboValue(OptiFsr4FilesCombo);
+        var show = variant is "int8" or "fp8";
+        OptiFsr4VersionCell.Visibility = show
+            ? Microsoft.UI.Xaml.Visibility.Visible
+            : Microsoft.UI.Xaml.Visibility.Collapsed;
+        RebuildFormControls();
+        if (!show || _suppressFsr4FilesEvent) return;
+        await ReloadFsr4VersionsAsync(variant);
+    }
+
+    /// <summary>按 FSR4 变体拉取可下载版本列表灌进"FSR4 版本"下拉</summary>
+    private async Task ReloadFsr4VersionsAsync(string variant)
+    {
+        var want = _savedFsr4Tag;
+        _savedFsr4Tag = "";
+        var gen = ++_fsr4VersionGen;
+
+        OptiFsr4VersionStatus.Text = "正在获取可下载版本…";
+        var options = await OptiScalerService.GetFsr4VersionOptionsAsync(variant);
+        if (gen != _fsr4VersionGen) return;
+
+        if (options.Length == 0) options = [("", "最新版（自动）")];
+        _suppressOptiTagEvent = true;
+        FillOptiCombo(OptiFsr4VersionCombo, options);
+        SelectOptiCombo(OptiFsr4VersionCombo, options, want);
+        _suppressOptiTagEvent = false;
+
+        OptiFsr4VersionStatus.Text = options.Length <= 1
+            ? "无法获取版本列表（请检查网络；注入时仍会尝试最新版）"
+            : $"共 {options.Length - 1} 个可下载版本，选中后自动下载";
+    }
+
+    /// <summary>用户选定 FSR4 版本：后台预下载</summary>
+    private async void OnOptiFsr4VersionChanged(object sender, Microsoft.UI.Xaml.Controls.SelectionChangedEventArgs e)
+    {
+        if (_suppressOptiTagEvent || OptiFsr4VersionStatus is null) return;
+        var variant = OptiComboValue(OptiFsr4FilesCombo);
+        if (variant is not ("int8" or "fp8")) return;
+        var tag = OptiComboValue(OptiFsr4VersionCombo);
+        await PrefetchAsync(variant, tag, OptiFsr4VersionStatus);
+    }
+
+    /// <summary>后台预下载选中版本，并把服务层的下载进度写到状态文本上（channel=stable/beta，variant=int8/fp8）</summary>
+    private async Task PrefetchAsync(string channel, string tag, TextBlock status)
+    {
+        var what = tag.Length == 0 ? "最新版" : tag;
+        status.Text = $"正在后台下载 {what}…";
+        var failed = false;
+        void Handler(OptiScalerMessage m)
+        {
+            if (m.Error) failed = true;
+            DispatcherQueue.TryEnqueue(() =>
+            {
+                if (!string.IsNullOrEmpty(m.Text)) status.Text = m.Text;
+            });
+        }
+
+        OptiScalerService.StatusChanged += Handler;
+        try
+        {
+            if (channel is "int8" or "fp8")
+                await OptiScalerService.PrefetchFsr4Async(channel, tag);
+            else
+                await OptiScalerService.PrefetchAsync(channel, tag);
+        }
+        finally
+        {
+            OptiScalerService.StatusChanged -= Handler;
+        }
+        status.Text = failed ? "下载失败（注入时会再试一次）" : $"{what} 已就绪";
+    }
+
+    private void OnOptiLocalFolderClick(object sender, Microsoft.UI.Xaml.RoutedEventArgs e)
+        => OptiScalerService.OpenLocalFolder();
 
     private void OnOptiRestoreClick(object sender, Microsoft.UI.Xaml.RoutedEventArgs e)
-        => OptiRestoreStatus.Text = OptiScalerService.Restore();
+        => RestoreSelectedOptiBackup();
+
+    /// <summary>还原下拉里选中的那个游戏（不是"上一次注入的游戏"），完成后刷新备份列表</summary>
+    private void RestoreSelectedOptiBackup()
+    {
+        if (OptiRestoreCombo.Items.Count == 0)
+        {
+            OptiRestoreStatus.Text = "没有可还原的备份";
+            return;
+        }
+        var key = OptiComboValue(OptiRestoreCombo);
+        var result = OptiScalerService.Restore(key);
+        RefreshOptiBackups();
+        // 还原成功后该备份目录会被删除；Refresh 在无备份时会写"暂无备份"，这里以还原结果为准
+        OptiRestoreStatus.Text = OptiRestoreCombo.Items.Count == 0
+            ? $"{result}（没有其他备份了）" : result;
+    }
+
+    /// <summary>刷新"已备份的游戏"下拉：按时间倒序，优先保持当前选中；没有备份时禁用下拉并给提示</summary>
+    private void RefreshOptiBackups()
+    {
+        var options = OptiScalerService.GetBackupOptions();
+        var prev = OptiComboValue(OptiRestoreCombo);
+        FillOptiCombo(OptiRestoreCombo, options);
+        if (options.Length > 0)
+        {
+            var want = options.Any(o => string.Equals(o.Value, prev, StringComparison.OrdinalIgnoreCase))
+                ? prev
+                : OptiScalerService.DefaultBackupKey();
+            SelectOptiCombo(OptiRestoreCombo, options, want);
+        }
+        OptiRestoreCombo.IsEnabled = options.Length > 0;
+        if (options.Length == 0) OptiRestoreStatus.Text = "暂无备份：注入一次 OptiScaler 后会自动备份被覆盖的文件";
+        RebuildFormControls();
+    }
 
     private void OnOptiOpenFolderClick(object sender, Microsoft.UI.Xaml.RoutedEventArgs e) => OptiScalerService.OpenFolder();
 
@@ -1938,10 +2236,9 @@ public sealed partial class AddItemPage : Page, ISettingsGamepad
             BrowseMode.Icon => "选择图标（exe / ico / 图片）",
             BrowseMode.Cover => "选择磁贴图片（png / jpg / bmp…）",
             BrowseMode.Folder => "选择文件夹",
-            BrowseMode.Archive => "选择 OptiScaler 包（文件夹 / zip / 7z）",
             _ => "选择程序（.exe）"
         };
-        HintBar.SetHints(mode is BrowseMode.Folder or BrowseMode.Archive
+        HintBar.SetHints(mode is BrowseMode.Folder
             ? "DPAD:选择|A:进入/选中|B:返回"
             : "DPAD:选择|A:进入/确认|B:返回");
         NavigateTo(GetStartDir());
@@ -1952,7 +2249,8 @@ public sealed partial class AddItemPage : Page, ISettingsGamepad
         _browsing = false;
         _pickingPhotoFolder = false; // 取消浏览时同样复位，避免影响下次普通文件夹选择
         _pickingBackupFolder = false;
-        _pickingOptiPack = false;
+        _pickingFtSendFolder = false;
+        _pickingFtRecvFolder = false;
         BrowsePanel.Visibility = Microsoft.UI.Xaml.Visibility.Collapsed;
         FormScroll.Visibility = Microsoft.UI.Xaml.Visibility.Visible;
         FooterBar.Visibility = Microsoft.UI.Xaml.Visibility.Visible;
@@ -2001,7 +2299,6 @@ public sealed partial class AddItemPage : Page, ISettingsGamepad
                 }
                 else if (_browseMode == BrowseMode.Cover) _ = SelectCover(entry);
                 else if (_browseMode == BrowseMode.Icon) SelectIcon(entry);
-                else if (_browseMode == BrowseMode.Archive) SelectArchive(entry);
                 else SelectExe(entry);
             }
         }
@@ -2023,7 +2320,6 @@ public sealed partial class AddItemPage : Page, ISettingsGamepad
             {
                 BrowseMode.Icon => new[] { "*.exe", "*.ico", "*.png", "*.jpg", "*.jpeg", "*.bmp", "*.gif" },
                 BrowseMode.Cover => new[] { "*.png", "*.jpg", "*.jpeg", "*.bmp", "*.gif", "*.webp" },
-                BrowseMode.Archive => new[] { "*.zip", "*.7z" },
                 BrowseMode.Folder => [],
                 _ => new[] { "*.exe" }
             };
@@ -2033,7 +2329,7 @@ public sealed partial class AddItemPage : Page, ISettingsGamepad
                 if (parent != null)
                     list.Add(new FileEntry("上一级", parent.FullName, true, true));
 
-                if (mode is BrowseMode.Folder or BrowseMode.Archive)
+                if (mode is BrowseMode.Folder)
                 {
                     var curName = Path.GetFileName(dir);
                     list.Add(new FileEntry(
@@ -2113,12 +2409,21 @@ public sealed partial class AddItemPage : Page, ISettingsGamepad
             ExitBrowse();
             return;
         }
-        // OptiScaler 选本地包（目录）：只记录到 _pendingOptiLocalPack，不改 TargetBox/类型
-        if (_pickingOptiPack)
+        // 文件传输选可发送目录：只记录到 _pendingFtSendFolder，不改 TargetBox/类型
+        if (_pickingFtSendFolder)
         {
-            _pendingOptiLocalPack = dir;
-            OptiLocalPackText.Text = dir;
-            _pickingOptiPack = false;
+            _pendingFtSendFolder = dir;
+            FtSendFolderText.Text = dir;
+            _pickingFtSendFolder = false;
+            ExitBrowse();
+            return;
+        }
+        // 文件传输选接收目录：只记录到 _pendingFtRecvFolder，不改 TargetBox/类型
+        if (_pickingFtRecvFolder)
+        {
+            _pendingFtRecvFolder = dir;
+            FtRecvFolderText.Text = dir;
+            _pickingFtRecvFolder = false;
             ExitBrowse();
             return;
         }
@@ -2126,16 +2431,6 @@ public sealed partial class AddItemPage : Page, ISettingsGamepad
         if (string.IsNullOrWhiteSpace(NameBox.Text))
             NameBox.Text = Path.GetFileName(dir) is { Length: > 0 } n ? n : dir;
         FolderRadio.IsChecked = true;
-        ExitBrowse();
-    }
-
-    /// <summary>选 OptiScaler 本地包（zip / 7z）：只记录到 _pendingOptiLocalPack，不改 TargetBox/类型</summary>
-    private void SelectArchive(FileEntry entry)
-    {
-        if (!_pickingOptiPack) { ExitBrowse(); return; }
-        _pendingOptiLocalPack = entry.Path;
-        OptiLocalPackText.Text = entry.Path;
-        _pickingOptiPack = false;
         ExitBrowse();
     }
 

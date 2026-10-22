@@ -1,3 +1,4 @@
+using GameLocker.Models;
 using GameLocker.Services;
 using Microsoft.UI.Text;
 using Microsoft.UI.Xaml;
@@ -6,6 +7,9 @@ using Microsoft.UI.Xaml.Controls;
 using Microsoft.UI.Xaml.Navigation;
 
 namespace GameLocker;
+
+/// <summary>磁贴主题下拉项：名称加粗，后面跟普通小字说明</summary>
+public sealed record TileThemeOption(TileTheme Theme, string Name, string Desc);
 
 /// <summary>
 /// 外观设置：窗口背景颜色 + 窗口透明度。
@@ -40,7 +44,9 @@ public sealed partial class AppearancePage : Page, ISettingsGamepad
 
         var s = SettingsService.Current;
         GlassToggle.IsOn = s.GlassEffect;
-        Tile3DToggle.IsOn = s.Tile3D;
+        FillTileThemes(s.TileTheme);
+        // 下拉被外部关闭（点击空白/焦点变化）时释放按键接管状态
+        TileThemeCombo.DropDownClosed += OnTileThemeDropDownClosed;
         TileNameToggle.IsOn = s.ShowTileName;
         GroupAnimToggle.IsOn = s.GroupExpandAnimation;
         RandomColorToggle.IsOn = s.RandomTileColor;
@@ -60,7 +66,7 @@ public sealed partial class AppearancePage : Page, ISettingsGamepad
             DarkGrayRadio, BlackRadio, BlueRadio, PurpleRadio, GreenRadio, BrownRadio,
             OpacityDownButton, OpacityUpButton,
             WidthDownButton, WidthUpButton,
-            Tile3DToggle, TileNameToggle, GroupAnimToggle, RandomColorToggle,
+            TileThemeCombo, TileNameToggle, GroupAnimToggle, RandomColorToggle,
             TileOpacityDownButton, TileOpacityUpButton,
             SpacingDownButton, SpacingUpButton
         ];
@@ -96,6 +102,14 @@ public sealed partial class AppearancePage : Page, ISettingsGamepad
     public void HandleGamepad(GamepadButtons buttons)
     {
         if (!_ready) return;
+        _consumedBack = false;
+
+        // 下拉框展开中：上/下移动选项，A 确认收起，B/Select 回滚收起（不返回上一级）
+        if (_openCombo is not null)
+        {
+            HandleOpenCombo(buttons);
+            return;
+        }
 
         // 行感知导航：开关为整行单控件、−/＋ 为左右两控件、颜色为多列，
         // 上下在相邻行之间移动（取最接近当前列的），左右在同一行内移动。
@@ -105,6 +119,47 @@ public sealed partial class AppearancePage : Page, ISettingsGamepad
         else if (buttons.HasFlag(GamepadButtons.DPadRight)) MoveCol(1);
         else if (buttons.HasFlag(GamepadButtons.A))
             ActivateCurrent();
+    }
+
+    private ComboBox? _openCombo;
+    private int _comboBackupIndex;
+    private bool _consumedBack;
+
+    /// <summary>是否已消费本次 B（下拉框展开时只收起下拉，不返回设置主页）</summary>
+    public bool ConsumedBack => _consumedBack;
+
+    /// <summary>A 键展开下拉框（记下当前索引，供 B 取消时回滚）</summary>
+    private void OpenCombo(ComboBox cb)
+    {
+        _comboBackupIndex = cb.SelectedIndex;
+        _openCombo = cb;
+        cb.IsDropDownOpen = true;
+    }
+
+    private void HandleOpenCombo(GamepadButtons b)
+    {
+        var cb = _openCombo!;
+        var last = cb.Items.Count - 1;
+        if (b.HasFlag(GamepadButtons.DPadUp))
+            cb.SelectedIndex = Math.Max(0, cb.SelectedIndex - 1);
+        else if (b.HasFlag(GamepadButtons.DPadDown))
+            cb.SelectedIndex = Math.Min(last, cb.SelectedIndex + 1);
+        else if (b.HasFlag(GamepadButtons.A))
+            CloseCombo(false);
+        else if (b.HasFlag(GamepadButtons.B) || b.HasFlag(GamepadButtons.View))
+        {
+            CloseCombo(true);
+            _consumedBack = true;
+        }
+    }
+
+    /// <summary>收起下拉框；rollback=true 时把选中项退回展开前的值（B 取消）</summary>
+    private void CloseCombo(bool rollback)
+    {
+        if (_openCombo is not { } cb) return;
+        if (rollback) cb.SelectedIndex = _comboBackupIndex;
+        cb.IsDropDownOpen = false;
+        _openCombo = null;
     }
 
     // 按控件中心 Y 聚成的"行"，每行内按 X 排序（每次按键实时重建，滚动后坐标仍准确）
@@ -207,6 +262,10 @@ public sealed partial class AppearancePage : Page, ISettingsGamepad
             case RadioButton rb:
                 rb.IsChecked = true;
                 break;
+            // 磁贴主题下拉框：A 键展开选项列表（展开后由 HandleOpenCombo 接管按键）
+            case ComboBox cb:
+                OpenCombo(cb);
+                break;
             case Button when ReferenceEquals(_controls[_index], OpacityDownButton):
                 ChangeOpacity(-0.1);
                 break;
@@ -237,11 +296,13 @@ public sealed partial class AppearancePage : Page, ISettingsGamepad
     private void FocusIndex(int i)
     {
         var c = _controls[i];
-        if (c is RadioButton or ToggleSwitch)
+        if (c is RadioButton or ToggleSwitch or ComboBox)
         {
-            // 单选/开关：移动只移动光标（高亮），不聚焦——避免焦点/空格等连带变更；
-            // 只有按 A（ActivateCurrent）才真正切换并保存。
+            // 单选/开关/下拉框：移动只移动光标（高亮），不聚焦——避免焦点/空格等连带变更；
+            // 只有按 A（ActivateCurrent）才真正切换并保存。下拉框的光标描边由外层卡片承担，
+            // 不再依赖系统焦点框（会被控件自身内容遮盖）。
             UpdateCursor(c);
+            if (c is ComboBox cb) cb.Focus(Microsoft.UI.Xaml.FocusState.Keyboard);
             EnsureVisible(c);
             return;
         }
@@ -265,6 +326,12 @@ public sealed partial class AppearancePage : Page, ISettingsGamepad
                     break;
                 case ToggleSwitch ts:
                     ts.BorderBrush = on
+                        ? new SolidColorBrush(Windows.UI.Color.FromArgb(0xCC, 0xFF, 0xFF, 0xFF))
+                        : new SolidColorBrush(Microsoft.UI.Colors.Transparent);
+                    break;
+                // 下拉框：描边画在外层卡片上（ComboBox 自身透明，防止焦点框被内容覆盖）
+                case ComboBox:
+                    TileThemeCard.BorderBrush = on
                         ? new SolidColorBrush(Windows.UI.Color.FromArgb(0xCC, 0xFF, 0xFF, 0xFF))
                         : new SolidColorBrush(Microsoft.UI.Colors.Transparent);
                     break;
@@ -311,11 +378,37 @@ public sealed partial class AppearancePage : Page, ISettingsGamepad
         App.Main?.ApplyBackground();
     }
 
-    /// <summary>磁贴立体效果开关 → 立即保存；返回主页时 Reload 重建磁贴生效</summary>
-    private void OnTile3DChanged(object sender, Microsoft.UI.Xaml.RoutedEventArgs e)
+    /// <summary>鼠标点击整卡展开/收起下拉（手柄走 A 键）</summary>
+    private void OnTileThemeCardTapped(object sender, Microsoft.UI.Xaml.Input.TappedRoutedEventArgs e)
     {
         if (!_ready) return;
-        SettingsService.Update(s => s.Tile3D = Tile3DToggle.IsOn);
+        if (_openCombo is null) OpenCombo(TileThemeCombo);
+        else CloseCombo(false);
+    }
+
+    /// <summary>下拉关闭（A 确认、B 取消、点击外部）→ 释放按键接管状态</summary>
+    private void OnTileThemeDropDownClosed(object? sender, object e)
+    {
+        _openCombo = null;
+    }
+
+    /// <summary>填充磁贴主题下拉（名称加粗 + 后置说明），按当前设置选中</summary>
+    private void FillTileThemes(TileTheme current)
+    {
+        TileThemeCombo.ItemsSource = new TileThemeOption[]
+        {
+            new(TileTheme.Colorful, "彩色磁贴", "按颜色/随机配色"),
+            new(TileTheme.Win10, "Win10 磁贴", "无颜色 · 方形"),
+        };
+        TileThemeCombo.SelectedIndex = current == TileTheme.Win10 ? 1 : 0;
+    }
+
+    /// <summary>磁贴主题切换 → 立即保存；返回主页时 Reload 重建磁贴生效</summary>
+    private void OnTileThemeChanged(object sender, Microsoft.UI.Xaml.Controls.SelectionChangedEventArgs e)
+    {
+        if (!_ready) return;
+        var theme = TileThemeCombo.SelectedItem is TileThemeOption o ? o.Theme : TileTheme.Colorful;
+        SettingsService.Update(s => s.TileTheme = theme);
     }
 
     private void OnTileNameChanged(object sender, Microsoft.UI.Xaml.RoutedEventArgs e)

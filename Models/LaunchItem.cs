@@ -56,7 +56,9 @@ public enum WidgetKind
     /// <summary>电源（常驻主页，A/点击弹出电源菜单：注销/睡眠/休眠/重启/关机；不可删除/组合，可移动与改颜色大小）</summary>
     Power,
     /// <summary>性能监控（A/点击=开启/关闭置顶悬浮监控条，屏幕上方居中显示帧率/帧延迟/帧波动/CPU/GPU/电池/内存）</summary>
-    Monitor
+    Monitor,
+    /// <summary>文件传输（A/点击=打开局域网传输浮层：搜索同网段设备、连接后互发文件，收到文件需确认）</summary>
+    FileTransfer
 }
 
 /// <summary>手柄映射的目标类型（仅 GamepadMapping 使用）</summary>
@@ -244,12 +246,20 @@ public class LaunchItem
     /// <summary>FSR4 附加文件（官方包不含）：auto=不额外注入 / int8=兼容卡 / fp8=RDNA4</summary>
     public string OptiFsr4Files { get; set; } = "auto";
 
-    /// <summary>本地 OptiScaler 包路径（目录或 zip/7z；为空则自动从 GitHub Release 下载最新包并缓存）</summary>
+    /// <summary>显式指定的本地 OptiScaler 包路径（目录或 zip/7z/rar）；为空时"本地包"渠道扫描
+    /// %APPDATA%\GameLocker\optiscaler\local 文件夹。仅 OptiChannel=local 时使用。</summary>
     public string? OptiLocalPackage { get; set; }
 
     /// <summary>要注入的 OptiScaler 版本渠道（仅 WidgetKind.OptiScaler 使用）：stable=官方正式版，
-    /// beta=社区镜像的最新预览版（OptiScaler-Betas）。两者 ini 与用法一致，只是包更新更快。</summary>
+    /// beta=社区镜像的最新预览版（OptiScaler-Betas），local=不联网、直接用本地包文件夹里的包。
+    /// 三种渠道 ini 与用法一致，只是取包来源不同。</summary>
     public string OptiChannel { get; set; } = "stable";
+
+    /// <summary>选定的 OptiScaler Release 标签（如 v0.9.4；空=自动取该渠道最新版）</summary>
+    public string OptiVersionTag { get; set; } = "";
+
+    /// <summary>选定的 FSR4 附加包 Release 标签（空=自动取最新版）</summary>
+    public string OptiFsr4VersionTag { get; set; } = "";
 
     /// <summary>性能监控悬浮条位置（仅 WidgetKind.Monitor 使用）</summary>
     public MonitorPosition MonitorPos { get; set; } = MonitorPosition.TopCenter;
@@ -259,6 +269,12 @@ public class LaunchItem
 
     /// <summary>性能监控悬浮条不透明度（仅 WidgetKind.Monitor 使用；0~1，0 表示无外框只剩文字）</summary>
     public double MonitorOpacity { get; set; } = 1.0;
+
+    /// <summary>文件传输的可发送目录（仅 WidgetKind.FileTransfer 使用；空=系统下载文件夹，浮层里列出该目录顶层文件）</summary>
+    public string? FileTransferSendFolder { get; set; }
+
+    /// <summary>文件传输的接收目录（仅 WidgetKind.FileTransfer 使用；空=系统下载文件夹，收到的文件直接存这里）</summary>
+    public string? FileTransferRecvFolder { get; set; }
 
     /// <summary>深拷贝一个快捷项（含组成员），用于复制/迁移时与源数据隔离</summary>
     public LaunchItem Clone() => new()
@@ -293,6 +309,8 @@ public class LaunchItem
         OptiFsr4Files = OptiFsr4Files,
         OptiLocalPackage = OptiLocalPackage,
         OptiChannel = OptiChannel,
+        OptiVersionTag = OptiVersionTag,
+        OptiFsr4VersionTag = OptiFsr4VersionTag,
         MonitorPos = MonitorPos,
         MonitorScale = MonitorScale,
         MonitorOpacity = MonitorOpacity,
@@ -329,6 +347,7 @@ public class LaunchItem
             WidgetKind.System => "\uE713", // 设置（系统小组件：默认停在 Win 设置）
             WidgetKind.Power => "\uE7E8",  // 电源（电源菜单）
             WidgetKind.Monitor => "\uE9D9", // 诊断（性能监控）
+            WidgetKind.FileTransfer => "\uE895", // 同步（局域网文件互传）
             _ => "\uE8D6"                  // 音乐（音乐控制器）
         },
         _ => "\uE7F8"                  // desktop

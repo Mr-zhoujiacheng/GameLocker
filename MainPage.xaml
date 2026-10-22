@@ -321,5 +321,65 @@
                 </StackPanel>
             </Border>
         </Grid>
+
+        <!-- 文件传输浮层：搜索局域网设备 → 连接 → 把文件拖进窗口 → 按 X 发送；收到的请求在这里确认 -->
+        <Grid x:Name="FileTransferOverlay" Grid.Row="0" Grid.RowSpan="3" Visibility="Collapsed">
+            <Border x:Name="FileTransferMask" Background="#D80A0C10"/>
+
+            <Border x:Name="FileTransferPanel" HorizontalAlignment="Center" VerticalAlignment="Center"
+                    CornerRadius="24" Padding="18,18,18,12"
+                    BorderBrush="#2EFFFFFF" BorderThickness="1.2"
+                    RenderTransformOrigin="0.5,0.5">
+                <Border.Background>
+                    <LinearGradientBrush StartPoint="0,0" EndPoint="0.35,1">
+                        <GradientStop Color="#F22A2E36" Offset="0"/>
+                        <GradientStop Color="#F21A1D23" Offset="1"/>
+                    </LinearGradientBrush>
+                </Border.Background>
+                <Border.RenderTransform>
+                    <CompositeTransform x:Name="FileTransferPanelTransform" ScaleX="1" ScaleY="1"/>
+                </Border.RenderTransform>
+
+                <StackPanel Width="520" Spacing="10">
+                    <!-- 标题：蓝色传输徽章 + 标题/状态 -->
+                    <StackPanel Orientation="Horizontal" Spacing="12" Margin="2,0,0,2">
+                        <Border Width="44" Height="44" CornerRadius="22" Background="#264CC2FF" VerticalAlignment="Center">
+                            <FontIcon Glyph="&#xE895;" FontSize="19" Foreground="#4CC2FF"/>
+                        </Border>
+                        <StackPanel VerticalAlignment="Center" Spacing="1">
+                            <TextBlock Text="文件传输" FontSize="21" FontWeight="SemiBold"/>
+                            <TextBlock x:Name="FileTransferStatusText" Text="正在搜索局域网设备…"
+                                       FontSize="12" Opacity="0.6" TextTrimming="CharacterEllipsis" MaxWidth="430"/>
+                        </StackPanel>
+                    </StackPanel>
+
+                    <!-- 设备列表 -->
+                    <TextBlock Text="设备" FontSize="12" Opacity="0.5" Margin="4,4,0,0"/>
+                    <StackPanel x:Name="FileTransferPeerList" Spacing="6"/>
+
+                    <!-- 接收请求提示条 -->
+                    <Border x:Name="FileTransferOfferBar" Visibility="Collapsed" CornerRadius="14" Padding="14,10"
+                            Background="#2A4CC2FF" BorderBrush="#554CC2FF" BorderThickness="1">
+                        <TextBlock x:Name="FileTransferOfferText" FontSize="13" TextWrapping="Wrap"/>
+                    </Border>
+
+                    <!-- 待发送文件：从资源管理器/桌面直接拖进本窗口加入，不再在窗口内浏览目录 -->
+                    <TextBlock x:Name="FileTransferFilesHeader" Text="待发送文件（把文件拖进窗口）" FontSize="12" Opacity="0.5" Margin="4,4,0,0"/>
+                    <ScrollViewer MaxHeight="190" VerticalScrollBarVisibility="Auto">
+                        <StackPanel x:Name="FileTransferFileList" Spacing="6"/>
+                    </ScrollViewer>
+
+                    <!-- 进度 -->
+                    <StackPanel x:Name="FileTransferProgressBox" Spacing="6" Visibility="Collapsed">
+                        <ProgressBar x:Name="FileTransferProgressBar" Height="6" Minimum="0" Maximum="1"
+                                     Foreground="#4CC2FF" Background="#22FFFFFF"/>
+                        <TextBlock x:Name="FileTransferProgressText" FontSize="12" Opacity="0.6"/>
+                    </StackPanel>
+
+                    <ctl:GamepadHintBar HorizontalAlignment="Center" Margin="0,6,0,2"
+                                        Hints="DPAD:选择|A:连接|X:发送|Y:清空|B:关闭"/>
+                </StackPanel>
+            </Border>
+        </Grid>
     </Grid>
 </Page>

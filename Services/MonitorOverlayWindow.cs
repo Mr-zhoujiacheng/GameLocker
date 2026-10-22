@@ -19,6 +19,7 @@ internal sealed class MonitorOverlayWindow : IDisposable
     private const int WS_EX_LAYERED = 0x00080000;
     private const int WS_EX_NOACTIVATE = 0x08000000;
     private const int SW_SHOWNOACTIVATE = 4;
+    private const int SW_HIDE = 0;
     private const int SPI_GETWORKAREA = 0x0030;
     private const int WM_PAINT = 0x000F;
     private const int WM_ERASEBKGND = 0x0014;
@@ -44,6 +45,7 @@ internal sealed class MonitorOverlayWindow : IDisposable
     private int _width;
     private int _batteryWidth;
     private int _fpsWidth;
+    private int _gpuWidth;
     private RECT _work;
     private int _x, _y;
 
@@ -60,6 +62,7 @@ internal sealed class MonitorOverlayWindow : IDisposable
     private IntPtr _fontFps;
 
     private MonitorSnapshot? _snapshot;
+    private bool _visible = true;
 
     private static WndProcDelegate? _wndProc; // 防止回调被 GC
     private static bool _registered;
@@ -140,7 +143,7 @@ internal sealed class MonitorOverlayWindow : IDisposable
     public void Update(MonitorSnapshot snapshot)
     {
         _snapshot = snapshot;
-        if (_hwnd == IntPtr.Zero) return;
+        if (_hwnd == IntPtr.Zero || !_visible) return;
         try
         {
             lock (_renderGate)
@@ -154,6 +157,27 @@ internal sealed class MonitorOverlayWindow : IDisposable
                 {
                     RenderLayeredCore();
                 }
+            }
+        }
+        catch { }
+    }
+
+    /// <summary>
+    /// 主窗口切换前台/后台：后台且当前没有全屏游戏时隐藏悬浮条，
+    /// 节省 GPU 更新开销；全屏游戏里即使主窗口在后台也保持显示。
+    /// </summary>
+    public void SetForeground(bool appForeground, bool fullscreenVisible)
+    {
+        var shouldShow = appForeground || fullscreenVisible;
+        if (_hwnd == IntPtr.Zero || shouldShow == _visible) return;
+        _visible = shouldShow;
+        try
+        {
+            ShowWindow(_hwnd, shouldShow ? SW_SHOWNOACTIVATE : SW_HIDE);
+            if (shouldShow)
+            {
+                PlaceWindow(); // 重新定位（主窗口可能被拖过）
+                ReassertTopmost();
             }
         }
         catch { }
@@ -183,7 +207,7 @@ internal sealed class MonitorOverlayWindow : IDisposable
     // ---- 布局 / 窗口 ----
 
     private static int TotalWidth() =>
-        ChipGraph + ChipCpu + ChipGpu + ChipMemory + PadH * 2;
+        ChipGraph + ChipCpu + ChipMemory + PadH * 2;
 
     /// <summary>FPS 块按实际帧率文字宽度收紧，让帧波动折线紧贴“帧生成”读数</summary>
     private int MeasureFpsWidth()
@@ -227,16 +251,41 @@ internal sealed class MonitorOverlayWindow : IDisposable
         finally { ReleaseDC(IntPtr.Zero, hdc); }
     }
 
-    /// <summary>按实际文字重新计算 FPS / 电池块宽度；变化明显时返回 true（调用方负责重设区域与位置）</summary>
+    /// <summary>GPU 块按实际标题/数值宽度收紧（无功耗时标题更短，后面的电池块贴上来）</summary>
+    private int MeasureGpuWidth()
+    {
+        if (_fontLabel == IntPtr.Zero || _fontValue == IntPtr.Zero) return Scaled(ChipGpu);
+        var snap = _snapshot ?? new MonitorSnapshot();
+        var label = GpuLabel(snap);
+        var value = FormatGpu(snap);
+        var hdc = GetDC(IntPtr.Zero);
+        if (hdc == IntPtr.Zero) return Scaled(ChipGpu);
+        try
+        {
+            var old = SelectObject(hdc, _fontLabel);
+            var ok = GetTextExtentPoint32W(hdc, label, label.Length, out var labelSize);
+            SelectObject(hdc, _fontValue);
+            ok &= GetTextExtentPoint32W(hdc, value, value.Length, out var valueSize);
+            SelectObject(hdc, old);
+            if (!ok) return Scaled(ChipGpu);
+            var content = Math.Max(labelSize.CX, valueSize.CX);
+            return Math.Clamp(Scaled(15) + content + Scaled(10), Scaled(104), Scaled(ChipGpu));
+        }
+        finally { ReleaseDC(IntPtr.Zero, hdc); }
+    }
+
+    /// <summary>按实际文字重新计算 FPS / GPU / 电池块宽度；变化明显时返回 true（调用方负责重设区域与位置）</summary>
     private bool AdjustDynamicWidths()
     {
         var fps = MeasureFpsWidth();
+        var gpu = MeasureGpuWidth();
         var battery = MeasureBatteryWidth();
         var changed = false;
         if (Math.Abs(fps - _fpsWidth) >= 4) { _fpsWidth = fps; changed = true; }
+        if (Math.Abs(gpu - _gpuWidth) >= 4) { _gpuWidth = gpu; changed = true; }
         if (Math.Abs(battery - _batteryWidth) >= 4) { _batteryWidth = battery; changed = true; }
         if (!changed) return false;
-        _width = Scaled(TotalWidth()) + _fpsWidth + _batteryWidth;
+        _width = Scaled(TotalWidth()) + _fpsWidth + _gpuWidth + _batteryWidth;
         return true;
     }
 
@@ -296,12 +345,13 @@ internal sealed class MonitorOverlayWindow : IDisposable
             _work = new RECT { Left = 0, Top = 0, Right = GetSystemMetrics(0), Bottom = GetSystemMetrics(1) };
         var workW = Math.Max(320, _work.Right - _work.Left);
         var byDpi = DpiScale();
-        var byWidth = (workW - 24.0) / (TotalWidth() + ChipFps + ChipBattery);
+        var byWidth = (workW - 24.0) / (TotalWidth() + ChipFps + ChipGpu + ChipBattery);
         var fit = Math.Min(byDpi, byWidth);
         _scale = Math.Clamp(fit * _userScale, 0.55, Math.Max(0.55, byWidth));
         _batteryWidth = Scaled(ChipBattery);
         _fpsWidth = Scaled(ChipFps);
-        _width = Scaled(TotalWidth()) + _fpsWidth + _batteryWidth;
+        _gpuWidth = Scaled(ChipGpu);
+        _width = Scaled(TotalWidth()) + _fpsWidth + _gpuWidth + _batteryWidth;
     }
 
     private void CreateFonts()
@@ -446,7 +496,7 @@ internal sealed class MonitorOverlayWindow : IDisposable
         x = DrawFpsChip(hdc, x, _fpsWidth, Color(0x6F, 0xE3, 0xA0));
         x = DrawGraph(hdc, x, Scaled(ChipGraph), snap.FrameHistory, Color(0x4C, 0xC2, 0xFF));
         x = DrawChip(hdc, x, Scaled(ChipCpu), "CPU 使用 · 频率 · 温度 · 功耗", FormatCpu(snap), Color(0x6B, 0xB6, 0xFF));
-        x = DrawChip(hdc, x, Scaled(ChipGpu), "GPU 使用 · 频率 · 功耗", FormatGpu(snap), Color(0xA9, 0x9B, 0xFF));
+        x = DrawChip(hdc, x, _gpuWidth, GpuLabel(snap), FormatGpu(snap), Color(0xA9, 0x9B, 0xFF));
         x = DrawChip(hdc, x, _batteryWidth, "电池功耗 · 预计", FormatBattery(snap), Color(0xFF, 0xC4, 0x6B));
         DrawChip(hdc, x, Scaled(ChipMemory), "内存", FormatMemory(snap), Color(0x6F, 0xE0, 0xD8));
     }
@@ -623,12 +673,17 @@ internal sealed class MonitorOverlayWindow : IDisposable
         return $"{s.CpuUsage:0}% · {freq} · {temp} · {power}";
     }
 
+    /// <summary>GPU 块标题：有功耗数据时多一段"功耗"，Intel 核显没有瓦特接口则省略</summary>
+    private static string GpuLabel(MonitorSnapshot s) =>
+        double.IsNaN(s.GpuPower) ? "GPU 使用 · 频率" : "GPU 使用 · 频率 · 功耗";
+
     private static string FormatGpu(MonitorSnapshot s)
     {
-        var usage = double.IsNaN(s.GpuUsage) ? "—" : $"{s.GpuUsage:0}%";
-        var freq = double.IsNaN(s.GpuMhz) ? "—" : $"{s.GpuMhz:0}MHz";
-        var power = double.IsNaN(s.GpuPower) ? "—" : $"{s.GpuPower:0.0}W";
-        return $"{usage} · {freq} · {power}";
+        // 功耗取不到时省略该段（Intel 核显没有瓦特功耗接口）；频率读得到就显示，0 也照实显示 0MHz
+        var parts = new List<string> { double.IsNaN(s.GpuUsage) ? "—" : $"{s.GpuUsage:0}%" };
+        if (!double.IsNaN(s.GpuMhz)) parts.Add($"{s.GpuMhz:0}MHz");
+        if (!double.IsNaN(s.GpuPower)) parts.Add($"{s.GpuPower:0.0}W");
+        return string.Join(" · ", parts);
     }
 
     private static string FormatBattery(MonitorSnapshot s)

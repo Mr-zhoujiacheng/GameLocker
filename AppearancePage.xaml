@@ -3,7 +3,8 @@
     x:Class="GameLocker.AppearancePage"
     xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
     xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
-    xmlns:ctl="using:GameLocker.Controls">
+    xmlns:ctl="using:GameLocker.Controls"
+    xmlns:local="using:GameLocker">
 
     <Grid Background="Transparent"
           RequestedTheme="Dark" XYFocusKeyboardNavigation="Enabled">
@@ -169,14 +170,60 @@
                     </Rectangle>
                 </Grid>
 
-                <ToggleSwitch x:Name="Tile3DToggle" Padding="14,10" Toggled="OnTile3DChanged">
-                    <ToggleSwitch.Header>
-                        <StackPanel Spacing="2">
-                            <TextBlock Text="立体效果" FontSize="16"/>
-                            <TextBlock Text="磁贴高光阴影渐变，呈现立体感" FontSize="12" Opacity="0.6"/>
-                        </StackPanel>
-                    </ToggleSwitch.Header>
-                </ToggleSwitch>
+                <!-- 卡片外壳：背景/圆角/光标描边都在这一层，下拉框本体全透明，避免双重描边变形 -->
+                <Border x:Name="TileThemeCard" Background="#1FFFFFFF" CornerRadius="10"
+                        BorderBrush="Transparent" BorderThickness="1.5"
+                        Tapped="OnTileThemeCardTapped">
+                    <ComboBox x:Name="TileThemeCombo" HorizontalAlignment="Stretch"
+                              Background="Transparent" BorderThickness="0" Padding="0"
+                              UseSystemFocusVisuals="False"
+                              SelectionChanged="OnTileThemeChanged">
+                        <!-- 自绘模板：标题只作显示 + 当前主题（加粗名 + 普通说明）+ 右侧箭头，高度与下方开关卡片一致 -->
+                        <ComboBox.Template>
+                            <ControlTemplate TargetType="ComboBox">
+                                <Grid>
+                                    <Grid.ColumnDefinitions>
+                                        <ColumnDefinition Width="*"/>
+                                        <ColumnDefinition Width="Auto"/>
+                                    </Grid.ColumnDefinitions>
+                                    <Grid Padding="14,10" VerticalAlignment="Center">
+                                        <StackPanel Spacing="2">
+                                            <TextBlock Text="磁贴主题" FontSize="16"/>
+                                            <ContentPresenter Content="{Binding SelectedItem, RelativeSource={RelativeSource TemplatedParent}}"
+                                                              ContentTemplate="{TemplateBinding ItemTemplate}"
+                                                              HorizontalAlignment="Left"/>
+                                        </StackPanel>
+                                    </Grid>
+                                    <TextBlock Grid.Column="1" Text="&#xE70D;"
+                                               FontFamily="Segoe MDL2 Assets" FontSize="12"
+                                               Opacity="0.7" VerticalAlignment="Center"
+                                               Margin="10,0,14,0"/>
+                                    <Popup x:Name="Popup"
+                                           IsOpen="{Binding IsDropDownOpen, Mode=TwoWay, RelativeSource={RelativeSource TemplatedParent}}"
+                                           IsLightDismissEnabled="True" VerticalOffset="6">
+                                        <Border Background="#FF202020" CornerRadius="10"
+                                                BorderBrush="#33FFFFFF" BorderThickness="1"
+                                                Padding="4,6"
+                                                Width="{TemplateBinding ActualWidth}">
+                                            <ScrollViewer MaxHeight="240">
+                                                <ItemsPresenter/>
+                                            </ScrollViewer>
+                                        </Border>
+                                    </Popup>
+                                </Grid>
+                            </ControlTemplate>
+                        </ComboBox.Template>
+                        <ComboBox.ItemTemplate>
+                            <DataTemplate x:DataType="local:TileThemeOption">
+                                <TextBlock TextTrimming="CharacterEllipsis" VerticalAlignment="Center">
+                                    <Run Text="{x:Bind Name}" FontWeight="SemiBold"/>
+                                    <Run Text="  "/>
+                                    <Run Text="{x:Bind Desc}" FontSize="12" Foreground="#B3FFFFFF"/>
+                                </TextBlock>
+                            </DataTemplate>
+                        </ComboBox.ItemTemplate>
+                    </ComboBox>
+                </Border>
 
                 <ToggleSwitch x:Name="TileNameToggle" Padding="14,10" Toggled="OnTileNameChanged">
                     <ToggleSwitch.Header>

@@ -18,7 +18,7 @@
             <Border x:Name="TrainerChoiceMask" Background="#C00A0C10" Tapped="OnTrainerChoiceMaskTapped"/>
 
             <Border x:Name="TrainerChoicePanel" HorizontalAlignment="Center" VerticalAlignment="Center"
-                    CornerRadius="16" Padding="20,20,20,16"
+                    CornerRadius="16" Padding="20,20,20,0"
                     Background="#E6242424" BorderBrush="#33FFFFFF" BorderThickness="1.5"
                     RenderTransformOrigin="0.5,0.5">
                 <Border.RenderTransform>
@@ -40,7 +40,9 @@
                         <StackPanel x:Name="TrainerChoiceList" Spacing="8"/>
                     </ScrollViewer>
 
-                    <ctl:GamepadHintBar HorizontalAlignment="Center" Margin="0,4,0,0"
+                    <!-- 触屏：图标行贴住面板底边，图标放大后可点按（A=下载，B=取消） -->
+                    <ctl:GamepadHintBar x:Name="TrainerChoiceHintBar" TouchMode="True"
+                                        HorizontalAlignment="Center" Margin="0,8,0,0"
                                         Hints="DPAD:选择|A:下载|B:取消"/>
                 </StackPanel>
             </Border>
@@ -52,7 +54,7 @@
             <Border x:Name="OptiMask" Background="#C00A0C10" Tapped="OnOptiMaskTapped"/>
 
             <Border x:Name="OptiPanel" HorizontalAlignment="Center" VerticalAlignment="Center"
-                    CornerRadius="16" Padding="20,20,20,16"
+                    CornerRadius="16" Padding="20,20,20,0"
                     Background="#E6242424" BorderBrush="#33FFFFFF" BorderThickness="1.5"
                     RenderTransformOrigin="0.5,0.5">
                 <Border.RenderTransform>
@@ -108,7 +110,9 @@
                     <TextBlock x:Name="OptiHintText" FontSize="12" Opacity="0.6" TextWrapping="Wrap"
                                Text="选择注入将关闭游戏、写入 OptiScaler 后重新打开游戏；注入前会自动备份被覆盖的同名文件。"/>
 
-                    <ctl:GamepadHintBar HorizontalAlignment="Center" Margin="0,4,0,0" Hints="A:注入|B:取消"/>
+                    <!-- 触屏：图标行贴住面板底边，图标放大后可点按（A=注入，B=取消） -->
+                    <ctl:GamepadHintBar x:Name="OptiHintBar" TouchMode="True"
+                                        HorizontalAlignment="Center" Margin="0,8,0,0" Hints="A:注入|B:取消"/>
                 </StackPanel>
             </Border>
         </Grid>

@@ -317,6 +317,13 @@ public static class OptiScalerService
                 Report($"游戏 {TrainerService.CurrentGameName()} 已退出，请先运行游戏", true);
                 return;
             }
+            if (!TrainerService.IsLastGameActuallyForeground())
+            {
+                // 切到设置 / Steam / 浏览器等非游戏窗口时，虽然 LastExeName 还保留着游戏，
+                // 但此刻前台不是它 —— 拒绝注入，避免改到错误的程序目录
+                Report($"请先把游戏「{TrainerService.CurrentGameName()}」切到前台再注入", true);
+                return;
+            }
             var exePath = TrainerService.CurrentGameExePath();
             if (string.IsNullOrEmpty(exePath) || !File.Exists(exePath))
             {

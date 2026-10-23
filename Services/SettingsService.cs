@@ -65,7 +65,12 @@ public static class SettingsService
             if (run == null) return;
 
             if (enable)
-                run.SetValue("GameLocker", Environment.ProcessPath ?? "");
+            {
+                // 加引号：路径含空格时 Run 项按空格截断，重启后就启动不了本程序
+                var exe = $"\"{Environment.ProcessPath}\"";
+                if (!string.Equals(run.GetValue("GameLocker") as string, exe, StringComparison.OrdinalIgnoreCase))
+                    run.SetValue("GameLocker", exe);
+            }
             else
                 run.DeleteValue("GameLocker", false);
         }
@@ -73,5 +78,12 @@ public static class SettingsService
         {
             // 注册表不可写时忽略，不影响其余设置
         }
+    }
+
+    /// <summary>启动时校正自启项：程序被移动/重命名后 Run 值仍指向旧路径，开机就起不来。</summary>
+    public static void EnsureAutoStartPath()
+    {
+        ApplyAutoStart(Current.AutoStart);
+        DebugLog.Write($"开机自启：{Current.AutoStart} → {Environment.ProcessPath}");
     }
 }

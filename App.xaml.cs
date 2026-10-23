@@ -25,6 +25,7 @@ public partial class App : Application
 
         InstallCrashLogging();
         MigrateLegacyConfig();
+        SettingsService.EnsureAutoStartPath(); // 校正开机自启路径（程序移动/改名后 Run 键会失效）
         Main = new MainWindow();
 
         _tray = new TrayHotkeyService();
@@ -37,6 +38,10 @@ public partial class App : Application
         // 若系统前台锁导致 Activated 不触发，裸 Activate 会让窗口永远停在屏外（前台无窗口）。
         // ShowFromTray 自带兜底：Activated 没来就直接播滑入动画。
         Main.ShowFromTray();
+
+        // 启动时后台检查 GitHub 最新版本（关于页可关闭）；失败静默，不阻塞启动
+        if (SettingsService.Current.AutoCheckUpdates)
+            _ = UpdateService.AutoCheckAsync();
     }
 
     /// <summary>全局异常记录：写入 %APPDATA%\GameLocker\crash.log，便于定位闪退</summary>

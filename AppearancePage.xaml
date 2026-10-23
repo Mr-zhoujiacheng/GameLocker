@@ -170,60 +170,54 @@
                     </Rectangle>
                 </Grid>
 
-                <!-- 卡片外壳：背景/圆角/光标描边都在这一层，下拉框本体全透明，避免双重描边变形 -->
+                <!-- 卡片外壳：背景/圆角/光标描边都在这一层；主题列表在同一张卡片内向下展开，
+                     不使用 ComboBox 弹层，避免弹层开合时序问题 -->
                 <Border x:Name="TileThemeCard" Background="#1FFFFFFF" CornerRadius="10"
                         BorderBrush="Transparent" BorderThickness="1.5"
                         Tapped="OnTileThemeCardTapped">
-                    <ComboBox x:Name="TileThemeCombo" HorizontalAlignment="Stretch"
-                              Background="Transparent" BorderThickness="0" Padding="0"
-                              UseSystemFocusVisuals="False"
-                              SelectionChanged="OnTileThemeChanged">
-                        <!-- 自绘模板：标题只作显示 + 当前主题（加粗名 + 普通说明）+ 右侧箭头，高度与下方开关卡片一致 -->
-                        <ComboBox.Template>
-                            <ControlTemplate TargetType="ComboBox">
-                                <Grid>
-                                    <Grid.ColumnDefinitions>
-                                        <ColumnDefinition Width="*"/>
-                                        <ColumnDefinition Width="Auto"/>
-                                    </Grid.ColumnDefinitions>
-                                    <Grid Padding="14,10" VerticalAlignment="Center">
-                                        <StackPanel Spacing="2">
-                                            <TextBlock Text="磁贴主题" FontSize="16"/>
-                                            <ContentPresenter Content="{Binding SelectedItem, RelativeSource={RelativeSource TemplatedParent}}"
-                                                              ContentTemplate="{TemplateBinding ItemTemplate}"
-                                                              HorizontalAlignment="Left"/>
-                                        </StackPanel>
-                                    </Grid>
-                                    <TextBlock Grid.Column="1" Text="&#xE70D;"
-                                               FontFamily="Segoe MDL2 Assets" FontSize="12"
-                                               Opacity="0.7" VerticalAlignment="Center"
-                                               Margin="10,0,14,0"/>
-                                    <Popup x:Name="Popup"
-                                           IsOpen="{Binding IsDropDownOpen, Mode=TwoWay, RelativeSource={RelativeSource TemplatedParent}}"
-                                           IsLightDismissEnabled="True" VerticalOffset="6">
-                                        <Border Background="#FF202020" CornerRadius="10"
-                                                BorderBrush="#33FFFFFF" BorderThickness="1"
-                                                Padding="4,6"
-                                                Width="{TemplateBinding ActualWidth}">
-                                            <ScrollViewer MaxHeight="240">
-                                                <ItemsPresenter/>
-                                            </ScrollViewer>
-                                        </Border>
-                                    </Popup>
-                                </Grid>
-                            </ControlTemplate>
-                        </ComboBox.Template>
-                        <ComboBox.ItemTemplate>
-                            <DataTemplate x:DataType="local:TileThemeOption">
-                                <TextBlock TextTrimming="CharacterEllipsis" VerticalAlignment="Center">
-                                    <Run Text="{x:Bind Name}" FontWeight="SemiBold"/>
-                                    <Run Text="  "/>
-                                    <Run Text="{x:Bind Desc}" FontSize="12" Foreground="#B3FFFFFF"/>
-                                </TextBlock>
-                            </DataTemplate>
-                        </ComboBox.ItemTemplate>
-                    </ComboBox>
+                    <StackPanel>
+                        <!-- 折叠行：标题 + 当前主题（预览色块 + 名称）+ 箭头 -->
+                        <Grid Padding="14,10">
+                            <Grid.ColumnDefinitions>
+                                <ColumnDefinition Width="*"/>
+                                <ColumnDefinition Width="Auto"/>
+                            </Grid.ColumnDefinitions>
+                            <StackPanel Spacing="3">
+                                <StackPanel Orientation="Horizontal" Spacing="8">
+                                    <FontIcon Glyph="&#xE790;" FontSize="15" Foreground="#FF4CC2FF"
+                                              VerticalAlignment="Center"/>
+                                    <TextBlock Text="磁贴主题" FontSize="16" VerticalAlignment="Center"/>
+                                </StackPanel>
+                                <StackPanel Orientation="Horizontal" Spacing="8">
+                                    <Border x:Name="ThemeCurrentSwatch" Width="26" Height="18"
+                                            CornerRadius="3" BorderBrush="#40FFFFFF" BorderThickness="1"
+                                            VerticalAlignment="Center"/>
+                                    <TextBlock x:Name="ThemeCurrentText" FontSize="12" Foreground="#B3FFFFFF"
+                                               VerticalAlignment="Center"/>
+                                </StackPanel>
+                            </StackPanel>
+                            <FontIcon x:Name="ThemeChevron" Grid.Column="1" Glyph="&#xE70D;"
+                                      FontSize="12" Opacity="0.7" VerticalAlignment="Center"
+                                      Margin="10,0,4,0">
+                                <FontIcon.RenderTransform>
+                                    <RotateTransform x:Name="ThemeChevronRotate" CenterX="6" CenterY="6"/>
+                                </FontIcon.RenderTransform>
+                            </FontIcon>
+                        </Grid>
+                        <!-- 展开列表：选项由代码按主题表生成（含迷你预览条） -->
+                        <StackPanel x:Name="TileThemeList" Visibility="Collapsed"
+                                    Margin="10,0,10,10" Spacing="4"/>
+                    </StackPanel>
                 </Border>
+
+                <ToggleSwitch x:Name="TileCornerToggle" Padding="14,10" Toggled="OnTileCornerChanged">
+                    <ToggleSwitch.Header>
+                        <StackPanel Spacing="2">
+                            <TextBlock Text="方形磁贴" FontSize="16"/>
+                            <TextBlock Text="磁贴使用直角（关闭为圆角）" FontSize="12" Opacity="0.6"/>
+                        </StackPanel>
+                    </ToggleSwitch.Header>
+                </ToggleSwitch>
 
                 <ToggleSwitch x:Name="TileNameToggle" Padding="14,10" Toggled="OnTileNameChanged">
                     <ToggleSwitch.Header>

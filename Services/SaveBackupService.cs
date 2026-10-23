@@ -68,6 +68,11 @@ public static class SaveBackupService
                 Report($"游戏 {TrainerService.CurrentGameName()} 已退出，请先运行游戏", true);
                 return;
             }
+            if (!TrainerService.IsLastGameActuallyForeground())
+            {
+                Report($"请先把游戏「{TrainerService.CurrentGameName()}」切到前台再备份存档", true);
+                return;
+            }
 
             var gameName = Sanitize(TrainerService.CurrentGameName());
             DebugLog.Write($"存档备份: 触发 exe={TrainerService.LastExeName} 标题={TrainerService.LastWindowTitle} 模式={item.BackupMode}");
@@ -192,6 +197,11 @@ public static class SaveBackupService
             if (!TrainerService.IsGameRunning())
             {
                 Report($"游戏 {TrainerService.CurrentGameName()} 已退出，请先运行游戏", true);
+                return;
+            }
+            if (!TrainerService.IsLastGameActuallyForeground())
+            {
+                Report($"请先把游戏「{TrainerService.CurrentGameName()}」切到前台再同步存档", true);
                 return;
             }
 

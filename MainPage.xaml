@@ -128,7 +128,7 @@
             <Border x:Name="ChoiceMask" Background="#C00A0C10"/>
 
             <Border x:Name="ChoicePanel" HorizontalAlignment="Center" VerticalAlignment="Center"
-                    CornerRadius="16" Padding="20,20,20,16"
+                    CornerRadius="16" Padding="20,20,20,0"
                     Background="#E6242424" BorderBrush="#33FFFFFF" BorderThickness="1.5"
                     RenderTransformOrigin="0.5,0.5">
                 <Border.RenderTransform>
@@ -183,7 +183,9 @@
                         </StackPanel>
                     </Border>
 
-                    <ctl:GamepadHintBar HorizontalAlignment="Center" Margin="0,4,0,0"
+                    <!-- 触屏：图标行贴住面板底边，图标放大后可点按（DPAD=切换，A=确认，B=取消） -->
+                    <ctl:GamepadHintBar x:Name="ChoiceHintBar" TouchMode="True"
+                                        HorizontalAlignment="Center" Margin="0,8,0,0"
                                         Hints="DPAD:选择|A:确认|B:取消"/>
                 </StackPanel>
             </Border>
@@ -194,7 +196,7 @@
             <Border x:Name="RenameMask" Background="#C00A0C10"/>
 
             <Border HorizontalAlignment="Center" VerticalAlignment="Center"
-                    CornerRadius="16" Padding="20,18,20,14"
+                    CornerRadius="16" Padding="20,18,20,0"
                     Background="#E6242424" BorderBrush="#33FFFFFF" BorderThickness="1.5">
                 <StackPanel Width="292" Spacing="12">
                     <StackPanel Orientation="Horizontal" HorizontalAlignment="Center" Spacing="10" Margin="0,0,0,4">
@@ -205,7 +207,9 @@
                     </StackPanel>
                     <TextBox x:Name="RenameBox" FontSize="16" Padding="10,8"
                              PlaceholderText="抽屉名称" KeyDown="OnRenameBoxKeyDown"/>
-                    <ctl:GamepadHintBar HorizontalAlignment="Center" Margin="0,2,0,0" Hints="A:确认|B:取消"/>
+                    <!-- 触屏：图标行贴住面板底边，放大后的 A/B 图标可直接点按确认/取消 -->
+                    <ctl:GamepadHintBar x:Name="RenameHintBar" TouchMode="True"
+                                        HorizontalAlignment="Center" Margin="0,8,0,0" Hints="A:确认|B:取消"/>
                 </StackPanel>
             </Border>
         </Grid>
@@ -216,7 +220,7 @@
             <Border x:Name="PowerMask" Background="#D80A0C10"/>
 
             <Border x:Name="PowerPanel" HorizontalAlignment="Center" VerticalAlignment="Center"
-                    CornerRadius="24" Padding="18,20,18,14"
+                    CornerRadius="24" Padding="18,20,18,0"
                     BorderBrush="#2EFFFFFF" BorderThickness="1.2"
                     RenderTransformOrigin="0.5,0.5">
                 <Border.Background>
@@ -316,7 +320,9 @@
                         </Grid>
                     </Border>
 
-                    <ctl:GamepadHintBar HorizontalAlignment="Center" Margin="0,6,0,2"
+                    <!-- 触屏：图标行贴住面板底边，图标放大后可点按（DPAD=切换，A=执行，B=取消） -->
+                    <ctl:GamepadHintBar x:Name="PowerHintBar" TouchMode="True"
+                                        HorizontalAlignment="Center" Margin="0,8,0,0"
                                         Hints="DPAD:选择|A:执行|B:取消"/>
                 </StackPanel>
             </Border>
@@ -327,7 +333,7 @@
             <Border x:Name="FileTransferMask" Background="#D80A0C10"/>
 
             <Border x:Name="FileTransferPanel" HorizontalAlignment="Center" VerticalAlignment="Center"
-                    CornerRadius="24" Padding="18,18,18,12"
+                    CornerRadius="24" Padding="18,18,18,0"
                     BorderBrush="#2EFFFFFF" BorderThickness="1.2"
                     RenderTransformOrigin="0.5,0.5">
                 <Border.Background>
@@ -357,7 +363,7 @@
                     <TextBlock Text="设备" FontSize="12" Opacity="0.5" Margin="4,4,0,0"/>
                     <StackPanel x:Name="FileTransferPeerList" Spacing="6"/>
 
-                    <!-- 接收请求提示条 -->
+                    <!-- 接收请求提示条（触屏直接点下方放大的 A/B 图标接受或拒绝） -->
                     <Border x:Name="FileTransferOfferBar" Visibility="Collapsed" CornerRadius="14" Padding="14,10"
                             Background="#2A4CC2FF" BorderBrush="#554CC2FF" BorderThickness="1">
                         <TextBlock x:Name="FileTransferOfferText" FontSize="13" TextWrapping="Wrap"/>
@@ -376,7 +382,9 @@
                         <TextBlock x:Name="FileTransferProgressText" FontSize="12" Opacity="0.6"/>
                     </StackPanel>
 
-                    <ctl:GamepadHintBar HorizontalAlignment="Center" Margin="0,6,0,2"
+                    <!-- 触屏：图标行贴住面板底边，图标放大后可点按（连接/发送/清空/关闭） -->
+                    <ctl:GamepadHintBar x:Name="FileTransferHintBar" TouchMode="True"
+                                        HorizontalAlignment="Center" Margin="0,8,0,0"
                                         Hints="DPAD:选择|A:连接|X:发送|Y:清空|B:关闭"/>
                 </StackPanel>
             </Border>

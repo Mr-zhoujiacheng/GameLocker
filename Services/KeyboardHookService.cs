@@ -60,6 +60,8 @@ public sealed class KeyboardHookService : IDisposable
     private IntPtr _hook;
     private IntPtr _mouseHook;
     private IntPtr _winEvent;
+    private IntPtr _winEventShow;
+    private IntPtr _winEventCreate;
     private HOOKPROC? _proc;
     private HOOKPROC? _mouseProc;
     private WinEventProc? _winEventProc;
@@ -80,6 +82,11 @@ public sealed class KeyboardHookService : IDisposable
     private WndProc? _coverProc;      // 防 GC 回收
     private bool _coverDown;          // 覆盖窗上左键已按下（抬起时触发切换）
 
+    // ---- 呼出瞬间的"开始菜单封锁"（防止原版菜单先画出来）----
+    private Timer? _blockTimer;   // 50ms 轮询，封锁期内结束开始/搜索宿主进程
+    private long _blockUntil;     // 封锁截止 TickCount64
+    private long _diagUntil;      // 诊断日志截止 TickCount64（呼出后记录大窗口事件）
+
     /// <summary>暂停/恢复判定（捕获键位期间暂停，避免钩子把用户正在按的键吞掉）</summary>
     public void SetSuspended(bool value) => _suspended = value;
 
@@ -95,6 +102,8 @@ public sealed class KeyboardHookService : IDisposable
     {
         if (!_running) return;
         _running = false;
+        _blockTimer?.Dispose();
+        _blockTimer = null;
         // 投递 WM_QUIT 唤醒消息循环，让钩子线程退出并卸载钩子
         if (_threadId != 0) PostThreadMessage(_threadId, WM_QUIT, IntPtr.Zero, IntPtr.Zero);
     }
@@ -103,21 +112,43 @@ public sealed class KeyboardHookService : IDisposable
     {
         _threadId = GetCurrentThreadId();
         _proc = HookCallback; // 保持委托存活，避免被 GC 回收导致回调跳飞
-        _hook = SetWindowsHookEx(WH_KEYBOARD_LL, _proc, GetModuleHandle(null), 0);
-        if (_hook == IntPtr.Zero)
+        // 开机自启时本进程可能早于资源管理器/任务栏就绪，钩子偶尔装不上。
+        // 失败不要直接退出（否则开机后 Win 键、开始按钮、边缘手势的接管全部失效），改为持续重试。
+        while (_running && (_hook = SetWindowsHookEx(WH_KEYBOARD_LL, _proc, GetModuleHandle(null), 0)) == IntPtr.Zero)
         {
-            _running = false;
+            DebugLog.Write("键盘钩子安装失败，2 秒后重试");
+            Thread.Sleep(2000);
+        }
+        if (!_running)
+        {
+            _threadId = 0;
             return;
         }
         // 鼠标钩子（开始按钮拦截）失败不影响键盘功能
         _mouseProc = MouseCallback;
         _mouseHook = SetWindowsHookEx(WH_MOUSE_LL, _mouseProc, GetModuleHandle(null), 0);
-        // 前台变化监听：触屏点开始按钮不会产生鼠标钩子消息（explorer 自己处理触摸），
-        // 改为监听"系统开始菜单窗口变成前台"这一信号，命中即刻把它隐藏
+        // 前台变化监听 + 窗口显示监听：触屏点开始按钮不会产生鼠标钩子消息（explorer 自己处理触摸），
+        // 改为监听"系统开始/搜索窗口出现"这一信号，命中即刻结束其宿主进程。
+        // 显示事件比前台事件更早，能赶在菜单画出第一帧之前把它按掉。
         _winEventProc = WinEventCallback;
         _winEvent = SetWinEventHook(EVENT_SYSTEM_FOREGROUND, EVENT_SYSTEM_FOREGROUND, IntPtr.Zero,
             _winEventProc, 0, 0, WINEVENT_OUTOFCONTEXT | WINEVENT_SKIPOWNPROCESS);
+        _winEventShow = SetWinEventHook(EVENT_OBJECT_SHOW, EVENT_OBJECT_SHOW, IntPtr.Zero,
+            _winEventProc, 0, 0, WINEVENT_OUTOFCONTEXT | WINEVENT_SKIPOWNPROCESS);
+        _winEventCreate = SetWinEventHook(EVENT_OBJECT_CREATE, EVENT_OBJECT_CREATE, IntPtr.Zero,
+            _winEventProc, 0, 0, WINEVENT_OUTOFCONTEXT | WINEVENT_SKIPOWNPROCESS);
         CreateCover();
+        DebugLog.Write($"输入接管已就绪：键盘钩子={_hook != IntPtr.Zero} 鼠标钩子={_mouseHook != IntPtr.Zero} " +
+                       $"前台监听={_winEvent != IntPtr.Zero} 显示监听={_winEventShow != IntPtr.Zero} " +
+                       $"创建监听={_winEventCreate != IntPtr.Zero} 覆盖窗={_cover != IntPtr.Zero}");
+        // 版本校验用：掌机日志里能看到实际运行的构建时间，避免"装的是旧版"却查不到
+        try
+        {
+            var exePath = Environment.ProcessPath ?? "";
+            DebugLog.Write($"开始菜单接管：模式={_startMenuMode} 程序={exePath} " +
+                           $"构建={File.GetLastWriteTime(exePath):yyyy-MM-dd HH:mm:ss}");
+        }
+        catch { /* 读不到文件时间不影响接管 */ }
 
         while (_running && GetMessage(out var msg, IntPtr.Zero, 0, 0) > 0)
         {
@@ -133,6 +164,16 @@ public sealed class KeyboardHookService : IDisposable
         {
             UnhookWinEvent(_winEvent);
             _winEvent = IntPtr.Zero;
+        }
+        if (_winEventShow != IntPtr.Zero)
+        {
+            UnhookWinEvent(_winEventShow);
+            _winEventShow = IntPtr.Zero;
+        }
+        if (_winEventCreate != IntPtr.Zero)
+        {
+            UnhookWinEvent(_winEventCreate);
+            _winEventCreate = IntPtr.Zero;
         }
         if (_mouseHook != IntPtr.Zero)
         {
@@ -245,12 +286,23 @@ public sealed class KeyboardHookService : IDisposable
         var r = ResolveStartButtonRect(force: true);
         if (r.Right <= r.Left || r.Bottom <= r.Top)
         {
-            ShowWindow(_cover, SW_HIDE); // 任务栏自动隐藏/未就绪时暂时让开
+            // 任务栏自动隐藏/未就绪时暂时让开。开机自启常早于任务栏创建，
+            // 这里必须先挂上定时器持续重试，否则覆盖窗会永远保持隐藏（开机后开始按钮失效）。
+            ShowWindow(_cover, SW_HIDE);
+            SetTimer(_cover, (uint)CoverTimerId, 1000, IntPtr.Zero);
             return;
         }
         SetWindowPos(_cover, HWND_TOPMOST, r.Left, r.Top, r.Right - r.Left, r.Bottom - r.Top,
             SWP_NOACTIVATE | SWP_SHOWWINDOW);
         SetTimer(_cover, (uint)CoverTimerId, 1000, IntPtr.Zero);
+
+        // 兜底：某些触屏上滑路径不产生前台/显示事件，每秒顺带检查一次前台是不是开始/搜索 UI
+        var fg = GetForegroundWindow();
+        if (IsStartMenuProcessWindow(fg) && IsWindowVisible(fg))
+        {
+            KillStartUiProcesses(fg);
+            StartMenuOpened?.Invoke();
+        }
     }
 
     /// <summary>把覆盖窗重新压到任务栏之上（任务栏本身也是 TOPMOST，前台变化可能重建 Z 序）</summary>
@@ -310,68 +362,198 @@ public sealed class KeyboardHookService : IDisposable
     }
 
     /// <summary>
-    /// 前台变化回调：先重新压住覆盖窗（任务栏可能重建 Z 序），再兼容旧 build 的
-    /// StartMenuExperienceHost 开始菜单窗口——命中即刻隐藏并通知切换本启动器。
+    /// 前台/窗口显示回调：开始菜单模式下一旦出现系统开始/搜索界面，立刻结束其宿主进程。
+    /// 宿主不是已知进程时（某些系统版本把它挂在别的进程里）退化为隐藏 + ESC。
+    /// 同时呼出后的 8 秒内记录所有大窗口事件，用于定位掌机上究竟是哪个进程画出了开始菜单。
     /// </summary>
     private void WinEventCallback(IntPtr hook, uint eventId, IntPtr hwnd, int idObject, int idChild,
         uint eventThread, uint eventTime)
     {
         if (!_running || _suspended) return;
-        ReassertCoverTop();
+        if (eventId == EVENT_SYSTEM_FOREGROUND) ReassertCoverTop();
         if (!_startMenuMode) return;
         if (idObject != OBJID_WINDOW || idChild != 0 || hwnd == IntPtr.Zero) return;
-        if (!IsStartMenuWindow(hwnd)) return;
-        CloseStartMenuWindows(hwnd);
-        StartMenuOpened?.Invoke();
+        if (Environment.TickCount64 < Interlocked.Read(ref _diagUntil))
+            LogDiagEvent(eventId, hwnd);
+        if (!IsStartUiWindow(hwnd)) return;
+        // 创建事件的窗口此时还没显示，不做可见性要求；显示/前台事件要求真的可见
+        if (eventId != EVENT_OBJECT_CREATE && !IsWindowVisible(hwnd)) return;
+        GetWindowThreadProcessId(hwnd, out var pid);
+        var exe = ProcessImageName(pid);
+        DebugLog.Write($"开始菜单: 拦截系统开始/搜索界面 event={eventId} hwnd={hwnd} pid={pid} exe={exe}");
+        if (exe.Equals("StartMenuExperienceHost.exe", StringComparison.OrdinalIgnoreCase)
+            || exe.Equals("SearchHost.exe", StringComparison.OrdinalIgnoreCase))
+        {
+            KillStartUiProcesses(hwnd);
+        }
+        else
+        {
+            // 未知宿主（例如被 explorer 自己承载）：不能杀 explorer，退回 ESC + 隐藏
+            HideForeignStartWindow(hwnd);
+        }
+        // 创建事件只做拦截：此时系统还没打算"打开"菜单，不能顺手把启动器拉出来
+        if (eventId != EVENT_OBJECT_CREATE) StartMenuOpened?.Invoke();
     }
 
-    /// <summary>
-    /// 关掉系统开始菜单：先发一次 ESC 让它自行收起，再把 StartMenuExperienceHost 进程的
-    /// 所有可见顶层窗口隐藏。只隐藏触发的那一个窗口不够——Win11 开始菜单还有别的窗口
-    /// 会继续吃手柄/键盘输入，表现为"启动器开着，按键却在操作系统开始菜单"。
-    /// </summary>
-    private static void CloseStartMenuWindows(IntPtr trigger)
+    /// <summary>开始界面窗口识别：已知宿主进程，或任何进程的 CoreWindow 且标题是开始/搜索</summary>
+    private static bool IsStartUiWindow(IntPtr hwnd)
     {
-        GetWindowThreadProcessId(trigger, out var pid);
-        if (pid == 0) return;
+        if (IsStartMenuProcessWindow(hwnd)) return true;
+        var cls = GetClassNameString(hwnd);
+        if (!string.Equals(cls, "Windows.UI.Core.CoreWindow", StringComparison.OrdinalIgnoreCase))
+            return false;
+        var title = WindowText(hwnd);
+        return title is "开始" or "搜索" or "Start" or "Search";
+    }
+
+    /// <summary>非开始/搜索宿主进程的窗口：ESC 让它自行收起，再隐藏，避免杀系统进程</summary>
+    private static void HideForeignStartWindow(IntPtr hwnd)
+    {
         try
         {
-            // 只在系统开始菜单确实在前台时才发 ESC，避免误关刚呼出的启动器
-            if (IsStartMenuProcessWindow(GetForegroundWindow()))
+            if (GetForegroundWindow() == hwnd)
             {
                 KeySendService.SendKeyOnly(VK_ESCAPE, up: false, InjectMarker);
                 KeySendService.SendKeyOnly(VK_ESCAPE, up: true, InjectMarker);
             }
         }
-        catch { }
+        catch { /* 注入失败：直接隐藏 */ }
+        ShowWindow(hwnd, SW_HIDE);
+        DebugLog.Write($"开始菜单: 未知宿主窗口已隐藏 hwnd={hwnd}");
+    }
+
+    /// <summary>诊断：记录呼出后出现的大窗口（>=200x200），便于判断开始菜单到底由谁绘制</summary>
+    private static void LogDiagEvent(uint eventId, IntPtr hwnd)
+    {
+        try
+        {
+            GetWindowRect(hwnd, out var r);
+            if (r.Right - r.Left < 200 || r.Bottom - r.Top < 200) return;
+            GetWindowThreadProcessId(hwnd, out var pid);
+            if (pid == Environment.ProcessId) return;
+            DebugLog.Write($"诊断窗口: event={eventId} pid={pid} exe={ProcessImageName(pid)} " +
+                           $"cls={GetClassNameString(hwnd)} title={WindowText(hwnd)} " +
+                           $"rect={r.Left},{r.Top},{r.Right},{r.Bottom} visible={IsWindowVisible(hwnd)}");
+        }
+        catch { /* 诊断日志失败不影响拦截 */ }
+    }
+
+    /// <summary>
+    /// 呼出/切换启动器时开启约 2.5 秒封锁期：每 50ms 结束一次开始/搜索宿主进程。
+    /// 触屏上滑时 explorer 会同时拉起开始菜单，窗口 100ms 内就会画出来，
+    /// 靠"出现后再隐藏/结束"必然闪一帧；提前把这个进程按死，菜单就没有机会显示。
+    /// </summary>
+    public void BeginStartUiBlockWatch(int durationMs = 2500)
+    {
+        if (!_startMenuMode) return;
+        Interlocked.Exchange(ref _blockUntil, Environment.TickCount64 + durationMs);
+        Interlocked.Exchange(ref _diagUntil, Environment.TickCount64 + 8000);
+        _blockTimer ??= new Timer(_ => BlockWatchTick(), null, 0, 50);
+        _blockTimer.Change(0, 50);
+    }
+
+    private void BlockWatchTick()
+    {
+        if (!_startMenuMode || Environment.TickCount64 > Interlocked.Read(ref _blockUntil))
+        {
+            _blockTimer?.Change(Timeout.Infinite, Timeout.Infinite);
+            return;
+        }
+        KillNamedProcesses("StartMenuExperienceHost");
+        KillNamedProcesses("SearchHost");
+        SweepStartUiWindows();
+    }
+
+    /// <summary>
+    /// 兜底扫描：某些系统版本把开始界面挂在别的进程（例如 explorer）里，
+    /// 按窗口类 CoreWindow + 标题开始/搜索 识别，宿主是已知进程就结束，否则 ESC + 隐藏。
+    /// 只查窗口类名和标题，开销很小，可在封锁期内 50ms 跑一次。
+    /// </summary>
+    private static void SweepStartUiWindows()
+    {
         EnumWindows((h, _) =>
         {
-            GetWindowThreadProcessId(h, out var p);
-            if (p == pid && IsWindowVisible(h)) ShowWindow(h, SW_HIDE);
+            if (!IsWindowVisible(h)) return true;
+            var cls = GetClassNameString(h);
+            if (!string.Equals(cls, "Windows.UI.Core.CoreWindow", StringComparison.OrdinalIgnoreCase))
+                return true;
+            if (WindowText(h) is not ("开始" or "搜索" or "Start" or "Search")) return true;
+            GetWindowThreadProcessId(h, out var pid);
+            var exe = ProcessImageName(pid);
+            if (exe.Equals("StartMenuExperienceHost.exe", StringComparison.OrdinalIgnoreCase)
+                || exe.Equals("SearchHost.exe", StringComparison.OrdinalIgnoreCase))
+                KillProcess(pid);
+            else
+                HideForeignStartWindow(h);
             return true;
         }, IntPtr.Zero);
     }
 
-    /// <summary>指定窗口是否属于系统开始菜单进程（StartMenuExperienceHost.exe）</summary>
+    /// <summary>结束系统开始/搜索界面宿主进程（触发窗口的进程 + 当前所有宿主实例）</summary>
+    private static void KillStartUiProcesses(IntPtr hwnd)
+    {
+        GetWindowThreadProcessId(hwnd, out var pid);
+        if (pid != 0) KillProcess(pid);
+        KillNamedProcesses("StartMenuExperienceHost");
+        KillNamedProcesses("SearchHost");
+    }
+
+    private static void KillNamedProcesses(string name)
+    {
+        try
+        {
+            foreach (var p in System.Diagnostics.Process.GetProcessesByName(name))
+                KillProcess((uint)p.Id);
+        }
+        catch { /* 进程枚举失败：忽略本次 */ }
+    }
+
+    private static void KillProcess(uint pid)
+    {
+        if (pid == 0) return;
+        var h = OpenProcess(PROCESS_TERMINATE, false, pid);
+        if (h == IntPtr.Zero)
+        {
+            DebugLog.Write($"开始菜单: 打开进程失败 pid={pid} err={Marshal.GetLastWin32Error()}");
+            return;
+        }
+        try
+        {
+            if (!TerminateProcess(h, 0))
+                DebugLog.Write($"开始菜单: 结束进程失败 pid={pid} err={Marshal.GetLastWin32Error()}");
+        }
+        finally { CloseHandle(h); }
+    }
+
+    /// <summary>指定窗口是否属于系统开始 / 搜索 UI。</summary>
     public static bool IsStartMenuProcessWindow(IntPtr hwnd)
     {
         if (hwnd == IntPtr.Zero) return false;
         GetWindowThreadProcessId(hwnd, out var pid);
         if (pid == 0) return false;
+        var exe = ProcessImageName(pid);
+        // Win11 24H2 起开始菜单界面由 SearchHost 承载（窗口标题「搜索」），
+        // 旧 build 仍是 StartMenuExperienceHost（标题「开始」），两者都要认。
+        return exe.Equals("StartMenuExperienceHost.exe", StringComparison.OrdinalIgnoreCase)
+            || exe.Equals("SearchHost.exe", StringComparison.OrdinalIgnoreCase);
+    }
+
+    /// <summary>进程可执行文件名（取不到返回空串）</summary>
+    private static string ProcessImageName(uint pid)
+    {
         var h = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, false, pid);
-        if (h == IntPtr.Zero) return false;
+        if (h == IntPtr.Zero) return "";
         try
         {
             var buf = new StringBuilder(512);
             uint n = (uint)buf.Capacity;
-            if (!QueryFullProcessImageName(h, 0, buf, ref n)) return false;
-            return buf.ToString(0, (int)n).EndsWith("StartMenuExperienceHost.exe", StringComparison.OrdinalIgnoreCase);
+            if (!QueryFullProcessImageName(h, 0, buf, ref n)) return "";
+            var full = buf.ToString(0, (int)n);
+            var slash = full.LastIndexOf('\\');
+            return slash >= 0 ? full[(slash + 1)..] : full;
         }
         finally { CloseHandle(h); }
     }
-
-    /// <summary>该窗口是否属于系统开始菜单进程（StartMenuExperienceHost.exe）</summary>
-    private static bool IsStartMenuWindow(IntPtr hwnd) => IsStartMenuProcessWindow(hwnd);
 
     /// <summary>鼠标钩子：开始菜单模式下吞掉任务栏开始按钮的点击，抬起时触发呼出/收起</summary>
     private IntPtr MouseCallback(int nCode, IntPtr wParam, IntPtr lParam)
@@ -480,6 +662,15 @@ public sealed class KeyboardHookService : IDisposable
         return n > 0 ? buf.ToString(0, n) : "";
     }
 
+    /// <summary>窗口标题（取不到返回空串）</summary>
+    private static string WindowText(IntPtr hwnd)
+    {
+        if (hwnd == IntPtr.Zero) return "";
+        var buf = new StringBuilder(256);
+        var n = GetWindowText(hwnd, buf, buf.Capacity);
+        return n > 0 ? buf.ToString(0, n) : "";
+    }
+
     /// <summary>当前按住的修饰键（左/右任一）</summary>
     private static int CurrentMods()
     {
@@ -511,11 +702,14 @@ public sealed class KeyboardHookService : IDisposable
     private const int VK_LWIN = 0x5B;
     private const int VK_RWIN = 0x5C;
     private const uint EVENT_SYSTEM_FOREGROUND = 0x0003;
+    private const uint EVENT_OBJECT_SHOW = 0x8002;
+    private const uint EVENT_OBJECT_CREATE = 0x8000;
     private const uint WINEVENT_OUTOFCONTEXT = 0x0000;
     private const uint WINEVENT_SKIPOWNPROCESS = 0x0002;
     private const int OBJID_WINDOW = 0;
     private const int SW_HIDE = 0;
     private const uint PROCESS_QUERY_LIMITED_INFORMATION = 0x1000;
+    private const uint PROCESS_TERMINATE = 0x0001;
 
     // ---- 开始按钮覆盖窗 ----
     private const uint WM_APP_REFRESH_COVER = 0x8000 + 1;
@@ -668,6 +862,9 @@ public sealed class KeyboardHookService : IDisposable
     [DllImport("user32.dll")]
     private static extern bool GetWindowRect(IntPtr hWnd, out RECT lpRect);
 
+    [DllImport("user32.dll", CharSet = CharSet.Unicode)]
+    private static extern int GetWindowText(IntPtr hWnd, StringBuilder lpString, int nMaxCount);
+
     [DllImport("user32.dll")]
     private static extern IntPtr SetWinEventHook(uint eventMin, uint eventMax, IntPtr hmodWinEventProc,
         WinEventProc lpfnWinEventProc, uint idProcess, uint idThread, uint dwFlags);
@@ -690,6 +887,9 @@ public sealed class KeyboardHookService : IDisposable
 
     [DllImport("kernel32.dll")]
     private static extern bool CloseHandle(IntPtr hObject);
+
+    [DllImport("kernel32.dll")]
+    private static extern bool TerminateProcess(IntPtr hProcess, uint uExitCode);
 
     // ---- 覆盖窗相关 ----
     [DllImport("user32.dll", CharSet = CharSet.Unicode, SetLastError = true)]

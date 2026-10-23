@@ -1,4 +1,5 @@
 using GameLocker.Services;
+using Microsoft.UI.Xaml;
 using Microsoft.UI.Xaml.Controls;
 using Microsoft.UI.Xaml.Media.Imaging;
 using Microsoft.UI.Xaml.Navigation;
@@ -6,13 +7,19 @@ using Microsoft.UI.Xaml.Navigation;
 namespace GameLocker;
 
 /// <summary>
-/// 关于页：软件信息 + 作者入口（GitHub 仓库 / QQ 群聊 / 打赏支持）。
-/// 手柄：方向=选择入口，A=打开，View(Select)/B=返回设置主页。
+/// 关于页：软件信息 + 更新设置（检查/下载 GitHub 最新版本、启动自动检查）+ 作者入口。
+/// 手柄：方向=选择条目，A=执行（检查/安装/切换/打开），View(Select)/B=返回设置主页。
 /// </summary>
 public sealed partial class AboutPage : Page, ISettingsGamepad
 {
     private int _index;
     private bool _ready;
+
+    /// <summary>本轮会话中找到的新版本（null=已是最新或尚未检查）</summary>
+    private UpdateInfo? _update;
+
+    /// <summary>正在检查或下载，防止重复触发</summary>
+    private bool _busy;
 
     public AboutPage()
     {
@@ -35,10 +42,25 @@ public sealed partial class AboutPage : Page, ISettingsGamepad
             : Text(AboutInfo.QqGroupUrl);
         DonateSub.Text = "你的支持就是我的动力！";
         CopyrightText.Text = $"© 2026 {AboutInfo.Author}  保留所有权利";
+
+        AutoCheckToggle.IsOn = SettingsService.Current.AutoCheckUpdates;
+        ShowKnownUpdate();
     }
 
     /// <summary>未配置的入口显示为提示文字，避免空行</summary>
     private static string Text(string url) => string.IsNullOrWhiteSpace(url) ? "（未配置）" : url;
+
+    /// <summary>把启动时自动检查的结果同步到界面（无需再次联网）</summary>
+    private void ShowKnownUpdate()
+    {
+        if (UpdateService.LatestFound is { } info)
+        {
+            ApplyUpdate(info);
+            return;
+        }
+        if (UpdateService.AutoChecked)
+            UpdateSub.Text = $"已是最新版本 v{FormatVersion(UpdateService.CurrentVersion)}";
+    }
 
     protected override void OnNavigatedTo(NavigationEventArgs e)
     {
@@ -47,6 +69,11 @@ public sealed partial class AboutPage : Page, ISettingsGamepad
         _index = LinkList.SelectedIndex < 0 ? 0 : LinkList.SelectedIndex;
         LinkList.SelectedIndex = _index;
         FocusIndex(_index);
+
+        ShowKnownUpdate();
+        // 启动自动检查关闭或尚未完成时，进入关于页补一次静默检查
+        if (_update is null && !UpdateService.AutoChecked && SettingsService.Current.AutoCheckUpdates)
+            _ = CheckAsync(silent: true);
     }
 
     protected override void OnNavigatedFrom(NavigationEventArgs e)
@@ -84,7 +111,7 @@ public sealed partial class AboutPage : Page, ISettingsGamepad
             item.Focus(Microsoft.UI.Xaml.FocusState.Keyboard);
     }
 
-    /// <summary>鼠标/触摸点击条目直接打开（Tapped 对鼠标与触屏都可靠触发）</summary>
+    /// <summary>鼠标/触摸点击条目直接执行（Tapped 对鼠标与触屏都可靠触发）</summary>
     private void OnLinkTapped(object sender, Microsoft.UI.Xaml.Input.TappedRoutedEventArgs e)
     {
         var idx = LinkList.Items.IndexOf(sender);
@@ -98,14 +125,137 @@ public sealed partial class AboutPage : Page, ISettingsGamepad
 
     private void Open(int index)
     {
-        var url = index switch
+        var tag = index >= 0 && index < LinkList.Items.Count && LinkList.Items[index] is ListViewItem item
+            ? item.Tag as string
+            : null;
+        switch (tag)
         {
-            0 => AboutInfo.GithubUrl,
-            1 => AboutInfo.QqGroupUrl,
-            _ => AboutInfo.DonateUrl
-        };
-        OpenUrl(url);
+            case "update":
+                _ = CheckOrInstallAsync();
+                break;
+            case "autocheck":
+                ToggleAutoCheck();
+                break;
+            case "qq":
+                OpenUrl(AboutInfo.QqGroupUrl);
+                break;
+            case "donate":
+                OpenUrl(AboutInfo.DonateUrl);
+                break;
+            default:
+                OpenUrl(AboutInfo.GithubUrl);
+                break;
+        }
     }
+
+    /// <summary>更新条目：无新版本时检查，有新版本时下载并安装</summary>
+    private async Task CheckOrInstallAsync()
+    {
+        if (_busy) return;
+        if (_update is { } info) await InstallAsync(info);
+        else await CheckAsync();
+    }
+
+    /// <summary>检查 GitHub 最新版本；silent=true 时不显示进度动画、失败也不改状态文字</summary>
+    private async Task CheckAsync(bool silent = false)
+    {
+        if (_busy) return;
+        _busy = true;
+        if (!silent)
+        {
+            UpdateTitle.Text = "检查更新";
+            UpdateSub.Text = "正在检查…";
+            UpdateProgress.Value = 0;
+            UpdateProgress.IsIndeterminate = true;
+            UpdateProgress.Visibility = Visibility.Visible;
+        }
+        try
+        {
+            var info = await UpdateService.CheckAsync();
+            if (info is null)
+            {
+                _update = null;
+                UpdateTitle.Text = "检查更新";
+                UpdateSub.Text = $"已是最新版本 v{FormatVersion(UpdateService.CurrentVersion)}";
+            }
+            else
+            {
+                ApplyUpdate(info);
+            }
+        }
+        catch (Exception ex)
+        {
+            if (!silent) UpdateSub.Text = "检查失败：" + ex.Message;
+        }
+        finally
+        {
+            _busy = false;
+            UpdateProgress.IsIndeterminate = false;
+            UpdateProgress.Visibility = Visibility.Collapsed;
+        }
+    }
+
+    private void ApplyUpdate(UpdateInfo info)
+    {
+        _update = info;
+        UpdateTitle.Text = $"下载并安装 v{FormatVersion(info.Version)}";
+        UpdateSub.Text = FirstLine(info.Notes)
+                         ?? $"发现新版本（当前 v{FormatVersion(UpdateService.CurrentVersion)}），点按下载并安装";
+    }
+
+    /// <summary>下载安装包并静默启动安装（Inno Setup 会关闭并重启本程序）</summary>
+    private async Task InstallAsync(UpdateInfo info)
+    {
+        _busy = true;
+        UpdateSub.Text = "开始下载…";
+        UpdateProgress.Value = 0;
+        UpdateProgress.IsIndeterminate = false;
+        UpdateProgress.Visibility = Visibility.Visible;
+        try
+        {
+            var progress = new Progress<double>(p =>
+            {
+                UpdateProgress.Value = p * 100;
+                UpdateSub.Text = p >= 1
+                    ? "下载完成，正在启动安装程序…"
+                    : $"正在下载… {p * 100:0}%";
+            });
+            var path = await UpdateService.DownloadAsync(info, progress);
+            UpdateService.RunInstaller(path);
+            // 安装程序会关闭本程序并在安装结束后自动重启，这里保持 busy 防止重复触发
+        }
+        catch (Exception ex)
+        {
+            _busy = false;
+            UpdateProgress.Visibility = Visibility.Collapsed;
+            UpdateTitle.Text = $"重试下载并安装 v{FormatVersion(info.Version)}";
+            UpdateSub.Text = "更新失败：" + ex.Message;
+        }
+    }
+
+    /// <summary>切换“启动时检查更新”并立即保存</summary>
+    private void ToggleAutoCheck()
+    {
+        var on = !AutoCheckToggle.IsOn;
+        AutoCheckToggle.IsOn = on;
+        SettingsService.Update(s => s.AutoCheckUpdates = on);
+        if (on && !UpdateService.AutoChecked) _ = CheckAsync(silent: true);
+    }
+
+    /// <summary>release 说明取第一行非空文本，去掉 markdown 符号并限长</summary>
+    private static string? FirstLine(string? notes)
+    {
+        if (string.IsNullOrWhiteSpace(notes)) return null;
+        foreach (var raw in notes.Split('\n'))
+        {
+            var line = raw.Trim().TrimStart('#', '-', '*', ' ').Trim();
+            if (line.Length == 0) continue;
+            return line.Length > 90 ? line[..90] + "…" : line;
+        }
+        return null;
+    }
+
+    private static string FormatVersion(Version v) => $"{v.Major}.{v.Minor}.{v.Build}";
 
     /// <summary>交给系统默认浏览器/应用打开；链接未配置或非法时静默忽略</summary>
     private static async void OpenUrl(string url)

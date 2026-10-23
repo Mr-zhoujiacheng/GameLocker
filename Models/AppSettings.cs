@@ -10,11 +10,22 @@ public enum DockSide
     Center
 }
 
-/// <summary>磁贴主题：彩色磁贴（按指定色/随机配色，圆角）或 Win10 磁贴（无颜色、方形，隐藏颜色设置）</summary>
+/// <summary>磁贴主题：彩色（强调色纯色块）/ 渐变（自身颜色斜向亮暗渐变）/
+/// 玻璃（磨砂底 + 底部色条）/ 简约（无颜色固定深灰）/ 透明（无底色，全部透明，不可选颜色）</summary>
 public enum TileTheme
 {
     Colorful,
-    Win10
+    Win10,
+    Gradient,
+    Glass,
+    Transparent
+}
+
+/// <summary>磁贴圆角样式（与主题独立设置）</summary>
+public enum TileCorner
+{
+    Rounded,
+    Square
 }
 
 /// <summary>应用设置（JSON 持久化，见 SettingsService）</summary>
@@ -47,14 +58,20 @@ public class AppSettings
     /// <summary>主页总页数（含主主页；副页块在添加方式（X 键）里新增，主页用 LT/RT 循环切换）</summary>
     public int HomePageCount { get; set; } = 1;
 
-    /// <summary>磁贴主题（彩色磁贴 / Win10 磁贴）</summary>
+    /// <summary>磁贴主题（彩色 / 简约 / 渐变 / 玻璃 / 透明磁贴）</summary>
     public TileTheme TileTheme { get; set; } = TileTheme.Colorful;
+
+    /// <summary>磁贴圆角样式：未设置时按主题默认（彩色=圆角，简约/渐变/玻璃/透明=方形）</summary>
+    public TileCorner? TileCornerShape { get; set; }
 
     /// <summary>磁贴透明度（0.3~1.0，1 为完全不透明）</summary>
     public double TileOpacity { get; set; } = 1.0;
 
     /// <summary>磁贴显示标题（名称）</summary>
     public bool ShowTileName { get; set; } = true;
+
+    /// <summary>启动时自动检查 GitHub 最新版本（关于页可关闭）</summary>
+    public bool AutoCheckUpdates { get; set; } = true;
 
     /// <summary>磁贴组展开/收起动画（成员磁贴交错淡入浮现 / 淡出收起）</summary>
     public bool GroupExpandAnimation { get; set; } = true;

@@ -71,7 +71,9 @@ public static class TrainerService
 
     /// <summary>
     /// 捕获当前前台窗口所属进程（由 MainWindow 定时调用，窗口隐藏期间也要持续调用）：
-    /// 跳过本程序自身、资源管理器外壳、修改器进程本身与无标题窗口，避免「当前游戏」被它们覆盖。
+    /// 只在"看起来像游戏"的窗口上更新 LastExeName / LastWindowTitle。
+    /// 切到系统设置、浏览器、聊天工具、Steam 等非游戏程序时，保持上一次的游戏不变 ——
+    /// 这样回到主页点"Opti 注入 / 存档备份 / 修改器"时，目标仍是真正的游戏，不会误套到非游戏窗口上。
     /// </summary>
     public static void CaptureForeground()
     {
@@ -83,8 +85,7 @@ public static class TrainerService
             if ((int)pid == Environment.ProcessId) return;
             using var p = Process.GetProcessById((int)pid);
             var exe = p.ProcessName;
-            if (exe.Contains("trainer", StringComparison.OrdinalIgnoreCase)) return; // 修改器自身
-            if (string.Equals(exe, "explorer", StringComparison.OrdinalIgnoreCase)) return; // 桌面/任务栏
+            if (!IsGameLikeProcess(hwnd, exe)) return;
             var title = WindowText(hwnd);
             if (string.IsNullOrWhiteSpace(title)) return; // 无标题的窗口不认作游戏
             if (!string.Equals(LastExeName, exe, StringComparison.OrdinalIgnoreCase))
@@ -93,6 +94,85 @@ public static class TrainerService
             LastWindowTitle = title;
         }
         catch { /* 进程已退出 / 无权限读取：忽略本次采样 */ }
+    }
+
+    /// <summary>
+    /// 基于进程名 + 窗口类名判断当前前台窗口是否"看起来像游戏"。
+    /// 黑名单覆盖：系统核心进程、资源管理器壳/子窗、UWP 宿主、修改器自身、浏览器/聊天/启动器/设置/媒体等通用软件。
+    /// 命中黑名单 → 不更新 LastExeName（让调用方继续用之前那一款游戏）。
+    /// </summary>
+    private static bool IsGameLikeProcess(IntPtr hwnd, string exe)
+    {
+        var lower = exe.ToLowerInvariant();
+
+        // 1) 系统核心 / 资源管理器壳 —— 冻结、杀进程都不应该操作它们
+        switch (lower)
+        {
+            case "system": case "registry": case "idle": case "csrss": case "wininit":
+            case "winlogon": case "services": case "lsass": case "smss": case "dwm":
+            case "audiodg": case "fontdrvhost": case "sihost": case "svchost":
+            case "searchhost": case "searchindexer": case "searchprotocolhost":
+            case "runtimebroker": // UWP/系统设置宿主
+            case "explorer": case "startmenuexperiencehost": case "shellappruntime":
+                return false;
+        }
+
+        // 2) 本程序自身及其衍生组件 —— 进程名 = GameLocker / Game Launcher
+        if (lower is "gamelocker" or "gamelauncher" or "optiscalerconfig") return false;
+
+        // 3) 修改器自身 / WeMod / FLiNG 家族
+        if (lower.Contains("trainer") || lower.Contains("wemod") || lower.Contains("fling")) return false;
+
+        // 4) 常见非游戏桌面软件 —— 命中即放行
+        if (lower is
+            // 启动器 / 商店 / 平台
+            "steam" or "stewebhelper" or "epicgameslauncher" or "uplay" or "upc" or "goggalaxy" or "itch" or "battlenet" or "origin"
+            // 浏览器
+            or "chrome" or "msedge" or "firefox" or "brave" or "opera" or "vivaldi"
+            // 聊天
+            or "qq" or "wechat" or "discord" or "telegram" or "skype" or "teams" or "slack" or "wemeetapp"
+            // 音乐 / 视频
+            or "sodamusic" or "neteasecloudmusic" or "qqmusic" or "luna" or "spotify" or "vlc" or "potplayer" or "mpv"
+            // 系统设置 / 控制面板
+            or "systemsettings" or "control" or "winver" or "regedit" or "taskmgr" or "resmon" or "perfmon"
+            // 开发工具
+            or "trae cn" or "code" or "pycharm64" or "devenv" or "studio64" or "xcode"
+            // 办公
+            or "explorer" /* 已在上方兜底 */ or "onenote" or "winword" or "excel" or "powerpnt" or "outlook"
+            )
+            return false;
+
+        // 5) 窗口类名黑名单 —— 系统托盘气泡 / 通知中心 / 任务小组件 / 输入法候选窗
+        if (hwnd != IntPtr.Zero)
+        {
+            var cls = GetClassName(hwnd);
+            if (cls is "Progman" or "WorkerW" or "Shell_TrayWnd" or "Shell_SecondaryTrayWnd"
+                or "Shell_CompatTrayWnd" or "TrayAlert" or "ToastWindow" or "IMMNotificationWindow"
+                or "IndicatorUIWndClass")
+                return false;
+        }
+
+        // 6) 默认放行：任何其它有窗口的 EXE 都被视为"游戏候选"
+        return true;
+    }
+
+    /// <summary>
+    /// 当前 LastExeName 对应的进程此刻是否真的在前台（配合 IsGameLikeProcess 判定"确实切到了游戏"）。
+    /// 三个小组件的 Activate 入口都先查这个：用户切到设置/浏览器/Steam 时拒绝操作并提示切回游戏。
+    /// </summary>
+    public static bool IsLastGameActuallyForeground()
+    {
+        if (string.IsNullOrEmpty(LastExeName)) return false;
+        if (!IsGameRunning()) return false;
+        try
+        {
+            var hwnd = GetForegroundWindow();
+            if (hwnd == IntPtr.Zero) return false;
+            GetWindowThreadProcessId(hwnd, out var pid);
+            using var p = Process.GetProcessById((int)pid);
+            return string.Equals(p.ProcessName, LastExeName, StringComparison.OrdinalIgnoreCase);
+        }
+        catch { return false; }
     }
 
     /// <summary>最近记录的游戏进程是否仍在运行</summary>
@@ -171,6 +251,11 @@ public static class TrainerService
             if (!IsGameRunning())
             {
                 Report($"游戏 {GameName()} 已退出，请先运行游戏", true);
+                return;
+            }
+            if (!IsLastGameActuallyForeground())
+            {
+                Report($"请先把游戏「{GameName()}」切到前台再获取修改器", true);
                 return;
             }
 
@@ -723,6 +808,9 @@ public static class TrainerService
     [DllImport("user32.dll", CharSet = CharSet.Unicode)]
     private static extern int GetWindowTextW(IntPtr hWnd, StringBuilder lpString, int nMaxCount);
 
+    [DllImport("user32.dll", CharSet = CharSet.Unicode)]
+    private static extern int GetClassNameW(IntPtr hWnd, StringBuilder lpClassName, int nMaxCount);
+
     private static string WindowText(IntPtr hwnd)
     {
         var len = GetWindowTextLengthW(hwnd);
@@ -730,5 +818,11 @@ public static class TrainerService
         var sb = new StringBuilder(len + 1);
         GetWindowTextW(hwnd, sb, sb.Capacity);
         return sb.ToString();
+    }
+
+    private static string GetClassName(IntPtr hwnd)
+    {
+        var sb = new StringBuilder(128);
+        return GetClassNameW(hwnd, sb, sb.Capacity) > 0 ? sb.ToString() : "";
     }
 }

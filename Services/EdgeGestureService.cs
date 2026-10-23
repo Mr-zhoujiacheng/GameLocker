@@ -76,6 +76,16 @@ public sealed class EdgeGestureService : IDisposable
     /// 同样走 Raw Input 触摸通道</summary>
     public event Action? BackTriggered;
 
+    /// <summary>手指刚落在呼出边缘带（抬起前就触发）：用于提前封锁系统开始菜单，
+    /// 避免上滑动作完成前原版开始菜单先闪出来。</summary>
+    public event Action? EdgeTouched;
+
+    private void NotifyEdgeTouched()
+    {
+        try { EdgeTouched?.Invoke(); }
+        catch { /* 订阅方异常不影响手势判定 */ }
+    }
+
     public EdgeGestureService()
     {
         _hookProc = HookCallback;
@@ -283,7 +293,9 @@ public sealed class EdgeGestureService : IDisposable
                 _tDown = true;
                 _tStartX = x; _tStartY = y;
                 _tDownAt = Environment.TickCount64;
-                Log($"touch down ({x},{y}) nearEdge={NearEdge(x, y)}");
+                var near = NearEdge(x, y);
+                Log($"touch down ({x},{y}) nearEdge={near}");
+                if (near) NotifyEdgeTouched(); // 起手即封锁系统开始菜单，别等滑完
             }
             _tLastX = x; _tLastY = y;
         }
@@ -446,7 +458,11 @@ public sealed class EdgeGestureService : IDisposable
                 _downX = info.ptX; _downY = info.ptY;
                 _downNearEdge = NearEdge(info.ptX, info.ptY);
                 _tracking = true;
-                if (_downNearEdge) Log($"down near edge {_edge} at ({info.ptX},{info.ptY})");
+                if (_downNearEdge)
+                {
+                    Log($"down near edge {_edge} at ({info.ptX},{info.ptY})");
+                    NotifyEdgeTouched(); // 起手即封锁系统开始菜单，别等滑完
+                }
             }
             else if (msgId == WM_LBUTTONUP && _tracking)
             {

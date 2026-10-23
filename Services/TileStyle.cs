@@ -14,11 +14,30 @@ public static class TileStyle
     /// <summary>磁贴基本单位（1×1 格边长，像素）</summary>
     public const double Unit = 84;
 
-    /// <summary>磁贴圆角（Win10 磁贴为直角）</summary>
-    public static double Radius => IsWin10Theme ? 0 : 6;
+    /// <summary>磁贴圆角（按用户设置；未设置时彩色主题圆角、其余主题直角）</summary>
+    public static double Radius => IsSquareRadius ? 0 : 6;
 
-    /// <summary>是否为 Win10 磁贴主题（无颜色、方形，并隐藏磁贴颜色设置）</summary>
+    /// <summary>是否为 Win10 磁贴主题（无颜色、隐藏磁贴颜色设置）</summary>
     public static bool IsWin10Theme => SettingsService.Current.TileTheme == TileTheme.Win10;
+
+    /// <summary>是否为渐变磁贴主题（自身颜色斜向亮暗渐变）</summary>
+    public static bool IsGradientTheme => SettingsService.Current.TileTheme == TileTheme.Gradient;
+
+    /// <summary>是否为玻璃磁贴主题（磨砂底 + 底部自身颜色柔光/色条）</summary>
+    public static bool IsGlassTheme => SettingsService.Current.TileTheme == TileTheme.Glass;
+
+    /// <summary>是否为透明磁贴主题（所有磁贴无底色，隐藏磁贴颜色设置）</summary>
+    public static bool IsTransparentTheme => SettingsService.Current.TileTheme == TileTheme.Transparent;
+
+    /// <summary>是否直角（方形）：显式设置优先，未设置时按主题默认</summary>
+    public static bool IsSquareRadius =>
+        (SettingsService.Current.TileCornerShape
+         ?? (IsWin10Theme || IsGradientTheme || IsGlassTheme || IsTransparentTheme
+             ? TileCorner.Square
+             : TileCorner.Rounded)) == TileCorner.Square;
+
+    /// <summary>是否隐藏磁贴颜色设置（简约/透明主题固定无色）</summary>
+    public static bool HidesTileColor => IsWin10Theme || IsTransparentTheme;
 
     /// <summary>Win10 磁贴的固定底色（不随磁贴颜色设置变化）</summary>
     public static readonly Windows.UI.Color Win10TileColor =
@@ -100,9 +119,67 @@ public static class TileStyle
         return c;
     }
 
-    /// <summary>磁贴填充：彩色磁贴用强调色纯色块；Win10 磁贴统一无颜色固定底色</summary>
+    /// <summary>磁贴填充：彩色=强调色纯色块；渐变=亮暗斜向渐变；玻璃=深色磨砂底+底部色晕；
+    /// Win10=固定深灰；透明=完全透明</summary>
     public static Brush TileFill(Windows.UI.Color accent) =>
-        new SolidColorBrush(IsWin10Theme ? Win10TileColor : accent);
+        FillFor(SettingsService.Current.TileTheme, accent);
+
+    /// <summary>按指定主题生成填充（主题预览等需要渲染非当前主题时使用）</summary>
+    public static Brush FillFor(TileTheme theme, Windows.UI.Color accent)
+    {
+        if (theme == TileTheme.Transparent)
+            return new SolidColorBrush(Windows.UI.Color.FromArgb(0, 0, 0, 0));
+        if (theme == TileTheme.Win10) return new SolidColorBrush(Win10TileColor);
+        if (theme == TileTheme.Gradient)
+            return new LinearGradientBrush
+            {
+                StartPoint = new Windows.Foundation.Point(0, 0),
+                EndPoint = new Windows.Foundation.Point(1, 1),
+                GradientStops =
+                {
+                    new GradientStop { Color = Shade(accent, 0.34), Offset = 0 },
+                    new GradientStop { Color = accent, Offset = 0.45 },
+                    new GradientStop { Color = Shade(accent, -0.42), Offset = 1 }
+                }
+            };
+        if (theme == TileTheme.Glass)
+            // 统一深色磨砂底（白/黑叠加），底部透出磁贴自身颜色
+            return new LinearGradientBrush
+            {
+                StartPoint = new Windows.Foundation.Point(0, 0),
+                EndPoint = new Windows.Foundation.Point(0, 1),
+                GradientStops =
+                {
+                    new GradientStop { Color = Windows.UI.Color.FromArgb(0x3A, 0xFF, 0xFF, 0xFF), Offset = 0 },
+                    new GradientStop { Color = Windows.UI.Color.FromArgb(0x16, 0xFF, 0xFF, 0xFF), Offset = 0.55 },
+                    new GradientStop
+                    {
+                        Color = Windows.UI.Color.FromArgb(0x52, accent.R, accent.G, accent.B),
+                        Offset = 1
+                    }
+                }
+            };
+        return new SolidColorBrush(accent);
+    }
+
+    /// <summary>颜色明暗微调：k&gt;0 向白提亮，k&lt;0 向黑压暗（-1~1）</summary>
+    private static Windows.UI.Color Shade(Windows.UI.Color c, double k)
+    {
+        byte Ch(byte v, byte target) => (byte)Math.Clamp(v + (target - v) * k, 0, 255);
+        return Windows.UI.Color.FromArgb(c.A, Ch(c.R, 255), Ch(c.G, 255), Ch(c.B, 255));
+    }
+
+    /// <summary>主题对应的磁贴外框：渐变略粗、更亮，透明无边框，其余 1px 淡白</summary>
+    public static Windows.UI.Color TileBorderColor =>
+        IsTransparentTheme
+            ? Windows.UI.Color.FromArgb(0, 0, 0, 0)
+            : IsGradientTheme
+                ? Windows.UI.Color.FromArgb(0x60, 0xFF, 0xFF, 0xFF)
+                : Windows.UI.Color.FromArgb(0x40, 0xFF, 0xFF, 0xFF);
+
+    /// <summary>主题对应的磁贴边框粗细</summary>
+    public static double TileBorderThickness =>
+        IsTransparentTheme ? 0 : IsGradientTheme ? 1.5 : 1;
 
     /// <summary>
     /// 构建标准磁贴（主页 / 小组件页预览共用）：背景图片铺满 或 强调色底+图标+名称，
@@ -135,6 +212,55 @@ public static class TileStyle
         }
 
         var grid = new Grid();
+
+        // 主题装饰层：先加入（位于图标/名称之下），且不接管输入
+        if (!noColor && IsGlassTheme)
+        {
+            // 玻璃：底部自身颜色柔光 + 3px 顶部色条
+            grid.Children.Add(new Border
+            {
+                Height = Math.Max(20, height * 0.45),
+                VerticalAlignment = VerticalAlignment.Bottom,
+                Background = new LinearGradientBrush
+                {
+                    StartPoint = new Windows.Foundation.Point(0, 0),
+                    EndPoint = new Windows.Foundation.Point(0, 1),
+                    GradientStops =
+                    {
+                        new GradientStop { Color = Windows.UI.Color.FromArgb(0x00, accent.R, accent.G, accent.B), Offset = 0 },
+                        new GradientStop { Color = Windows.UI.Color.FromArgb(0x48, accent.R, accent.G, accent.B), Offset = 1 }
+                    }
+                },
+                IsHitTestVisible = false
+            });
+            grid.Children.Add(new Border
+            {
+                Height = 3,
+                VerticalAlignment = VerticalAlignment.Bottom,
+                Background = new SolidColorBrush(accent),
+                IsHitTestVisible = false
+            });
+        }
+        else if (!noColor && IsGradientTheme)
+        {
+            // 渐变：顶部白色高光带，强化斜向亮暗过渡的立体感
+            grid.Children.Add(new Border
+            {
+                Height = Math.Max(16, height * 0.32),
+                VerticalAlignment = VerticalAlignment.Top,
+                Background = new LinearGradientBrush
+                {
+                    StartPoint = new Windows.Foundation.Point(0, 0),
+                    EndPoint = new Windows.Foundation.Point(0, 1),
+                    GradientStops =
+                    {
+                        new GradientStop { Color = Windows.UI.Color.FromArgb(0x30, 0xFF, 0xFF, 0xFF), Offset = 0 },
+                        new GradientStop { Color = Windows.UI.Color.FromArgb(0x00, 0xFF, 0xFF, 0xFF), Offset = 1 }
+                    }
+                },
+                IsHitTestVisible = false
+            });
+        }
 
         // 名称开关关闭 / 无颜色磁贴时不显示名称；小磁贴从图标下方居中显示标题
         var showName = SettingsService.Current.ShowTileName && !noColor;
@@ -206,8 +332,8 @@ public static class TileStyle
             Height = height,
             CornerRadius = new CornerRadius(Radius),
             Background = noColor ? new SolidColorBrush(Windows.UI.Color.FromArgb(0, 0, 0, 0)) : TileFill(accent),
-            BorderBrush = new SolidColorBrush(Windows.UI.Color.FromArgb(0x40, 0xFF, 0xFF, 0xFF)),
-            BorderThickness = new Thickness(1),
+            BorderBrush = new SolidColorBrush(TileBorderColor),
+            BorderThickness = new Thickness(TileBorderThickness),
             Child = grid,
             RenderTransformOrigin = new Windows.Foundation.Point(0.5, 0.5)
         };

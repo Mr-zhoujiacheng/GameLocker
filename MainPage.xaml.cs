@@ -1,6 +1,7 @@
 using System.Collections.ObjectModel;
 using GameLocker.Models;
 using GameLocker.Services;
+using GameLocker.Controls;
 using Microsoft.UI.Xaml;
 using Microsoft.UI.Xaml.Controls;
 using Microsoft.UI.Xaml.Input;
@@ -181,6 +182,14 @@ public sealed partial class MainPage : Page
             var index = i;
             _powerCards[i].Tapped += (_, _) => ChoosePower(index);
         }
+
+        // 触屏：弹窗底部放大的提示图标可直接点按，走与手柄按键相同的处理入口
+        ChoiceHintBar.HintTapped += key => HandleChoice(GamepadHintBar.ToGamepadButtons(key));
+        RenameHintBar.HintTapped += key => HandleRename(GamepadHintBar.ToGamepadButtons(key));
+        PowerHintBar.HintTapped += key => HandlePower(GamepadHintBar.ToGamepadButtons(key));
+        FileTransferHintBar.HintTapped += key => HandleFileTransfer(GamepadHintBar.ToGamepadButtons(key));
+        // 文件传输浮层：点空白处关闭
+        FileTransferMask.Tapped += (_, _) => CloseFileTransfer();
 
         // 页码圆点：切页时短暂显示，3 秒无操作自动隐藏
         _pageDotsTimer.Tick += (_, _) =>
@@ -3615,6 +3624,11 @@ public sealed partial class MainPage : Page
         FileTransferStatusText.Text = status;
 
         FileTransferOfferBar.Visibility = offer is null ? Visibility.Collapsed : Visibility.Visible;
+        // 有接收请求时提示条只保留"接受/拒绝"，触屏点放大的图标即可响应
+        var hintSpec = offer is null
+            ? "DPAD:选择|A:连接|X:发送|Y:清空|B:关闭"
+            : "A:接受|B:拒绝";
+        if (FileTransferHintBar.Hints != hintSpec) FileTransferHintBar.Hints = hintSpec;
         if (offer is not null)
             FileTransferOfferText.Text = $"{offer.PeerName} 想发送 {offer.Count} 个文件"
                 + $"（{FileTransferService.SizeText(offer.TotalBytes)}）· A 接受 · B 拒绝";

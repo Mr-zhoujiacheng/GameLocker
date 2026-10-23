@@ -536,7 +536,7 @@ public sealed partial class AddItemPage : Page, ISettingsGamepad
             // 颜色：图片组不需要（整块铺图）
             SizeColumn.Visibility = isPhoto || item.WidgetKind is WidgetKind.Settings or WidgetKind.Power or WidgetKind.Weather or WidgetKind.Mapping or WidgetKind.Trainer or WidgetKind.Backup or WidgetKind.GamepadMap or WidgetKind.OptiScaler or WidgetKind.RecycleBin or WidgetKind.Foreground or WidgetKind.Monitor
                 ? Microsoft.UI.Xaml.Visibility.Visible : w;
-            ColorColumn.Visibility = isPhoto || TileStyle.IsWin10Theme
+            ColorColumn.Visibility = isPhoto || TileStyle.HidesTileColor
                 ? w : Microsoft.UI.Xaml.Visibility.Visible;
             PhotoFolderRow.Visibility = isPhoto
                 ? Microsoft.UI.Xaml.Visibility.Visible : w;
@@ -693,7 +693,7 @@ public sealed partial class AddItemPage : Page, ISettingsGamepad
             TitleColumn.Visibility = Microsoft.UI.Xaml.Visibility.Collapsed;
             SystemOptionsPanel.Visibility = Microsoft.UI.Xaml.Visibility.Collapsed;
             SizeColumn.Visibility = Microsoft.UI.Xaml.Visibility.Visible;
-            ColorColumn.Visibility = TileStyle.IsWin10Theme
+            ColorColumn.Visibility = TileStyle.HidesTileColor
                 ? Microsoft.UI.Xaml.Visibility.Collapsed : Microsoft.UI.Xaml.Visibility.Visible;
             IconHeaderText.Visibility = Microsoft.UI.Xaml.Visibility.Visible;
             IconRow.Visibility = Microsoft.UI.Xaml.Visibility.Visible;

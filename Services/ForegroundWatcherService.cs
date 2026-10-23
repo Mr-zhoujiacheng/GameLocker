@@ -135,6 +135,8 @@ namespace GameLocker.Services;
             if (Current is not null && Current.ProcessId == (int)pid) return;
             var (name, exe) = Describe(pid);
             if (name is null) return;
+            // 开始菜单 / 搜索 / 输入面板等系统壳 UI 不算前台应用，保留上一次真正的应用
+            if (name is "StartMenuExperienceHost" or "SearchHost" or "TextInputHost" or "ShellExperienceHost") return;
             Current = new ForegroundApp((int)pid, name, exe, WindowTitle(hwnd));
             StateChanged?.Invoke();
             if (exe is not null) _ = ExtractIconAsync(exe);

@@ -11,6 +11,7 @@ using Microsoft.UI.Xaml.Media;
 using Microsoft.UI.Xaml.Media.Animation;
 using GameLocker.Models;
 using GameLocker.Services;
+using GameLocker.Controls;
 
 namespace GameLocker;
 
@@ -279,8 +280,12 @@ public sealed partial class MainWindow : Window
 
         // 平板边缘手势呼出
         _edgeGesture = new EdgeGestureService();
+        // 手指落在呼出边缘带即开始封锁系统开始菜单（上滑动作完成前先把它按掉，避免原版菜单闪出来）
+        _edgeGesture.EdgeTouched += () => DispatcherQueue.TryEnqueue(() => KeyboardHook.BeginStartUiBlockWatch());
         _edgeGesture.SummonTriggered += () => DispatcherQueue.TryEnqueue(() =>
         {
+            // 触屏上滑时 explorer 会同时拉起系统开始菜单，先封锁它的宿主进程，避免原版菜单闪一下
+            KeyboardHook.BeginStartUiBlockWatch();
             if (!Visible || GetForegroundWindow() != _hwnd)
                 ShowFromTray();
         });
@@ -300,6 +305,10 @@ public sealed partial class MainWindow : Window
 
         // OptiScaler 点击磁贴后，弹窗显示适配性并询问是否注入
         OptiScalerService.InspectionReady += OnOptiInspection;
+
+        // 触屏：点弹窗底部放大的提示图标 = 执行对应手柄指令（与物理手柄共用同一处理入口）
+        TrainerChoiceHintBar.HintTapped += key => HandleTrainerChoice(GamepadHintBar.ToGamepadButtons(key));
+        OptiHintBar.HintTapped += key => HandleOpti(GamepadHintBar.ToGamepadButtons(key));
 
         Root.Navigate(typeof(MainPage));
 
@@ -387,6 +396,8 @@ public sealed partial class MainWindow : Window
         TrainerChoiceOverlay.Visibility = Visibility.Visible;
         UpdateTrainerCursor();
         PlayTrainerChoiceIn();
+        // 触屏点选要求窗口处于前台：否则第一次点按可能只用于激活窗口
+        if (_shown) BringToForeground();
     }
 
     /// <summary>候选卡片：扳手徽章 + 修改器名 + 右对齐的匹配度百分比（选中态由 UpdateTrainerCursor 统一切换）</summary>
@@ -573,6 +584,8 @@ public sealed partial class MainWindow : Window
 
         OptiOverlay.Visibility = Visibility.Visible;
         PlayOptiIn();
+        // 触屏点选要求窗口处于前台：否则第一次点按可能只用于激活窗口
+        if (_shown) BringToForeground();
     }
 
     /// <summary>遮罩入场：遮罩层淡入 + 面板由 0.94 缓动放大到 1（与修改器候选弹窗一致）</summary>
@@ -816,6 +829,8 @@ public sealed partial class MainWindow : Window
         var now = Environment.TickCount64;
         if (now - _lastStartMenuToggle < 400) return;
         _lastStartMenuToggle = now;
+        // Win 键/点击开始按钮后系统也可能补开开始菜单，短暂封锁它的宿主进程
+        KeyboardHook.BeginStartUiBlockWatch();
         if (_shown) HideToTray();
         else ShowFromTray();
     }

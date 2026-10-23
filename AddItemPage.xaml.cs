@@ -382,21 +382,21 @@ public sealed partial class AddItemPage : Page, ISettingsGamepad
                 list.Add(GamepadMapDeleteButton);
             }
         }
-        // OptiScaler 小组件：注入 DLL 名 / 画质提升（含 FSR4 子项）/ 版本渠道 + 具体版本 / 本地包 / 一键还原与打开目录
+        // OptiScaler 小组件：版本渠道 + 具体版本 / 注入 DLL 名 / 画质提升 / FSR4 独立分组（画质档、文件、具体版本）/ 本地包 / 一键还原与打开目录
         if (OptiScalerRow.Visibility == vis)
         {
+            list.Add(OptiVersionCombo);
+            // 本地包渠道没有网上版本可选 → "具体版本"已收起，不纳入导航
+            if (OptiVersionTagCell.Visibility == vis) list.Add(OptiVersionTagCombo);
             list.Add(OptiDllCombo);
             list.Add(OptiUpscalerCombo);
-            // 仅"画质提升"选到 FSR4 时才显示 FSR4 画质档 / 文件 / 版本 → 收起时不纳入导航
+            // 仅"画质提升"选到 FSR4 时才显示 FSR4 画质档 / 文件 / 具体版本 → 收起时不纳入导航
             if (OptiFsr4Cell.Visibility == vis)
             {
                 list.Add(OptiFsr4PresetCombo);
                 list.Add(OptiFsr4FilesCombo);
                 if (OptiFsr4VersionCell.Visibility == vis) list.Add(OptiFsr4VersionCombo);
             }
-            list.Add(OptiVersionCombo);
-            // 本地包渠道没有网上版本可选 → "具体版本"已收起，不纳入导航
-            if (OptiVersionTagCell.Visibility == vis) list.Add(OptiVersionTagCombo);
             if (OptiLocalRow.Visibility == vis) list.Add(OptiLocalFolderButton);
             list.Add(OptiFrameGenToggle);
             // 两列并排的视觉顺序：帧生成 → 输入 → 输出 → 倍数；关闭时后三格收起，不纳入导航
@@ -1677,7 +1677,7 @@ public sealed partial class AddItemPage : Page, ISettingsGamepad
 
         OptiVersionStatus.Text = options.Length <= 1
             ? "无法获取版本列表（请检查网络；注入时仍会尝试最新版）"
-            : $"共 {options.Length - 1} 个可下载版本，选中后自动下载";
+            : $"共 {options.Length - 1} 个可下载版本，✓ 表示已下载，选中后自动下载";
     }
 
     /// <summary>用户选定"具体版本"：后台预下载，注入时直接用缓存</summary>
@@ -1722,7 +1722,7 @@ public sealed partial class AddItemPage : Page, ISettingsGamepad
 
         OptiFsr4VersionStatus.Text = options.Length <= 1
             ? "无法获取版本列表（请检查网络；注入时仍会尝试最新版）"
-            : $"共 {options.Length - 1} 个可下载版本，选中后自动下载";
+            : $"共 {options.Length - 1} 个可下载版本，✓ 表示已下载，选中后自动下载";
     }
 
     /// <summary>用户选定 FSR4 版本：后台预下载</summary>
@@ -1762,7 +1762,43 @@ public sealed partial class AddItemPage : Page, ISettingsGamepad
         {
             OptiScalerService.StatusChanged -= Handler;
         }
+        // 下载成功后刷新下拉项，给刚下完的版本补上 ✓
+        if (!failed)
+        {
+            if (channel is "int8" or "fp8") await RefreshFsr4TagLabelsAsync(channel);
+            else await RefreshOptiTagLabelsAsync();
+        }
         status.Text = failed ? "下载失败（注入时会再试一次）" : $"{what} 已就绪";
+    }
+
+    /// <summary>下载完成后刷新"具体版本"下拉的 ✓ 标记（Release 列表走 10 分钟缓存，不会重复请求）</summary>
+    private async Task RefreshOptiTagLabelsAsync()
+    {
+        if (OptiVersionTagCombo is null ||
+            OptiScalerRow.Visibility != Microsoft.UI.Xaml.Visibility.Visible) return;
+        var channel = OptiComboValue(OptiVersionCombo);
+        if (channel == "local") return;
+        var current = OptiComboValue(OptiVersionTagCombo);
+        var options = await OptiScalerService.GetVersionOptionsAsync(channel);
+        if (options.Length == 0) return;
+        _suppressOptiTagEvent = true;
+        FillOptiCombo(OptiVersionTagCombo, options);
+        SelectOptiCombo(OptiVersionTagCombo, options, current);
+        _suppressOptiTagEvent = false;
+    }
+
+    /// <summary>下载完成后刷新"FSR4 版本"下拉的 ✓ 标记</summary>
+    private async Task RefreshFsr4TagLabelsAsync(string variant)
+    {
+        if (OptiFsr4VersionCombo is null ||
+            OptiFsr4VersionCell.Visibility != Microsoft.UI.Xaml.Visibility.Visible) return;
+        var current = OptiComboValue(OptiFsr4VersionCombo);
+        var options = await OptiScalerService.GetFsr4VersionOptionsAsync(variant);
+        if (options.Length == 0) return;
+        _suppressOptiTagEvent = true;
+        FillOptiCombo(OptiFsr4VersionCombo, options);
+        SelectOptiCombo(OptiFsr4VersionCombo, options, current);
+        _suppressOptiTagEvent = false;
     }
 
     private void OnOptiLocalFolderClick(object sender, Microsoft.UI.Xaml.RoutedEventArgs e)

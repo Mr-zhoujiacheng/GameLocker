@@ -736,8 +736,10 @@
                         </StackPanel>
                     </Border>
 
-                    <!-- 设置项：DLL/画质两列并排；下一行选版本（渠道 + 具体版本，可浏览并下载历史版本）；
-                         本地包文件夹紧跟版本行下方；帧生成开关独占一行；其下输入+输出并排、倍数落在输入正下方。
+                    <!-- 设置项：先选版本（渠道 + 具体版本），再选注入 DLL 名 / 画质提升；
+                         FSR4（画质档 / 文件 / 具体版本）从"画质提升"里独立出来，单独成组，
+                         仅当画质提升 = FSR4 时展开（含自己的版本下载与 ✓ 已下载标记）；
+                         本地包文件夹紧跟其下方；帧生成开关独占一行；其下输入+输出并排、倍数落在输入正下方。
                          帧生成关闭时，倍数/输入/输出三格整体收起（行高归零，下方内容随之上移）。
                          用 Margin 代替 RowSpacing，收起后不留空档。 -->
                     <Grid ColumnSpacing="18">
@@ -752,45 +754,16 @@
                             <RowDefinition Height="Auto"/>
                             <RowDefinition Height="Auto"/>
                             <RowDefinition Height="Auto"/>
+                            <RowDefinition Height="Auto"/>
                         </Grid.RowDefinitions>
 
                         <StackPanel Grid.Row="0" Grid.Column="0" Spacing="5" Margin="0,0,0,14">
-                            <TextBlock Text="注入 DLL 名" FontSize="13" Opacity="0.72"/>
-                            <ComboBox x:Name="OptiDllCombo" HorizontalAlignment="Stretch"
-                                      ToolTipService.ToolTip="自动 = 按 OptiScaler wiki 对该游戏的建议（默认 dxgi）。若游戏自带同名 DLL，可改用 version / winmm 等规避。"/>
-                        </StackPanel>
-                        <StackPanel Grid.Row="0" Grid.Column="1" Spacing="5" Margin="0,0,0,14">
-                            <TextBlock Text="画质提升" FontSize="13" Opacity="0.72"/>
-                            <ComboBox x:Name="OptiUpscalerCombo" HorizontalAlignment="Stretch"
-                                      SelectionChanged="OnOptiUpscalerChanged"
-                                      ToolTipService.ToolTip="写入 [Upscalers] Dx12Upscaler：实际使用的超分方案。选 FSR4 = ffx + [FSR] UpscalerIndex=0（FSR 4.0.2，RDNA4 原生支持；其他卡由驱动回退到 FSR3）。"/>
-                            <StackPanel x:Name="OptiFsr4Cell" Spacing="5" Margin="0,9,0,0" Visibility="Collapsed">
-                                <TextBlock Text="FSR4 画质档" FontSize="13" Opacity="0.72"/>
-                                <ComboBox x:Name="OptiFsr4PresetCombo" HorizontalAlignment="Stretch"
-                                          ToolTipService.ToolTip="写入 [FSR] Fsr4Preset 内部 FSR4 预设：原生 AA / 质量 / 平衡 / 性能 / DRS / 超级性能。"/>
-                                <TextBlock Text="FSR4 文件" FontSize="13" Opacity="0.72" Margin="0,4,0,0"/>
-                                <ComboBox x:Name="OptiFsr4FilesCombo" HorizontalAlignment="Stretch"
-                                          SelectionChanged="OnOptiFsr4FilesChanged"
-                                          ToolTipService.ToolTip="FSR4 的主 DLL 不在 OptiScaler 官方包里，需另从社区仓库下载。INT8 适合 RDNA2/3 等兼容卡；FP8 是 RDNA4 的官方模型。选「不额外注入」则沿用驱动/游戏自带的 FSR4 文件（RDNA4 通常够用）。"/>
-                                <StackPanel x:Name="OptiFsr4VersionCell" Spacing="5" Margin="0,4,0,0"
-                                            Visibility="Collapsed">
-                                    <TextBlock Text="FSR4 版本" FontSize="13" Opacity="0.72"/>
-                                    <ComboBox x:Name="OptiFsr4VersionCombo" HorizontalAlignment="Stretch"
-                                              SelectionChanged="OnOptiFsr4VersionChanged"
-                                              ToolTipService.ToolTip="该变体仓库里可下载的 Release 列表；默认取最新版。选中后会自动在后台下载，注入时直接用。"/>
-                                    <TextBlock x:Name="OptiFsr4VersionStatus" FontSize="12" Opacity="0.55"
-                                               TextWrapping="Wrap" Text="默认取该仓库最新版本"/>
-                                </StackPanel>
-                            </StackPanel>
-                        </StackPanel>
-
-                        <StackPanel Grid.Row="1" Grid.Column="0" Spacing="5" Margin="0,0,0,14">
                             <TextBlock Text="OptiScaler 版本" FontSize="13" Opacity="0.72"/>
                             <ComboBox x:Name="OptiVersionCombo" HorizontalAlignment="Stretch"
                                       SelectionChanged="OnOptiVersionChanged"
                                       ToolTipService.ToolTip="正式版：官方仓库的 Release，最稳定；测试版：社区镜像的预览版，更新更快但可能有 Bug；本地包：不联网，直接使用下方「本地包文件夹」里的包。"/>
                         </StackPanel>
-                        <StackPanel x:Name="OptiVersionTagCell" Grid.Row="1" Grid.Column="1" Spacing="5" Margin="0,0,0,14">
+                        <StackPanel x:Name="OptiVersionTagCell" Grid.Row="0" Grid.Column="1" Spacing="5" Margin="0,0,0,14">
                             <TextBlock Text="具体版本" FontSize="13" Opacity="0.72"/>
                             <ComboBox x:Name="OptiVersionTagCombo" HorizontalAlignment="Stretch"
                                       SelectionChanged="OnOptiVersionTagChanged"
@@ -799,7 +772,54 @@
                                        TextWrapping="Wrap" Text="默认使用最新版"/>
                         </StackPanel>
 
-                        <StackPanel x:Name="OptiLocalRow" Grid.Row="2" Grid.Column="0" Grid.ColumnSpan="2"
+                        <StackPanel Grid.Row="1" Grid.Column="0" Spacing="5" Margin="0,0,0,14">
+                            <TextBlock Text="注入 DLL 名" FontSize="13" Opacity="0.72"/>
+                            <ComboBox x:Name="OptiDllCombo" HorizontalAlignment="Stretch"
+                                      ToolTipService.ToolTip="自动 = 按 OptiScaler wiki 对该游戏的建议（默认 dxgi）。若游戏自带同名 DLL，可改用 version / winmm 等规避。"/>
+                        </StackPanel>
+                        <StackPanel Grid.Row="1" Grid.Column="1" Spacing="5" Margin="0,0,0,14">
+                            <TextBlock Text="画质提升" FontSize="13" Opacity="0.72"/>
+                            <ComboBox x:Name="OptiUpscalerCombo" HorizontalAlignment="Stretch"
+                                      SelectionChanged="OnOptiUpscalerChanged"
+                                      ToolTipService.ToolTip="写入 [Upscalers] Dx12Upscaler：实际使用的超分方案。选 FSR4 = ffx + [FSR] UpscalerIndex=0（FSR 4.0.2，RDNA4 原生支持；其他卡由驱动回退到 FSR3）。"/>
+                        </StackPanel>
+
+                        <!-- FSR4 独立分组：画质档 / 文件（变体）/ 具体版本，仅在画质提升=FSR4 时展开 -->
+                        <StackPanel x:Name="OptiFsr4Cell" Grid.Row="2" Grid.Column="0" Grid.ColumnSpan="2"
+                                    Spacing="5" Margin="0,0,0,14" Visibility="Collapsed">
+                            <Grid ColumnSpacing="18">
+                                <Grid.ColumnDefinitions>
+                                    <ColumnDefinition Width="*"/>
+                                    <ColumnDefinition Width="*"/>
+                                </Grid.ColumnDefinitions>
+                                <Grid.RowDefinitions>
+                                    <RowDefinition Height="Auto"/>
+                                    <RowDefinition Height="Auto"/>
+                                </Grid.RowDefinitions>
+                                <StackPanel Grid.Row="0" Grid.Column="0" Spacing="5" Margin="0,0,0,14">
+                                    <TextBlock Text="FSR4 画质档" FontSize="13" Opacity="0.72"/>
+                                    <ComboBox x:Name="OptiFsr4PresetCombo" HorizontalAlignment="Stretch"
+                                              ToolTipService.ToolTip="写入 [FSR] Fsr4Preset 内部 FSR4 预设：原生 AA / 质量 / 平衡 / 性能 / DRS / 超级性能。"/>
+                                </StackPanel>
+                                <StackPanel Grid.Row="0" Grid.Column="1" Spacing="5" Margin="0,0,0,14">
+                                    <TextBlock Text="FSR4 文件" FontSize="13" Opacity="0.72"/>
+                                    <ComboBox x:Name="OptiFsr4FilesCombo" HorizontalAlignment="Stretch"
+                                              SelectionChanged="OnOptiFsr4FilesChanged"
+                                              ToolTipService.ToolTip="INT8：NVIDIA / AMD / Intel 通用（Intel Arc 走 XMX）；FP8：AMD RDNA4 官方模型。「不额外注入」沿用游戏自带 FSR4 文件。"/>
+                                </StackPanel>
+                                <StackPanel x:Name="OptiFsr4VersionCell" Grid.Row="1" Grid.Column="0" Grid.ColumnSpan="2"
+                                            Spacing="5" Visibility="Collapsed">
+                                    <TextBlock Text="FSR4 具体版本" FontSize="13" Opacity="0.72"/>
+                                    <ComboBox x:Name="OptiFsr4VersionCombo" HorizontalAlignment="Stretch"
+                                              SelectionChanged="OnOptiFsr4VersionChanged"
+                                              ToolTipService.ToolTip="该变体仓库里可下载的 Release 列表；默认取最新版。选中后会自动在后台下载，已下载的版本名称后带 ✓。"/>
+                                    <TextBlock x:Name="OptiFsr4VersionStatus" FontSize="12" Opacity="0.55"
+                                               TextWrapping="Wrap" Text="默认取该仓库最新版本"/>
+                                </StackPanel>
+                            </Grid>
+                        </StackPanel>
+
+                        <StackPanel x:Name="OptiLocalRow" Grid.Row="3" Grid.Column="0" Grid.ColumnSpan="2"
                                     Spacing="6" Margin="0,0,0,14" Visibility="Collapsed">
                             <TextBlock Text="本地包文件夹" FontSize="13" Opacity="0.72"/>
                             <Grid>
@@ -822,25 +842,25 @@
                                        FontSize="12" Opacity="0.55" TextWrapping="Wrap"/>
                         </StackPanel>
 
-                        <StackPanel Grid.Row="3" Grid.Column="0" Grid.ColumnSpan="2" Spacing="5" Margin="0,0,0,14">
+                        <StackPanel Grid.Row="4" Grid.Column="0" Grid.ColumnSpan="2" Spacing="5" Margin="0,0,0,14">
                             <TextBlock Text="帧生成" FontSize="13" Opacity="0.72"/>
                             <ToggleSwitch x:Name="OptiFrameGenToggle" HorizontalAlignment="Left"
                                           OnContent="开" OffContent="关" Toggled="OnOptiFrameGenToggled"
                                           ToolTipService.ToolTip="写入 OptiScaler.ini 的 FrameGen.Enabled。关闭时输入/输出/倍数不生效，会一并收起。"/>
                         </StackPanel>
 
-                        <StackPanel x:Name="OptiFgInputCell" Grid.Row="4" Grid.Column="0" Spacing="5" Margin="0,0,0,14">
+                        <StackPanel x:Name="OptiFgInputCell" Grid.Row="5" Grid.Column="0" Spacing="5" Margin="0,0,0,14">
                             <TextBlock Text="帧生成输入" FontSize="13" Opacity="0.72"/>
                             <ComboBox x:Name="OptiFgInputCombo" HorizontalAlignment="Stretch"
                                       ToolTipService.ToolTip="FrameGen.FGInput 帧生成的帧源。DLSSG 需游戏走 Streamline + DLSSG，NvngxFG 需游戏支持 DLSS 帧生成；FSRFG / FSRFG 3.0 可配合任意输出；OptiFG（ini 值就是 upscaler）走 OptiScaler 内置的实验性补帧通路，需超分开启，细节由 [OptiFG] 段调节。"/>
                         </StackPanel>
-                        <StackPanel x:Name="OptiFgOutputCell" Grid.Row="4" Grid.Column="1" Spacing="5" Margin="0,0,0,14">
+                        <StackPanel x:Name="OptiFgOutputCell" Grid.Row="5" Grid.Column="1" Spacing="5" Margin="0,0,0,14">
                             <TextBlock Text="帧生成输出" FontSize="13" Opacity="0.72"/>
                             <ComboBox x:Name="OptiFgOutputCombo" HorizontalAlignment="Stretch"
                                       ToolTipService.ToolTip="FrameGen.FGOutput 实际补帧的实现。FSRFG 需 amd_fidelityfx 系列 DLL，XeFG 需 libxess_fg.dll 与 libxell.dll，NvngxFG 需 dlssg_to_fsr3_amd_is_better.dll，DLSSG 需 streamline + nvngx_dlssg.dll，DLSSG+NvngxFG 还需一个 NvNGX 提供方。"/>
                         </StackPanel>
 
-                        <StackPanel x:Name="OptiFgMultiplierCell" Grid.Row="5" Grid.Column="0" Spacing="5" Margin="0,0,0,14">
+                        <StackPanel x:Name="OptiFgMultiplierCell" Grid.Row="6" Grid.Column="0" Spacing="5" Margin="0,0,0,14">
                             <TextBlock Text="帧生成倍数" FontSize="13" Opacity="0.72"/>
                             <ComboBox x:Name="OptiFgMultiplierCombo" HorizontalAlignment="Stretch"
                                       ToolTipService.ToolTip="写入 DLSSG / XeFG 的 InterpolationCount：1=2X、2=3X、3=4X、4=5X、5=6X。5X/6X 仅 DLSSG 系输出支持（XeFG 上限 4X）；FSRFG 固定 2X。"/>

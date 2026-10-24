@@ -805,7 +805,7 @@
                                     <TextBlock Text="FSR4 文件" FontSize="13" Opacity="0.72"/>
                                     <ComboBox x:Name="OptiFsr4FilesCombo" HorizontalAlignment="Stretch"
                                               SelectionChanged="OnOptiFsr4FilesChanged"
-                                              ToolTipService.ToolTip="INT8：NVIDIA / AMD / Intel 通用（Intel Arc 走 XMX）；FP8：AMD RDNA4 官方模型。「不额外注入」沿用游戏自带 FSR4 文件。"/>
+                                              ToolTipService.ToolTip="FSR4 必须注入模型文件，无「不注入」选项。INT8：NVIDIA / AMD / Intel 通用，默认；FP8：AMD RDNA4 官方模型；XMX：Intel Arc 专用模型（两个 DLL 一起注入）。"/>
                                 </StackPanel>
                                 <StackPanel x:Name="OptiFsr4VersionCell" Grid.Row="1" Grid.Column="0" Grid.ColumnSpan="2"
                                             Spacing="5" Visibility="Collapsed">

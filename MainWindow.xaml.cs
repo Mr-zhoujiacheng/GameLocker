@@ -582,6 +582,13 @@ public sealed partial class MainWindow : Window
         OptiNoteText.Text = insp.Note;
         OptiNoteBox.Visibility = string.IsNullOrWhiteSpace(insp.Note) ? Visibility.Collapsed : Visibility.Visible;
 
+        // 已注入过：醒目的覆盖警告 + 提示条改为「覆盖注入」
+        OptiWarnBox.Visibility = insp.AlreadyInjected ? Visibility.Visible : Visibility.Collapsed;
+        OptiHintBar.Hints = insp.AlreadyInjected ? "A:覆盖注入|B:取消" : "A:注入|B:取消";
+        OptiHintText.Text = insp.AlreadyInjected
+            ? "继续注入会关闭游戏并覆盖现有 OptiScaler 文件；覆盖前会自动备份，可用「一键还原」恢复。"
+            : "选择注入将关闭游戏、写入 OptiScaler 后重新打开游戏；注入前会自动备份被覆盖的同名文件。";
+
         OptiOverlay.Visibility = Visibility.Visible;
         PlayOptiIn();
         // 触屏点选要求窗口处于前台：否则第一次点按可能只用于激活窗口

@@ -80,19 +80,25 @@ public sealed partial class AppearancePage : Page, ISettingsGamepad
         _tileOpacity = Math.Clamp(s.TileOpacity, 0.3, 1.0);
         TileOpacityText.Text = $"{(int)Math.Round(_tileOpacity * 100)}%";
 
-        _controls =
-        [
+        SyncControls();
+    }
+
+    /// <summary>按展开状态重建可导航控件列表：折叠时移除选项行，
+    /// 避免光标落到已隐藏的行上（ActualHeight 残留会让 BuildRows 仍把它们算成一行）</summary>
+    private void SyncControls()
+    {
+        var controls = new List<FrameworkElement>
+        {
             GlassToggle,
             DarkGrayRadio, BlackRadio, BlueRadio, PurpleRadio, GreenRadio, BrownRadio,
             OpacityDownButton, OpacityUpButton,
             WidthDownButton, WidthUpButton,
-            TileThemeCard,
-            .._themeRows,
-            TileCornerToggle,
-            TileNameToggle, GroupAnimToggle, RandomColorToggle,
-            TileOpacityDownButton, TileOpacityUpButton,
-            SpacingDownButton, SpacingUpButton
-        ];
+            TileThemeCard
+        };
+        if (_themeExpanded) controls.AddRange(_themeRows);
+        controls.AddRange([TileCornerToggle, TileNameToggle, GroupAnimToggle, RandomColorToggle,
+            TileOpacityDownButton, TileOpacityUpButton, SpacingDownButton, SpacingUpButton]);
+        _controls = controls;
     }
 
     /// <summary>色值 → 勾选对应单选（避免 SelectionChanged 递归）</summary>
@@ -164,6 +170,7 @@ public sealed partial class AppearancePage : Page, ISettingsGamepad
         _themeExpanded = true;
         TileThemeList.Visibility = Visibility.Visible;
         ThemeChevronRotate.Angle = 180;
+        SyncControls();
         // 展开后光标直接落在当前选中的主题上：选中框始终可见，也方便直接按 A 确认
         if (_ready && _themeOptionBorders.TryGetValue(_currentTheme, out var selected))
         {
@@ -178,6 +185,7 @@ public sealed partial class AppearancePage : Page, ISettingsGamepad
         _themeExpanded = false;
         TileThemeList.Visibility = Visibility.Collapsed;
         ThemeChevronRotate.Angle = 0;
+        SyncControls();
         // 无论光标此前在选项行还是已在标题行，收起后统一回到标题行并重绘选中框
         if (restoreCursor)
         {
@@ -187,6 +195,10 @@ public sealed partial class AppearancePage : Page, ISettingsGamepad
                 _index = header;
                 FocusIndex(header);
             }
+        }
+        else if (_index >= _controls.Count)
+        {
+            _index = Math.Max(0, _controls.Count - 1); // 选项行已被移除，避免留下越界索引
         }
     }
 

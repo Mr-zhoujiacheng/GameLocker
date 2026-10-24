@@ -68,6 +68,16 @@
                         <TextBlock Text="OptiScaler 适配性" FontSize="19" FontWeight="SemiBold" VerticalAlignment="Center"/>
                     </StackPanel>
 
+                    <!-- 已注入过：覆盖警告（继续注入会覆盖现有文件，A=覆盖注入 / B=取消） -->
+                    <Border x:Name="OptiWarnBox" Visibility="Collapsed" CornerRadius="12"
+                            Background="#2AFF6B5C" BorderBrush="#55FF6B5C" BorderThickness="1" Padding="14,12">
+                        <StackPanel Orientation="Horizontal" Spacing="10">
+                            <FontIcon Glyph="&#xE7BA;" FontSize="16" Foreground="#FF8A7A" VerticalAlignment="Top"/>
+                            <TextBlock Text="该游戏已注入过 OptiScaler。继续注入会覆盖现有文件，若已装其他 Mod 或旧版本容易冲突、甚至无法启动；被覆盖的文件会先备份，可一键还原。是否仍要注入？"
+                                       FontSize="12.5" TextWrapping="Wrap"/>
+                        </StackPanel>
+                    </Border>
+
                     <Border CornerRadius="12" Background="#14FFFFFF" BorderBrush="#26FFFFFF"
                             BorderThickness="1" Padding="16,14">
                         <StackPanel Spacing="10">

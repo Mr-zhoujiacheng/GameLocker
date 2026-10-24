@@ -38,6 +38,8 @@ public sealed class OptiScalerInspection
     public string Note { get; set; } = "";
     /// <summary>wiki 兼容条目里给出的可用输入（DLSS / FSR3.1 …）</summary>
     public string Inputs { get; set; } = "";
+    /// <summary>该游戏目录已有 OptiScaler 注入痕迹：再次注入会覆盖现有文件，需要用户确认</summary>
+    public bool AlreadyInjected { get; set; }
 }
 
 /// <summary>GitHub 上的一个可选 Release（供编辑页"具体版本"下拉使用）</summary>
@@ -179,14 +181,33 @@ public static class OptiScalerService
     ];
 
     /// <summary>
-    /// FSR4 的主 DLL 不在 OptiScaler 官方包里，需要另从社区仓库取（AMD 会按显卡世代给不同模型）。
+    /// FSR4 的主 DLL 不在 OptiScaler 官方包里，必须另从社区仓库取并注入（AMD 会按显卡世代给不同模型），
+    /// 因此不提供"不注入"选项；默认 INT8（兼容面最广）。
     /// 值=(variant, 显示名)：int8=兼容卡（RDNA2/3 等，OptiScaler-Extras；Intel Arc 也走 INT8/XMX）、fp8=RDNA4（Optiscaler-Extras-FP8）。
     /// </summary>
     public static readonly (string Value, string Label)[] Fsr4FilesOptions =
     [
-        ("auto", "不额外注入"),
         ("int8", "INT8 · NVIDIA / AMD / Intel"),
-        ("fp8", "FP8 · AMD RDNA4")
+        ("fp8", "FP8 · AMD RDNA4"),
+        ("xmx", "XMX · intel")
+    ];
+
+    /// <summary>FSR4 文件变体默认值（旧配置里为 "auto" 的数据也归到这里）</summary>
+    public const string DefaultFsr4Variant = "int8";
+
+    /// <summary>FSR4.1.1 XMX：Intel Arc / XMX 专用模型，两个 DLL 一起使用，版本固定</summary>
+    public const string XmxVariant = "xmx";
+    public const string XmxTag = "4.1.1";
+    private const string XmxUrl =
+        "https://github.com/Mr-zhoujiacheng/GameLocker/releases/download/fsr4-xmx/FSR4.1.1XMX.zip";
+    private const long XmxSize = 75108743;
+    private const string XmxSha256 = "5e40087efeb789ba1d7d61901b659b8042e8cf107486bfacd448fced143da3f4";
+
+    /// <summary>XMX 包内的两个 DLL（缺一不可，且要覆盖到 OptiScaler 包内 FSR 模块所在目录）</summary>
+    private static readonly string[] XmxFileNames =
+    [
+        "amd_fidelityfx_upscaler_dx12.dll",
+        "fsr-original.dll"
     ];
 
     /// <summary>FSR4 包缓存目录（按 int8 / fp8 分子目录）</summary>
@@ -347,15 +368,15 @@ public static class OptiScalerService
         }
     }
 
-    /// <summary>该组件的 FSR4 附加文件变体：仅"画质提升=FSR4"且指定了 int8/fp8 时才有值（空=不额外注入）</summary>
+    /// <summary>该组件的 FSR4 附加文件变体：画质提升=FSR4 时必注入，未选或旧配置的空值/auto 一律按 INT8</summary>
     private static string Fsr4VariantOf(LaunchItem item)
     {
         if (!string.Equals(item.OptiDx12Upscaler, "fsr4", StringComparison.OrdinalIgnoreCase)) return "";
         var v = (item.OptiFsr4Files ?? "").Trim().ToLowerInvariant();
-        return v is "int8" or "fp8" ? v : "";
+        return v is "fp8" or XmxVariant ? v : DefaultFsr4Variant;
     }
 
-    /// <summary>按配置取 FSR4 附加文件；不需要时返回 null 且不报错（用 needFsr4 区分"没取"和"取失败"）</summary>
+    /// <summary>按配置取 FSR4 附加文件；画质提升不是 FSR4 时不需要，返回 null（不报错）</summary>
     private static async Task<string?> EnsureFsr4ForItemAsync(LaunchItem item)
     {
         var variant = Fsr4VariantOf(item);
@@ -385,11 +406,11 @@ public static class OptiScalerService
             }
             DebugLog.Write($"OptiScaler: 使用包目录 {root}");
 
-            // 1b) FSR4 的主 DLL 不在官方包里：选了 FSR4 且指定要额外注入时，先把它取下来
+            // 1b) FSR4 的主 DLL 不在官方包里：选了 FSR4 就必须注入，先把它取下来
             var fsr4Root = await EnsureFsr4ForItemAsync(item);
             if (fsr4Root is null && Fsr4VariantOf(item).Length > 0)
             {
-                Report("FSR4 文件获取失败，已取消注入（可在编辑页把「FSR4 文件」改为不额外注入）", true);
+                Report("FSR4 文件获取失败，已取消注入（请检查网络后重试）", true);
                 return;
             }
 
@@ -509,6 +530,7 @@ public static class OptiScalerService
             ExePath = exePath,
             GameDir = Path.GetDirectoryName(exePath) ?? ""
         };
+        insp.AlreadyInjected = DetectInjected(insp.GameDir, exeName);
 
         var entries = await LoadCompatibilityAsync();
         var keys = GameKeys(insp.GameName, exeName, exePath);
@@ -522,6 +544,23 @@ public static class OptiScalerService
             insp.SuggestedDll = SuggestDll(best) ?? DefaultProxy;
         }
         return insp;
+    }
+
+    /// <summary>游戏目录是否已有 OptiScaler 注入痕迹：本工具写入的 OptiScaler.ini、
+    /// v10 版的 OptiScaler 子目录，或上次注入留下的备份清单（要求游戏目录一致）</summary>
+    private static bool DetectInjected(string gameDir, string exeName)
+    {
+        if (string.IsNullOrEmpty(gameDir)) return false;
+        try
+        {
+            if (File.Exists(Path.Combine(gameDir, "OptiScaler.ini"))) return true;
+            if (Directory.Exists(Path.Combine(gameDir, "OptiScaler"))) return true;
+            var manifestPath = Path.Combine(BackupDir, Sanitize(exeName), "manifest.json");
+            if (!File.Exists(manifestPath)) return false;
+            var m = JsonSerializer.Deserialize<OptiBackupManifest>(File.ReadAllText(manifestPath));
+            return m is not null && string.Equals(m.GameDir, gameDir, StringComparison.OrdinalIgnoreCase);
+        }
+        catch { return false; }
     }
 
     /// <summary>匹配用的名字：窗口标题、进程名、Steam 安装目录名（去空、去重）。
@@ -1068,6 +1107,8 @@ public static class OptiScalerService
     /// <summary>编辑页「FSR4 版本」下拉项：首项"最新版"（空值）+ 该变体仓库可下载的 Release</summary>
     public static async Task<(string Value, string Label)[]> GetFsr4VersionOptionsAsync(string variant)
     {
+        // XMX 是固定版本的专用模型包，不走社区仓库的版本列表
+        if (variant == XmxVariant) return [(XmxTag, "FSR4.1.1XMX")];
         if (!Fsr4Sources.TryGetValue(variant, out var src)) return [];
         var list = await GetReleasesAsync(src.Repo, variant);
         var items = list.Select(r => (r.Tag, r.Label)).ToList();
@@ -1137,10 +1178,10 @@ public static class OptiScalerService
         }
     }
 
-    /// <summary>编辑页选定 FSR4 版本后调用的预下载</summary>
+    /// <summary>编辑页选定 FSR4 版本后调用的预下载（XMX 是固定 URL，同样走这里）</summary>
     public static async Task PrefetchFsr4Async(string variant, string tag)
     {
-        if (!Fsr4Sources.ContainsKey(variant)) return;
+        if (variant != XmxVariant && !Fsr4Sources.ContainsKey(variant)) return;
         try { await GetFsr4Async(variant, tag); }
         catch (Exception ex) { DebugLog.Write($"OptiScaler: FSR4 预下载失败 {ex.Message}"); }
     }
@@ -1344,6 +1385,7 @@ public static class OptiScalerService
     /// </summary>
     private static async Task<string?> GetFsr4CoreAsync(string variant, string? versionTag)
     {
+        if (variant == XmxVariant) return await GetXmxAsync();
         if (!Fsr4Sources.TryGetValue(variant, out var src)) return null;
         var baseDir = Path.Combine(Fsr4Dir, variant);
         var tag = (versionTag ?? "").Trim();
@@ -1387,9 +1429,44 @@ public static class OptiScalerService
         try { File.Delete(tmp); } catch { /* 临时包删不掉无害 */ }
         if (root is null)
         {
-            Report($"FSR4 {src.Label} 包解压失败（需要系统 tar.exe；可改设为不额外注入）", true);
+            Report($"FSR4 {src.Label} 包解压失败（需要系统 tar.exe）", true);
             return null;
         }
+        return root;
+    }
+
+    /// <summary>取 FSR4.1.1 XMX 模型包：来源固定为本项目 Release 资源，校验大小与 SHA256 后解压</summary>
+    private static async Task<string?> GetXmxAsync()
+    {
+        var baseDir = Path.Combine(Fsr4Dir, XmxVariant);
+        var dir = Path.Combine(baseDir, XmxTag);
+        if (FindRootContaining(dir, XmxFileNames) is { } cached) return cached;
+
+        Directory.CreateDirectory(baseDir);
+        var tmp = Path.Combine(baseDir, "FSR4.1.1XMX.zip");
+        Report($"正在下载 FSR4.1.1 XMX（约 {XmxSize / 1048576}MB，自动选最快源）…", progress: 0);
+        try
+        {
+            var ok = await DownloadAssetAsync(XmxUrl, tmp, XmxSize, XmxSha256,
+                (got, total) => ReportDownload("FSR4.1.1 XMX", got, total));
+            if (!ok) { Report("FSR4.1.1 XMX 下载失败，请检查网络后重试", true); return null; }
+        }
+        catch (Exception ex)
+        {
+            DebugLog.Write($"OptiScaler: FSR4.1.1 XMX 下载异常 {ex.Message}");
+            Report("FSR4.1.1 XMX 下载失败，请检查网络后重试", true);
+            return null;
+        }
+
+        Report("正在解压 FSR4.1.1 XMX…");
+        var root = await ExtractAsync(tmp, dir, XmxFileNames);
+        try { File.Delete(tmp); } catch { /* 临时包删不掉无害 */ }
+        if (root is null)
+        {
+            Report("FSR4.1.1XMX 包解压失败（需要系统 tar.exe）", true);
+            return null;
+        }
+        Report("FSR4.1.1XMX 已下载完成，注入时直接使用");
         return root;
     }
 
@@ -1409,7 +1486,11 @@ public static class OptiScalerService
         var ext = Path.GetExtension(archive).ToLowerInvariant();
         if (ext == ".zip")
         {
-            try { ZipFile.ExtractToDirectory(archive, staging, true); }
+            try
+            {
+                // 大包（XMX 约 111MB）同步解压会卡住 UI 线程，放后台线程解
+                await Task.Run(() => ZipFile.ExtractToDirectory(archive, staging, true));
+            }
             catch (Exception ex)
             {
                 DebugLog.Write($"OptiScaler: zip 解压失败 {ex.Message}");
@@ -1567,7 +1648,14 @@ public static class OptiScalerService
         return null;
     }
 
-    // ---- 注入 / 备份 ----
+    /// <summary>OptiScaler 包内 FSR 模块所在的相对目录（0.9.4=根目录，v10=OptiScaler）；找不到返回空</summary>
+    private static string Fsr4TargetSubDir(string pkgRoot)
+    {
+        var file = FindFileNamed(pkgRoot, "amd_fidelityfx_upscaler_dx12.dll");
+        if (file is null) return "";
+        var rel = Path.GetDirectoryName(Path.GetRelativePath(pkgRoot, file));
+        return string.IsNullOrEmpty(rel) || rel == "." ? "" : rel;
+    }
 
     private sealed class OptiBackupManifest
     {
@@ -1658,27 +1746,34 @@ public static class OptiScalerService
                 CopyWithRetry(src, dest);
             }
 
-            // FSR4 附加文件：官方包不含，按已知文件名补进游戏根目录（游戏硬编码哪个名字就用哪个）
+            // FSR4 附加文件：官方包不含，按已知文件名补进游戏根目录（游戏硬编码哪个名字就用哪个）。
+            // XMX 是 Intel 专用模型，要覆盖到 OptiScaler 包内 FSR 模块所在目录
+            // （0.9.4 在游戏根目录、v10 在 OptiScaler\ 子目录），两个 DLL 一起放。
             if (fsr4Root is not null)
             {
-                foreach (var name in Fsr4KnownNames)
+                var fsr4Variant = Fsr4VariantOf(item);
+                var names = fsr4Variant == XmxVariant ? XmxFileNames : Fsr4KnownNames;
+                var subDir = fsr4Variant == XmxVariant ? Fsr4TargetSubDir(pkgRoot) : "";
+                foreach (var name in names)
                 {
                     var src = FindFileNamed(fsr4Root, name);
                     if (src is null) continue;
-                    var dest = Path.Combine(gameDir, name);
+                    var rel = Path.Combine(subDir, name);
+                    var dest = Path.Combine(gameDir, rel);
+                    Directory.CreateDirectory(Path.GetDirectoryName(dest)!);
                     if (File.Exists(dest))
                     {
-                        var bk = Path.Combine(bdir, "files", name);
+                        var bk = Path.Combine(bdir, "files", rel);
                         Directory.CreateDirectory(Path.GetDirectoryName(bk)!);
                         CopyWithRetry(dest, bk);
-                        manifest.BackedUp.Add(name);
+                        manifest.BackedUp.Add(rel);
                     }
                     else
                     {
-                        manifest.Created.Add(name);
+                        manifest.Created.Add(rel);
                     }
                     CopyWithRetry(src, dest);
-                    DebugLog.Write($"OptiScaler: 补入 FSR4 文件 {name}");
+                    DebugLog.Write($"OptiScaler: 补入 FSR4 文件 {rel}");
                 }
             }
 
@@ -1723,10 +1818,10 @@ public static class OptiScalerService
             text = SetIniValue(text, "Upscalers", "Dx12Upscaler", isFsr4 ? "ffx" : dx12);
             text = SetIniValue(text, "FSR", "UpscalerIndex", isFsr4 ? "0" : "auto");
             text = SetIniValue(text, "FSR", "Fsr4Preset", Blank(item.OptiFsr4Preset));
-            // FSR4 模型：INT8=2 / FP8=1（对应两种附加包；不额外注入则交给驱动自动判定）
-            var fsr4Files = (item.OptiFsr4Files ?? "").Trim().ToLowerInvariant();
+            // FSR4 模型：INT8/XMX=2 / FP8=1（画质提升=FSR4 时必注入，默认 INT8）
+            var fsr4Files = Fsr4VariantOf(item);
             text = SetIniValue(text, "FSR", "Fsr4ForceModel",
-                fsr4Files == "int8" ? "2" : fsr4Files == "fp8" ? "1" : "auto");
+                fsr4Files is "int8" or XmxVariant ? "2" : fsr4Files == "fp8" ? "1" : "auto");
             text = SetIniValue(text, "FrameGen", "Enabled", item.OptiFrameGen ? "true" : "false");
             text = SetIniValue(text, "FrameGen", "FGInput", Blank(item.OptiFgInput));
             text = SetIniValue(text, "FrameGen", "FGOutput", Blank(item.OptiFgOutput));

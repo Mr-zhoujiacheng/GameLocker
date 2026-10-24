@@ -234,6 +234,10 @@ public sealed partial class AddItemPage : Page, ISettingsGamepad
         FillOptiCombo(OptiFgMultiplierCombo, OptiScalerService.FgMultiplierOptions);
         FillOptiCombo(OptiFsr4PresetCombo, OptiScalerService.Fsr4PresetOptions);
         FillOptiCombo(OptiFsr4FilesCombo, OptiScalerService.Fsr4FilesOptions);
+        // FSR4 必须注入模型文件：没有"不注入"选项，新建默认 INT8（抑制事件，避免构造时就去拉版本列表）
+        _suppressFsr4FilesEvent = true;
+        OptiFsr4FilesCombo.SelectedIndex = 0;
+        _suppressFsr4FilesEvent = false;
         UpdateOptiFsr4Row();  // 画质提升默认"自动" → 先收起 FSR4 画质档
         UpdateOptiFgRows();   // 帧生成默认关闭 → 先收起输入/输出/倍数三项（内部会重建手柄导航序列）
 
@@ -282,6 +286,9 @@ public sealed partial class AddItemPage : Page, ISettingsGamepad
     /// <summary>版本列表请求代次：渠道/变体快速切换时只采纳最后一次请求的结果</summary>
     private int _optiVersionGen;
     private int _fsr4VersionGen;
+
+    /// <summary>已拉过版本列表的 FSR4 变体（避免每次展开都重复请求 GitHub）</summary>
+    private string _fsr4LoadedVariant = "";
 
     /// <summary>编辑初始化时程序内回填下拉，抑制 SelectionChanged 的副作用（加载/下载）</summary>
     private bool _suppressOptiVersionEvent;
@@ -612,16 +619,6 @@ public sealed partial class AddItemPage : Page, ISettingsGamepad
                 UpdateOptiLocalRow(); // 版本渠道选"本地包"时展开文件夹提示
                 // 版本列表：渠道/变体没变化时 SelectionChanged 不会触发，这里主动加载并按保存值回填
                 _ = ReloadOptiVersionsAsync();
-                var fsr4Variant = OptiComboValue(OptiFsr4FilesCombo);
-                if (fsr4Variant is "int8" or "fp8")
-                {
-                    OptiFsr4VersionCell.Visibility = Microsoft.UI.Xaml.Visibility.Visible;
-                    _ = ReloadFsr4VersionsAsync(fsr4Variant);
-                }
-                else
-                {
-                    OptiFsr4VersionCell.Visibility = Microsoft.UI.Xaml.Visibility.Collapsed;
-                }
                 OptiRestoreStatus.Text = OptiScalerService.HasBackup()
                     ? "选择上面下拉里的游戏，再按「一键还原」。" : "";
                 RefreshOptiBackups();
@@ -1029,7 +1026,29 @@ public sealed partial class AddItemPage : Page, ISettingsGamepad
         OptiFsr4Cell.Visibility = show
             ? Microsoft.UI.Xaml.Visibility.Visible
             : Microsoft.UI.Xaml.Visibility.Collapsed;
+        if (show) EnsureFsr4Versions();
         RebuildFormControls();
+    }
+
+    /// <summary>展开 FSR4 分组时确保"FSR4 具体版本"列表已拉取（同一变体只拉一次）；XMX 是固定版本，直接填本地项</summary>
+    private void EnsureFsr4Versions()
+    {
+        var variant = OptiComboValue(OptiFsr4FilesCombo);
+        if (variant == OptiScalerService.XmxVariant)
+        {
+            _suppressOptiTagEvent = true;
+            FillOptiCombo(OptiFsr4VersionCombo,
+                [(OptiScalerService.XmxTag, "FSR4.1.1XMX")]);
+            OptiFsr4VersionCombo.SelectedIndex = 0;
+            _suppressOptiTagEvent = false;
+            OptiFsr4VersionStatus.Text = "Intel Arc / XMX 专用模型，选中后自动下载（约 72MB）";
+            OptiFsr4VersionCell.Visibility = Microsoft.UI.Xaml.Visibility.Visible;
+            return;
+        }
+        if (variant is not ("int8" or "fp8")) variant = OptiScalerService.DefaultFsr4Variant;
+        OptiFsr4VersionCell.Visibility = Microsoft.UI.Xaml.Visibility.Visible;
+        if (_suppressFsr4FilesEvent || _fsr4LoadedVariant == variant) return;
+        _ = ReloadFsr4VersionsAsync(variant);
     }
 
     /// <summary>
@@ -1490,9 +1509,12 @@ public sealed partial class AddItemPage : Page, ISettingsGamepad
                     it.OptiFgOutput = OptiComboValue(OptiFgOutputCombo);
                     it.OptiFgMultiplier = OptiComboValue(OptiFgMultiplierCombo);
                     it.OptiFsr4Preset = OptiComboValue(OptiFsr4PresetCombo);
-                    it.OptiFsr4Files = OptiComboValue(OptiFsr4FilesCombo);
-                    it.OptiFsr4VersionTag = it.OptiFsr4Files is "int8" or "fp8"
-                        ? OptiComboValue(OptiFsr4VersionCombo) : "";
+                    var fsr4Files = OptiComboValue(OptiFsr4FilesCombo);
+                    it.OptiFsr4Files = fsr4Files is "fp8" or OptiScalerService.XmxVariant
+                        ? fsr4Files : OptiScalerService.DefaultFsr4Variant;
+                    // XMX 版本固定，不读下拉框
+                    it.OptiFsr4VersionTag = it.OptiFsr4Files == OptiScalerService.XmxVariant
+                        ? OptiScalerService.XmxTag : OptiComboValue(OptiFsr4VersionCombo);
                 }
                 else if (it.WidgetKind == WidgetKind.RecycleBin)
                 {
@@ -1689,18 +1711,17 @@ public sealed partial class AddItemPage : Page, ISettingsGamepad
         await PrefetchAsync(channel, tag, OptiVersionStatus);
     }
 
-    /// <summary>FSR4 文件变体切换：int8/fp8 才需要选版本，并拉取该仓库可下载的 Release</summary>
-    private async void OnOptiFsr4FilesChanged(object sender, Microsoft.UI.Xaml.Controls.SelectionChangedEventArgs e)
+    /// <summary>FSR4 文件变体切换：两种变体都要注入，切换后重新拉取该仓库可下载的版本</summary>
+    private void OnOptiFsr4FilesChanged(object sender, Microsoft.UI.Xaml.Controls.SelectionChangedEventArgs e)
     {
         if (OptiFsr4VersionCell is null) return;
-        var variant = OptiComboValue(OptiFsr4FilesCombo);
-        var show = variant is "int8" or "fp8";
-        OptiFsr4VersionCell.Visibility = show
-            ? Microsoft.UI.Xaml.Visibility.Visible
-            : Microsoft.UI.Xaml.Visibility.Collapsed;
+        _fsr4LoadedVariant = "";   // 变体变了 → 版本列表需要重新拉
+        EnsureFsr4Versions();
         RebuildFormControls();
-        if (!show || _suppressFsr4FilesEvent) return;
-        await ReloadFsr4VersionsAsync(variant);
+
+        // XMX 只有一个固定版本，下拉里点不出"变化"，选中变体即开始下载
+        if (!_suppressFsr4FilesEvent && OptiComboValue(OptiFsr4FilesCombo) == OptiScalerService.XmxVariant)
+            _ = PrefetchAsync(OptiScalerService.XmxVariant, OptiScalerService.XmxTag, OptiFsr4VersionStatus);
     }
 
     /// <summary>按 FSR4 变体拉取可下载版本列表灌进"FSR4 版本"下拉</summary>
@@ -1715,6 +1736,8 @@ public sealed partial class AddItemPage : Page, ISettingsGamepad
         if (gen != _fsr4VersionGen) return;
 
         if (options.Length == 0) options = [("", "最新版（自动）")];
+        // 只有真正拿到列表才标记已加载；失败时下次展开会重试
+        _fsr4LoadedVariant = options.Length > 1 ? variant : "";
         _suppressOptiTagEvent = true;
         FillOptiCombo(OptiFsr4VersionCombo, options);
         SelectOptiCombo(OptiFsr4VersionCombo, options, want);
@@ -1725,17 +1748,18 @@ public sealed partial class AddItemPage : Page, ISettingsGamepad
             : $"共 {options.Length - 1} 个可下载版本，✓ 表示已下载，选中后自动下载";
     }
 
-    /// <summary>用户选定 FSR4 版本：后台预下载</summary>
+    /// <summary>用户选定 FSR4 版本：后台预下载（XMX 只有一个固定版本，选中变体时就开始下载）</summary>
     private async void OnOptiFsr4VersionChanged(object sender, Microsoft.UI.Xaml.Controls.SelectionChangedEventArgs e)
     {
         if (_suppressOptiTagEvent || OptiFsr4VersionStatus is null) return;
         var variant = OptiComboValue(OptiFsr4FilesCombo);
-        if (variant is not ("int8" or "fp8")) return;
+        if (variant != OptiScalerService.XmxVariant && variant is not ("int8" or "fp8"))
+            variant = OptiScalerService.DefaultFsr4Variant;
         var tag = OptiComboValue(OptiFsr4VersionCombo);
         await PrefetchAsync(variant, tag, OptiFsr4VersionStatus);
     }
 
-    /// <summary>后台预下载选中版本，并把服务层的下载进度写到状态文本上（channel=stable/beta，variant=int8/fp8）</summary>
+    /// <summary>后台预下载选中版本，并把服务层的下载进度写到状态文本上（channel=stable/beta，variant=int8/fp8/xmx）</summary>
     private async Task PrefetchAsync(string channel, string tag, TextBlock status)
     {
         var what = tag.Length == 0 ? "最新版" : tag;
@@ -1753,7 +1777,7 @@ public sealed partial class AddItemPage : Page, ISettingsGamepad
         OptiScalerService.StatusChanged += Handler;
         try
         {
-            if (channel is "int8" or "fp8")
+            if (channel is "int8" or "fp8" || channel == OptiScalerService.XmxVariant)
                 await OptiScalerService.PrefetchFsr4Async(channel, tag);
             else
                 await OptiScalerService.PrefetchAsync(channel, tag);

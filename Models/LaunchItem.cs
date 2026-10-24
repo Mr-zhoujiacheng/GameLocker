@@ -243,8 +243,8 @@ public class LaunchItem
     /// <summary>FSR4 画质档（写 [FSR] 段的 Fsr4Preset；auto 或 0=原生AA … 5=超级性能）</summary>
     public string OptiFsr4Preset { get; set; } = "auto";
 
-    /// <summary>FSR4 附加文件（官方包不含）：auto=不额外注入 / int8=兼容卡 / fp8=RDNA4</summary>
-    public string OptiFsr4Files { get; set; } = "auto";
+    /// <summary>FSR4 附加文件（官方包不含，选 FSR4 时必须注入）：int8=兼容卡（默认）/ fp8=RDNA4</summary>
+    public string OptiFsr4Files { get; set; } = "int8";
 
     /// <summary>显式指定的本地 OptiScaler 包路径（目录或 zip/7z/rar）；为空时"本地包"渠道扫描
     /// %APPDATA%\GameLocker\optiscaler\local 文件夹。仅 OptiChannel=local 时使用。</summary>

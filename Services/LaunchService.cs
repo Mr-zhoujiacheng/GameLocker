@@ -34,8 +34,8 @@ public static class LaunchService
     }
 
     /// <summary>
-    /// 关闭该磁贴对应的程序：优先关闭启动时到前台的那个窗口（WM_CLOSE，优雅退出）；
-    /// 无记录时按类型兜底匹配窗口。返回关闭的窗口数（0=未在运行）。
+    /// 关闭该磁贴对应的程序：先收集本次启动/名称匹配到的进程，向它们的所有可见窗口发 WM_CLOSE；
+    /// 若无可见窗口（已缩到托盘）则关主窗口或结束进程树。返回关闭的窗口数（0=未在运行）。
     /// </summary>
     public static int Close(LaunchItem item)
     {
@@ -44,29 +44,56 @@ public static class LaunchService
         if (item.Kind == LaunchKind.Folder || IsDirectoryTarget(item.Target))
             return CloseExplorerWindows(item.Target);
 
-        if (_records.TryRemove(item.Target, out var rec))
+        // 网站磁贴：有启动记录时关记录窗口，没有则按域名匹配浏览器窗口
+        if (item.Kind == LaunchKind.Url)
+            return TryCloseRecordWindow(item.Target) ? 1 : CloseWindowsWithTitle(HostOf(item.Target));
+
+        var pids = CollectTargetPids(item);
+        if (pids.Count == 0) return 0;
+
+        // 一次关闭该应用的所有窗口（主窗口 + 迷你播放器/歌词窗等），避免关一半
+        var posted = 0;
+        foreach (var hwnd in EnumVisibleTopWindows())
         {
-            // 1) 启动时捕获到的窗口仍在、且仍属于当初记录的进程 → 直接关闭该窗口
-            //    （校验所属进程防句柄复用误关别的窗口；外壳窗口由 TryPostWmClose 拒绝）
-            if (rec!.Hwnd != 0 && IsWindow(rec.Hwnd))
+            GetWindowThreadProcessId(hwnd, out uint pid);
+            if (!pids.Contains((int)pid)) continue;
+            if (TryPostWmClose(hwnd)) posted++;
+        }
+
+        if (posted == 0)
+        {
+            // 没有可见窗口（已缩到托盘）：按主窗口再试一次，仍不行就结束进程树
+            foreach (var pid in new List<int>(pids))
             {
-                GetWindowThreadProcessId(rec.Hwnd, out uint curPid);
-                if ((int)curPid == rec.Pid && TryPostWmClose(rec.Hwnd))
-                    return 1;
-            }
-            // 2) 只有 PID：取其主窗口关闭，否则结束进程树
-            if (rec.Pid != 0 && rec.Pid != System.Environment.ProcessId
-                && TryGetProcess(rec.Pid, out var p)
-                && !string.Equals(p.ProcessName, "explorer", StringComparison.OrdinalIgnoreCase))
-            {
-                if (p.MainWindowHandle != 0 && TryPostWmClose(p.MainWindowHandle))
-                    return 1;
-                try { p.Kill(entireProcessTree: true); return 1; }
+                if (pid == Environment.ProcessId || !TryGetProcess(pid, out var p)) continue;
+                if (string.Equals(p.ProcessName, "explorer", StringComparison.OrdinalIgnoreCase)) continue;
+                if (p.MainWindowHandle != 0 && TryPostWmClose(p.MainWindowHandle)) { posted++; continue; }
+                try { p.Kill(entireProcessTree: true); posted++; }
                 catch { /* 无权限/已退出 */ }
             }
         }
-        // 3) 兜底：按类型匹配现有窗口（跨会话/捕获失败时）
-        return CloseByMatch(item);
+
+        if (posted > 0) EscalateHiddenApp(pids);
+        return posted;
+    }
+
+    /// <summary>关掉启动记录里捕获到的窗口；成功返回 true</summary>
+    private static bool TryCloseRecordWindow(string target)
+    {
+        if (!_records.TryRemove(target, out var rec)) return false;
+        if (rec!.Hwnd != 0 && IsWindow(rec.Hwnd))
+        {
+            GetWindowThreadProcessId(rec.Hwnd, out uint curPid);
+            if ((int)curPid == rec.Pid && TryPostWmClose(rec.Hwnd)) return true;
+        }
+        if (rec.Pid != 0 && rec.Pid != Environment.ProcessId
+            && TryGetProcess(rec.Pid, out var p)
+            && !string.Equals(p.ProcessName, "explorer", StringComparison.OrdinalIgnoreCase))
+        {
+            if (p.MainWindowHandle != 0 && TryPostWmClose(p.MainWindowHandle)) return true;
+            try { p.Kill(entireProcessTree: true); return true; } catch { }
+        }
+        return false;
     }
 
     // ---- 启动记录 ----
@@ -83,7 +110,7 @@ public static class LaunchService
     private static async Task CaptureForegroundAsync(string target, int startedPid)
     {
         var ownPid = Environment.ProcessId;
-        for (int i = 0; i < 30; i++) // 最多约 3 秒
+        for (int i = 0; i < 100; i++) // 最多约 10 秒：启动器型应用（先起 launcher 再拉起真身）需要更久
         {
             await Task.Delay(100);
             var fg = GetForegroundWindow();
@@ -101,31 +128,115 @@ public static class LaunchService
         }
     }
 
-    // ---- 兜底匹配 ----
+    // ---- 目标进程匹配 ----
 
-    private static int CloseByMatch(LaunchItem item) => item.Kind switch
+    /// <summary>收集该磁贴对应的进程：启动记录 + 进程名/启动器前缀/窗口标题匹配。
+    /// 启动器型应用（SodaMusicLauncher → SodaMusic）与跨会话重启后都靠这一层兜底。</summary>
+    private static HashSet<int> CollectTargetPids(LaunchItem item)
     {
-        LaunchKind.Url => CloseWindowsWithTitle(HostOf(item.Target)),
-        LaunchKind.Folder => CloseExplorerWindows(item.Target),
-        _ => CloseWindowsByProcessName(ExeLeafOf(item.Target))
-    };
+        var ownPid = Environment.ProcessId;
+        var pids = new HashSet<int>();
 
-    /// <summary>按进程名关闭其所有可见顶层窗口（优雅 WM_CLOSE）</summary>
-    private static int CloseWindowsByProcessName(string? name)
-    {
-        if (string.IsNullOrEmpty(name)) return 0;
-        int count = 0;
+        if (_records.TryRemove(item.Target, out var rec))
+        {
+            // 捕获窗口所属进程优先（启动器场景下它就是真身进程），再补启动 PID
+            if (rec!.Hwnd != 0 && IsWindow(rec.Hwnd))
+            {
+                GetWindowThreadProcessId(rec.Hwnd, out uint pid);
+                if ((int)pid == rec.Pid && rec.Pid != ownPid) pids.Add(rec.Pid);
+            }
+            if (rec.Pid != 0 && rec.Pid != ownPid) pids.Add(rec.Pid);
+        }
+
+        var leaf = ExeLeafOf(item.Target);
+        var titleKey = item.Name?.Trim();
+
+        // 按进程名收集（不要求有可见窗口）：应用缩到托盘后 Y 键也能一次关掉
+        if (!string.IsNullOrEmpty(leaf))
+        {
+            foreach (var p in Process.GetProcesses())
+            {
+                try
+                {
+                    if (p.Id != ownPid && !pids.Contains(p.Id) && MatchesApp(p.ProcessName, leaf, "", null))
+                        pids.Add(p.Id);
+                }
+                catch { /* 受保护进程取不到名字 */ }
+                finally { p.Dispose(); }
+            }
+        }
+
+        // 再按窗口标题补齐（启动器 exe 名与真身完全不同、只能靠磁贴名称认亲的情况）
         foreach (var hwnd in EnumVisibleTopWindows())
         {
             GetWindowThreadProcessId(hwnd, out uint pid);
-            if (!TryGetProcess((int)pid, out var p)) continue;
-            if (string.Equals(p.ProcessName, name, StringComparison.OrdinalIgnoreCase))
-            {
-                if (TryPostWmClose(hwnd)) count++;
-            }
+            var id = (int)pid;
+            if (id == ownPid || IsShellProcess(id) || pids.Contains(id)) continue;
+            if (!TryGetProcess(id, out var p)) continue;
+            if (MatchesApp(p.ProcessName, leaf, WindowText(hwnd), titleKey)) pids.Add(id);
         }
-        return count;
+        return pids;
     }
+
+    /// <summary>进程是否属于这个磁贴：1) 进程名 = exe 名；2) 启动器与被启动程序共享前缀
+    /// （SodaMusicLauncher / SodaMusic）；3) 窗口标题与磁贴名称完全相同。</summary>
+    private static bool MatchesApp(string processName, string? exeLeaf, string windowTitle, string? displayName)
+    {
+        if (!string.IsNullOrEmpty(exeLeaf))
+        {
+            if (string.Equals(processName, exeLeaf, StringComparison.OrdinalIgnoreCase)) return true;
+            // 启动器与真身互为前缀（SodaMusicLauncher ↔ SodaMusic、WeChat ↔ WeChatAppEx）
+            if (processName.Length >= 4 && exeLeaf.Length >= 4
+                && (processName.StartsWith(exeLeaf, StringComparison.OrdinalIgnoreCase)
+                    || exeLeaf.StartsWith(processName, StringComparison.OrdinalIgnoreCase)))
+                return true;
+        }
+        return !string.IsNullOrEmpty(displayName)
+               && string.Equals(windowTitle.Trim(), displayName, StringComparison.OrdinalIgnoreCase);
+    }
+
+    /// <summary>关闭后复查：应用把关闭拦截成"缩到托盘"（进程仍在、已无可见窗口）时强制结束，
+    /// 避免需要按两次 Y；若还留着窗口（例如"确认退出"对话框）就交给用户决定。</summary>
+    private static void EscalateHiddenApp(IReadOnlyCollection<int> pids)
+    {
+        if (pids.Count == 0) return;
+        _ = Task.Run(async () =>
+        {
+            await Task.Delay(1500);
+            foreach (var pid in new List<int>(pids))
+            {
+                if (pid == Environment.ProcessId) continue;
+                if (!TryGetProcess(pid, out var p)) continue;
+                if (IsProtectedProcess(p.ProcessName) || HasVisibleUserWindow(pid)) continue;
+                try { p.Kill(entireProcessTree: true); } catch { /* 无权限/已退出 */ }
+            }
+        });
+    }
+
+    /// <summary>该进程是否还有"用户可见"的窗口：有标题、非工具窗口。
+    /// 托盘应用的隐藏主窗/无标题辅助窗不算，否则永远等不到强制结束。</summary>
+    private static bool HasVisibleUserWindow(int pid)
+    {
+        var found = false;
+        EnumWindows((h, _) =>
+        {
+            GetWindowThreadProcessId(h, out uint p);
+            if ((int)p != pid || !IsWindowVisible(h)) return true;
+            if (WindowText(h).Trim().Length == 0) return true;
+            var ex = GetWindowLongPtrW(h, GWL_EXSTYLE).ToInt64();
+            if ((ex & WS_EX_TOOLWINDOW) != 0) return true;
+            found = true;
+            return false; // 找到即可停止枚举
+        }, IntPtr.Zero);
+        return found;
+    }
+
+    /// <summary>系统进程 / 外壳进程，不允许被强制结束</summary>
+    private static bool IsProtectedProcess(string name) => name.ToLowerInvariant() is
+        "explorer" or "svchost" or "dwm" or "csrss" or "winlogon" or "services" or "system"
+        or "applicationframehost" or "shellexperiencehost" or "startmenuexperiencehost"
+        or "searchhost" or "textinputhost" or "gamebar";
+
 
     /// <summary>关闭资源管理器中对应文件夹窗口（只关这一个目录窗口，不动其他 explorer 窗口）。
     /// 标题可能是目录名或本地化显示名（如 Downloads → "下载"），两者都匹配；盘符根匹配 "(X:)"。</summary>
@@ -287,6 +398,9 @@ public static class LaunchService
     [DllImport("user32.dll", CharSet = CharSet.Unicode)] private static extern int GetWindowTextW(IntPtr hWnd, System.Text.StringBuilder lpString, int nMaxCount);
     private delegate bool EnumWindowsProc(IntPtr hWnd, IntPtr lParam);
     [DllImport("user32.dll")] private static extern bool EnumWindows(EnumWindowsProc lpEnumFunc, IntPtr lParam);
+    [DllImport("user32.dll")] private static extern IntPtr GetWindowLongPtrW(IntPtr hWnd, int nIndex);
+    private const int GWL_EXSTYLE = -20;
+    private const long WS_EX_TOOLWINDOW = 0x80;
 
     /// <summary>枚举所有可见、有标题的顶层窗口句柄</summary>
     private static List<IntPtr> EnumVisibleTopWindows()

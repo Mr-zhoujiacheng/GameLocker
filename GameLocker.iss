@@ -5,7 +5,7 @@
 ;       故打包统一取 build 产物，并排除 publish 与 *.pdb
 
 #define AppName "Game Locker"
-#define AppVersion "1.7.0"
+#define AppVersion "1.7.1"
 #define AppPublisher "Mr-zhoujiacheng"
 #define AppUrl "https://github.com/Mr-zhoujiacheng/GameLocker"
 #define SrcDir "bin\Release\net8.0-windows10.0.19041.0\win-x64"
@@ -50,3 +50,6 @@ Name: "{autodesktop}\{#AppName}"; Filename: "{app}\GameLocker.exe"; Tasks: deskt
 
 [Run]
 Filename: "{app}\GameLocker.exe"; Description: "立即启动 {#AppName}"; Flags: nowait postinstall skipifsilent
+; 内置更新器走静默安装（/VERYSILENT），RestartApplications 在静默模式下不生效，
+; 这里补一条只在静默安装后执行的启动项，保证升级完自动重新打开
+Filename: "{app}\GameLocker.exe"; Flags: nowait skipifnotsilent

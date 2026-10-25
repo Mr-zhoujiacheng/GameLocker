@@ -91,6 +91,24 @@ public sealed partial class AddItemPage : Page, ISettingsGamepad
     /// <summary>系统小组件：胶囊右侧的勾/叉状态图标（与 _sysOptBoxes 同下标）</summary>
     private FontIcon[] _sysOptMarks = [];
 
+    /// <summary>性能监控：显示项目胶囊按钮（与 _monOptMetrics 同下标）</summary>
+    private ToggleButton[] _monOptBoxes = [];
+
+    /// <summary>性能监控：胶囊右侧的勾/叉状态图标（与 _monOptBoxes 同下标）</summary>
+    private FontIcon[] _monOptMarks = [];
+
+    /// <summary>正在按配置回填监控胶囊：此时不触发"至少保留一项"的自动勾回</summary>
+    private bool _fillingMonitorMetrics;
+
+    /// <summary>性能监控：各胶囊对应的位掩码</summary>
+    private static readonly MonitorMetric[] MonOptMetrics =
+    [
+        MonitorMetric.Fps, MonitorMetric.FrameTime, MonitorMetric.FrameGraph, MonitorMetric.Memory,
+        MonitorMetric.CpuUsage, MonitorMetric.CpuFreq, MonitorMetric.CpuTemp, MonitorMetric.CpuPower,
+        MonitorMetric.GpuUsage, MonitorMetric.GpuFreq, MonitorMetric.GpuPower, MonitorMetric.GpuTemp,
+        MonitorMetric.BatteryPercent, MonitorMetric.Battery
+    ];
+
     // 胶囊选中/未选视觉（代码直设，不走 VisualState）
     private static readonly Microsoft.UI.Xaml.Media.SolidColorBrush SysChipOnBrush = MakeBrush(0x33, 0x2E, 0x6B, 0xE6);
     private static readonly Microsoft.UI.Xaml.Media.SolidColorBrush SysChipOffBrush = MakeBrush(0x0F, 0xFF, 0xFF, 0xFF);
@@ -215,11 +233,31 @@ public sealed partial class AddItemPage : Page, ISettingsGamepad
             chip.Checked += (_, _) => ApplySysChipVisual(chip, mark, true);
             chip.Unchecked += (_, _) => ApplySysChipVisual(chip, mark, false);
         }
+        _monOptBoxes = [MonOptFps, MonOptFrameTime, MonOptGraph, MonOptMemory,
+            MonOptCpuUsage, MonOptCpuFreq, MonOptCpuTemp, MonOptCpuPower,
+            MonOptGpuUsage, MonOptGpuFreq, MonOptGpuPower, MonOptGpuTemp,
+            MonOptBatteryPercent, MonOptBattery];
+        _monOptMarks = [MonOptFpsMark, MonOptFrameTimeMark, MonOptGraphMark, MonOptMemoryMark,
+            MonOptCpuUsageMark, MonOptCpuFreqMark, MonOptCpuTempMark, MonOptCpuPowerMark,
+            MonOptGpuUsageMark, MonOptGpuFreqMark, MonOptGpuPowerMark, MonOptGpuTempMark,
+            MonOptBatteryPercentMark, MonOptBatteryMark];
+        for (var i = 0; i < _monOptBoxes.Length; i++)
+        {
+            var chip = _monOptBoxes[i];
+            var mark = _monOptMarks[i];
+            chip.Checked += (_, _) => ApplySysChipVisual(chip, mark, true);
+            chip.Unchecked += (_, _) =>
+            {
+                ApplySysChipVisual(chip, mark, false);
+                // 悬浮条至少保留一项，取消最后一项时立即勾回去
+                if (!_fillingMonitorMetrics && SelectedMonitorMetrics() == MonitorMetric.None)
+                    chip.IsChecked = true;
+            };
+        }
         BuildGamepadMapDiagram();
         // OptiScaler 下拉框选项来自服务层数组，保证与写入配置的值一致
         FillOptiCombo(OptiDllCombo, OptiScalerService.ProxyOptions);
-        // 版本渠道下拉项带"已下载到的版本号"后缀，故每次进页面都重新灌一次；默认选"正式版"
-        FillOptiCombo(OptiVersionCombo, OptiScalerService.GetVersionChannelOptions());
+        FillOptiCombo(OptiVersionCombo, OptiScalerService.VersionChannelOptions);
         // 具体版本先只放"最新版"，进编辑页后异步补上 GitHub 上可下载的版本列表
         FillOptiCombo(OptiVersionTagCombo, [("", "最新版（自动）")]);
         FillOptiCombo(OptiFsr4VersionCombo, [("", "最新版（自动）")]);
@@ -344,21 +382,25 @@ public sealed partial class AddItemPage : Page, ISettingsGamepad
         if (MappingRow.Visibility == vis) list.Add(MappingCaptureButton);
         // 修改器小组件：打开已下载修改器目录按钮
         if (TrainerRow.Visibility == vis) list.Add(OpenTrainerFolderButton);
-        // 性能监控：悬浮条位置（六选一）/ 大小 / 不透明度
+        // 性能监控：悬浮条位置（六选一）/ 大小 / 配色（组合色）
         if (MonitorRow.Visibility == vis)
         {
             list.Add(MonSizeSmall);
             list.Add(MonSizeNormal);
             list.Add(MonSizeLarge);
-            list.Add(MonOpaque100);
-            list.Add(MonOpaque50);
-            list.Add(MonOpaque0);
+            list.Add(MonColorDefault);
+            list.Add(MonColorNeon);
+            list.Add(MonColorIce);
+            list.Add(MonColorSunset);
+            list.Add(MonColorMono);
+            list.Add(MonAlwaysOnToggle);
             list.Add(MonPosTopLeft);
             list.Add(MonPosTopCenter);
             list.Add(MonPosTopRight);
             list.Add(MonPosBottomLeft);
             list.Add(MonPosBottomCenter);
             list.Add(MonPosBottomRight);
+            list.AddRange(_monOptBoxes);
         }
         // 游戏存档小组件：备份方式 / 保留份数，以及按方式显示的本地面板或云端面板
         if (BackupRow.Visibility == vis)
@@ -570,14 +612,17 @@ public sealed partial class AddItemPage : Page, ISettingsGamepad
                 Keep5Radio.IsChecked = item.BackupKeep is not 3 and not 10; // 兜底：非 3/10 一律按 5
                 UpdateBackupPanels();
             }
-            // 性能监控：大小、颜色 + 悬浮条位置 / 大小 / 透明度（磁贴固定显示“性能监控”，无需自定义名称）
+            // 性能监控：大小、颜色 + 悬浮条位置 / 大小 / 配色（磁贴固定显示“性能监控”，无需自定义名称）
             var isMonitor = item.WidgetKind == WidgetKind.Monitor;
             MonitorRow.Visibility = isMonitor ? Microsoft.UI.Xaml.Visibility.Visible : w;
             if (isMonitor)
             {
                 if (string.IsNullOrWhiteSpace(NameBox.Text)) NameBox.Text = "性能监控";
                 NameBox.Visibility = w;
-                CheckMonitorSettings(item.MonitorPos, item.MonitorScale, item.MonitorOpacity);
+                CheckMonitorSettings(item.MonitorPos, item.MonitorScale);
+                CheckMonitorColor(item.MonitorColor);
+                MonAlwaysOnToggle.IsOn = item.MonitorAlwaysOn;
+                CheckMonitorMetrics(item.MonitorMetrics);
             }
             // 文件传输：名称、大小、颜色 + 可发送目录 / 接收目录（留空=系统下载文件夹）
             var isFileTransfer = item.WidgetKind == WidgetKind.FileTransfer;
@@ -604,7 +649,7 @@ public sealed partial class AddItemPage : Page, ISettingsGamepad
                 _savedOptiTag = item.OptiVersionTag ?? "";
                 _savedFsr4Tag = item.OptiFsr4VersionTag ?? "";
                 _suppressOptiVersionEvent = true;
-                SelectOptiCombo(OptiVersionCombo, OptiScalerService.GetVersionChannelOptions(), item.OptiChannel);
+                SelectOptiCombo(OptiVersionCombo, OptiScalerService.VersionChannelOptions, item.OptiChannel);
                 _suppressOptiVersionEvent = false;
                 SelectOptiCombo(OptiUpscalerCombo, OptiScalerService.UpscalerOptions, item.OptiDx12Upscaler);
                 SelectOptiCombo(OptiFgInputCombo, OptiScalerService.FgInputOptions, item.OptiFgInput);
@@ -913,8 +958,8 @@ public sealed partial class AddItemPage : Page, ISettingsGamepad
         LargeSizeRadio.IsChecked = size == TileSize.Large;
     }
 
-    /// <summary>按配置回填监控悬浮条的位置 / 大小 / 不透明度（旧配置无这些字段时走默认值）</summary>
-    private void CheckMonitorSettings(MonitorPosition pos, double scale, double opacity)
+    /// <summary>按配置回填监控悬浮条的位置 / 大小（旧配置无这些字段时走默认值）</summary>
+    private void CheckMonitorSettings(MonitorPosition pos, double scale)
     {
         MonPosTopLeft.IsChecked = pos == MonitorPosition.TopLeft;
         MonPosTopCenter.IsChecked = pos == MonitorPosition.TopCenter;
@@ -926,10 +971,41 @@ public sealed partial class AddItemPage : Page, ISettingsGamepad
         MonSizeSmall.IsChecked = scale < 0.88;
         MonSizeLarge.IsChecked = scale > 1.15;
         MonSizeNormal.IsChecked = MonSizeSmall.IsChecked != true && MonSizeLarge.IsChecked != true;
+    }
 
-        MonOpaque100.IsChecked = opacity >= 0.72;
-        MonOpaque50.IsChecked = MonOpaque100.IsChecked != true && opacity >= 0.25;
-        MonOpaque0.IsChecked = MonOpaque100.IsChecked != true && MonOpaque50.IsChecked != true;
+    /// <summary>按配置回填监控条配色（组合色；旧配置无该字段时默认青彩）</summary>
+    private void CheckMonitorColor(MonitorColorTheme color)
+    {
+        MonColorDefault.IsChecked = color == MonitorColorTheme.Default;
+        MonColorNeon.IsChecked = color == MonitorColorTheme.Neon;
+        MonColorIce.IsChecked = color == MonitorColorTheme.Ice;
+        MonColorSunset.IsChecked = color == MonitorColorTheme.Sunset;
+        MonColorMono.IsChecked = color == MonitorColorTheme.Mono;
+    }
+
+    /// <summary>按配置回填"显示项目"胶囊（旧配置无该字段时默认全开）</summary>
+    private void CheckMonitorMetrics(MonitorMetric metrics)
+    {
+        _fillingMonitorMetrics = true;
+        try
+        {
+            for (var i = 0; i < _monOptBoxes.Length; i++)
+            {
+                var on = (metrics & MonOptMetrics[i]) != 0;
+                _monOptBoxes[i].IsChecked = on;
+                ApplySysChipVisual(_monOptBoxes[i], _monOptMarks[i], on); // 事件在 null→false 时不触发，显式兜底
+            }
+        }
+        finally { _fillingMonitorMetrics = false; }
+    }
+
+    /// <summary>把"显示项目"胶囊勾选结果读成位掩码（0 = 一项都没勾）</summary>
+    private MonitorMetric SelectedMonitorMetrics()
+    {
+        var mask = MonitorMetric.None;
+        for (var i = 0; i < _monOptBoxes.Length; i++)
+            if (_monOptBoxes[i].IsChecked == true) mask |= MonOptMetrics[i];
+        return mask;
     }
 
     private MonitorPosition SelectedMonitorPos()
@@ -946,9 +1022,14 @@ public sealed partial class AddItemPage : Page, ISettingsGamepad
         MonSizeSmall.IsChecked == true ? 0.75 :
         MonSizeLarge.IsChecked == true ? 1.3 : 1.0;
 
-    private double SelectedMonitorOpacity() =>
-        MonOpaque100.IsChecked == true ? 1.0 :
-        MonOpaque50.IsChecked == true ? 0.5 : 0.0;
+    private MonitorColorTheme SelectedMonitorColor()
+    {
+        if (MonColorNeon.IsChecked == true) return MonitorColorTheme.Neon;
+        if (MonColorIce.IsChecked == true) return MonitorColorTheme.Ice;
+        if (MonColorSunset.IsChecked == true) return MonitorColorTheme.Sunset;
+        if (MonColorMono.IsChecked == true) return MonitorColorTheme.Mono;
+        return MonitorColorTheme.Default;
+    }
 
     private PhotoSpeed SelectedSpeed()
     {
@@ -1433,12 +1514,15 @@ public sealed partial class AddItemPage : Page, ISettingsGamepad
                 }
                 else if (it.WidgetKind == WidgetKind.Monitor)
                 {
-                    // 性能监控：改名称、大小、颜色，以及悬浮条位置 / 大小 / 不透明度
+                    // 性能监控：改名称、大小、颜色，以及悬浮条位置 / 大小 / 配色
                     it.Size = SelectedSize();
                     it.TileColor = SelectedColor();
                     it.MonitorPos = SelectedMonitorPos();
                     it.MonitorScale = SelectedMonitorScale();
-                    it.MonitorOpacity = SelectedMonitorOpacity();
+                    it.MonitorColor = SelectedMonitorColor();
+                    it.MonitorAlwaysOn = MonAlwaysOnToggle.IsOn;
+                    var mm = SelectedMonitorMetrics();
+                    it.MonitorMetrics = mm == MonitorMetric.None ? MonitorMetric.All : mm;
                 }
                 else if (it.WidgetKind == WidgetKind.FileTransfer)
                 {

@@ -429,7 +429,7 @@
                     </Grid>
                 </StackPanel>
 
-                <!-- 性能监控小组件：悬浮条位置（小图示六选一）/ 大小 / 透明度（仅监控编辑时显示） -->
+                <!-- 性能监控小组件：悬浮条位置（小图示六选一）/ 大小 / 常开 / 配色 / 显示项目（仅监控编辑时显示） -->
                 <StackPanel x:Name="MonitorRow" Spacing="14" Visibility="Collapsed">
                     <StackPanel Spacing="4">
                         <TextBlock Text="监控条位置" FontSize="17" FontWeight="Bold" Opacity="0.95"/>
@@ -501,6 +501,8 @@
 
                     <StackPanel Spacing="4">
                         <TextBlock Text="监控条大小" FontSize="17" FontWeight="Bold" Opacity="0.95"/>
+                        <TextBlock Text="大小固定，不随屏幕分辨率 / 系统缩放变化；仅当屏幕宽度放不下时才会自动缩小"
+                                   FontSize="12" Opacity="0.6" TextWrapping="Wrap"/>
                         <StackPanel Orientation="Horizontal" Spacing="8">
                             <RadioButton x:Name="MonSizeSmall" Content="小" GroupName="MonitorSize" Padding="14,10"/>
                             <RadioButton x:Name="MonSizeNormal" Content="标准" GroupName="MonitorSize" Padding="14,10"
@@ -510,13 +512,216 @@
                     </StackPanel>
 
                     <StackPanel Spacing="4">
-                        <TextBlock Text="监控条不透明度" FontSize="17" FontWeight="Bold" Opacity="0.95"/>
-                        <StackPanel Orientation="Horizontal" Spacing="8">
-                            <RadioButton x:Name="MonOpaque100" Content="100%" GroupName="MonitorOpacity" Padding="14,10"
-                                         IsChecked="True"/>
-                            <RadioButton x:Name="MonOpaque50" Content="50%" GroupName="MonitorOpacity" Padding="14,10"/>
-                            <RadioButton x:Name="MonOpaque0" Content="0%（无外框）" GroupName="MonitorOpacity" Padding="14,10"/>
-                        </StackPanel>
+                        <TextBlock Text="监控条常开" FontSize="17" FontWeight="Bold" Opacity="0.95"/>
+                        <TextBlock Text="开启后切出本软件也一直显示；关闭则仅在本软件前台或检测到全屏游戏时显示"
+                                   FontSize="12" Opacity="0.6" TextWrapping="Wrap"/>
+                        <ToggleSwitch x:Name="MonAlwaysOnToggle" HorizontalAlignment="Left" Margin="0,2,0,0"
+                                      OnContent="一直显示" OffContent="按情况显示"
+                                      ToolTipService.ToolTip="开启：主窗口切到后台也保留悬浮条；关闭：主窗口前台或有全屏游戏时才显示，节省资源。"/>
+                    </StackPanel>
+
+                    <StackPanel Spacing="4">
+                        <TextBlock Text="监控条颜色" FontSize="17" FontWeight="Bold" Opacity="0.95"/>
+                        <TextBlock Text="背景固定为全透明；配色直接作用于每块的小标题、数值与左侧色条。色点为该方案的实际颜色，文字仅作品名"
+                                   FontSize="12" Opacity="0.6" TextWrapping="Wrap"/>
+                        <Grid ColumnSpacing="8" RowSpacing="8">
+                            <Grid.ColumnDefinitions>
+                                <ColumnDefinition Width="*"/>
+                                <ColumnDefinition Width="*"/>
+                                <ColumnDefinition Width="*"/>
+                            </Grid.ColumnDefinitions>
+                            <Grid.RowDefinitions>
+                                <RowDefinition Height="Auto"/>
+                                <RowDefinition Height="Auto"/>
+                            </Grid.RowDefinitions>
+                            <RadioButton x:Name="MonColorDefault" Grid.Row="0" Grid.Column="0"
+                                         GroupName="MonitorColor" Padding="12,8" IsChecked="True">
+                                <StackPanel Orientation="Horizontal" Spacing="8">
+                                    <StackPanel Orientation="Horizontal" Spacing="3">
+                                        <Ellipse Width="10" Height="10" Fill="#6FE3A0"/>
+                                        <Ellipse Width="10" Height="10" Fill="#6BB6FF"/>
+                                        <Ellipse Width="10" Height="10" Fill="#A99BFF"/>
+                                        <Ellipse Width="10" Height="10" Fill="#FFC46B"/>
+                                        <Ellipse Width="10" Height="10" Fill="#6FE0D8"/>
+                                    </StackPanel>
+                                    <TextBlock Text="默认" FontSize="14" VerticalAlignment="Center"/>
+                                </StackPanel>
+                            </RadioButton>
+                            <RadioButton x:Name="MonColorNeon" Grid.Row="0" Grid.Column="1"
+                                         GroupName="MonitorColor" Padding="12,8">
+                                <StackPanel Orientation="Horizontal" Spacing="8">
+                                    <StackPanel Orientation="Horizontal" Spacing="3">
+                                        <Ellipse Width="10" Height="10" Fill="#FF5C8A"/>
+                                        <Ellipse Width="10" Height="10" Fill="#4CFFD5"/>
+                                        <Ellipse Width="10" Height="10" Fill="#B983FF"/>
+                                        <Ellipse Width="10" Height="10" Fill="#FF8C42"/>
+                                        <Ellipse Width="10" Height="10" Fill="#4CC2FF"/>
+                                    </StackPanel>
+                                    <TextBlock Text="霓虹" FontSize="14" VerticalAlignment="Center"/>
+                                </StackPanel>
+                            </RadioButton>
+                            <RadioButton x:Name="MonColorIce" Grid.Row="0" Grid.Column="2"
+                                         GroupName="MonitorColor" Padding="12,8">
+                                <StackPanel Orientation="Horizontal" Spacing="8">
+                                    <StackPanel Orientation="Horizontal" Spacing="3">
+                                        <Ellipse Width="10" Height="10" Fill="#7FE7FF"/>
+                                        <Ellipse Width="10" Height="10" Fill="#6BB6FF"/>
+                                        <Ellipse Width="10" Height="10" Fill="#8FB3FF"/>
+                                        <Ellipse Width="10" Height="10" Fill="#9BE0FF"/>
+                                        <Ellipse Width="10" Height="10" Fill="#6FE0D8"/>
+                                    </StackPanel>
+                                    <TextBlock Text="冰蓝" FontSize="14" VerticalAlignment="Center"/>
+                                </StackPanel>
+                            </RadioButton>
+                            <RadioButton x:Name="MonColorSunset" Grid.Row="1" Grid.Column="0"
+                                         GroupName="MonitorColor" Padding="12,8">
+                                <StackPanel Orientation="Horizontal" Spacing="8">
+                                    <StackPanel Orientation="Horizontal" Spacing="3">
+                                        <Ellipse Width="10" Height="10" Fill="#FFD166"/>
+                                        <Ellipse Width="10" Height="10" Fill="#FFB86B"/>
+                                        <Ellipse Width="10" Height="10" Fill="#FF8C42"/>
+                                        <Ellipse Width="10" Height="10" Fill="#FFE0A3"/>
+                                        <Ellipse Width="10" Height="10" Fill="#FFA07A"/>
+                                    </StackPanel>
+                                    <TextBlock Text="暖阳" FontSize="14" VerticalAlignment="Center"/>
+                                </StackPanel>
+                            </RadioButton>
+                            <RadioButton x:Name="MonColorMono" Grid.Row="1" Grid.Column="1"
+                                         GroupName="MonitorColor" Padding="12,8">
+                                <StackPanel Orientation="Horizontal" Spacing="8">
+                                    <StackPanel Orientation="Horizontal" Spacing="3">
+                                        <Ellipse Width="10" Height="10" Fill="#FFFFFF"/>
+                                        <Ellipse Width="10" Height="10" Fill="#E6E6E6"/>
+                                        <Ellipse Width="10" Height="10" Fill="#FFFFFF"/>
+                                        <Ellipse Width="10" Height="10" Fill="#E6E6E6"/>
+                                        <Ellipse Width="10" Height="10" Fill="#FFFFFF"/>
+                                    </StackPanel>
+                                    <TextBlock Text="单色" FontSize="14" VerticalAlignment="Center"/>
+                                </StackPanel>
+                            </RadioButton>
+                        </Grid>
+                    </StackPanel>
+
+                    <StackPanel Spacing="4">
+                        <TextBlock Text="显示项目" FontSize="17" FontWeight="Bold" Opacity="0.95"/>
+                        <TextBlock Text="关闭的项不会出现在悬浮条上，至少保留一项；CPU / GPU 块只显示勾选的分项"
+                                   FontSize="12" Opacity="0.6" TextWrapping="Wrap"/>
+                        <Grid Margin="0,2,0,0" ColumnSpacing="8" RowSpacing="8">
+                            <Grid.ColumnDefinitions>
+                                <ColumnDefinition Width="*"/>
+                                <ColumnDefinition Width="*"/>
+                                <ColumnDefinition Width="*"/>
+                                <ColumnDefinition Width="*"/>
+                            </Grid.ColumnDefinitions>
+                            <Grid.RowDefinitions>
+                                <RowDefinition Height="Auto"/>
+                                <RowDefinition Height="Auto"/>
+                                <RowDefinition Height="Auto"/>
+                                <RowDefinition Height="Auto"/>
+                            </Grid.RowDefinitions>
+
+                            <ToggleButton x:Name="MonOptFps" Grid.Row="0" Grid.Column="0" Style="{StaticResource SysOptionChipStyle}">
+                                <Grid>
+                                    <TextBlock Text="帧率" FontSize="14" Margin="0,0,22,0"/>
+                                    <FontIcon x:Name="MonOptFpsMark" Glyph="&#xE711;" FontSize="14"
+                                              HorizontalAlignment="Right" VerticalAlignment="Center"/>
+                                </Grid>
+                            </ToggleButton>
+                            <ToggleButton x:Name="MonOptFrameTime" Grid.Row="0" Grid.Column="1" Style="{StaticResource SysOptionChipStyle}">
+                                <Grid>
+                                    <TextBlock Text="帧延迟" FontSize="14" Margin="0,0,22,0"/>
+                                    <FontIcon x:Name="MonOptFrameTimeMark" Glyph="&#xE711;" FontSize="14"
+                                              HorizontalAlignment="Right" VerticalAlignment="Center"/>
+                                </Grid>
+                            </ToggleButton>
+                            <ToggleButton x:Name="MonOptGraph" Grid.Row="0" Grid.Column="2" Style="{StaticResource SysOptionChipStyle}">
+                                <Grid>
+                                    <TextBlock Text="帧波动线" FontSize="14" Margin="0,0,22,0"/>
+                                    <FontIcon x:Name="MonOptGraphMark" Glyph="&#xE711;" FontSize="14"
+                                              HorizontalAlignment="Right" VerticalAlignment="Center"/>
+                                </Grid>
+                            </ToggleButton>
+                            <ToggleButton x:Name="MonOptMemory" Grid.Row="0" Grid.Column="3" Style="{StaticResource SysOptionChipStyle}">
+                                <Grid>
+                                    <TextBlock Text="内存" FontSize="14" Margin="0,0,22,0"/>
+                                    <FontIcon x:Name="MonOptMemoryMark" Glyph="&#xE711;" FontSize="14"
+                                              HorizontalAlignment="Right" VerticalAlignment="Center"/>
+                                </Grid>
+                            </ToggleButton>
+
+                            <ToggleButton x:Name="MonOptCpuUsage" Grid.Row="1" Grid.Column="0" Style="{StaticResource SysOptionChipStyle}">
+                                <Grid>
+                                    <TextBlock Text="CPU 使用" FontSize="14" Margin="0,0,22,0"/>
+                                    <FontIcon x:Name="MonOptCpuUsageMark" Glyph="&#xE711;" FontSize="14"
+                                              HorizontalAlignment="Right" VerticalAlignment="Center"/>
+                                </Grid>
+                            </ToggleButton>
+                            <ToggleButton x:Name="MonOptCpuFreq" Grid.Row="1" Grid.Column="1" Style="{StaticResource SysOptionChipStyle}">
+                                <Grid>
+                                    <TextBlock Text="CPU 频率" FontSize="14" Margin="0,0,22,0"/>
+                                    <FontIcon x:Name="MonOptCpuFreqMark" Glyph="&#xE711;" FontSize="14"
+                                              HorizontalAlignment="Right" VerticalAlignment="Center"/>
+                                </Grid>
+                            </ToggleButton>
+                            <ToggleButton x:Name="MonOptCpuTemp" Grid.Row="1" Grid.Column="2" Style="{StaticResource SysOptionChipStyle}">
+                                <Grid>
+                                    <TextBlock Text="CPU 温度" FontSize="14" Margin="0,0,22,0"/>
+                                    <FontIcon x:Name="MonOptCpuTempMark" Glyph="&#xE711;" FontSize="14"
+                                              HorizontalAlignment="Right" VerticalAlignment="Center"/>
+                                </Grid>
+                            </ToggleButton>
+                            <ToggleButton x:Name="MonOptCpuPower" Grid.Row="1" Grid.Column="3" Style="{StaticResource SysOptionChipStyle}">
+                                <Grid>
+                                    <TextBlock Text="CPU 功耗" FontSize="14" Margin="0,0,22,0"/>
+                                    <FontIcon x:Name="MonOptCpuPowerMark" Glyph="&#xE711;" FontSize="14"
+                                              HorizontalAlignment="Right" VerticalAlignment="Center"/>
+                                </Grid>
+                            </ToggleButton>
+
+                            <ToggleButton x:Name="MonOptGpuUsage" Grid.Row="2" Grid.Column="0" Style="{StaticResource SysOptionChipStyle}">
+                                <Grid>
+                                    <TextBlock Text="GPU 使用" FontSize="14" Margin="0,0,22,0"/>
+                                    <FontIcon x:Name="MonOptGpuUsageMark" Glyph="&#xE711;" FontSize="14"
+                                              HorizontalAlignment="Right" VerticalAlignment="Center"/>
+                                </Grid>
+                            </ToggleButton>
+                            <ToggleButton x:Name="MonOptGpuFreq" Grid.Row="2" Grid.Column="1" Style="{StaticResource SysOptionChipStyle}">
+                                <Grid>
+                                    <TextBlock Text="GPU 频率" FontSize="14" Margin="0,0,22,0"/>
+                                    <FontIcon x:Name="MonOptGpuFreqMark" Glyph="&#xE711;" FontSize="14"
+                                              HorizontalAlignment="Right" VerticalAlignment="Center"/>
+                                </Grid>
+                            </ToggleButton>
+                            <ToggleButton x:Name="MonOptGpuPower" Grid.Row="2" Grid.Column="2" Style="{StaticResource SysOptionChipStyle}">
+                                <Grid>
+                                    <TextBlock Text="GPU 功耗" FontSize="14" Margin="0,0,22,0"/>
+                                    <FontIcon x:Name="MonOptGpuPowerMark" Glyph="&#xE711;" FontSize="14"
+                                              HorizontalAlignment="Right" VerticalAlignment="Center"/>
+                                </Grid>
+                            </ToggleButton>
+                            <ToggleButton x:Name="MonOptGpuTemp" Grid.Row="2" Grid.Column="3" Style="{StaticResource SysOptionChipStyle}">
+                                <Grid>
+                                    <TextBlock Text="GPU 温度" FontSize="14" Margin="0,0,22,0"/>
+                                    <FontIcon x:Name="MonOptGpuTempMark" Glyph="&#xE711;" FontSize="14"
+                                              HorizontalAlignment="Right" VerticalAlignment="Center"/>
+                                </Grid>
+                            </ToggleButton>
+
+                            <ToggleButton x:Name="MonOptBatteryPercent" Grid.Row="3" Grid.Column="0" Style="{StaticResource SysOptionChipStyle}">
+                                <Grid>
+                                    <TextBlock Text="电池电量" FontSize="14" Margin="0,0,22,0"/>
+                                    <FontIcon x:Name="MonOptBatteryPercentMark" Glyph="&#xE711;" FontSize="14"
+                                              HorizontalAlignment="Right" VerticalAlignment="Center"/>
+                                </Grid>
+                            </ToggleButton>
+                            <ToggleButton x:Name="MonOptBattery" Grid.Row="3" Grid.Column="1" Style="{StaticResource SysOptionChipStyle}">
+                                <Grid>
+                                    <TextBlock Text="电池功耗 · 预计" FontSize="14" Margin="0,0,22,0"/>
+                                    <FontIcon x:Name="MonOptBatteryMark" Glyph="&#xE711;" FontSize="14"
+                                              HorizontalAlignment="Right" VerticalAlignment="Center"/>
+                                </Grid>
+                            </ToggleButton>
+                        </Grid>
                     </StackPanel>
                 </StackPanel>
 
@@ -761,7 +966,7 @@
                             <TextBlock Text="OptiScaler 版本" FontSize="13" Opacity="0.72"/>
                             <ComboBox x:Name="OptiVersionCombo" HorizontalAlignment="Stretch"
                                       SelectionChanged="OnOptiVersionChanged"
-                                      ToolTipService.ToolTip="正式版：官方仓库的 Release，最稳定；测试版：社区镜像的预览版，更新更快但可能有 Bug；本地包：不联网，直接使用下方「本地包文件夹」里的包。"/>
+                                      ToolTipService.ToolTip="正式版：官方仓库的 Release，最稳定；测试版：社区镜像的预览版，更新更快但可能有 Bug；汉化版：社区简体中文 nightly 构建，菜单和 ini 注释均为中文；本地包：不联网，直接使用下方「本地包文件夹」里的包。"/>
                         </StackPanel>
                         <StackPanel x:Name="OptiVersionTagCell" Grid.Row="0" Grid.Column="1" Spacing="5" Margin="0,0,0,14">
                             <TextBlock Text="具体版本" FontSize="13" Opacity="0.72"/>

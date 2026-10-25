@@ -29,6 +29,10 @@ public sealed class MonitorSnapshot
     public double GpuMhz = double.NaN;
     /// <summary>GPU 功耗（W，NaN=不可用；来自 NVML）</summary>
     public double GpuPower = double.NaN;
+    /// <summary>GPU 温度（℃，NaN=不可用；来自 NVML / ADL）</summary>
+    public double GpuTemp = double.NaN;
+    /// <summary>电池当前电量（%，NaN=不可用）</summary>
+    public double BatteryPercent = double.NaN;
     /// <summary>电池功率（W，充电时为充电功率、放电时为放电功率，NaN=不可用）</summary>
     public double BatteryPower = double.NaN;
     /// <summary>预计可用/充满时间（分钟，NaN=不可用）</summary>
@@ -158,7 +162,9 @@ public static class MonitorService
             _overlay = new MonitorOverlayWindow(
                 m?.MonitorPos ?? MonitorPosition.TopCenter,
                 m?.MonitorScale ?? 1.0,
-                m?.MonitorOpacity ?? 1.0);
+                m?.MonitorMetrics ?? MonitorMetric.All,
+                m?.MonitorColor ?? MonitorColorTheme.Default,
+                m?.MonitorAlwaysOn ?? false);
             if (!_overlay.Create())
             {
                 _overlay.Dispose();
@@ -209,7 +215,7 @@ public static class MonitorService
         StateChanged?.Invoke();
     }
 
-    /// <summary>把监控磁贴里保存的窗口设置（位置/大小/透明度）实时应用到悬浮条；未开启时忽略</summary>
+    /// <summary>把监控磁贴里保存的悬浮条设置（位置 / 大小 / 配色 / 常开）实时应用；未开启时忽略</summary>
     public static void ApplySettings()
     {
         if (!IsRunning) return;
@@ -217,7 +223,9 @@ public static class MonitorService
         _overlay?.ApplySettings(
             m?.MonitorPos ?? MonitorPosition.TopCenter,
             m?.MonitorScale ?? 1.0,
-            m?.MonitorOpacity ?? 1.0);
+            m?.MonitorMetrics ?? MonitorMetric.All,
+            m?.MonitorColor ?? MonitorColorTheme.Default,
+            m?.MonitorAlwaysOn ?? false);
     }
 
     /// <summary>从配置里找性能监控磁贴（可能被放进抽屉，故连同抽屉一起找）</summary>
@@ -292,12 +300,14 @@ public static class MonitorService
             var snapshot = Sample();
             lock (Gate) _snapshot = snapshot;
 
-            // 悬浮条显示策略：主窗口前台时永远显示；主窗口后台时只有全屏游戏才显示（避免白白消耗 GPU）
+            // 悬浮条显示策略：主窗口前台时永远显示；主窗口后台时只有全屏游戏才显示（避免白白消耗 GPU）；
+            // 用户勾选"常开"时后台也一直显示并保持 1 秒刷新
             var appFg = Volatile.Read(ref _appIsForeground) == 1;
             var fullscreen = FullscreenDetector.IsForegroundFullscreen();
+            var alwaysOn = _overlay?.AlwaysOn == true;
             _overlay?.SetForeground(appFg, fullscreen);
 
-            if (!appFg && !fullscreen)
+            if (!appFg && !fullscreen && !alwaysOn)
             {
                 // 后台累计 10 秒后主动 GC 一次（不频繁触发）
                 var bg = Interlocked.Increment(ref _backgroundTick);
@@ -318,7 +328,7 @@ public static class MonitorService
             }
 
             _overlay?.Update(snapshot);
-            if (fullscreen) _overlay?.ReassertTopmost();
+            if (fullscreen || (alwaysOn && !appFg)) _overlay?.ReassertTopmost();
         }
         catch { }
         finally
@@ -336,7 +346,8 @@ public static class MonitorService
             CpuMhz = ReadCpuMhz(),
             MemPercent = ReadMemoryPercent(),
             GpuMhz = ReadGpuClock(),
-            GpuPower = ReadGpuPower()
+            GpuPower = ReadGpuPower(),
+            GpuTemp = ReadGpuTemp()
         };
 
         // GPU 占用 / 电池功率走 WMI（较慢）、温度走 WMI，错开周期在后台采样并缓存
@@ -595,6 +606,9 @@ public static class MonitorService
         s.Charging = (p.BatteryFlag & 0x08) != 0; // 8 = 正在充电
         if (p.BatteryLifeTime > 0 && p.BatteryLifeTime != -1)
             s.BatteryMinutes = p.BatteryLifeTime / 60.0;
+        // 255 = 未知（无电池 / 读取失败）
+        if (p.BatteryLifePercent != 255)
+            s.BatteryPercent = p.BatteryLifePercent;
 
         // 充电时用充电功率，放电时用放电功率；接电源且电池已满时两者都为 0（无功率可示）
         if (s.Charging) s.BatteryPower = _batteryRate.Charge;
@@ -709,6 +723,23 @@ public static class MonitorService
         return ReadKmtClock();
     }
 
+    /// <summary>GPU 温度（℃）：NVIDIA 走 NVML，AMD 走 ADL；Intel 核显没有通用温度接口，返回 NaN</summary>
+    private static double ReadGpuTemp()
+    {
+        EnsureNvml();
+        if (_nvmlDevice != IntPtr.Zero)
+        {
+            try
+            {
+                // NVML_TEMPERATURE_GPU = 0
+                if (nvmlDeviceGetTemperature(_nvmlDevice, 0, out var celsius) == 0 && celsius > 0)
+                    return celsius;
+            }
+            catch { }
+        }
+        return ReadAdlTemp();
+    }
+
     [DllImport("nvml.dll", EntryPoint = "nvmlInit_v2")]
     private static extern int nvmlInit_v2();
 
@@ -723,6 +754,9 @@ public static class MonitorService
 
     [DllImport("nvml.dll", EntryPoint = "nvmlDeviceGetClockInfo")]
     private static extern int nvmlDeviceGetClockInfo(IntPtr device, int clockType, out uint mhz);
+
+    [DllImport("nvml.dll", EntryPoint = "nvmlDeviceGetTemperature")]
+    private static extern int nvmlDeviceGetTemperature(IntPtr device, int sensorType, out uint celsius);
 
     // ---- GPU 频率 / 功耗（AMD：ADL，atiadlxx.dll 由 AMD 显卡驱动提供）----
 
@@ -1031,6 +1065,24 @@ public static class MonitorService
         finally { Marshal.FreeHGlobal(buffer); }
     }
 
+    /// <summary>AMD 核心温度（ADL OD5 Temperature，单位 1/1000 ℃；APU 或驱动不支持时返回 NaN）</summary>
+    private static double ReadAdlTemp()
+    {
+        EnsureAdl();
+        if (!_adlReady) return double.NaN;
+
+        var buffer = Marshal.AllocHGlobal(8);
+        try
+        {
+            Marshal.WriteInt32(buffer, 0, 8); // ADLTemperature.iSize
+            if (ADL_Overdrive5_Temperature_Get(_adlAdapter, 0, buffer) != 0) return double.NaN;
+            var milli = Marshal.ReadInt32(buffer, 4); // iTemperature（1/1000 ℃）
+            return milli > 0 ? milli / 1000.0 : double.NaN;
+        }
+        catch { return double.NaN; }
+        finally { Marshal.FreeHGlobal(buffer); }
+    }
+
     /// <summary>AMD 整卡功耗（ADL OD6，单位 mW；APU 上驱动可能不支持，此时返回 NaN）</summary>
     private static double ReadAdlPower()
     {
@@ -1053,6 +1105,9 @@ public static class MonitorService
 
     [DllImport("atiadlxx.dll")]
     private static extern int ADL_Overdrive6_CurrentPower_Get(int adapterIndex, int powerType, out int power);
+
+    [DllImport("atiadlxx.dll")]
+    private static extern int ADL_Overdrive5_Temperature_Get(int adapterIndex, int thermalControllerIndex, IntPtr temperature);
 
     // ---- CPU 功耗 ----
 

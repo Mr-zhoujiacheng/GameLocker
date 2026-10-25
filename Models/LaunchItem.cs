@@ -136,6 +136,58 @@ public enum MonitorPosition
     BottomRight
 }
 
+/// <summary>性能监控悬浮条显示哪些数据（可多选，位掩码；编辑页"显示项目"里勾选）</summary>
+[Flags]
+public enum MonitorMetric
+{
+    None = 0,
+    /// <summary>帧率数字</summary>
+    Fps = 1 << 0,
+    /// <summary>帧生成时间（ms）</summary>
+    FrameTime = 1 << 1,
+    /// <summary>帧波动折线</summary>
+    FrameGraph = 1 << 2,
+    CpuUsage = 1 << 3,
+    CpuFreq = 1 << 4,
+    CpuTemp = 1 << 5,
+    CpuPower = 1 << 6,
+    GpuUsage = 1 << 7,
+    GpuFreq = 1 << 8,
+    GpuPower = 1 << 9,
+    /// <summary>电池功耗 / 预计续航</summary>
+    Battery = 1 << 10,
+    /// <summary>内存占用</summary>
+    Memory = 1 << 11,
+    /// <summary>GPU 温度（℃）</summary>
+    GpuTemp = 1 << 12,
+    /// <summary>电池当前电量百分比</summary>
+    BatteryPercent = 1 << 13,
+
+    /// <summary>CPU 块的任意一项（用于决定 CPU 块是否显示）</summary>
+    CpuAny = CpuUsage | CpuFreq | CpuTemp | CpuPower,
+    /// <summary>GPU 块的任意一项（用于决定 GPU 块是否显示）</summary>
+    GpuAny = GpuUsage | GpuFreq | GpuPower | GpuTemp,
+
+    /// <summary>默认全开（与旧版一律显示全部指标保持一致）</summary>
+    All = Fps | FrameTime | FrameGraph | CpuUsage | CpuFreq | CpuTemp | CpuPower
+        | GpuUsage | GpuFreq | GpuPower | Battery | Memory | GpuTemp | BatteryPercent
+}
+
+/// <summary>性能监控悬浮条配色（组合色：每组为帧率 / CPU / GPU / 电池 / 内存等指标分配不同颜色）</summary>
+public enum MonitorColorTheme
+{
+    /// <summary>默认青彩：绿 / 蓝 / 紫 / 橙 / 青</summary>
+    Default,
+    /// <summary>霓虹：玫红 / 薄荷 / 紫 / 橙红 / 亮蓝</summary>
+    Neon,
+    /// <summary>冰蓝：整体冷色，蓝 / 青系</summary>
+    Ice,
+    /// <summary>暖阳：黄 / 橙 / 珊瑚色系</summary>
+    Sunset,
+    /// <summary>单色：全部白色，最低干扰</summary>
+    Mono
+}
+
 /// <summary>磁贴尺寸（Win10 磁贴风格）</summary>
 public enum TileSize
 {
@@ -267,8 +319,15 @@ public class LaunchItem
     /// <summary>性能监控悬浮条大小倍率（仅 WidgetKind.Monitor 使用；叠加在自动适配之上，0.6~1.6）</summary>
     public double MonitorScale { get; set; } = 1.0;
 
-    /// <summary>性能监控悬浮条不透明度（仅 WidgetKind.Monitor 使用；0~1，0 表示无外框只剩文字）</summary>
-    public double MonitorOpacity { get; set; } = 1.0;
+    /// <summary>性能监控悬浮条显示哪些数据（仅 WidgetKind.Monitor 使用；默认全开）</summary>
+    public MonitorMetric MonitorMetrics { get; set; } = MonitorMetric.All;
+
+    /// <summary>性能监控悬浮条配色方案（仅 WidgetKind.Monitor 使用；背景固定透明，配色作用于标题、数值与色条）</summary>
+    public MonitorColorTheme MonitorColor { get; set; } = MonitorColorTheme.Default;
+
+    /// <summary>性能监控悬浮条是否常开（仅 WidgetKind.Monitor 使用）：开启后切出本软件也一直显示；
+    /// 关闭则仅在本软件前台或检测到全屏游戏时显示</summary>
+    public bool MonitorAlwaysOn { get; set; }
 
     /// <summary>文件传输的可发送目录（仅 WidgetKind.FileTransfer 使用；空=系统下载文件夹，浮层里列出该目录顶层文件）</summary>
     public string? FileTransferSendFolder { get; set; }
@@ -313,7 +372,9 @@ public class LaunchItem
         OptiFsr4VersionTag = OptiFsr4VersionTag,
         MonitorPos = MonitorPos,
         MonitorScale = MonitorScale,
-        MonitorOpacity = MonitorOpacity,
+        MonitorColor = MonitorColor,
+        MonitorMetrics = MonitorMetrics,
+        MonitorAlwaysOn = MonitorAlwaysOn,
         GamepadMappings = [.. GamepadMappings.Select(m => m.Clone())],
         Members = [.. Members.Select(m => m.Clone())],
         Drawers = Drawers is null ? null : [.. Drawers.Select(d => d.Clone())]

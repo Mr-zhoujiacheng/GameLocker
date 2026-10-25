@@ -157,8 +157,10 @@ public static class TrainerService
     }
 
     /// <summary>
-    /// 当前 LastExeName 对应的进程此刻是否真的在前台（配合 IsGameLikeProcess 判定"确实切到了游戏"）。
-    /// 三个小组件的 Activate 入口都先查这个：用户切到设置/浏览器/Steam 时拒绝操作并提示切回游戏。
+    /// 最近记录的游戏是否仍是"当前在玩的游戏"，三个小组件（修改器 / 游戏存档 / OptiScaler）的入口都先查这个。
+    /// 判定：前台就是该游戏；或前台是本启动器（开始菜单模式下必须点/按它才能操作磁贴）；
+    /// 或前台只是短暂遮挡游戏的覆盖层/系统外壳（Steam 覆盖、截图录屏工具、UWP 宿主、开始菜单等）。
+    /// 用户切到设置/浏览器/商店等真正的其他程序时仍然拒绝，避免操作到错误的游戏。
     /// </summary>
     public static bool IsLastGameActuallyForeground()
     {
@@ -169,11 +171,28 @@ public static class TrainerService
             var hwnd = GetForegroundWindow();
             if (hwnd == IntPtr.Zero) return false;
             GetWindowThreadProcessId(hwnd, out var pid);
-            using var p = Process.GetProcessById((int)pid);
-            return string.Equals(p.ProcessName, LastExeName, StringComparison.OrdinalIgnoreCase);
+            var id = (int)pid;
+            if (id == Environment.ProcessId) return true;   // 本启动器在前台：游戏就在它后面
+            using var p = Process.GetProcessById(id);
+            if (string.Equals(p.ProcessName, LastExeName, StringComparison.OrdinalIgnoreCase)) return true;
+
+            var pass = IsTransientForeground(p.ProcessName);
+            DebugLog.Write($"修改器: 前台校验 {p.ProcessName}（期望 {LastExeName}）→ {(pass ? "放行" : "拒绝")}");
+            return pass;
         }
-        catch { return false; }
+        catch (Exception ex)
+        {
+            DebugLog.Write($"修改器: 前台校验异常 {ex.GetType().Name}: {ex.Message}");
+            return false;
+        }
     }
+
+    /// <summary>短暂遮挡游戏的窗口：Steam / Xbox 覆盖层、截图录屏工具、系统外壳与开始菜单。
+    /// 它们在前台不代表用户切到了别的游戏（目标游戏仍由最近记录决定）。</summary>
+    private static bool IsTransientForeground(string exe) => exe.ToLowerInvariant() is
+        "steamwebhelper" or "gameoverlayui" or "snippingtool" or "screenclippinghost"
+        or "applicationframehost" or "shellexperiencehost" or "startmenuexperiencehost"
+        or "searchhost" or "textinputhost" or "explorer" or "gamebar" or "xboxgamebarwidgets";
 
     /// <summary>最近记录的游戏进程是否仍在运行</summary>
     public static bool IsGameRunning()

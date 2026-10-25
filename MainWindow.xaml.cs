@@ -320,13 +320,10 @@ public sealed partial class MainWindow : Window
         {
             _startMenuAutoHide.Stop();
             if (!SettingsService.Current.StartMenuMode || !_shown) return;
-            // 系统开始菜单抢到前台时不要收起，而是把焦点抢回来（否则会切成"呼出又关闭"）
+            // 系统开始菜单抢到前台时不要收起，而是把焦点抢回来（否则会切成"呼出又关闭"）；
+            // 其他程序成为前台（如刚启动的软件）不再自动收起，开始菜单模式下只能手动隐藏
             if (KeyboardHookService.IsStartMenuProcessWindow(GetForegroundWindow()))
-            {
                 BringToForeground();
-                return;
-            }
-            if (GetForegroundWindow() != _hwnd) HideToTray();
         };
 
         // 启动：先把窗口移到屏外，App.Activate 显示时不在原位（无虚影），Activated 后滑入
@@ -344,7 +341,12 @@ public sealed partial class MainWindow : Window
                 _edgeGesture?.SetStripVisible(false);
                 // 可见时重申手柄路由；失去前台（Deactivated）不动门控——
                 // 否则游戏抢回焦点时会把仍然显示在屏幕上的启动器手柄一并关掉
-                if (_shown) SetGamepadRouting(true);
+                if (_shown)
+                {
+                    SetGamepadRouting(true);
+                    // 重新获得前台时恢复置顶（启动其他程序时曾临时取消以免盖住对方）
+                    if (SettingsService.Current.StartMenuMode) SetAlwaysOnTop(true);
+                }
             }
             else
             {
@@ -352,8 +354,13 @@ public sealed partial class MainWindow : Window
                 ForegroundWatcherService.SetForeground(false);
                 _trainerTracker.Interval = TimeSpan.FromMilliseconds(5000);
                 _taskbarWatch.Interval = TimeSpan.FromMilliseconds(5000);
-                // 开始菜单模式：点到面板外部即自动收起
-                if (SettingsService.Current.StartMenuMode && _shown) _startMenuAutoHide.Start();
+                // 开始菜单模式：启动其他程序后保持显示（只能手动隐藏），同时取消置顶，
+                // 避免面板盖在新启动的程序上面；仍做一次失焦复查，用于抢回被系统开始菜单夺走的前台
+                if (SettingsService.Current.StartMenuMode && _shown)
+                {
+                    SetAlwaysOnTop(false);
+                    _startMenuAutoHide.Start();
+                }
                 // 任何其他应用成为前台（含被最小化/遮盖）：恢复边缘条，保证任意前台都能触摸呼出
                 _edgeGesture?.SetStripVisible(true);
             }

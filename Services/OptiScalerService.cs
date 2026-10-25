@@ -71,6 +71,9 @@ public static class OptiScalerService
     /// <summary>测试版（Beta）包目录：与正式版分开缓存，切换渠道时不会互相覆盖</summary>
     private static readonly string BetaPackageDir = Path.Combine(RootDir, "package-beta");
 
+    /// <summary>汉化版包目录：与正式版/测试版分开缓存</summary>
+    private static readonly string ZhPackageDir = Path.Combine(RootDir, "package-zh");
+
     /// <summary>本地包文件夹：用户把 zip / 7z / rar 或已解压目录放在这里（选择"本地包"时自动取用）</summary>
     private static readonly string LocalPackageDir = Path.Combine(RootDir, "local");
 
@@ -81,11 +84,13 @@ public static class OptiScalerService
     public static string LocalPackageFolder => LocalPackageDir;
 
     /// <summary>OptiScaler 版本渠道（值, 显示名）：正式版取官方仓库 latest Release，
-    /// 测试版取社区镜像的 pre 版本（OptiScaler-Betas）。ini 内容与用法完全一致，只是包更新更快。</summary>
+    /// 测试版取社区镜像的 pre 版本（OptiScaler-Betas），汉化版取社区简体中文 nightly 构建
+    /// （菜单 / ini 注释全中文，包结构与官方一致）。ini 内容与用法完全一致。</summary>
     public static readonly (string Value, string Label)[] VersionChannelOptions =
     [
         ("stable", "正式版"),
         ("beta", "测试版"),
+        ("zh", "汉化版"),
         ("local", "本地包")
     ];
 
@@ -114,12 +119,7 @@ public static class OptiScalerService
         }
     }
 
-    /// <summary>版本渠道下拉项：已下载过的渠道在"正式版 / 测试版"后附加实际版本号后缀</summary>
-    public static (string Value, string Label)[] GetVersionChannelOptions() =>
-        [.. VersionChannelOptions.Select(o =>
-            ChannelVersions.TryGetValue(o.Value, out var v) ? (o.Value, $"{o.Label} {v}") : o)];
-
-    /// <summary>记住某渠道下载到的版本号（包可用的那一刻调用），供下拉框显示版本后缀</summary>
+    /// <summary>记住某渠道下载到的版本号（包可用的那一刻调用），用于复用渠道根目录的旧缓存</summary>
     private static void RememberChannelVersion(string channel, string tag)
     {
         var version = tag.TrimStart('v', 'V').Trim();
@@ -274,6 +274,7 @@ public static class OptiScalerService
     private const string WikiHtmlUrl = "https://github.com/optiscaler/OptiScaler/wiki/Compatibility-List";
     private const string StableRepoApi = "https://api.github.com/repos/optiscaler/OptiScaler";
     private const string BetaRepoApi = "https://api.github.com/repos/Optiscaler-Client/OptiScaler-Betas";
+    private const string ZhRepoApi = "https://api.github.com/repos/Lxg6/OptiScaler-nightly-zh_CN";
 
     /// <summary>兼容列表缓存有效期（超过则尝试重新抓取）</summary>
     private static readonly TimeSpan CompatTtl = TimeSpan.FromDays(7);
@@ -836,18 +837,22 @@ public static class OptiScalerService
 
     // ---- 取包：本地覆盖 / 自动下载最新 Release ----
 
-    /// <summary>该项是否选了"测试版"渠道（默认/空值=正式版）</summary>
-    private static bool IsBeta(LaunchItem item) => Blank(item.OptiChannel) == "beta";
-
-    /// <summary>该项是否选了"本地包"渠道（不联网，直接用本地包文件夹里的包）</summary>
-    private static bool IsLocal(LaunchItem item) => Blank(item.OptiChannel) == "local";
+    /// <summary>该项的版本渠道：stable（默认/空值）/ beta / zh / local</summary>
+    private static string ChannelOf(LaunchItem item) => Blank(item.OptiChannel) switch
+    {
+        "beta" => "beta",
+        "zh" => "zh",
+        "local" => "local",
+        _ => "stable"
+    };
 
     /// <summary>取得解压后的 OptiScaler 包根目录（含 OptiScaler.dll）；失败返回 null。
     /// 指定了具体版本（OptiVersionTag）就取那个 Release，否则取该渠道最新版。</summary>
     private static async Task<string?> EnsurePackageAsync(LaunchItem item)
     {
+        var channel = ChannelOf(item);
         // 本地包渠道：显式选过包就用它，否则扫描"本地包文件夹"；失败直接报错，不回退联网下载
-        if (IsLocal(item))
+        if (channel == "local")
         {
             if (!string.IsNullOrWhiteSpace(item.OptiLocalPackage))
             {
@@ -864,22 +869,28 @@ public static class OptiScalerService
             return null;
         }
 
-        return await GetPackageAsync(IsBeta(item), item.OptiVersionTag);
+        return await GetPackageAsync(channel, item.OptiVersionTag);
     }
 
     /// <summary>按渠道 + 版本标签取包（tag 为空=最新版）：已缓存直接用，否则从 GitHub 下载并解压。
-    /// 每个版本一个缓存目录（package\{tag} / package-beta\{tag}），切换版本不会互相覆盖；
+    /// 每个版本一个缓存目录（package\{tag} / package-beta\{tag} / package-zh\{tag}），切换版本不会互相覆盖；
     /// 旧版直接解压在渠道根目录上的缓存仍可复用。</summary>
-    private static async Task<string?> GetPackageCoreAsync(bool beta, string? versionTag)
+    private static async Task<string?> GetPackageCoreAsync(string channel, string? versionTag)
     {
-        var label = beta ? "OptiScaler 测试版" : "OptiScaler";
-        var channel = beta ? "beta" : "stable";
-        var repo = beta ? BetaRepoApi : StableRepoApi;
-        var rootBase = beta ? BetaPackageDir : PackageDir;
+        var (label, repo, rootBase) = channel switch
+        {
+            "beta" => ("OptiScaler 测试版", BetaRepoApi, BetaPackageDir),
+            "zh" => ("OptiScaler 汉化版", ZhRepoApi, ZhPackageDir),
+            _ => ("OptiScaler", StableRepoApi, PackageDir)
+        };
         var tag = (versionTag ?? "").Trim();
 
         Report($"正在获取 {label} 版本信息…");
-        var asset = await GetReleaseAsync(repo, tag);
+        // 汉化版是每日构建，预览标记不固定（有时最新一条被标成 pre），
+        // 故"最新版"直接取 Release 列表第一条，避免 latest 接口退回到前一天
+        var asset = tag.Length == 0 && channel == "zh"
+            ? (await GetReleasesAsync(repo)).FirstOrDefault()
+            : await GetReleaseAsync(repo, tag);
         if (asset is null)
         {
             // 离线/接口失败兜底：已有缓存照样能用（旧版根目录或任一版本目录）
@@ -1081,19 +1092,26 @@ public static class OptiScalerService
     }
 
     /// <summary>编辑页「具体版本」下拉项：首项"最新版"（空值）+ 该渠道可下载的 Release。
-    /// 正式版渠道只列非预览 Release；本地包渠道没有版本概念，返回空。</summary>
+    /// 正式版渠道只列非预览 Release；测试版/汉化版列全部（nightly 常被标成预览）；
+    /// 本地包渠道没有版本概念，返回空。</summary>
     public static async Task<(string Value, string Label)[]> GetVersionOptionsAsync(string channel)
     {
         if (channel.Equals("local", StringComparison.OrdinalIgnoreCase)) return [];
-        var beta = channel.Equals("beta", StringComparison.OrdinalIgnoreCase);
-        var list = await GetReleasesAsync(beta ? BetaRepoApi : StableRepoApi);
-        var items = list.Where(r => beta || !r.Prerelease).Select(r => (r.Tag, r.Label)).ToList();
+        var (repo, baseDir) = channel.ToLowerInvariant() switch
+        {
+            "beta" => (BetaRepoApi, BetaPackageDir),
+            "zh" => (ZhRepoApi, ZhPackageDir),
+            _ => (StableRepoApi, PackageDir)
+        };
+        var list = await GetReleasesAsync(repo);
+        var items = list
+            .Where(r => !channel.Equals("stable", StringComparison.OrdinalIgnoreCase) || !r.Prerelease)
+            .Select(r => (r.Tag, r.Label)).ToList();
 
-        var baseDir = beta ? BetaPackageDir : PackageDir;
         var downloaded = DownloadedDirs(baseDir, ["OptiScaler.dll"]);
         // 旧版把包直接解压在渠道根目录：版本号只能看 channels.json 的记录
         if (IsNonEmptyFile(Path.Combine(baseDir, "OptiScaler.dll")) &&
-            ChannelVersions.TryGetValue(beta ? "beta" : "stable", out var legacyVer))
+            ChannelVersions.TryGetValue(channel.ToLowerInvariant(), out var legacyVer))
             downloaded.Add(legacyVer);
 
         // "最新版（自动）"解析到的就是列表里第一个 Release，已下载同样是打勾
@@ -1151,18 +1169,18 @@ public static class OptiScalerService
     public static async Task PrefetchAsync(string channel, string tag)
     {
         if (channel.Equals("local", StringComparison.OrdinalIgnoreCase)) return;
-        try { await GetPackageAsync(channel.Equals("beta", StringComparison.OrdinalIgnoreCase), tag); }
+        try { await GetPackageAsync(channel, tag); }
         catch (Exception ex) { DebugLog.Write($"OptiScaler: 预下载失败 {ex.Message}"); }
     }
 
     /// <summary>按渠道取包；预下载与注入可能同时发起，同渠道串行化。
     /// 注意按渠道而不是"渠道+版本"串行：「最新版」与手选版本往往解析成同一个 Release，
     /// 按版本分别加锁会并发出两份下载，用户看到的就是"下载两遍"。</summary>
-    private static async Task<string?> GetPackageAsync(bool beta, string? versionTag)
+    private static async Task<string?> GetPackageAsync(string channel, string? versionTag)
     {
-        var gate = FetchGateFor($"pkg|{(beta ? "beta" : "stable")}");
+        var gate = FetchGateFor($"pkg|{channel}");
         await gate.WaitAsync();
-        try { return await GetPackageCoreAsync(beta, versionTag); }
+        try { return await GetPackageCoreAsync(channel, versionTag); }
         finally { gate.Release(); }
     }
 

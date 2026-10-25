@@ -144,7 +144,7 @@
                 </Button>
                 <Border Grid.Column="1" Background="#1FFFFFFF" CornerRadius="10" Margin="10,0"
                         BorderBrush="#22FFFFFF" BorderThickness="1">
-                    <TextBlock x:Name="WidthText" Text="38%" FontSize="16"
+                    <TextBlock x:Name="WidthText" Text="40%" FontSize="16"
                                HorizontalAlignment="Center" VerticalAlignment="Center"/>
                 </Border>
                 <Button x:Name="WidthUpButton" Grid.Column="2" Padding="18,10" Click="OnWidthUp">

@@ -23,7 +23,7 @@ public sealed partial class AppearancePage : Page, ISettingsGamepad
     private double _opacity = 1.0;
     private double _spacing = 10;
     private double _tileOpacity = 1.0;
-    private double _widthPct = 0.38;
+    private double _widthPct = 0.40;
 
     /// <summary>磁贴主题可选项（名称 + 说明 + 迷你预览条）</summary>
     private static readonly TileThemeOption[] ThemeOptions =

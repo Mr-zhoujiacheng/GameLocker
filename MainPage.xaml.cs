@@ -2980,7 +2980,7 @@ public sealed partial class MainPage : Page
         {
             // 回收站小组件：A/点击 = 打开系统回收站（与启动程序一致：按设置收起窗口，否则置顶窗口会挡住资源管理器）
             RecycleBinService.Open();
-            if (SettingsService.Current.HideAfterLaunch) App.Main?.HideToTray();
+            if (AutoHideAfterLaunch) App.Main?.HideToTray();
         }
         else if (item.WidgetKind == WidgetKind.Foreground)
         {
@@ -3044,7 +3044,7 @@ public sealed partial class MainPage : Page
         if (panel == SystemPanel.Brightness) await SystemPanelService.RefreshBrightnessAsync();
         RefreshSystemTiles();
         ShowToast($"{SystemPanelService.Label(panel)}：{message}");
-        if (SystemPanelService.IsLauncher(panel) && SettingsService.Current.HideAfterLaunch) App.Main?.HideToTray();
+        if (SystemPanelService.IsLauncher(panel) && AutoHideAfterLaunch) App.Main?.HideToTray();
     }
 
     /// <summary>清空回收站（回收站小组件 Y 键语义）：先查项目数（空桶时 SHEmptyRecycleBin 会返回失败），静默清空并提示结果</summary>
@@ -4400,10 +4400,14 @@ public sealed partial class MainPage : Page
         UpdateHintBar();
     }
 
+    /// <summary>启动其他程序后是否自动收起：开始菜单模式下保持常驻，只能手动隐藏</summary>
+    private static bool AutoHideAfterLaunch =>
+        SettingsService.Current.HideAfterLaunch && !SettingsService.Current.StartMenuMode;
+
     private void LaunchItem(LaunchItem item)
     {
         LaunchService.Launch(item);
-        if (SettingsService.Current.HideAfterLaunch) App.Main?.HideToTray();
+        if (AutoHideAfterLaunch) App.Main?.HideToTray();
     }
 
     /// <summary>Y=关闭：结束选中磁贴对应的运行中程序；未运行则提示（小组件/组磁贴不响应；修改器小组件=关闭修改器）</summary>

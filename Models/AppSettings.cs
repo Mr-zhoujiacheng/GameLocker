@@ -49,8 +49,8 @@ public class AppSettings
     /// <summary>窗口停靠方式（左右贴边，或居中悬浮）；居中时窗口不贴屏幕四边，边缘手势走顶边</summary>
     public DockSide SidebarSide { get; set; } = DockSide.Left;
 
-    /// <summary>侧边栏宽度占屏幕比例（0.2~0.5，最小为当前默认观感，最大为屏幕一半）</summary>
-    public double SidebarWidthPercent { get; set; } = 0.38;
+    /// <summary>侧边栏宽度占屏幕比例（0.38~0.5，最小为允许的最窄观感，最大为屏幕一半；默认 40%）</summary>
+    public double SidebarWidthPercent { get; set; } = 0.40;
 
     /// <summary>磁贴间距（像素，0~30）</summary>
     public double TileSpacing { get; set; } = 4;
@@ -124,8 +124,8 @@ public class AppSettings
     public bool TabletMode { get; set; }
 
     /// <summary>替代 Windows 开始菜单：窗口居中停靠在任务栏上方；
-    /// Win 键与任务栏开始按钮改为呼出/收起本启动器</summary>
-    public bool StartMenuMode { get; set; }
+    /// Win 键与任务栏开始按钮改为呼出/收起本启动器（新用户默认开启）</summary>
+    public bool StartMenuMode { get; set; } = true;
 
     /// <summary>呼出组合键（长按 1 秒唤起窗口），默认 LT+RT</summary>
     public GamepadButtons SummonCombo { get; set; } =

@@ -1543,8 +1543,17 @@ public static class TileStyle
             return;
         }
         var s = MonitorService.Current;
-        var fps = s.Fps > 0 ? $"{s.Fps:0} FPS" : "FPS —";
-        refs.Summary.Text = $"{fps} · CPU {s.CpuUsage:0}% · 内存 {s.MemPercent:0}%";
+        var metrics = item.MonitorMetrics;
+        var parts = new List<string>();
+        if ((metrics & MonitorMetric.Fps) != 0)
+            parts.Add(s.Fps > 0 ? $"{s.Fps:0} FPS" : "FPS —");
+        if ((metrics & MonitorMetric.CpuUsage) != 0)
+            parts.Add($"CPU {s.CpuUsage:0}%");
+        if ((metrics & MonitorMetric.GpuUsage) != 0)
+            parts.Add(double.IsNaN(s.GpuUsage) ? "GPU —" : $"GPU {s.GpuUsage:0}%");
+        if ((metrics & MonitorMetric.Memory) != 0)
+            parts.Add($"内存 {s.MemPercent:0}%");
+        refs.Summary.Text = parts.Count > 0 ? string.Join(" · ", parts) : "监控中";
     }
 
     /// <summary>前台应用监测磁贴的可刷新元素引用（前台应用或冻结状态变化时只改内容，不重建磁贴）</summary>

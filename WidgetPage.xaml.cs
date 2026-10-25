@@ -146,13 +146,23 @@ public sealed partial class WidgetPage : Page
         Size = TileSize.Wide
     };
 
+    /// <summary>预览用固定小黄鸭项（闪电图标 + 安装/运行状态；实际添加时为默认"长"尺寸）</summary>
+    private static readonly LaunchItem LosslessScalPreviewItem = new()
+    {
+        Name = "小黄鸭",
+        Target = "widget:lossless",
+        Kind = LaunchKind.Widget,
+        WidgetKind = WidgetKind.LosslessScaling,
+        Size = TileSize.Wide
+    };
+
     /// <summary>预览磁贴框架（订阅天气变化时刷新文字）</summary>
     private TileStyle.WeatherTileRefs? _weatherPreviewRefs;
 
     public WidgetPage()
     {
         InitializeComponent();
-        _formControls = [MusicWidgetCard, PhotoWidgetCard, WeatherWidgetCard, MappingWidgetCard, TrainerWidgetCard, BackupWidgetCard, GamepadMapWidgetCard, OptiScalerWidgetCard, RecycleBinWidgetCard, ForegroundWidgetCard, SystemWidgetCard, MonitorWidgetCard, FileTransferWidgetCard];
+        _formControls = [MusicWidgetCard, PhotoWidgetCard, WeatherWidgetCard, MappingWidgetCard, TrainerWidgetCard, BackupWidgetCard, GamepadMapWidgetCard, OptiScalerWidgetCard, RecycleBinWidgetCard, ForegroundWidgetCard, SystemWidgetCard, MonitorWidgetCard, FileTransferWidgetCard, LosslessScalWidgetCard];
         // 磁贴式自适应：窗口宽度变化（侧边栏 ↔ 全屏/居中）时按可用宽度重排列数
         FormScroll.SizeChanged += (_, _) => LayoutCards();
         Loaded += (_, _) => LayoutCards();
@@ -256,6 +266,12 @@ public sealed partial class WidgetPage : Page
         FileTransferPreviewHost.Content = TileStyle.BuildStandardTile(
             FileTransferPreviewItem, null, w, h, TileStyle.AccentFor(FileTransferPreviewItem),
             TileStyle.IsNoColor(FileTransferPreviewItem));
+        // 小黄鸭预览：与主页同一构建（安装/运行状态）
+        var (lossTile, lossRefs) = TileStyle.BuildLosslessTile(
+            LosslessScalPreviewItem, w, h, TileStyle.AccentFor(LosslessScalPreviewItem),
+            TileStyle.IsNoColor(LosslessScalPreviewItem));
+        TileStyle.FillLosslessState(lossRefs, LosslessScalPreviewItem);
+        LosslessScalPreviewHost.Content = lossTile;
         WeatherService.StateChanged += OnWeatherChanged;
         WeatherService.EnsureFresh();
 
@@ -304,6 +320,7 @@ public sealed partial class WidgetPage : Page
         else if (ReferenceEquals(c, SystemWidgetCard)) AddSystemWidget();
         else if (ReferenceEquals(c, MonitorWidgetCard)) AddMonitorWidget();
         else if (ReferenceEquals(c, FileTransferWidgetCard)) AddFileTransferWidget();
+        else if (ReferenceEquals(c, LosslessScalWidgetCard)) AddLosslessWidget();
         else AddMusicWidget();
     }
 
@@ -673,6 +690,23 @@ public sealed partial class WidgetPage : Page
         });
     }
 
+    /// <summary>小黄鸭联动组件：默认"长"尺寸（可后续编辑大小、颜色、程序路径与热键），只允许一个——
+    /// 行为始终是"启动小黄鸭并发送一次补帧热键"，多份没有区别。</summary>
+    private void AddLosslessWidget()
+    {
+        var items = ConfigService.Load();
+        if (ExistsWidget(items, WidgetKind.LosslessScaling)) { PageTitle.Text = "小黄鸭已在主页"; return; }
+        CommitWidget(items, new LaunchItem
+        {
+            Name = "小黄鸭",
+            Target = "widget:lossless",
+            Kind = LaunchKind.Widget,
+            WidgetKind = WidgetKind.LosslessScaling,
+            PageIndex = App.Main?.CurrentHomePage ?? 0,   // 新磁贴归到主页当前所在页
+            Size = TileSize.Wide
+        });
+    }
+
     // ---- 鼠标 ----
 
     private void OnBackClick(object sender, RoutedEventArgs e) => App.Main?.ShowMainPage();
@@ -691,6 +725,7 @@ public sealed partial class WidgetPage : Page
         else if (sender is Button { Tag: "system" }) AddSystemWidget();
         else if (sender is Button { Tag: "monitor" }) AddMonitorWidget();
         else if (sender is Button { Tag: "filetransfer" }) AddFileTransferWidget();
+        else if (sender is Button { Tag: "lossless" }) AddLosslessWidget();
         else AddMusicWidget();
     }
 }

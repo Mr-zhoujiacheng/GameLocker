@@ -58,7 +58,9 @@ public enum WidgetKind
     /// <summary>性能监控（A/点击=开启/关闭置顶悬浮监控条，屏幕上方居中显示帧率/帧延迟/帧波动/CPU/GPU/电池/内存）</summary>
     Monitor,
     /// <summary>文件传输（A/点击=打开局域网传输浮层：搜索同网段设备、连接后互发文件，收到文件需确认）</summary>
-    FileTransfer
+    FileTransfer,
+    /// <summary>小黄鸭（Lossless Scaling 联动：A/点击=启动并切回游戏后发送补帧热键；磁贴显示安装/运行状态）</summary>
+    LosslessScaling
 }
 
 /// <summary>手柄映射的目标类型（仅 GamepadMapping 使用）</summary>
@@ -335,6 +337,13 @@ public class LaunchItem
     /// <summary>文件传输的接收目录（仅 WidgetKind.FileTransfer 使用；空=系统下载文件夹，收到的文件直接存这里）</summary>
     public string? FileTransferRecvFolder { get; set; }
 
+    /// <summary>手动指定的 LosslessScaling.exe 路径（仅 WidgetKind.LosslessScaling 使用；空=按 Steam 库自动检测）</summary>
+    public string? LosslessPath { get; set; }
+
+    /// <summary>选中的小黄鸭配置名（Settings.xml 中 Game Profiles 的 Title，仅 WidgetKind.LosslessScaling 使用；
+    /// 空=不指定，完全跟随小黄鸭自己的匹配）</summary>
+    public string? LosslessProfile { get; set; }
+
     /// <summary>深拷贝一个快捷项（含组成员），用于复制/迁移时与源数据隔离</summary>
     public LaunchItem Clone() => new()
     {
@@ -375,6 +384,10 @@ public class LaunchItem
         MonitorColor = MonitorColor,
         MonitorMetrics = MonitorMetrics,
         MonitorAlwaysOn = MonitorAlwaysOn,
+        FileTransferSendFolder = FileTransferSendFolder,
+        FileTransferRecvFolder = FileTransferRecvFolder,
+        LosslessPath = LosslessPath,
+        LosslessProfile = LosslessProfile,
         GamepadMappings = [.. GamepadMappings.Select(m => m.Clone())],
         Members = [.. Members.Select(m => m.Clone())],
         Drawers = Drawers is null ? null : [.. Drawers.Select(d => d.Clone())]
@@ -409,6 +422,7 @@ public class LaunchItem
             WidgetKind.Power => "\uE7E8",  // 电源（电源菜单）
             WidgetKind.Monitor => "\uE9D9", // 诊断（性能监控）
             WidgetKind.FileTransfer => "\uE895", // 同步（局域网文件互传）
+            WidgetKind.LosslessScaling => "\uE945", // 闪电（小黄鸭补帧）
             _ => "\uE8D6"                  // 音乐（音乐控制器）
         },
         _ => "\uE7F8"                  // desktop

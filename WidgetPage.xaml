@@ -237,6 +237,22 @@
                         </StackPanel>
                     </StackPanel>
                 </Button>
+
+                <!-- 小黄鸭联动组件卡片：状态磁贴预览 + 名称 + 简述 -->
+                <Button x:Name="LosslessScalWidgetCard" Tag="lossless" Background="#14FFFFFF" BorderThickness="1"
+                        BorderBrush="Transparent" VerticalAlignment="Top"
+                        HorizontalContentAlignment="Center" VerticalContentAlignment="Top" Padding="10" Click="OnAddClick">
+                    <StackPanel Spacing="8">
+                        <Viewbox MaxHeight="116" Stretch="Uniform" HorizontalAlignment="Center">
+                            <ContentPresenter x:Name="LosslessScalPreviewHost"/>
+                        </Viewbox>
+                        <StackPanel Spacing="3">
+                            <TextBlock Text="小黄鸭" FontSize="14" FontWeight="Bold" HorizontalAlignment="Center"/>
+                            <TextBlock Text="窗口捕获插帧：一键启动并发送热键"
+                                       FontSize="11" Opacity="0.7" TextWrapping="Wrap" TextAlignment="Center"/>
+                        </StackPanel>
+                    </StackPanel>
+                </Button>
             </Canvas>
         </ScrollViewer>
 

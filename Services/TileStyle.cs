@@ -1556,6 +1556,197 @@ public static class TileStyle
         refs.Summary.Text = parts.Count > 0 ? string.Join(" · ", parts) : "监控中";
     }
 
+    /// <summary>小黄鸭磁贴的可刷新元素引用（安装/运行状态变化时只改文字与圆点，不重建磁贴）</summary>
+    public sealed class LosslessTileRefs
+    {
+        public Border Tile = null!;               // 磁贴外壳
+        public Microsoft.UI.Xaml.Shapes.Ellipse Dot = null!; // 状态圆点
+        public TextBlock Status = null!;          // 安装/运行状态文字
+        public TextBlock Summary = null!;         // 操作摘要（长/大尺寸才有）
+    }
+
+    /// <summary>
+    /// 构建小黄鸭联动小组件磁贴：外壳与普通磁贴一致，内容按尺寸分档——
+    /// 小(1×1)=图标+状态；长(2×1)=图标+名称+状态；大(2×2)=图标+名称+状态+操作摘要。
+    /// 状态与摘要由 FillLosslessState 写入。
+    /// </summary>
+    public static (Border Tile, LosslessTileRefs Refs) BuildLosslessTile(
+        LaunchItem item, double width, double height, Windows.UI.Color accent, bool noColor)
+    {
+        var white = new SolidColorBrush(Microsoft.UI.Colors.White);
+        var label = string.IsNullOrWhiteSpace(item.Name) ? "小黄鸭" : item.Name;
+        const string glyph = "\uE945"; // 闪电（补帧）
+
+        var refs = new LosslessTileRefs();
+
+        Grid StatusRow(LosslessTileRefs refs, double fontSize)
+        {
+            var host = new Grid { HorizontalAlignment = HorizontalAlignment.Center };
+            var stack = new StackPanel
+            {
+                Orientation = Orientation.Horizontal,
+                Spacing = 6,
+                VerticalAlignment = VerticalAlignment.Center
+            };
+            refs.Dot = new Microsoft.UI.Xaml.Shapes.Ellipse
+            {
+                Width = 8,
+                Height = 8,
+                Fill = new SolidColorBrush(Windows.UI.Color.FromArgb(0x66, 0xFF, 0xFF, 0xFF)),
+                VerticalAlignment = VerticalAlignment.Center,
+                IsHitTestVisible = false
+            };
+            refs.Status = new TextBlock
+            {
+                Text = "未安装",
+                FontSize = fontSize,
+                Opacity = 0.85,
+                Foreground = white,
+                IsHitTestVisible = false
+            };
+            stack.Children.Add(refs.Dot);
+            stack.Children.Add(refs.Status);
+            host.Children.Add(stack);
+            return host;
+        }
+
+        var grid = new Grid();
+        if (item.Size == TileSize.Small)
+        {
+            refs.Summary = new TextBlock { Visibility = Visibility.Collapsed };
+            var stack = new StackPanel
+            {
+                Spacing = 4,
+                HorizontalAlignment = HorizontalAlignment.Center,
+                VerticalAlignment = VerticalAlignment.Center
+            };
+            stack.Children.Add(new FontIcon
+            {
+                Glyph = glyph,
+                FontSize = 24,
+                Foreground = white,
+                HorizontalAlignment = HorizontalAlignment.Center,
+                IsHitTestVisible = false
+            });
+            stack.Children.Add(StatusRow(refs, 10));
+            grid.Children.Add(stack);
+        }
+        else if (item.Size == TileSize.Wide)
+        {
+            var row = new StackPanel
+            {
+                Orientation = Orientation.Horizontal,
+                Spacing = 10,
+                HorizontalAlignment = HorizontalAlignment.Center,
+                VerticalAlignment = VerticalAlignment.Center
+            };
+            row.Children.Add(new FontIcon
+            {
+                Glyph = glyph,
+                FontSize = 30,
+                Foreground = white,
+                VerticalAlignment = VerticalAlignment.Center,
+                IsHitTestVisible = false
+            });
+            var col = new StackPanel { Spacing = 4, VerticalAlignment = VerticalAlignment.Center };
+            col.Children.Add(new TextBlock
+            {
+                Text = label,
+                FontSize = 16,
+                FontWeight = Microsoft.UI.Text.FontWeights.SemiBold,
+                Foreground = white,
+                TextTrimming = TextTrimming.CharacterEllipsis,
+                MaxWidth = width - 96,
+                IsHitTestVisible = false
+            });
+            col.Children.Add(StatusRow(refs, 12));
+            row.Children.Add(col);
+            grid.Children.Add(row);
+            refs.Summary = new TextBlock { Visibility = Visibility.Collapsed };
+        }
+        else
+        {
+            var stack = new StackPanel
+            {
+                Spacing = 6,
+                Margin = new Thickness(12, 10, 12, 10),
+                HorizontalAlignment = HorizontalAlignment.Center,
+                VerticalAlignment = VerticalAlignment.Center
+            };
+            stack.Children.Add(new FontIcon
+            {
+                Glyph = glyph,
+                FontSize = 38,
+                Foreground = white,
+                HorizontalAlignment = HorizontalAlignment.Center,
+                IsHitTestVisible = false
+            });
+            stack.Children.Add(new TextBlock
+            {
+                Text = label,
+                FontSize = 20,
+                FontWeight = Microsoft.UI.Text.FontWeights.SemiBold,
+                Foreground = white,
+                HorizontalAlignment = HorizontalAlignment.Center,
+                TextTrimming = TextTrimming.CharacterEllipsis,
+                MaxWidth = width - 28,
+                IsHitTestVisible = false
+            });
+            stack.Children.Add(StatusRow(refs, 13));
+            refs.Summary = new TextBlock
+            {
+                Text = "A:一键补帧",
+                FontSize = 12,
+                Opacity = 0.75,
+                Foreground = white,
+                HorizontalAlignment = HorizontalAlignment.Center,
+                TextTrimming = TextTrimming.CharacterEllipsis,
+                MaxWidth = width - 28,
+                IsHitTestVisible = false
+            };
+            stack.Children.Add(refs.Summary);
+            grid.Children.Add(stack);
+        }
+
+        var tile = new Border
+        {
+            Width = width,
+            Height = height,
+            CornerRadius = new CornerRadius(Radius),
+            Background = noColor ? new SolidColorBrush(Windows.UI.Color.FromArgb(0, 0, 0, 0)) : TileFill(accent),
+            BorderBrush = new SolidColorBrush(Windows.UI.Color.FromArgb(0x40, 0xFF, 0xFF, 0xFF)),
+            BorderThickness = new Thickness(1),
+            Child = grid
+        };
+        tile.Opacity = Opacity;
+        refs.Tile = tile;
+        return (tile, refs);
+    }
+
+    /// <summary>把安装/运行状态、插帧状态与操作摘要写入磁贴引用</summary>
+    public static void FillLosslessState(LosslessTileRefs refs, LaunchItem item)
+    {
+        LosslessScalingService.SyncState();
+        var installed = LosslessScalingService.IsInstalled(item);
+        var running = installed && LosslessScalingService.IsRunning;
+        var scaling = running && LosslessScalingService.FrameGenOn;
+
+        refs.Dot.Fill = new SolidColorBrush(
+            !installed ? Windows.UI.Color.FromArgb(0x66, 0xFF, 0xFF, 0xFF)   // 灰白：未安装
+            : scaling ? Windows.UI.Color.FromArgb(0xFF, 0x66, 0xE0, 0x8A)     // 绿：插帧中
+            : running ? Windows.UI.Color.FromArgb(0xFF, 0x4C, 0xC2, 0xFF)     // 蓝：运行中未插帧
+            : Windows.UI.Color.FromArgb(0xFF, 0xF5, 0xC5, 0x42));             // 黄：已安装未运行
+        refs.Status.Text = !installed ? "未安装"
+            : scaling ? "插帧中"
+            : running ? "运行中"
+            : "未运行";
+
+        if (refs.Summary.Visibility == Visibility.Collapsed) return;
+        refs.Summary.Text = !installed ? "R3:编辑 · 指定程序"
+            : scaling ? "A:关闭插帧"
+            : "A:开启插帧";
+    }
+
     /// <summary>前台应用监测磁贴的可刷新元素引用（前台应用或冻结状态变化时只改内容，不重建磁贴）</summary>
     public sealed class ForegroundTileRefs
     {

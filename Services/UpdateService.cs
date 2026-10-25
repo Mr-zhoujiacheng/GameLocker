@@ -36,6 +36,80 @@ public static class UpdateService
     public static Version CurrentVersion =>
         Normalize(typeof(UpdateService).Assembly.GetName().Version ?? new Version(1, 0, 0));
 
+    private static readonly object DownloadGate = new();
+    private static Task<string>? _downloadTask;
+    private static UpdateInfo? _downloadingInfo;
+    private static double _downloadProgress;
+    private static string? _downloadError;
+
+    /// <summary>安装包是否正在下载（下载跑在后台，切出关于页不会中断）</summary>
+    public static bool IsDownloading
+    {
+        get { lock (DownloadGate) return _downloadTask is { IsCompleted: false }; }
+    }
+
+    /// <summary>正在下载的版本；没有下载进行时为 null</summary>
+    public static UpdateInfo? DownloadingInfo
+    {
+        get { lock (DownloadGate) return _downloadTask is { IsCompleted: false } ? _downloadingInfo : null; }
+    }
+
+    /// <summary>当前下载进度 0~1（重新进入关于页时用来自动恢复进度显示）</summary>
+    public static double DownloadProgress
+    {
+        get { lock (DownloadGate) return _downloadProgress; }
+    }
+
+    /// <summary>最近一次下载的失败原因；重新下载时会清空</summary>
+    public static string? LastDownloadError
+    {
+        get { lock (DownloadGate) return _downloadError; }
+    }
+
+    /// <summary>
+    /// 下载并静默启动安装。下载任务全局唯一：切出关于页再回来不会重置已下载的部分，
+    /// 也不会并发写同一个安装包（并发写会因文件被占用而报错）。
+    /// 返回的任务在安装程序启动后完成（随后安装程序会关闭并重启本程序）。
+    /// </summary>
+    public static Task<string> StartDownloadAsync(UpdateInfo info)
+    {
+        lock (DownloadGate)
+        {
+            if (_downloadTask is { IsCompleted: false } running) return running;
+            _downloadingInfo = info;
+            _downloadProgress = 0;
+            _downloadError = null;
+            _downloadTask = DownloadAndInstallCoreAsync(info);
+            return _downloadTask;
+        }
+    }
+
+    private static async Task<string> DownloadAndInstallCoreAsync(UpdateInfo info)
+    {
+        try
+        {
+            var path = await DownloadAsync(info, new ProgressReporter());
+            lock (DownloadGate) _downloadProgress = 1;
+            RunInstaller(path);
+            return path;
+        }
+        catch (Exception ex)
+        {
+            lock (DownloadGate)
+            {
+                _downloadProgress = 0;
+                _downloadError = ex.Message;
+            }
+            throw;
+        }
+    }
+
+    /// <summary>线程安全地记录进度，不依赖 UI 线程（页面可能已经切走）</summary>
+    private sealed class ProgressReporter : IProgress<double>
+    {
+        public void Report(double value) { lock (DownloadGate) _downloadProgress = value; }
+    }
+
     private static HttpClient CreateHttp()
     {
         var http = new HttpClient { Timeout = TimeSpan.FromSeconds(20) };

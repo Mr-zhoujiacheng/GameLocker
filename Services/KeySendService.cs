@@ -141,9 +141,9 @@ public static class KeySendService
     /// 把键盘按键（含修饰键组合）注入到当前前台窗口。
     /// 调用前应先把 GameLocker 窗口收起，否则按键会落在自己身上。
     /// </summary>
-    public static void Send(int vk, int mods)
+    public static uint Send(int vk, int mods)
     {
-        if (vk == 0) return;
+        if (vk == 0) return 0;
 
         var inputs = new List<INPUT>(8);
         void Key(int code, bool up, bool ext) => inputs.Add(new INPUT
@@ -182,7 +182,7 @@ public static class KeySendService
         if (ctrl) Key(VkCtrl, true, false);
 
         var arr = inputs.ToArray();
-        SendInput((uint)arr.Length, arr, Marshal.SizeOf<INPUT>());
+        return SendInput((uint)arr.Length, arr, Marshal.SizeOf<INPUT>());
     }
 
     /// <summary>

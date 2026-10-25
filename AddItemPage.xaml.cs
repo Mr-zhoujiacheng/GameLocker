@@ -85,6 +85,15 @@ public sealed partial class AddItemPage : Page, ISettingsGamepad
     private bool _pickingFtSendFolder;
     private bool _pickingFtRecvFolder;
 
+    /// <summary>小黄鸭：本次会话选定的程序路径（null=未改动；""=恢复自动检测）</summary>
+    private string? _pendingLosslessPath;
+
+    /// <summary>当前浏览是否为"小黄鸭选程序"（区别于普通程序项，结果不写入 TargetBox）</summary>
+    private bool _pickingLosslessPath;
+
+    /// <summary>上次载入的小黄鸭配置列表指纹（标题+路径）；展开下拉时据此判断是否需要重读 Settings.xml</summary>
+    private string _losslessProfileSignature = "";
+
     /// <summary>系统小组件：启用的面板项胶囊按钮（下标 = SystemPanelService.Order 的序号）</summary>
     private ToggleButton[] _sysOptBoxes = [];
 
@@ -378,6 +387,14 @@ public sealed partial class AddItemPage : Page, ISettingsGamepad
             list.Add(FtSendFolderButton);
             list.Add(FtRecvFolderButton);
         }
+        // 小黄鸭：程序路径（选择 / 恢复自动检测）/ 配置下拉 / 新建配置
+        if (LosslessRow.Visibility == vis)
+        {
+            list.Add(LosslessBrowseButton);
+            list.Add(LosslessClearButton);
+            list.Add(LosslessProfileCombo);
+            list.Add(LosslessNewProfileButton);
+        }
         // 映射小组件：按键捕获按钮
         if (MappingRow.Visibility == vis) list.Add(MappingCaptureButton);
         // 修改器小组件：打开已下载修改器目录按钮
@@ -583,7 +600,7 @@ public sealed partial class AddItemPage : Page, ISettingsGamepad
             CoverRow.Visibility = w;
             // 音乐固定 2×2、系统固定"长"不可改大小；其余小组件（图片组/设置/电源/天气/映射/修改器/游戏存档/手柄映射）可编辑大小。
             // 颜色：图片组不需要（整块铺图）
-            SizeColumn.Visibility = isPhoto || item.WidgetKind is WidgetKind.Settings or WidgetKind.Power or WidgetKind.Weather or WidgetKind.Mapping or WidgetKind.Trainer or WidgetKind.Backup or WidgetKind.GamepadMap or WidgetKind.OptiScaler or WidgetKind.RecycleBin or WidgetKind.Foreground or WidgetKind.Monitor
+            SizeColumn.Visibility = isPhoto || item.WidgetKind is WidgetKind.Settings or WidgetKind.Power or WidgetKind.Weather or WidgetKind.Mapping or WidgetKind.Trainer or WidgetKind.Backup or WidgetKind.GamepadMap or WidgetKind.OptiScaler or WidgetKind.RecycleBin or WidgetKind.Foreground or WidgetKind.Monitor or WidgetKind.LosslessScaling
                 ? Microsoft.UI.Xaml.Visibility.Visible : w;
             ColorColumn.Visibility = isPhoto || TileStyle.HidesTileColor
                 ? w : Microsoft.UI.Xaml.Visibility.Visible;
@@ -634,6 +651,19 @@ public sealed partial class AddItemPage : Page, ISettingsGamepad
                     ? "未设置（默认：下载文件夹）" : item.FileTransferSendFolder!;
                 FtRecvFolderText.Text = string.IsNullOrWhiteSpace(item.FileTransferRecvFolder)
                     ? "未设置（默认：下载文件夹）" : item.FileTransferRecvFolder!;
+            }
+            // 小黄鸭：大小、颜色 + 程序路径 / 补帧热键 / 自动补帧（磁贴固定显示"小黄鸭"，无需自定义名称）
+            var isLossless = item.WidgetKind == WidgetKind.LosslessScaling;
+            LosslessRow.Visibility = isLossless ? Microsoft.UI.Xaml.Visibility.Visible : w;
+            if (isLossless)
+            {
+                if (string.IsNullOrWhiteSpace(NameBox.Text)) NameBox.Text = "小黄鸭";
+                NameBox.Visibility = w;
+                _pendingLosslessPath = item.LosslessPath;
+                _pickingLosslessPath = false;
+                LosslessPathText.Text = string.IsNullOrWhiteSpace(item.LosslessPath)
+                    ? "自动检测（Steam 库）" : item.LosslessPath!;
+                ReloadLosslessProfiles(item.LosslessProfile);
             }
             // OptiScaler：名称、大小、颜色 + 注入 DLL 名 / ini 关键项 / 本地包 / 一键还原
             var isOptiScaler = item.WidgetKind == WidgetKind.OptiScaler;
@@ -750,6 +780,7 @@ public sealed partial class AddItemPage : Page, ISettingsGamepad
             OptiScalerRow.Visibility = Microsoft.UI.Xaml.Visibility.Collapsed;
             MonitorRow.Visibility = Microsoft.UI.Xaml.Visibility.Collapsed;
             FileTransferRow.Visibility = Microsoft.UI.Xaml.Visibility.Collapsed;
+            LosslessRow.Visibility = Microsoft.UI.Xaml.Visibility.Collapsed;
         }
     }
 
@@ -777,6 +808,7 @@ public sealed partial class AddItemPage : Page, ISettingsGamepad
                     : item.WidgetKind == WidgetKind.System ? "编辑系统小组件"
                     : item.WidgetKind == WidgetKind.Monitor ? "编辑性能监控小组件"
                     : item.WidgetKind == WidgetKind.FileTransfer ? "编辑文件传输小组件"
+                    : item.WidgetKind == WidgetKind.LosslessScaling ? "编辑小黄鸭小组件"
                     : item.WidgetKind == WidgetKind.Drawer ? "编辑磁贴抽屉" : "编辑音乐小组件")
                 : _isGroup ? "编辑磁贴组" : "编辑快捷项";
         }
@@ -801,6 +833,10 @@ public sealed partial class AddItemPage : Page, ISettingsGamepad
             OptiScalerRow.Visibility = Microsoft.UI.Xaml.Visibility.Collapsed;
             MonitorRow.Visibility = Microsoft.UI.Xaml.Visibility.Collapsed;
             FileTransferRow.Visibility = Microsoft.UI.Xaml.Visibility.Collapsed;
+            LosslessRow.Visibility = Microsoft.UI.Xaml.Visibility.Collapsed;
+            _pendingLosslessPath = null;
+            _pickingLosslessPath = false;
+            LosslessPathText.Text = "自动检测（Steam 库）";
             DrawerRow.Visibility = Microsoft.UI.Xaml.Visibility.Collapsed;
             _pendingDrawers = [];
             _drawerCursor = 0;
@@ -1230,6 +1266,15 @@ public sealed partial class AddItemPage : Page, ISettingsGamepad
                 _pickingFtRecvFolder = true;
                 EnterBrowse(BrowseMode.Folder);
                 break;
+            // 小黄鸭：选择程序 / 恢复自动检测
+            case Button btn when ReferenceEquals(btn, LosslessBrowseButton):
+                _pickingLosslessPath = true;
+                EnterBrowse(BrowseMode.Program);
+                break;
+            case Button btn when ReferenceEquals(btn, LosslessClearButton):
+                _pendingLosslessPath = "";
+                LosslessPathText.Text = "自动检测（Steam 库）";
+                break;
             // 磁贴抽屉：上一个 / 下一个 / 新增 / 删除
             case Button btn when ReferenceEquals(btn, DrawerPrevButton):
                 MoveDrawerCursor(-1);
@@ -1348,10 +1393,15 @@ public sealed partial class AddItemPage : Page, ISettingsGamepad
         }
     }
 
-    /// <summary>高亮光标所在的"显示项目"胶囊（白色描边走 CursorRing，与选中态/焦点态互不覆盖）</summary>
+    /// <summary>高亮光标所在的"显示项目"胶囊（系统 / 性能监控），白色描边走 CursorRing，与选中态/焦点态互不覆盖</summary>
     private void UpdateSysChipCursor(ToggleButton? cursor)
     {
         foreach (var b in _sysOptBoxes)
+        {
+            if (ReferenceEquals(b, cursor)) b.BorderBrush = CursorBrush;
+            else b.ClearValue(ToggleButton.BorderBrushProperty);
+        }
+        foreach (var b in _monOptBoxes)
         {
             if (ReferenceEquals(b, cursor)) b.BorderBrush = CursorBrush;
             else b.ClearValue(ToggleButton.BorderBrushProperty);
@@ -1533,6 +1583,16 @@ public sealed partial class AddItemPage : Page, ISettingsGamepad
                         it.FileTransferSendFolder = _pendingFtSendFolder.Length == 0 ? null : _pendingFtSendFolder;
                     if (_pendingFtRecvFolder != null)
                         it.FileTransferRecvFolder = _pendingFtRecvFolder.Length == 0 ? null : _pendingFtRecvFolder;
+                }
+                else if (it.WidgetKind == WidgetKind.LosslessScaling)
+                {
+                    // 小黄鸭：改大小、颜色、程序路径与要应用的配置（空=按 Steam 库自动检测 / 不指定配置）
+                    it.Size = SelectedSize();
+                    it.TileColor = SelectedColor();
+                    it.LosslessPath = string.IsNullOrWhiteSpace(_pendingLosslessPath) ? null : _pendingLosslessPath.Trim();
+                    var profile = CurrentLosslessProfile();
+                    it.LosslessProfile = string.IsNullOrWhiteSpace(profile) ? null : profile;
+                    LosslessScalingService.InvalidateCache(); // 路径变化后让磁贴状态立即重新检测
                 }
                 else if (it.WidgetKind == WidgetKind.Mapping)
                 {
@@ -1717,6 +1777,89 @@ public sealed partial class AddItemPage : Page, ISettingsGamepad
         _pickingFtRecvFolder = true;
         EnterBrowse(BrowseMode.Folder);
     }
+
+    // 小黄鸭：选择程序 / 恢复自动检测 / 捕获补帧热键
+    private void OnLosslessBrowseClick(object sender, Microsoft.UI.Xaml.RoutedEventArgs e)
+    {
+        _pickingLosslessPath = true;
+        EnterBrowse(BrowseMode.Program);
+    }
+
+    private void OnLosslessClearClick(object sender, Microsoft.UI.Xaml.RoutedEventArgs e)
+    {
+        _pendingLosslessPath = "";
+        LosslessPathText.Text = "自动检测（Steam 库）";
+    }
+
+    // 小黄鸭配置：展开下拉时重读 Settings.xml（在小黄鸭里新建/删除配置后无需退出本页）
+    private void OnLosslessProfileDropDownOpened(object? sender, object e) =>
+        ReloadLosslessProfiles(CurrentLosslessProfile());
+
+    /// <summary>小黄鸭：当前下拉选中的配置名（空串=不指定，跟随小黄鸭）</summary>
+    private string CurrentLosslessProfile() =>
+        (LosslessProfileCombo.SelectedItem as ComboBoxItem)?.Tag as string ?? "";
+
+    /// <summary>
+    /// 把小黄鸭的 Game Profiles 读进下拉框（第一项=不指定）。列表没变化时只校正选中项，
+    /// 避免展开下拉的瞬间重建列表导致弹层闪一下。
+    /// </summary>
+    private void ReloadLosslessProfiles(string? selected)
+    {
+        var profiles = LosslessScalingService.ReadProfiles();
+        var signature = string.Join("|", profiles.Select(p => $"{p.Title}>{p.Path}"));
+        if (signature != _losslessProfileSignature)
+        {
+            _losslessProfileSignature = signature;
+            LosslessProfileCombo.Items.Clear();
+            LosslessProfileCombo.Items.Add(new ComboBoxItem { Content = "不指定（跟随小黄鸭）", Tag = "" });
+            foreach (var p in profiles)
+            {
+                var file = string.IsNullOrWhiteSpace(p.Path) ? "" : Path.GetFileName(p.Path.Replace('/', '\\'));
+                var label = file.Length == 0 ? p.Title : $"{p.Title}（{file}）";
+                LosslessProfileCombo.Items.Add(new ComboBoxItem { Content = label, Tag = p.Title });
+            }
+            // 已保存但后来在小黄鸭里删掉的配置：保留一项，免得保存时静默丢失
+            if (!string.IsNullOrWhiteSpace(selected)
+                && !profiles.Any(p => string.Equals(p.Title, selected, StringComparison.OrdinalIgnoreCase)))
+                LosslessProfileCombo.Items.Add(new ComboBoxItem { Content = $"{selected}（已不存在）", Tag = selected });
+        }
+        SelectLosslessProfile(selected);
+    }
+
+    /// <summary>按下拉项的值选中配置；找不到则回到"不指定"</summary>
+    private void SelectLosslessProfile(string? title)
+    {
+        var want = title ?? "";
+        for (var i = 0; i < LosslessProfileCombo.Items.Count; i++)
+        {
+            if (LosslessProfileCombo.Items[i] is ComboBoxItem it
+                && string.Equals(it.Tag as string ?? "", want, StringComparison.OrdinalIgnoreCase))
+            {
+                LosslessProfileCombo.SelectedIndex = i;
+                return;
+            }
+        }
+        if (LosslessProfileCombo.Items.Count > 0) LosslessProfileCombo.SelectedIndex = 0;
+    }
+
+    // 小黄鸭：「新建配置」= 打开小黄鸭主窗口，让用户在小黄鸭里添加/编辑配置
+    private void OnLosslessNewProfileClick(object sender, Microsoft.UI.Xaml.RoutedEventArgs e) =>
+        _ = OpenLosslessForProfileAsync();
+
+    private async Task OpenLosslessForProfileAsync()
+    {
+        if (_editing is null) return;
+        // 用本次编辑里刚选的程序路径（未改过则沿用已保存的）
+        var draft = _editing.Clone();
+        draft.LosslessPath = string.IsNullOrWhiteSpace(_pendingLosslessPath) ? null : _pendingLosslessPath!.Trim();
+
+        LosslessProfileHint.Text = "正在打开小黄鸭…";
+        var ok = await LosslessScalingService.OpenAsync(draft);
+        LosslessProfileHint.Text = ok
+            ? "已打开小黄鸭：新建/编辑配置后回到这里，重新展开下拉框即可刷新。"
+            : "未检测到小黄鸭：请先安装，或用上面的「选择…」指定 LosslessScaling.exe。";
+    }
+
     private void OnCoverClick(object sender, Microsoft.UI.Xaml.RoutedEventArgs e) => EnterBrowse(BrowseMode.Cover);
     private void OnCoverClearClick(object sender, Microsoft.UI.Xaml.RoutedEventArgs e) => ClearCover();
     // 修改器编辑：「已下载修改器」一键跳转到存放修改器的目录
@@ -2395,6 +2538,7 @@ public sealed partial class AddItemPage : Page, ISettingsGamepad
         _pickingBackupFolder = false;
         _pickingFtSendFolder = false;
         _pickingFtRecvFolder = false;
+        _pickingLosslessPath = false;
         BrowsePanel.Visibility = Microsoft.UI.Xaml.Visibility.Collapsed;
         FormScroll.Visibility = Microsoft.UI.Xaml.Visibility.Visible;
         FooterBar.Visibility = Microsoft.UI.Xaml.Visibility.Visible;
@@ -2443,6 +2587,7 @@ public sealed partial class AddItemPage : Page, ISettingsGamepad
                 }
                 else if (_browseMode == BrowseMode.Cover) _ = SelectCover(entry);
                 else if (_browseMode == BrowseMode.Icon) SelectIcon(entry);
+                else if (_pickingLosslessPath) SelectLosslessExe(entry);
                 else SelectExe(entry);
             }
         }
@@ -2529,6 +2674,15 @@ public sealed partial class AddItemPage : Page, ISettingsGamepad
         TargetBox.Text = entry.Path;
         if (string.IsNullOrWhiteSpace(NameBox.Text)) NameBox.Text = entry.Name;
         AppRadio.IsChecked = true;
+        ExitBrowse();
+    }
+
+    /// <summary>小黄鸭选程序：只记录到 _pendingLosslessPath，不改 TargetBox/类型（Target 是组件标识）</summary>
+    private void SelectLosslessExe(FileEntry entry)
+    {
+        _pendingLosslessPath = entry.Path;
+        LosslessPathText.Text = entry.Path;
+        _pickingLosslessPath = false;
         ExitBrowse();
     }
 

@@ -101,7 +101,7 @@ public static class TrainerService
     /// 黑名单覆盖：系统核心进程、资源管理器壳/子窗、UWP 宿主、修改器自身、浏览器/聊天/启动器/设置/媒体等通用软件。
     /// 命中黑名单 → 不更新 LastExeName（让调用方继续用之前那一款游戏）。
     /// </summary>
-    private static bool IsGameLikeProcess(IntPtr hwnd, string exe)
+    public static bool IsGameLikeProcess(IntPtr hwnd, string exe)
     {
         var lower = exe.ToLowerInvariant();
 
@@ -125,8 +125,9 @@ public static class TrainerService
 
         // 4) 常见非游戏桌面软件 —— 命中即放行
         if (lower is
-            // 启动器 / 商店 / 平台
-            "steam" or "stewebhelper" or "epicgameslauncher" or "uplay" or "upc" or "goggalaxy" or "itch" or "battlenet" or "origin"
+            // 启动器 / 商店 / 平台 / 工具
+            "steam" or "steamwebhelper" or "epicgameslauncher" or "uplay" or "upc" or "goggalaxy" or "itch" or "battlenet" or "origin"
+            or "losslessscaling"
             // 浏览器
             or "chrome" or "msedge" or "firefox" or "brave" or "opera" or "vivaldi"
             // 聊天

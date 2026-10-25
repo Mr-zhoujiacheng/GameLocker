@@ -117,6 +117,9 @@ public sealed partial class MainPage : Page
     /// <summary>当前显示的性能监控磁贴引用（重排时重建；开关或读数变化时只改文字）</summary>
     private readonly Dictionary<TileStyle.MonitorTileRefs, LaunchItem> _monRefs = [];
 
+    /// <summary>当前显示的小黄鸭磁贴引用（重排时重建；安装/运行状态变化时只改文字与圆点）</summary>
+    private readonly Dictionary<TileStyle.LosslessTileRefs, LaunchItem> _lossRefs = [];
+
     /// <summary>长按目标=手柄映射磁贴时记录（长按=关闭映射）</summary>
     private LaunchItem? _lpRemapItem;
 
@@ -226,6 +229,8 @@ public sealed partial class MainPage : Page
         if (_musicRefs.Count > 0) RefreshMusicTiles();
         // 性能监控磁贴读数秒级刷新
         if (_monRefs.Count > 0) RefreshMonitorTiles();
+        // 小黄鸭磁贴安装/运行状态秒级刷新
+        if (_lossRefs.Count > 0) RefreshLosslessTiles();
     }
 
     private int _tickCount;
@@ -999,6 +1004,7 @@ public sealed partial class MainPage : Page
             else if (IsRecycleBinSelected()) EmptyRecycleBin();
             else if (IsForegroundSelected()) CloseForegroundApp();
             else if (IsSystemSelected()) ShowToast("系统小组件：右摇杆←→切换 · A 开关 · LB/RB 调整");
+            else if (IsLosslessSelected()) LaunchLossless(_display[_selected].item);
             else CloseSelected();
             return true;
         }
@@ -1167,6 +1173,7 @@ public sealed partial class MainPage : Page
         _fgRefs.Clear();
         _sysRefs.Clear();
         _monRefs.Clear();
+        _lossRefs.Clear();
         // 磁贴重建：旧的徽章引用失效
         _settingsTile = null;
         _badge = SettingsBadge.None;
@@ -1452,6 +1459,19 @@ public sealed partial class MainPage : Page
             AttachEditGestures(monTile, item, group, index, false);
             TileStyle.FillMonitorState(monRefs, item); // 建好即显示当前开关状态
             return monTile;
+        }
+
+        // 小黄鸭联动小组件磁贴：A/点击 = 启动并切回游戏后发送补帧热键，磁贴显示安装/运行状态
+        if (item.Kind == LaunchKind.Widget && item.WidgetKind == WidgetKind.LosslessScaling)
+        {
+            var (lossTile, lossRefs) = TileStyle.BuildLosslessTile(item, width, height, accent, noColor);
+            lossTile.Tag = index;
+            _lossRefs[lossRefs] = item;
+            lossTile.Tapped += (_, _) => OnTileTapped(index, () => ActivateAt(index));
+            lossTile.DoubleTapped += (_, _) => HandleDoubleTap(index);
+            AttachEditGestures(lossTile, item, group, index, false);
+            TileStyle.FillLosslessState(lossRefs, item); // 建好即显示安装/运行状态
+            return lossTile;
         }
 
         // 标准磁贴（背景图片铺满 / 强调色底+图标+名称）：与小组件页预览共用同一构建
@@ -3021,10 +3041,51 @@ public sealed partial class MainPage : Page
             // 文件传输小组件：A/点击 = 打开局域网传输浮层（搜索设备 / 勾选文件 / 发送与接收）
             OpenFileTransfer(item);
         }
+        else if (item.WidgetKind == WidgetKind.LosslessScaling)
+        {
+            // 小黄鸭联动小组件：A/点击 = 启动并切回游戏后发送补帧热键
+            _ = ActivateLosslessAsync(item);
+        }
         else
         {
             // 音乐小组件：A = 播放/暂停系统当前媒体
             SystemMediaService.TogglePlay();
+        }
+    }
+
+    /// <summary>小黄鸭一键补帧：按结果给出提示，并刷新磁贴状态</summary>
+    private async Task ActivateLosslessAsync(LaunchItem item)
+    {
+        if (LosslessScalingService.IsActivating)
+        {
+            ShowToast("正在启动小黄鸭…", ToastKind.Warning);
+            return;
+        }
+        var result = await LosslessScalingService.ActivateAsync(item);
+        RefreshLosslessTiles();
+        // 小黄鸭以管理员身份运行时，普通权限的启动器无法收起它的窗口，提示里说明一下
+        var minSuffix = LosslessScalingService.MinimizeBlocked ? "（小黄鸭以管理员运行，窗口无法最小化）" : "";
+        var minKind = minSuffix.Length > 0 ? ToastKind.Warning : ToastKind.Success;
+        switch (result)
+        {
+            case LosslessScalingService.ScaleResult.NotInstalled:
+                ShowToast("未检测到小黄鸭：请先安装，或按 R3 指定程序", ToastKind.Warning);
+                break;
+            case LosslessScalingService.ScaleResult.LaunchFailed:
+                ShowToast("小黄鸭启动失败", ToastKind.Warning);
+                break;
+            case LosslessScalingService.ScaleResult.NoGame:
+                ShowToast("未检测到游戏：小黄鸭已打开并最小化，进入游戏后再按 A 开启插帧", ToastKind.Warning);
+                break;
+            case LosslessScalingService.ScaleResult.FocusFailed:
+                ShowToast("切不回游戏窗口：请进入游戏后再按 A", ToastKind.Warning);
+                break;
+            case LosslessScalingService.ScaleResult.FrameGenOn:
+                ShowToast("已开启插帧" + minSuffix, minKind);
+                break;
+            case LosslessScalingService.ScaleResult.FrameGenOff:
+                ShowToast("已关闭插帧" + minSuffix, minKind);
+                break;
         }
     }
 
@@ -3045,6 +3106,20 @@ public sealed partial class MainPage : Page
         RefreshSystemTiles();
         ShowToast($"{SystemPanelService.Label(panel)}：{message}");
         if (SystemPanelService.IsLauncher(panel) && AutoHideAfterLaunch) App.Main?.HideToTray();
+    }
+
+    /// <summary>启动/唤醒小黄鸭（小黄鸭小组件 Y 键语义）：启动后最小化，已运行则直接最小化</summary>
+    private async void LaunchLossless(LaunchItem item)
+    {
+        if (!LosslessScalingService.IsInstalled(item))
+        {
+            ShowToast("未检测到小黄鸭：请先安装，或按 R3 指定程序", ToastKind.Warning);
+            return;
+        }
+        var ok = await LosslessScalingService.LaunchMinimizedAsync(item);
+        var hint = ok && LosslessScalingService.MinimizeBlocked ? "（管理员运行，无法最小化）" : "";
+        ShowToast(ok ? "已打开小黄鸭（最小化）" + hint : "小黄鸭启动失败", ok && hint.Length == 0 ? ToastKind.Success : ToastKind.Warning);
+        RefreshLosslessTiles();
     }
 
     /// <summary>清空回收站（回收站小组件 Y 键语义）：先查项目数（空桶时 SHEmptyRecycleBin 会返回失败），静默清空并提示结果</summary>
@@ -3261,6 +3336,7 @@ public sealed partial class MainPage : Page
         if (item.Kind == LaunchKind.Widget && item.WidgetKind == WidgetKind.System) return; // 系统小组件没有"可关闭"的对象
         if (item.Kind == LaunchKind.Widget && item.WidgetKind == WidgetKind.Power) return;  // 电源磁贴没有"可关闭"的对象
         if (item.Kind == LaunchKind.Widget && item.WidgetKind == WidgetKind.FileTransfer) return; // 文件传输：Y 已用于浮层内刷新列表
+        if (item.Kind == LaunchKind.Widget && item.WidgetKind == WidgetKind.LosslessScaling) { LaunchLossless(item); return; } // 小黄鸭：Y=启动/唤醒
         if (item.Kind == LaunchKind.Widget && item.WidgetKind == WidgetKind.Monitor)
         {
             // 性能监控：Y 键直接关闭监控（未开启时无动作）
@@ -3353,6 +3429,14 @@ public sealed partial class MainPage : Page
         if (_selected < 0 || _selected >= _display.Count) return false;
         var (item, group) = _display[_selected];
         return group is null && item.Kind == LaunchKind.Widget && item.WidgetKind == WidgetKind.OptiScaler;
+    }
+
+    /// <summary>当前选中的是否为顶层小黄鸭小组件磁贴（决定 Y 键是启动/唤醒而不是关闭程序）</summary>
+    private bool IsLosslessSelected()
+    {
+        if (_selected < 0 || _selected >= _display.Count) return false;
+        var (item, group) = _display[_selected];
+        return group is null && item.Kind == LaunchKind.Widget && item.WidgetKind == WidgetKind.LosslessScaling;
     }
 
     /// <summary>当前选中的是否为顶层性能监控小组件磁贴（决定 A 键是开/关监控、Y 键是关闭监控）</summary>
@@ -3942,6 +4026,12 @@ public sealed partial class MainPage : Page
         foreach (var (refs, item) in _monRefs) TileStyle.FillMonitorState(refs, item);
     }
 
+    /// <summary>刷新小黄鸭磁贴的安装/运行状态（每秒轮询或操作后调用）</summary>
+    private void RefreshLosslessTiles()
+    {
+        foreach (var (refs, item) in _lossRefs) TileStyle.FillLosslessState(refs, item);
+    }
+
     /// <summary>当前焦点所在的系统小组件磁贴项（磁贴区选中 或 抽屉内层焦点）；不是系统小组件返回 null</summary>
     private LaunchItem? SystemItemInFocus()
     {
@@ -4161,6 +4251,8 @@ public sealed partial class MainPage : Page
             HintBar.SetHints("DPAD:切换选择|A:呼出OptiScaler菜单|Y:注入|R3:编辑|L3:排列|B:隐藏");
         else if (IsMonitorSelected())
             HintBar.SetHints("DPAD:切换选择|A:开启/关闭监控|R3:编辑|L3:排列|B:隐藏");
+        else if (IsLosslessSelected())
+            HintBar.SetHints("DPAD:切换选择|A:开关插帧|Y:打开小黄鸭|R3:编辑|L3:排列|B:隐藏");
         else if (IsFixedSelected())
             HintBar.SetHints("DPAD:选择|A:打开|L3:排列|VIEW:设置|B:隐藏"); // 设置/电源常驻磁贴不可编辑
         else if (IsClosableSelected())

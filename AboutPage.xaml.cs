@@ -21,6 +21,9 @@ public sealed partial class AboutPage : Page, ISettingsGamepad
     /// <summary>正在检查或下载，防止重复触发</summary>
     private bool _busy;
 
+    /// <summary>下载进度轮询：下载在 UpdateService 里后台跑，页面重建后仍能接上进度</summary>
+    private DispatcherTimer? _downloadWatch;
+
     public AboutPage()
     {
         InitializeComponent();
@@ -45,6 +48,7 @@ public sealed partial class AboutPage : Page, ISettingsGamepad
 
         AutoCheckToggle.IsOn = SettingsService.Current.AutoCheckUpdates;
         ShowKnownUpdate();
+        RestoreDownloadState();
     }
 
     /// <summary>未配置的入口显示为提示文字，避免空行</summary>
@@ -71,6 +75,8 @@ public sealed partial class AboutPage : Page, ISettingsGamepad
         FocusIndex(_index);
 
         ShowKnownUpdate();
+        // 页面可能被重建：下载中则恢复进度显示，而不是回到"下载并安装"
+        RestoreDownloadState();
         // 启动自动检查关闭或尚未完成时，进入关于页补一次静默检查
         if (_update is null && !UpdateService.AutoChecked && SettingsService.Current.AutoCheckUpdates)
             _ = CheckAsync(silent: true);
@@ -80,6 +86,7 @@ public sealed partial class AboutPage : Page, ISettingsGamepad
     {
         base.OnNavigatedFrom(e);
         _ready = false;
+        _downloadWatch?.Stop();
     }
 
     public void HandleGamepad(GamepadButtons buttons)
@@ -152,7 +159,7 @@ public sealed partial class AboutPage : Page, ISettingsGamepad
     private async Task CheckOrInstallAsync()
     {
         if (_busy) return;
-        if (_update is { } info) await InstallAsync(info);
+        if (_update is { } info) Install(info);
         else await CheckAsync();
     }
 
@@ -203,34 +210,91 @@ public sealed partial class AboutPage : Page, ISettingsGamepad
                          ?? $"发现新版本（当前 v{FormatVersion(UpdateService.CurrentVersion)}），点按下载并安装";
     }
 
-    /// <summary>下载安装包并静默启动安装（Inno Setup 会关闭并重启本程序）</summary>
-    private async Task InstallAsync(UpdateInfo info)
+    /// <summary>
+    /// 下载安装包并静默启动安装。下载任务由 UpdateService 单例持有：
+    /// 中途切出关于页不会重置进度，也不会重复下载同一个安装包。
+    /// </summary>
+    private void Install(UpdateInfo info)
     {
+        _update = info;
         _busy = true;
+        UpdateTitle.Text = $"正在下载 v{FormatVersion(info.Version)}";
         UpdateSub.Text = "开始下载…";
         UpdateProgress.Value = 0;
         UpdateProgress.IsIndeterminate = false;
         UpdateProgress.Visibility = Visibility.Visible;
         try
         {
-            var progress = new Progress<double>(p =>
-            {
-                UpdateProgress.Value = p * 100;
-                UpdateSub.Text = p >= 1
-                    ? "下载完成，正在启动安装程序…"
-                    : $"正在下载… {p * 100:0}%";
-            });
-            var path = await UpdateService.DownloadAsync(info, progress);
-            UpdateService.RunInstaller(path);
-            // 安装程序会关闭本程序并在安装结束后自动重启，这里保持 busy 防止重复触发
+            var task = UpdateService.StartDownloadAsync(info);
+            // 错误通过 UpdateService.LastDownloadError 在轮询里显示，这里只避免任务异常未观察
+            _ = task.ContinueWith(t => _ = t.Exception, CancellationToken.None,
+                TaskContinuationOptions.OnlyOnFaulted, TaskScheduler.Default);
         }
         catch (Exception ex)
         {
             _busy = false;
-            UpdateProgress.Visibility = Visibility.Collapsed;
-            UpdateTitle.Text = $"重试下载并安装 v{FormatVersion(info.Version)}";
-            UpdateSub.Text = "更新失败：" + ex.Message;
+            ShowDownloadFailed(info, ex.Message);
+            return;
         }
+        StartDownloadWatch();
+    }
+
+    /// <summary>重新进入关于页时：如果还在下载就恢复进度显示，而不是重置成"下载并安装"</summary>
+    private void RestoreDownloadState()
+    {
+        if (UpdateService.DownloadingInfo is { } info && UpdateService.IsDownloading)
+        {
+            _update = info;
+            _busy = true;
+            UpdateTitle.Text = $"正在下载 v{FormatVersion(info.Version)}";
+            UpdateProgress.Value = UpdateService.DownloadProgress * 100;
+            UpdateProgress.IsIndeterminate = false;
+            UpdateProgress.Visibility = Visibility.Visible;
+            UpdateSub.Text = $"正在下载… {UpdateService.DownloadProgress * 100:0}%";
+            StartDownloadWatch();
+            return;
+        }
+        if (UpdateService.LastDownloadError is { } error && _update is { } failed)
+            ShowDownloadFailed(failed, error);
+    }
+
+    /// <summary>轮询 UpdateService 的下载进度（页面可能被重建，进度仍保存在服务里）</summary>
+    private void StartDownloadWatch()
+    {
+        _downloadWatch ??= new DispatcherTimer { Interval = TimeSpan.FromMilliseconds(300) };
+        _downloadWatch.Tick -= OnDownloadWatchTick;
+        _downloadWatch.Tick += OnDownloadWatchTick;
+        _downloadWatch.Start();
+    }
+
+    private void OnDownloadWatchTick(object? sender, object e)
+    {
+        if (UpdateService.IsDownloading)
+        {
+            UpdateProgress.Value = UpdateService.DownloadProgress * 100;
+            UpdateSub.Text = $"正在下载… {UpdateService.DownloadProgress * 100:0}%";
+            return;
+        }
+
+        _downloadWatch?.Stop();
+        if (UpdateService.LastDownloadError is { } error)
+        {
+            _busy = false;
+            UpdateProgress.Visibility = Visibility.Collapsed;
+            if (_update is { } info) ShowDownloadFailed(info, error);
+            return;
+        }
+        // 下载完成、安装程序已启动（安装结束后程序会自动重启），保持 busy 防止重复触发
+        UpdateProgress.Value = 100;
+        UpdateSub.Text = "下载完成，正在启动安装程序…";
+    }
+
+    private void ShowDownloadFailed(UpdateInfo info, string error)
+    {
+        _busy = false;
+        UpdateProgress.Visibility = Visibility.Collapsed;
+        UpdateTitle.Text = $"重试下载并安装 v{FormatVersion(info.Version)}";
+        UpdateSub.Text = "更新失败：" + error;
     }
 
     /// <summary>切换“启动时检查更新”并立即保存</summary>

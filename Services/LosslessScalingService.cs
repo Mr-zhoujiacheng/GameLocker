@@ -39,15 +39,29 @@ public static class LosslessScalingService
         /// <summary>已发送热键：插帧已开启</summary>
         FrameGenOn,
         /// <summary>已发送热键：插帧已关闭</summary>
-        FrameGenOff
+        FrameGenOff,
+        /// <summary>热键发出去了，但插帧状态没有变化（小黄鸭没响应注入的热键）</summary>
+        ToggleFailed
     }
 
     private static string? _detectedExe;
     private static bool _detectedOnce;
     private static int _activating;
 
-    /// <summary>最近一次由本组件切换的插帧状态（小黄鸭启动时视为关闭；仅用于磁贴提示与文案）</summary>
-    public static bool FrameGenOn { get; private set; }
+    /// <summary>
+    /// 是否正在缩放/插帧：以小黄鸭实际创建的覆盖层窗口为准（开启后会生成可见的
+    /// LosslessScalingBlk 输出层窗口，关闭后消失）。不再依赖本地标志翻转，
+    /// 避免"热键没被响应但状态已翻转"导致磁贴与画面不一致。
+    /// </summary>
+    public static bool IsScaling
+    {
+        get
+        {
+            foreach (var pid in RunningProcessIds())
+                if (HasOverlay(pid)) return true;
+            return false;
+        }
+    }
 
     /// <summary>是否正在执行开关插帧（防重入）</summary>
     public static bool IsActivating => Volatile.Read(ref _activating) == 1;
@@ -57,12 +71,6 @@ public static class LosslessScalingService
     /// 小黄鸭若以管理员身份运行（它自己的"以管理员身份启动"选项），普通权限的启动器无法操作它的窗口。
     /// </summary>
     public static bool MinimizeBlocked { get; private set; }
-
-    /// <summary>进程不在运行时把插帧记录清零（磁贴刷新前调用，避免显示过期的"插帧开"）</summary>
-    public static void SyncState()
-    {
-        if (!IsRunning) FrameGenOn = false;
-    }
 
     /// <summary>是否已安装：手动路径存在，或 Steam 库中检测到 LosslessScaling.exe</summary>
     public static bool IsInstalled(LaunchItem item) => DetectExe(item) is not null;
@@ -271,7 +279,8 @@ public static class LosslessScalingService
     /// </summary>
     public static async Task<ScaleResult> ActivateAsync(LaunchItem item)
     {
-        if (Interlocked.Exchange(ref _activating, 1) == 1) return ScaleResult.FrameGenOn;
+        if (Interlocked.Exchange(ref _activating, 1) == 1)
+            return IsScaling ? ScaleResult.FrameGenOn : ScaleResult.FrameGenOff;
         try
         {
             if (!IsInstalled(item)) return ScaleResult.NotInstalled;
@@ -281,6 +290,8 @@ public static class LosslessScalingService
             var app = ForegroundWatcherService.Current;
             var target = FindTargetGameWindow(app, out var targetName);
             var running = IsRunning;
+            // 以覆盖层实际状态判断当前是"开"还是"关"：A 键始终朝相反方向切换
+            var wasScaling = running && IsScaling;
 
             // 选中的配置要在小黄鸭启动前写进 Settings.xml；已在运行时它不会重读，留待下次启动生效。
             if (!running && target != IntPtr.Zero && !string.IsNullOrWhiteSpace(item.LosslessProfile))
@@ -291,7 +302,6 @@ public static class LosslessScalingService
                 var launchedAt = Environment.TickCount64; // 从发起启动开始计时（含冷启动全过程）
                 if (!Launch(item)) return ScaleResult.LaunchFailed;
                 if (!await WaitRunningAsync(12000)) return ScaleResult.LaunchFailed;
-                FrameGenOn = false; // 刚启动的小黄鸭尚未开启插帧
 
                 // 等主窗口出现后，再留约 2 秒给小黄鸭初始化热键监听（冷启动通常要几秒）
                 var windowReady = await WaitWindowReadyAsync(8000);
@@ -328,10 +338,11 @@ public static class LosslessScalingService
                 return ScaleResult.FocusFailed;
             }
 
-            var injected = KeySendService.Send(ScaleHotkeyKey, ScaleHotkeyMods);
-            FrameGenOn = !FrameGenOn;
-            DebugLog.Write($"小黄鸭: 已发送插帧热键 Ctrl+Alt+S，injected={injected}，目标={targetName}，最小化失败={MinimizeBlocked}，state={(FrameGenOn ? "开" : "关")}");
-            return FrameGenOn ? ScaleResult.FrameGenOn : ScaleResult.FrameGenOff;
+            var desired = !wasScaling;
+            var ok = await ToggleAsync(target, desired, targetName);
+            return ok
+                ? desired ? ScaleResult.FrameGenOn : ScaleResult.FrameGenOff
+                : ScaleResult.ToggleFailed;
         }
         catch (Exception ex)
         {
@@ -339,6 +350,60 @@ public static class LosslessScalingService
             return ScaleResult.LaunchFailed;
         }
         finally { Volatile.Write(ref _activating, 0); }
+    }
+
+    /// <summary>
+    /// 发送插帧热键并等待覆盖层状态真正改变：最多尝试 3 次（热键偶尔会被小黄鸭漏掉），
+    /// 每次发送前确保游戏仍是前台，发完轮询实际状态，成功即返回。
+    /// </summary>
+    private static async Task<bool> ToggleAsync(IntPtr target, bool desired, string targetName)
+    {
+        for (var attempt = 1; attempt <= 3; attempt++)
+        {
+            if (GetForegroundWindow() != target)
+            {
+                BringToForeground(target);
+                await Task.Delay(400);
+            }
+            var injected = await KeySendService.SendAsync(ScaleHotkeyKey, ScaleHotkeyMods);
+            var ok = await WaitScalingAsync(desired, 2500);
+            DebugLog.Write($"小黄鸭: 插帧热键 第{attempt}次 injected={injected} " +
+                           $"期望={(desired ? "开" : "关")} 实际={(IsScaling ? "开" : "关")} 目标={targetName}");
+            if (ok) return true;
+            if (attempt < 3) await Task.Delay(300);
+        }
+        return false;
+    }
+
+    /// <summary>轮询等待覆盖层达到期望状态（150ms 一次，最多 timeoutMs）</summary>
+    private static async Task<bool> WaitScalingAsync(bool desired, int timeoutMs)
+    {
+        var waited = 0;
+        while (waited < timeoutMs)
+        {
+            if (IsScaling == desired) return true;
+            await Task.Delay(150);
+            waited += 150;
+        }
+        return IsScaling == desired;
+    }
+
+    /// <summary>该进程是否有可见的缩放覆盖层窗口（LosslessScalingBlk 即画面输出层）</summary>
+    private static bool HasOverlay(int pid)
+    {
+        var found = false;
+        EnumWindows((h, _) =>
+        {
+            GetWindowThreadProcessId(h, out var winPid);
+            if ((int)winPid != pid || !IsWindowVisible(h)) return true;
+            var cls = new StringBuilder(64);
+            if (GetClassNameW(h, cls, cls.Capacity) <= 0) return true;
+            if (!string.Equals(cls.ToString(), "LosslessScalingBlk", StringComparison.OrdinalIgnoreCase))
+                return true;
+            found = true;
+            return false;
+        }, IntPtr.Zero);
+        return found;
     }
 
     /// <summary>等待小黄鸭出现任一可见窗口（轮询 200ms，最多 timeoutMs）</summary>
@@ -361,7 +426,6 @@ public static class LosslessScalingService
         {
             if (!Launch(item)) return false;
             if (!await WaitRunningAsync(10000)) return false;
-            FrameGenOn = false; // 刚启动的小黄鸭尚未开启插帧
         }
         MinimizeBlocked = !MinimizeWindows();
         return true;
@@ -623,6 +687,9 @@ public static class LosslessScalingService
 
     [DllImport("user32.dll", CharSet = CharSet.Unicode)]
     private static extern int GetWindowTextLengthW(IntPtr hWnd);
+
+    [DllImport("user32.dll", CharSet = CharSet.Unicode)]
+    private static extern int GetClassNameW(IntPtr hWnd, StringBuilder lpClassName, int nMaxCount);
 
     [DllImport("user32.dll")]
     private static extern bool IsIconic(IntPtr hWnd);

@@ -1726,10 +1726,9 @@ public static class TileStyle
     /// <summary>把安装/运行状态、插帧状态与操作摘要写入磁贴引用</summary>
     public static void FillLosslessState(LosslessTileRefs refs, LaunchItem item)
     {
-        LosslessScalingService.SyncState();
         var installed = LosslessScalingService.IsInstalled(item);
         var running = installed && LosslessScalingService.IsRunning;
-        var scaling = running && LosslessScalingService.FrameGenOn;
+        var scaling = running && LosslessScalingService.IsScaling;
 
         refs.Dot.Fill = new SolidColorBrush(
             !installed ? Windows.UI.Color.FromArgb(0x66, 0xFF, 0xFF, 0xFF)   // 灰白：未安装

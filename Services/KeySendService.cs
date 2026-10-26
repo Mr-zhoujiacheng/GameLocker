@@ -186,6 +186,64 @@ public static class KeySendService
     }
 
     /// <summary>
+    /// 与 <see cref="Send"/> 相同的组合键注入，但逐个事件发送、事件间隔约 30ms，
+    /// 更接近真人按键节奏。部分游戏/工具（如小黄鸭）对整串瞬间注入的热键反应不稳定，
+    /// 拉开间隔可显著提高命中率。
+    /// </summary>
+    public static async Task<uint> SendAsync(int vk, int mods)
+    {
+        if (vk == 0) return 0;
+
+        var ctrl = (mods & ModCtrl) != 0;
+        var shift = (mods & ModShift) != 0;
+        var alt = (mods & ModAlt) != 0;
+        var win = (mods & ModWin) != 0;
+        var ext = IsExtended(vk);
+
+        var keys = new List<(int Code, bool Up, bool Ext)>(8);
+        if (ctrl) keys.Add((VkCtrl, false, false));
+        if (shift) keys.Add((VkShift, false, false));
+        if (alt) keys.Add((VkAlt, false, false));
+        if (win) keys.Add((VkWin, false, true));
+        keys.Add((vk, false, ext));
+        keys.Add((vk, true, ext));
+        if (win) keys.Add((VkWin, true, true));
+        if (alt) keys.Add((VkAlt, true, false));
+        if (shift) keys.Add((VkShift, true, false));
+        if (ctrl) keys.Add((VkCtrl, true, false));
+
+        uint sent = 0;
+        for (var i = 0; i < keys.Count; i++)
+        {
+            var (code, up, extended) = keys[i];
+            sent += SendOne(code, up, extended);
+            if (i < keys.Count - 1) await Task.Delay(30);
+        }
+        return sent;
+    }
+
+    /// <summary>注入单次按键事件，返回 SendInput 是否成功（1=成功）</summary>
+    private static uint SendOne(int vk, bool up, bool ext)
+    {
+        var input = new INPUT
+        {
+            type = INPUT_KEYBOARD,
+            U = new InputUnion
+            {
+                ki = new KEYBDINPUT
+                {
+                    wVk = (ushort)vk,
+                    wScan = 0,
+                    dwFlags = (uint)((up ? KEYEVENTF_KEYUP : 0) | (ext ? KEYEVENTF_EXTENDEDKEY : 0)),
+                    time = 0,
+                    dwExtraInfo = IntPtr.Zero
+                }
+            }
+        };
+        return SendInput(1, [input], Marshal.SizeOf<INPUT>());
+    }
+
+    /// <summary>
     /// 只注入一次按键按下或抬起（不配对），并带上标记值 dwExtraInfo。
     /// 供键盘钩子在"Win 键被吞掉后补发"时使用：标记让钩子能识别自己注入的事件并放行，避免自吞。
     /// </summary>

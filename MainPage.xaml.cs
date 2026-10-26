@@ -3086,6 +3086,9 @@ public sealed partial class MainPage : Page
             case LosslessScalingService.ScaleResult.FrameGenOff:
                 ShowToast("已关闭插帧" + minSuffix, minKind);
                 break;
+            case LosslessScalingService.ScaleResult.ToggleFailed:
+                ShowToast("未能切换插帧：请在小黄鸭里按 Ctrl+Alt+S 确认热键", ToastKind.Warning);
+                break;
         }
     }
 

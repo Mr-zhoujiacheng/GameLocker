@@ -73,6 +73,9 @@ public class AppSettings
     /// <summary>启动时自动检查 GitHub 最新版本（关于页可关闭）</summary>
     public bool AutoCheckUpdates { get; set; } = true;
 
+    /// <summary>记录运行日志（关于页可开关，默认关闭）：开启后复现问题，再导出日志给开发者排查</summary>
+    public bool DiagnosticLog { get; set; }
+
     /// <summary>磁贴组展开/收起动画（成员磁贴交错淡入浮现 / 淡出收起）</summary>
     public bool GroupExpandAnimation { get; set; } = true;
 

@@ -74,6 +74,31 @@
                                           VerticalAlignment="Center"/>
                         </Grid>
                     </ListViewItem>
+                    <ListViewItem Tapped="OnLinkTapped" Tag="log">
+                        <Grid Padding="0,10" ColumnSpacing="10">
+                            <Grid.ColumnDefinitions>
+                                <ColumnDefinition Width="Auto"/>
+                                <ColumnDefinition Width="*"/>
+                                <ColumnDefinition Width="Auto"/>
+                                <ColumnDefinition Width="Auto"/>
+                            </Grid.ColumnDefinitions>
+                            <FontIcon Glyph="&#xE7C3;" FontSize="20" VerticalAlignment="Center"/>
+                            <StackPanel Grid.Column="1" Spacing="2">
+                                <TextBlock Text="记录运行日志" FontSize="17"/>
+                                <TextBlock x:Name="ExportSub" Text="默认关闭。遇到问题时打开，复现一次后再导出"
+                                           FontSize="12" Opacity="0.6" TextWrapping="Wrap"/>
+                            </StackPanel>
+                            <Button x:Name="ExportButton" Grid.Column="2" Content="导出"
+                                    Click="OnExportClick" IsTabStop="False"
+                                    FontSize="13" Padding="0"
+                                    HorizontalContentAlignment="Center"
+                                    VerticalAlignment="Center"/>
+                            <ToggleSwitch x:Name="LogToggle" Grid.Column="3"
+                                          Margin="28,0,0,0"
+                                          IsHitTestVisible="False" IsTabStop="False"
+                                          VerticalAlignment="Center"/>
+                        </Grid>
+                    </ListViewItem>
                     <ListViewItem Tapped="OnLinkTapped" Tag="github">
                         <StackPanel Orientation="Horizontal" Spacing="14" Padding="0,10">
                             <FontIcon Glyph="&#xE774;" FontSize="20" VerticalAlignment="Center"/>
@@ -116,6 +141,6 @@
                    Margin="24,0,24,4"/>
 
         <ctl:GamepadHintBar Grid.Row="3" Margin="0,8,0,12"
-                            Hints="DPAD:选择|A:打开|B:返回"/>
+                            Hints="DPAD:选择|A:打开|X:导出日志|B:返回"/>
     </Grid>
 </Page>

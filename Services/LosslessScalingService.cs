@@ -48,12 +48,40 @@ public static class LosslessScalingService
     private static bool _detectedOnce;
     private static int _activating;
 
+    /// <summary>小黄鸭开始插帧后 GPU 占用会明显升高（实测约 65%），空闲时为 0；用作真实状态判据</summary>
+    private const double GpuBusyThreshold = 5.0;
+
+    /// <summary>刚切换完的这段时间内再按 A 直接忽略：GPU 计数还在沉降，此时切换会把刚生效的结果切回去</summary>
+    private const int ToggleCooldownMs = 1200;
+
+    private static long _lastToggleAt = -(1 << 30);
+
+    private static readonly object GpuLock = new();
+    private static IntPtr _gpuQuery;
+    private static IntPtr _gpuCounter;
+    private static int _gpuPid;
+    private static int _gpuCollects;
+    private static long _gpuLastCollect;
+    private static double _gpuValue = -1;
+
     /// <summary>
-    /// 是否正在缩放/插帧：以小黄鸭实际创建的覆盖层窗口为准（开启后会生成可见的
-    /// LosslessScalingBlk 输出层窗口，关闭后消失）。不再依赖本地标志翻转，
-    /// 避免"热键没被响应但状态已翻转"导致磁贴与画面不一致。
+    /// 上次成功切换后的插帧状态。小黄鸭的输出层窗口只在被缩放的游戏处于前台时存在，
+    /// 一离开游戏（例如回到启动器按 A）就会被销毁，但小黄鸭内部的开关状态仍然保留，
+    /// 重新切回游戏又会自动恢复。因此磁贴显示要结合"实测覆盖层 + 上次成功状态"。
     /// </summary>
-    public static bool IsScaling
+    private static bool _frameGenState;
+
+    /// <summary>
+    /// 是否处于插帧中（供磁贴显示）：能看到覆盖层就是开；看不到时回落到上次成功切换的状态，
+    /// 避免回到启动器时覆盖层被销毁而把磁贴误显示成"运行中"。
+    /// </summary>
+    public static bool IsScaling => IsRunning && (IsOverlayVisible || _frameGenState);
+
+    /// <summary>
+    /// 覆盖层当前是否可见。注意：只有目标游戏处于前台时它才存在，
+    /// 判定真实状态必须在把游戏切回前台之后再做（见 <see cref="ActivateAsync"/>）。
+    /// </summary>
+    private static bool IsOverlayVisible
     {
         get
         {
@@ -273,9 +301,9 @@ public static class LosslessScalingService
     }
 
     /// <summary>
-    /// 开关插帧（须在 UI 线程调用）：先记下目标游戏窗口 → 未运行时启动小黄鸭并等它初始化 →
-    /// 收起启动器与小黄鸭窗口 → 把游戏切回前台 → 发送 Ctrl+Alt+S。每次按下都在开/关之间切换。
-    /// 没找到游戏窗口时只打开小黄鸭，不发热键（热键只会缩放当前前台窗口）。
+    /// 开关插帧（须在 UI 线程调用）：先记下目标游戏窗口 → 未运行时启动小黄鸭并尽快最小化 →
+    /// 收起启动器、把游戏切回前台 → 等小黄鸭的输出层（插帧画面）恢复后判定当前状态 →
+    /// 发送 Ctrl+Alt+S 朝相反方向切换。没找到游戏窗口时只打开小黄鸭，不发热键。
     /// </summary>
     public static async Task<ScaleResult> ActivateAsync(LaunchItem item)
     {
@@ -285,34 +313,51 @@ public static class LosslessScalingService
         {
             if (!IsInstalled(item)) return ScaleResult.NotInstalled;
 
+            // 刚切换完的一瞬间再按 A：GPU 计数还停留在旧值上，此时切换方向会算错，
+            // 把刚生效的开关又切回去（表现为"慢一拍"）。冷却期内直接按上次结果回报。
+            if (Environment.TickCount64 - _lastToggleAt < ToggleCooldownMs)
+            {
+                DebugLog.Write($"小黄鸭: 距上次切换 {Environment.TickCount64 - _lastToggleAt}ms，忽略本次按键（状态={(_frameGenState ? "开" : "关")}）");
+                return _frameGenState ? ScaleResult.FrameGenOn : ScaleResult.FrameGenOff;
+            }
+
             // 必须在启动小黄鸭之前确定目标游戏窗口：小黄鸭一启动就会抢占前台，
             // 前台记录随之变成小黄鸭自己，之后再取会把热键发给小黄鸭（表现为"只打开了小黄鸭"）。
             var app = ForegroundWatcherService.Current;
             var target = FindTargetGameWindow(app, out var targetName);
             var running = IsRunning;
-            // 以覆盖层实际状态判断当前是"开"还是"关"：A 键始终朝相反方向切换
-            var wasScaling = running && IsScaling;
+            var hasGame = target != IntPtr.Zero && IsWindow(target);
 
             // 选中的配置要在小黄鸭启动前写进 Settings.xml；已在运行时它不会重读，留待下次启动生效。
-            if (!running && target != IntPtr.Zero && !string.IsNullOrWhiteSpace(item.LosslessProfile))
+            if (!running && hasGame && !string.IsNullOrWhiteSpace(item.LosslessProfile))
                 ApplyProfile(item.LosslessProfile, app);
 
             if (!running)
             {
                 var launchedAt = Environment.TickCount64; // 从发起启动开始计时（含冷启动全过程）
                 if (!Launch(item)) return ScaleResult.LaunchFailed;
-                if (!await WaitRunningAsync(12000)) return ScaleResult.LaunchFailed;
 
-                // 等主窗口出现后，再留约 2 秒给小黄鸭初始化热键监听（冷启动通常要几秒）
+                // 小黄鸭启动时窗口会闪一下：先把启动器收起、游戏切回前台，
+                // 让它的窗口尽量被游戏盖住；随后一旦出现窗口就立刻最小化（无感）。
+                if (hasGame)
+                {
+                    App.Main?.HideToTray();
+                    BringToForeground(target);
+                }
+                if (!await WaitRunningAsync(12000)) return ScaleResult.LaunchFailed;
+                await MinimizeAsapAsync(10000);
+
+                // 等主窗口出现后再留一点时间给小黄鸭初始化热键监听
                 var windowReady = await WaitWindowReadyAsync(8000);
-                if (windowReady) await Task.Delay(2000);
+                if (windowReady) await Task.Delay(1200);
                 var elapsed = Environment.TickCount64 - launchedAt;
-                if (elapsed < 4000) await Task.Delay((int)(4000 - elapsed));
-                DebugLog.Write($"小黄鸭: 启动就绪 窗口={windowReady} 用时={Environment.TickCount64 - launchedAt}ms 目标={targetName}");
+                if (elapsed < 3500) await Task.Delay((int)(3500 - elapsed));
+                _frameGenState = false; // 刚启动的小黄鸭尚未开启插帧
+                DebugLog.Write($"小黄鸭: 启动就绪 窗口={windowReady} 用时={Environment.TickCount64 - launchedAt}ms 最小化失败={MinimizeBlocked} 目标={targetName}");
             }
 
             // 没有可缩放的游戏窗口：热键发了也没用（小黄鸭只会缩放前台窗口），只打开并最小化
-            if (target == IntPtr.Zero || !IsWindow(target))
+            if (!hasGame)
             {
                 MinimizeBlocked = !MinimizeWindows();
                 DebugLog.Write($"小黄鸭: 未找到游戏窗口（目标={targetName}），已打开并最小化（最小化失败={MinimizeBlocked}），不发送热键");
@@ -338,8 +383,16 @@ public static class LosslessScalingService
                 return ScaleResult.FocusFailed;
             }
 
-            var desired = !wasScaling;
-            var ok = await ToggleAsync(target, desired, targetName);
+            // 覆盖层只为"被缩放的那个窗口"创建，且在前台切换时可能销毁也可能保留，
+            // 单靠它判断开关并不可靠（回到启动器按 A 时常常已经看不到）。
+            // 方向以"上次成功切换的状态"为准；切回游戏后若实测已在插帧（小黄鸭恢复了输出）再纠偏为开。
+            var pids = RunningProcessIds();
+            if (await WaitScalingStableAsync(pids, true, 1600, 2, "切回游戏后确认插帧已恢复"))
+                _frameGenState = true;
+            var desired = !_frameGenState;
+            DebugLog.Write($"小黄鸭: 切换前状态={(_frameGenState ? "开" : "关")} GPU={GpuValue(pids):0.#}% 覆盖层={(IsOverlayVisible ? "在" : "无")} 目标={targetName}");
+            var ok = await ToggleAsync(target, desired, targetName, pids);
+            _frameGenState = ok ? desired : IsScalingNow(pids);
             return ok
                 ? desired ? ScaleResult.FrameGenOn : ScaleResult.FrameGenOff
                 : ScaleResult.ToggleFailed;
@@ -353,39 +406,118 @@ public static class LosslessScalingService
     }
 
     /// <summary>
-    /// 发送插帧热键并等待覆盖层状态真正改变：最多尝试 3 次（热键偶尔会被小黄鸭漏掉），
-    /// 每次发送前确保游戏仍是前台，发完轮询实际状态，成功即返回。
+    /// 发送插帧热键并把状态切到期望值。GPU 计数器约 1s 才刷新一次、关闭后还会短暂残留高值，
+    /// 所以发完必须按"连续采样"确认，不能刚发完就判失败；确认成功才记冷却，
+    /// 确认状态完全没变才补发一次（避免把已经生效的切换又切回去）。
     /// </summary>
-    private static async Task<bool> ToggleAsync(IntPtr target, bool desired, string targetName)
+    private static async Task<bool> ToggleAsync(IntPtr target, bool desired, string targetName, List<int> pids)
     {
-        for (var attempt = 1; attempt <= 3; attempt++)
+        for (var attempt = 1; attempt <= 2; attempt++)
         {
             if (GetForegroundWindow() != target)
             {
                 BringToForeground(target);
-                await Task.Delay(400);
+                await Task.Delay(450);
             }
             var injected = await KeySendService.SendAsync(ScaleHotkeyKey, ScaleHotkeyMods);
-            var ok = await WaitScalingAsync(desired, 2500);
+            // 小黄鸭处理热键 + GPU 计数器刷新都要时间（约 1s 一次采样），先留出沉降时间，
+            // 否则刚发完读到的还是切换前的旧值，会把"已生效"误判成"没生效"。
+            await Task.Delay(600);
+            var ok = await WaitScalingStableAsync(pids, desired, 4000, desired ? 2 : 3,
+                $"插帧热键 第{attempt}次({(desired ? "开" : "关")})");
             DebugLog.Write($"小黄鸭: 插帧热键 第{attempt}次 injected={injected} " +
-                           $"期望={(desired ? "开" : "关")} 实际={(IsScaling ? "开" : "关")} 目标={targetName}");
-            if (ok) return true;
-            if (attempt < 3) await Task.Delay(300);
+                           $"期望={(desired ? "开" : "关")} 实际={(IsScalingNow(pids) ? "开" : "关")} " +
+                           $"GPU={GpuValue(pids):0.#}% 目标={targetName}");
+            if (ok)
+            {
+                _lastToggleAt = Environment.TickCount64;
+                return true;
+            }
+            if (attempt < 2) await Task.Delay(500);
         }
         return false;
     }
 
-    /// <summary>轮询等待覆盖层达到期望状态（150ms 一次，最多 timeoutMs）</summary>
-    private static async Task<bool> WaitScalingAsync(bool desired, int timeoutMs)
+    /// <summary>
+    /// 等待插帧状态"稳定"达到期望：必须连续 needed 次采样都一致才算成功。
+    /// 单次读数会受 GPU 计数延迟影响而"慢一拍"（关闭后还会残留高值），
+    /// 连续采样能避免把残留值当成真实状态、从而多发一次热键把插帧又打开。
+    /// </summary>
+    private static async Task<bool> WaitScalingStableAsync(
+        List<int> pids, bool desired, int timeoutMs, int needed, string reason)
     {
+        var hits = 0;
         var waited = 0;
+        var lastGpu = -1.0;
         while (waited < timeoutMs)
         {
-            if (IsScaling == desired) return true;
-            await Task.Delay(150);
-            waited += 150;
+            var gpu = GpuValue(pids);
+            var on = gpu >= 0 ? gpu >= GpuBusyThreshold : pids.Any(HasOverlay);
+            if (on == desired)
+            {
+                if (++hits >= needed) return true;
+            }
+            else hits = 0;
+            lastGpu = gpu;
+            await Task.Delay(400);
+            waited += 400;
         }
-        return IsScaling == desired;
+        var final = IsScalingNow(pids);
+        if (final == desired) return true;
+        DebugLog.Write($"小黄鸭: {reason} 超时 期望={(desired ? "开" : "关")} 实际={(final ? "开" : "关")} " +
+                       $"GPU={lastGpu:0.#}% 覆盖层={(pids.Any(HasOverlay) ? "在" : "无")}");
+        return false;
+    }
+
+    /// <summary>当前是否在插帧：GPU 读数可用时以 GPU 为准，读不到再看覆盖层窗口</summary>
+    private static bool IsScalingNow(List<int> pids)
+    {
+        var gpu = GpuValue(pids);
+        if (gpu >= 0) return gpu >= GpuBusyThreshold;
+        return pids.Any(HasOverlay);
+    }
+
+    /// <summary>小黄鸭进程的 GPU 占用（多进程时取最大；都读不到返回 -1）</summary>
+    private static double GpuValue(List<int> pids)
+    {
+        var max = -1.0;
+        foreach (var pid in pids)
+        {
+            var v = GpuUsage(pid);
+            if (v > max) max = v;
+        }
+        return max;
+    }
+
+    /// <summary>
+    /// 小黄鸭一出现主窗口就立刻最小化（每 120ms 试一次），让启动过程尽量无感。
+    /// 以管理员身份运行时普通权限进程的 ShowWindow 会被 UIPI 拒绝，连续失败 3 次就放弃，
+    /// 避免空等到超时。
+    /// </summary>
+    private static async Task MinimizeAsapAsync(int timeoutMs)
+    {
+        var waited = 0;
+        var failed = 0;
+        while (waited < timeoutMs)
+        {
+            var pid = RunningProcessIds().FirstOrDefault();
+            if (pid != 0)
+            {
+                var main = FindMainWindow(pid);
+                if (main != IntPtr.Zero)
+                {
+                    if (ShowWindow(main, SW_MINIMIZE) || IsIconic(main))
+                    {
+                        MinimizeBlocked = false;
+                        return;
+                    }
+                    if (++failed >= 3) { MinimizeBlocked = true; return; }
+                }
+            }
+            await Task.Delay(120);
+            waited += 120;
+        }
+        MinimizeBlocked = true;
     }
 
     /// <summary>该进程是否有可见的缩放覆盖层窗口（LosslessScalingBlk 即画面输出层）</summary>
@@ -404,6 +536,94 @@ public static class LosslessScalingService
             return false;
         }, IntPtr.Zero);
         return found;
+    }
+
+    /// <summary>
+    /// 读取小黄鸭进程的 GPU 占用（所有引擎求和，%）；读不到返回 -1。
+    /// 插帧时实测约 60%+，关闭后为 0，比"覆盖层窗口是否存在"可靠得多
+    /// （覆盖层只在被缩放窗口处于前台时存在，窗口消失不代表插帧已关）。
+    /// 结果缓存 200ms，避免高频性能计数器采集。
+    /// </summary>
+    private static double GpuUsage(int pid)
+    {
+        if (pid == 0) return -1;
+        lock (GpuLock)
+        {
+            var now = Environment.TickCount64;
+            if (_gpuPid != pid)
+            {
+                ResetGpu();
+                _gpuPid = pid;
+            }
+            if (_gpuQuery == IntPtr.Zero && !OpenGpu()) return -1;
+            if (now - _gpuLastCollect < 200) return _gpuValue;
+            _gpuLastCollect = now;
+            if (PdhCollectQueryData(_gpuQuery) != 0) return -1;
+            // 速率计数器需要两次采样才有数值，第一次只当作预热
+            if (++_gpuCollects < 2) return -1;
+            _gpuValue = ReadGpuArray(pid);
+            return _gpuValue;
+        }
+    }
+
+    private static bool OpenGpu()
+    {
+        if (PdhOpenQueryW(null, UIntPtr.Zero, out _gpuQuery) != 0)
+        {
+            _gpuQuery = IntPtr.Zero;
+            return false;
+        }
+        if (PdhAddEnglishCounterW(_gpuQuery, @"\GPU Engine(*)\Utilization Percentage",
+                UIntPtr.Zero, out _gpuCounter) != 0)
+        {
+            PdhCloseQuery(_gpuQuery);
+            _gpuQuery = IntPtr.Zero;
+            _gpuCounter = IntPtr.Zero;
+            return false;
+        }
+        return true;
+    }
+
+    private static double ReadGpuArray(int pid)
+    {
+        uint size = 0, count = 0;
+        var ret = PdhGetFormattedCounterArrayW(_gpuCounter, PdhFmtDouble, ref size, out count, IntPtr.Zero);
+        if (ret != PdhMoreData || size == 0) return -1;
+        var buffer = Marshal.AllocHGlobal((int)size);
+        try
+        {
+            ret = PdhGetFormattedCounterArrayW(_gpuCounter, PdhFmtDouble, ref size, out count, buffer);
+            if (ret != 0) return -1;
+            var itemSize = Marshal.SizeOf<PdhItem>();
+            var sum = 0.0;
+            for (var i = 0; i < count; i++)
+            {
+                var item = Marshal.PtrToStructure<PdhItem>(buffer + i * itemSize);
+                if (item.Name == IntPtr.Zero) continue;
+                var name = Marshal.PtrToStringUni(item.Name) ?? "";
+                if (!name.Contains($"pid_{pid}_", StringComparison.OrdinalIgnoreCase)) continue;
+                if (item.Value.Status != 0) continue;
+                sum += item.Value.Value;
+            }
+            return sum;
+        }
+        finally
+        {
+            Marshal.FreeHGlobal(buffer);
+        }
+    }
+
+    private static void ResetGpu()
+    {
+        if (_gpuQuery != IntPtr.Zero)
+        {
+            PdhCloseQuery(_gpuQuery);
+            _gpuQuery = IntPtr.Zero;
+        }
+        _gpuCounter = IntPtr.Zero;
+        _gpuCollects = 0;
+        _gpuLastCollect = 0;
+        _gpuValue = -1;
     }
 
     /// <summary>等待小黄鸭出现任一可见窗口（轮询 200ms，最多 timeoutMs）</summary>
@@ -426,6 +646,8 @@ public static class LosslessScalingService
         {
             if (!Launch(item)) return false;
             if (!await WaitRunningAsync(10000)) return false;
+            await MinimizeAsapAsync(6000);
+            return true;
         }
         MinimizeBlocked = !MinimizeWindows();
         return true;
@@ -705,4 +927,38 @@ public static class LosslessScalingService
 
     [DllImport("user32.dll")]
     private static extern IntPtr GetForegroundWindow();
+
+    // ---- GPU 占用采样（PDH：\GPU Engine(*)\Utilization Percentage）----
+    private const uint PdhFmtDouble = 0x0000_0200;
+    private const uint PdhMoreData = 0x8000_07D2;
+
+    [StructLayout(LayoutKind.Sequential)]
+    private struct PdhCounterValue
+    {
+        public uint Status;
+        public double Value;
+    }
+
+    [StructLayout(LayoutKind.Sequential)]
+    private struct PdhItem
+    {
+        public IntPtr Name;
+        public PdhCounterValue Value;
+    }
+
+    [DllImport("pdh.dll", CharSet = CharSet.Unicode)]
+    private static extern uint PdhOpenQueryW(string? dataSource, UIntPtr userData, out IntPtr query);
+
+    [DllImport("pdh.dll", CharSet = CharSet.Unicode)]
+    private static extern uint PdhAddEnglishCounterW(IntPtr query, string path, UIntPtr userData, out IntPtr counter);
+
+    [DllImport("pdh.dll")]
+    private static extern uint PdhCollectQueryData(IntPtr query);
+
+    [DllImport("pdh.dll")]
+    private static extern uint PdhCloseQuery(IntPtr query);
+
+    [DllImport("pdh.dll", CharSet = CharSet.Unicode)]
+    private static extern uint PdhGetFormattedCounterArrayW(IntPtr counter, uint format,
+        ref uint bufferSize, out uint itemCount, IntPtr buffer);
 }

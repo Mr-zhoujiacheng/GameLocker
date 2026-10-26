@@ -1,14 +1,16 @@
 using GameLocker.Services;
 using Microsoft.UI.Xaml;
 using Microsoft.UI.Xaml.Controls;
+using Microsoft.UI.Xaml.Media;
 using Microsoft.UI.Xaml.Media.Imaging;
 using Microsoft.UI.Xaml.Navigation;
 
 namespace GameLocker;
 
 /// <summary>
-/// 关于页：软件信息 + 更新设置（检查/下载 GitHub 最新版本、启动自动检查）+ 作者入口。
-/// 手柄：方向=选择条目，A=执行（检查/安装/切换/打开），View(Select)/B=返回设置主页。
+/// 关于页：软件信息 + 更新设置（检查/下载 GitHub 最新版本、启动自动检查）
+/// + 运行日志（默认关闭，开启后复现问题再导出到桌面）+ 作者入口。
+/// 手柄：方向=选择条目，A=执行（检查/安装/切换/打开），X=导出日志，View(Select)/B=返回设置主页。
 /// </summary>
 public sealed partial class AboutPage : Page, ISettingsGamepad
 {
@@ -20,6 +22,9 @@ public sealed partial class AboutPage : Page, ISettingsGamepad
 
     /// <summary>正在检查或下载，防止重复触发</summary>
     private bool _busy;
+
+    /// <summary>正在导出日志，防止重复触发</summary>
+    private bool _exporting;
 
     /// <summary>下载进度轮询：下载在 UpdateService 里后台跑，页面重建后仍能接上进度</summary>
     private DispatcherTimer? _downloadWatch;
@@ -47,6 +52,15 @@ public sealed partial class AboutPage : Page, ISettingsGamepad
         CopyrightText.Text = $"© 2026 {AboutInfo.Author}  保留所有权利";
 
         AutoCheckToggle.IsOn = SettingsService.Current.AutoCheckUpdates;
+        LogToggle.IsOn = SettingsService.Current.DiagnosticLog;
+
+        // 「导出」按钮宽度跟右侧开关一致（还原），高度比开关低一点，视觉上更紧凑
+        LogToggle.SizeChanged += (_, _) =>
+        {
+            ExportButton.Width = LogToggle.ActualWidth;
+            ExportButton.Height = Math.Max(22, LogToggle.ActualHeight - 6);
+        };
+
         ShowKnownUpdate();
         RestoreDownloadState();
     }
@@ -97,6 +111,8 @@ public sealed partial class AboutPage : Page, ISettingsGamepad
             Move(-1);
         else if (buttons.HasFlag(GamepadButtons.DPadDown) || buttons.HasFlag(GamepadButtons.DPadRight))
             Move(1);
+        else if (buttons.HasFlag(GamepadButtons.X))
+            _ = ExportAsync();
         else if (buttons.HasFlag(GamepadButtons.A))
             Open(_index);
     }
@@ -121,6 +137,8 @@ public sealed partial class AboutPage : Page, ISettingsGamepad
     /// <summary>鼠标/触摸点击条目直接执行（Tapped 对鼠标与触屏都可靠触发）</summary>
     private void OnLinkTapped(object sender, Microsoft.UI.Xaml.Input.TappedRoutedEventArgs e)
     {
+        // 点在「导出」按钮上时不要顺带切换整行的日志开关（Tapped 会冒泡到整行）
+        if (IsInsideButton(e.OriginalSource)) return;
         var idx = LinkList.Items.IndexOf(sender);
         if (idx >= 0)
         {
@@ -128,6 +146,18 @@ public sealed partial class AboutPage : Page, ISettingsGamepad
             LinkList.SelectedIndex = idx;
             Open(idx);
         }
+    }
+
+    /// <summary>沿可视树向上找 Button：用于区分「点按钮」和「点整行」</summary>
+    private static bool IsInsideButton(object? source)
+    {
+        var current = source as DependencyObject;
+        while (current is not null)
+        {
+            if (current is Button) return true;
+            current = VisualTreeHelper.GetParent(current);
+        }
+        return false;
     }
 
     private void Open(int index)
@@ -142,6 +172,9 @@ public sealed partial class AboutPage : Page, ISettingsGamepad
                 break;
             case "autocheck":
                 ToggleAutoCheck();
+                break;
+            case "log":
+                ToggleLog();
                 break;
             case "qq":
                 OpenUrl(AboutInfo.QqGroupUrl);
@@ -304,6 +337,48 @@ public sealed partial class AboutPage : Page, ISettingsGamepad
         AutoCheckToggle.IsOn = on;
         SettingsService.Update(s => s.AutoCheckUpdates = on);
         if (on && !UpdateService.AutoChecked) _ = CheckAsync(silent: true);
+    }
+
+    /// <summary>
+    /// 切换「记录运行日志」并立即保存。打开时清空旧日志（导出即本次复现的内容），
+    /// 关闭时先写一行再禁用，便于日志里看到用户何时停用。
+    /// </summary>
+    private void ToggleLog()
+    {
+        var on = !LogToggle.IsOn;
+        LogToggle.IsOn = on;
+        if (!on) DebugLog.Write("日志已关闭（用户手动关闭）");
+        SettingsService.Update(s => s.DiagnosticLog = on);
+        if (on) DebugLog.Reset();
+        ExportSub.Text = on
+            ? "已开始记录：复现一次问题后点「导出」保存到桌面"
+            : "默认关闭。遇到问题时打开，复现一次后再导出";
+    }
+
+    /// <summary>点击行内的「导出」按钮：只导出，不切换日志开关</summary>
+    private void OnExportClick(object sender, RoutedEventArgs e) => _ = ExportAsync();
+
+    /// <summary>把运行日志 + 显卡/温度诊断导出成一个 txt 到桌面（默认位置），结果显示在条目说明里</summary>
+    private async Task ExportAsync()
+    {
+        if (_exporting) return;
+        _exporting = true;
+        ExportSub.Text = "正在导出…";
+        try
+        {
+            var path = await Task.Run(DebugLog.Export);
+            ExportSub.Text = path is null
+                ? "导出失败：桌面目录不可写"
+                : $"已导出到桌面：{Path.GetFileName(path)}";
+        }
+        catch (Exception ex)
+        {
+            ExportSub.Text = "导出失败：" + ex.Message;
+        }
+        finally
+        {
+            _exporting = false;
+        }
     }
 
     /// <summary>release 说明取第一行非空文本，去掉 markdown 符号并限长</summary>

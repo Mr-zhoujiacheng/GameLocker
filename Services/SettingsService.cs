@@ -27,7 +27,11 @@ public static class SettingsService
         try
         {
             if (File.Exists(FilePath))
-                return JsonSerializer.Deserialize<AppSettings>(File.ReadAllText(FilePath), Options) ?? new AppSettings();
+            {
+                var loaded = JsonSerializer.Deserialize<AppSettings>(File.ReadAllText(FilePath), Options) ?? new AppSettings();
+                DebugLog.Enabled = loaded.DiagnosticLog;
+                return loaded;
+            }
         }
         catch
         {
@@ -41,6 +45,7 @@ public static class SettingsService
     public static void Save(AppSettings settings)
     {
         Current = settings;
+        DebugLog.Enabled = settings.DiagnosticLog;
         Directory.CreateDirectory(Dir);
         File.WriteAllText(FilePath, JsonSerializer.Serialize(settings, Options));
         ApplyAutoStart(settings.AutoStart);

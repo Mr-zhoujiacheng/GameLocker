@@ -88,6 +88,12 @@ public static class MonitorService
     private static double _cpuPower = double.NaN;
     private static double _cpuMhzFallback;
 
+    // CPU 温度假值判定（见 UpdateCpuTemp）
+    private static double _cpuTempPrev = double.NaN;
+    private static int _cpuTempSameCount;
+    private static double _cpuTempLoadPeak;
+    private static bool _cpuTempIsFake;
+
     private static (double Discharge, double Charge) _batteryRate = (double.NaN, double.NaN);
 
     // 提权助手通道
@@ -358,7 +364,7 @@ public static class MonitorService
         }
         if (n % 5 == 0)
         {
-            _cpuTemp = ReadCpuTemp();
+            UpdateCpuTemp(ReadCpuTemp(), s.CpuUsage);
             _cpuPower = ReadCpuPower();
             if (_cpuMhzFallback <= 0) _cpuMhzFallback = ReadCpuMhzWmi();
         }
@@ -723,7 +729,7 @@ public static class MonitorService
         return ReadKmtClock();
     }
 
-    /// <summary>GPU 温度（℃）：NVIDIA 走 NVML，AMD 走 ADL；Intel 核显没有通用温度接口，返回 NaN</summary>
+    /// <summary>GPU 温度（℃）：NVIDIA 走 NVML，AMD 走 ADL，Intel 核显走 IGCL；都没有时返回 NaN</summary>
     private static double ReadGpuTemp()
     {
         EnsureNvml();
@@ -737,7 +743,8 @@ public static class MonitorService
             }
             catch { }
         }
-        return ReadAdlTemp();
+        var adl = ReadAdlTemp();
+        return double.IsNaN(adl) ? IntelGpuTemp.Read() : adl;
     }
 
     [DllImport("nvml.dll", EntryPoint = "nvmlInit_v2")]
@@ -993,6 +1000,8 @@ public static class MonitorService
                     + $" power(0.1%)={aperf.Power} temp(0.1C)={aperf.Temperature} fan={aperf.FanRPM}");
             }
             sb.AppendLine($"GPU 最终读数: clock={ReadGpuClock()} MHz, power={ReadGpuPower()} W");
+            sb.AppendLine($"IGCL(Intel 核显温度): {IntelGpuTemp.Status} / temp={IntelGpuTemp.Read()} ℃");
+            sb.AppendLine($"CPU 温度: 原始={ReadCpuTemp()} ℃ / 固定值判定={(_cpuTempIsFake ? "是（界面显示—）" : "否")}");
             var dir = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData), "GameLocker");
             Directory.CreateDirectory(dir);
             File.WriteAllText(Path.Combine(dir, "monitor-diag.txt"), sb.ToString());
@@ -1135,6 +1144,42 @@ public static class MonitorService
     }
 
     // ---- CPU 温度 ----
+
+    /// <summary>
+    /// 记录 CPU 温度并识别"假传感器"。真实 CPU 温度必然随负载变化，也不可能在 CPU 有明显负载时
+    /// 仍低于 35℃；而部分机型（如微星 Claw 掌机）的 ACPI 热区只返回固定的环境温度（例如恒定 28℃）。
+    /// 判据：连续 24 次采样（约 2 分钟）读数完全一致、低于 35℃，且期间 CPU 占用达到过 40% 以上
+    /// → 判定为固件固定值，界面显示"—"，避免误导。温度一旦变化过就恢复为真实读数。
+    /// </summary>
+    private static void UpdateCpuTemp(double temp, double cpuUsage)
+    {
+        if (double.IsNaN(temp))
+        {
+            _cpuTempPrev = double.NaN;
+            _cpuTempSameCount = 0;
+            _cpuTempLoadPeak = 0;
+            _cpuTemp = double.NaN;
+            return;
+        }
+
+        if (!double.IsNaN(_cpuTempPrev) && Math.Abs(temp - _cpuTempPrev) < 0.05)
+        {
+            _cpuTempSameCount++;
+        }
+        else
+        {
+            _cpuTempSameCount = 1;
+            _cpuTempLoadPeak = 0;
+            _cpuTempIsFake = false;
+        }
+        _cpuTempPrev = temp;
+        if (cpuUsage > _cpuTempLoadPeak) _cpuTempLoadPeak = cpuUsage;
+
+        if (!_cpuTempIsFake && _cpuTempSameCount >= 24 && temp < 35 && _cpuTempLoadPeak >= 40)
+            _cpuTempIsFake = true;
+
+        _cpuTemp = _cpuTempIsFake ? double.NaN : temp;
+    }
 
     /// <summary>
     /// 优先读性能计数器里的 ACPI 热区温度（Kelvin，普通权限可读，无需 WMI 特权）；

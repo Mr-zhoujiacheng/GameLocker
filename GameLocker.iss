@@ -1,11 +1,11 @@
-; Game Locker 安装包脚本（Inno Setup 6）
+﻿; Game Locker 安装包脚本（Inno Setup 6）
 ; 用法：ISCC.exe GameLocker.iss
 ; 源目录 = dotnet build 的 Release 产物；产物落在仓库外的 ..\dist\ 下
 ; 说明：publish 目录（dotnet publish 产物）不含 GameLocker.pri，运行时无法加载 XAML，
 ;       故打包统一取 build 产物，并排除 publish 与 *.pdb
 
 #define AppName "Game Locker"
-#define AppVersion "1.7.7"
+#define AppVersion "1.8.0"
 #define AppPublisher "Mr-zhoujiacheng"
 #define AppUrl "https://github.com/Mr-zhoujiacheng/GameLocker"
 #define SrcDir "bin\Release\net8.0-windows10.0.19041.0\win-x64"

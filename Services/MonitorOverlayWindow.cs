@@ -38,8 +38,8 @@ internal sealed class MonitorOverlayWindow : IDisposable
     /// <summary>电池电量（百分比）块：只放"电量"标题 + 百分比</summary>
     private const int ChipSoc = 68;
     private const int ChipMemory = 58;
-    private const int PadH = 10;
-    private const int BarHeight = 48;
+    private const int PadH = 7;
+    private const int BarHeight = 36;
 
     private IntPtr _hwnd;
     private IntPtr _instance;
@@ -160,8 +160,8 @@ internal sealed class MonitorOverlayWindow : IDisposable
         catch { }
     }
 
-    /// <summary>背景透明度固定为 0（完全透明，只保留文字 / 色条 / 折线），不再提供设置项</summary>
-    private const byte BackgroundAlpha = 0;
+    /// <summary>背景透明度：半透明深色底片，保证在浅色 / 同色画面下文字依然清晰；圆角外仍完全透明</summary>
+    private const byte BackgroundAlpha = 190;
 
     /// <summary>推送新数据并重绘（可从任意线程调用）</summary>
     public void Update(MonitorSnapshot snapshot)
@@ -668,11 +668,11 @@ internal sealed class MonitorOverlayWindow : IDisposable
         var left = x + Scaled(15);
         SelectObject(hdc, _fontLabel);
         SetTextColor(hdc, DimColor(accent, 0.78));
-        TextOutW(hdc, left, Scaled(5), label, label.Length);
+        TextOutW(hdc, left, Scaled(3), label, label.Length);
 
         SelectObject(hdc, _fontValue);
         SetTextColor(hdc, accent);
-        TextOutW(hdc, left, Scaled(17), value, value.Length);
+        TextOutW(hdc, left, Scaled(13), value, value.Length);
         return x + width;
     }
 
@@ -689,7 +689,7 @@ internal sealed class MonitorOverlayWindow : IDisposable
         SelectObject(hdc, _fontFps);
         SetTextColor(hdc, accent);
         var fps = FormatFps(snap);
-        TextOutW(hdc, left, Scaled(3), fps, fps.Length);
+        TextOutW(hdc, left, Scaled(1), fps, fps.Length);
 
         // 数字后面带个小号单位 FPS
         var extent = new SIZE();
@@ -697,7 +697,7 @@ internal sealed class MonitorOverlayWindow : IDisposable
         {
             SelectObject(hdc, _fontLabel);
             SetTextColor(hdc, DimColor(accent, 0.78));
-            TextOutW(hdc, left + extent.CX + Scaled(3), Scaled(10), "FPS", 3);
+            TextOutW(hdc, left + extent.CX + Scaled(3), Scaled(7), "FPS", 3);
         }
 
         if (Has(MonitorMetric.FrameTime))
@@ -705,7 +705,7 @@ internal sealed class MonitorOverlayWindow : IDisposable
             SelectObject(hdc, _fontLabel);
             SetTextColor(hdc, DimColor(accent, 0.86));
             var delay = FormatFrameDelay(snap);
-            TextOutW(hdc, left, Scaled(30), delay, delay.Length);
+            TextOutW(hdc, left, Scaled(23), delay, delay.Length);
         }
         return x + width;
     }
@@ -719,7 +719,7 @@ internal sealed class MonitorOverlayWindow : IDisposable
         var pen = CreatePen(0, Math.Max(1, Scaled(1)), accent);
         var oldBrush = SelectObject(hdc, brush);
         var oldPen = SelectObject(hdc, pen);
-        RoundRect(hdc, bx, Scaled(11), bx + barW, Scaled(BarHeight - 11), barW, barW);
+        RoundRect(hdc, bx, Scaled(7), bx + barW, Scaled(BarHeight - 7), barW, barW);
         SelectObject(hdc, oldBrush);
         SelectObject(hdc, oldPen);
         DeleteObject(pen);
@@ -731,9 +731,9 @@ internal sealed class MonitorOverlayWindow : IDisposable
     {
         var left = x + Scaled(2);
         var gx = left;
-        var gy = Scaled(18);
+        var gy = Scaled(12);
         var gw = width - Scaled(6);
-        var gh = Scaled(22);
+        var gh = Scaled(18);
         if (gw <= 4 || gh <= 4) return x + width;
 
         // 基线：给折线一个视觉落脚点

@@ -339,12 +339,33 @@ internal sealed class MonitorOverlayWindow : IDisposable
         return MeasureLabelValueWidth("电量", FormatSoc(snap), 46, 0);
     }
 
-    /// <summary>内存块按实际文字宽度收紧；未勾选时宽度为 0</summary>
+    /// <summary>内存块（内存占用 · 显存占用）按实际文字宽度收紧；两项都未勾选时宽度为 0</summary>
     private int MeasureMemoryWidth()
     {
-        if (!Has(MonitorMetric.Memory)) return 0;
+        if (!HasMemoryBlock()) return 0;
         var snap = _snapshot ?? new MonitorSnapshot();
-        return MeasureLabelValueWidth("内存", FormatMemory(snap), 46, 0);
+        return MeasureLabelValueWidth(MemoryLabel(), MemoryValue(snap), 46, 0);
+    }
+
+    /// <summary>内存块是否显示：内存看占用率、显存看已用量，勾了任一项就显示</summary>
+    private bool HasMemoryBlock() => Has(MonitorMetric.Memory | MonitorMetric.GpuVram);
+
+    /// <summary>内存块标题：两项都勾时合成为一个块</summary>
+    private string MemoryLabel()
+    {
+        var mem = Has(MonitorMetric.Memory);
+        var vram = Has(MonitorMetric.GpuVram);
+        if (mem && vram) return "内存 · 显存";
+        return mem ? "内存" : "显存";
+    }
+
+    /// <summary>内存块数值：内存百分比与显存 GB 用 · 连接，取不到的项单独显示 —</summary>
+    private string MemoryValue(MonitorSnapshot s)
+    {
+        var parts = new List<string>();
+        if (Has(MonitorMetric.Memory)) parts.Add(double.IsNaN(s.MemPercent) ? "—" : $"{s.MemPercent:0}%");
+        if (Has(MonitorMetric.GpuVram)) parts.Add(double.IsNaN(s.GpuVram) ? "—" : $"{s.GpuVram:0.#}G");
+        return string.Join(" · ", parts);
     }
 
     /// <summary>按实际文字重新计算 FPS / CPU / GPU / 电池 / 电量 / 内存块宽度；变化明显时返回 true（调用方负责重设区域与位置）</summary>
@@ -388,7 +409,7 @@ internal sealed class MonitorOverlayWindow : IDisposable
         _cpuWidth = Has(MonitorMetric.CpuAny) ? Scaled(ChipCpu) : 0;
         _gpuWidth = Has(MonitorMetric.GpuAny) ? Scaled(ChipGpu) : 0;
         _socWidth = Has(MonitorMetric.BatteryPercent) ? Scaled(ChipSoc) : 0;
-        _memoryWidth = Has(MonitorMetric.Memory) ? Scaled(ChipMemory) : 0;
+        _memoryWidth = HasMemoryBlock() ? Scaled(ChipMemory) : 0;
         _width = TotalWidth();
         AdjustDynamicWidths();
     }
@@ -427,21 +448,21 @@ internal sealed class MonitorOverlayWindow : IDisposable
     }
 
     /// <summary>
-    /// 只按用户选的大小档位计算缩放，不随屏幕分辨率 / DPI 自动变化，
-    /// 保证同一档位在不同分辨率下显示一致；仅当悬浮条总宽超出工作区时由
+    /// 只按用户设定的百分比缩放（1.0 = 100%），不随屏幕分辨率 / DPI 自动变化，
+    /// 保证同一比例在不同分辨率下显示一致；仅当悬浮条总宽超出工作区时由
     /// <see cref="FitToWorkArea"/> 兜底等比缩小。
     /// </summary>
     private void UpdateMetrics()
     {
         if (!SystemParametersInfoW(SPI_GETWORKAREA, 0, out _work, 0))
             _work = new RECT { Left = 0, Top = 0, Right = GetSystemMetrics(0), Bottom = GetSystemMetrics(1) };
-        _scale = Math.Clamp(_userScale, 0.6, 1.8);
+        _scale = Math.Clamp(_userScale, 0.7, 2.0);
         _batteryWidth = Has(MonitorMetric.Battery) ? Scaled(ChipBattery) : 0;
         _fpsWidth = Has(MonitorMetric.Fps | MonitorMetric.FrameTime) ? Scaled(ChipFps) : 0;
         _cpuWidth = Has(MonitorMetric.CpuAny) ? Scaled(ChipCpu) : 0;
         _gpuWidth = Has(MonitorMetric.GpuAny) ? Scaled(ChipGpu) : 0;
         _socWidth = Has(MonitorMetric.BatteryPercent) ? Scaled(ChipSoc) : 0;
-        _memoryWidth = Has(MonitorMetric.Memory) ? Scaled(ChipMemory) : 0;
+        _memoryWidth = HasMemoryBlock() ? Scaled(ChipMemory) : 0;
         _width = TotalWidth();
     }
 
@@ -621,12 +642,13 @@ internal sealed class MonitorOverlayWindow : IDisposable
             x = DrawChip(hdc, x, _cpuWidth, CpuLabel(), CpuValue(snap), p.Cpu);
         if (Has(MonitorMetric.GpuAny))
             x = DrawChip(hdc, x, _gpuWidth, GpuLabel(snap), FormatGpu(snap), p.Gpu);
+        // 内存 · 显存紧跟 GPU 块（在 GPU 分割线之后），电池类信息排在最后
+        if (HasMemoryBlock())
+            x = DrawChip(hdc, x, _memoryWidth, MemoryLabel(), MemoryValue(snap), p.Memory);
         if (Has(MonitorMetric.Battery))
             x = DrawChip(hdc, x, _batteryWidth, "电池功耗 · 预计", FormatBattery(snap), p.Battery);
         if (Has(MonitorMetric.BatteryPercent))
-            x = DrawChip(hdc, x, _socWidth, "电量", FormatSoc(snap), p.Soc);
-        if (Has(MonitorMetric.Memory))
-            DrawChip(hdc, x, _memoryWidth, "内存", FormatMemory(snap), p.Memory);
+            DrawChip(hdc, x, _socWidth, "电量", FormatSoc(snap), p.Soc);
     }
 
     /// <summary>竖渐变深色底 + 细描边，比纯色块更有层次</summary>
@@ -859,8 +881,6 @@ internal sealed class MonitorOverlayWindow : IDisposable
     /// <summary>电池电量（%）：无电池或读取失败时显示"—"</summary>
     private static string FormatSoc(MonitorSnapshot s) =>
         double.IsNaN(s.BatteryPercent) ? "—" : $"{s.BatteryPercent:0}%";
-
-    private static string FormatMemory(MonitorSnapshot s) => $"{s.MemPercent:0}%";
 
     private static uint Color(byte r, byte g, byte b) => (uint)(r | (g << 8) | (b << 16));
 

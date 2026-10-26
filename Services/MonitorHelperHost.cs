@@ -1,5 +1,6 @@
 using System.Diagnostics;
 using System.Runtime.InteropServices;
+using System.Text;
 
 namespace GameLocker.Services;
 
@@ -34,14 +35,38 @@ internal static class MonitorHelperHost
         catch { }
         Log($"stopEvent={(stop is null ? "缺失" : "ok")}");
 
-        using var etw = new PresentEtwListener();
-        if (!etw.Start())
+        // CPU 封装温度：PawnIO/MSR（首次会静默安装随包附带的驱动，失败则保持不可用）
+        // GPU 温度：厂商 MSI ACPI WMI（Get_Thermal[3]），由下面的定时器每 200ms 取一次（内部缓存 2 秒）
+        // 放到后台任务里做，避免驱动安装耗时拖住 ETW 启动与采样
+        _ = Task.Run(() =>
         {
-            Log($"etw 启动失败 err={etw.StartError} {etw.StartDiagnostic}，退出");
-            stop?.Dispose();
-            return;
+            var ready = PawnIoMsr.EnsureReady(installIfMissing: true);
+            Log($"pawnio={(ready ? "ok" : PawnIoMsr.Status)}");
+
+            var wmiReady = MsiWmiProbe.EnsureReady();
+            Log($"msi-wmi={(wmiReady ? "ok：" + MsiWmiProbe.MethodList : MsiWmiProbe.Status)}");
+
+            WriteVendorStatus(wmiReady);
+        });
+
+        PresentEtwListener? etw = null;
+        try
+        {
+            etw = new PresentEtwListener();
+            if (etw.Start()) Log("etw=ok");
+            else
+            {
+                Log($"etw 启动失败 err={etw.StartError} {etw.StartDiagnostic}（继续只读温度）");
+                etw.Dispose();
+                etw = null;
+            }
         }
-        Log("etw=ok");
+        catch (Exception ex)
+        {
+            Log("etw 异常：" + ex.Message);
+            etw?.Dispose();
+            etw = null;
+        }
 
         // 先创建线程消息队列，否则看门狗的 PostThreadMessage 可能失败
         PeekMessage(out _, IntPtr.Zero, 0, 0, PM_NOREMOVE);
@@ -61,15 +86,24 @@ internal static class MonitorHelperHost
             {
                 if (msg.message == WM_QUIT) break;
                 if (msg.message != WM_TIMER) continue;
-                etw.TargetPid = shared.ReadTargetPid();
-                var (fps, frameMs, history) = etw.GetStats();
-                shared.Publish(fps, frameMs, history);
+                double fps = 0, frameMs = 0;
+                double[] history = [];
+                if (etw is not null)
+                {
+                    etw.TargetPid = shared.ReadTargetPid();
+                    (fps, frameMs, history) = etw.GetStats();
+                }
+                var cpuTemp = PawnIoMsr.Available ? PawnIoMsr.ReadTemperature() : double.NaN;
+                // 厂商 WMI 的 GPU 温度（内部缓存 2 秒，不会每次 200ms 都调固件）
+                var gpuTemp = MsiWmiProbe.ReadGpuTemperature();
+                shared.Publish(fps, frameMs, history, cpuTemp, gpuTemp);
             }
         }
         finally
         {
             KillTimer(IntPtr.Zero, new UIntPtr(TimerId));
-            etw.Dispose();
+            etw?.Dispose();
+            PawnIoMsr.Close();
             stop?.Dispose();
             Log("exit");
         }
@@ -87,6 +121,40 @@ internal static class MonitorHelperHost
         }
         catch { }
     }
+
+    private static string Dir => Path.Combine(
+        Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData), "GameLocker");
+
+    /// <summary>
+    /// 厂商传感器采集状态（%APPDATA%\GameLocker\monitor-vendor.txt），导出日志时附在「厂商传感器」段开头，
+    /// 这样即使采集失败，用户导出的日志也能说明失败原因。
+    /// </summary>
+    private static void WriteVendorStatus(bool wmiReady)
+    {
+        try
+        {
+            Directory.CreateDirectory(Dir);
+            var sb = new StringBuilder();
+            sb.AppendLine($"采集时间：{DateTime.Now:yyyy-MM-dd HH:mm:ss}");
+            sb.AppendLine($"MSI WMI：{(wmiReady ? "就绪（" + MsiWmiProbe.MethodList + "）" : MsiWmiProbe.Status)}");
+            if (wmiReady)
+            {
+                // 首轮结果直接写进状态文件：方法调用失败时这里会带出确切原因
+                var probe = MsiWmiProbe.Capture();
+                if (probe.Length > 0)
+                    sb.AppendLine("MSI WMI 首轮：" + (probe.Length > 220 ? probe[..220] + "…" : probe));
+                else if (MsiWmiProbe.LastError.Length > 0)
+                    sb.AppendLine("MSI WMI 首轮失败：" + MsiWmiProbe.LastError);
+                // Get_Thermal[3] 第 8 字节（浮层 GPU 温度的来源）
+                sb.AppendLine($"MSI WMI GPU 温度：{Num(MsiWmiProbe.ReadGpuTemperature(), "0")} ℃");
+            }
+            File.WriteAllText(Path.Combine(Dir, "monitor-vendor.txt"), sb.ToString());
+        }
+        catch { }
+    }
+
+    private static string Num(double value, string format) =>
+        double.IsNaN(value) ? "—" : value.ToString(format);
 
     /// <summary>看门狗：父进程消失或主进程发停止事件时，给助手线程投递 WM_QUIT</summary>
     private static void Watch(int parentPid, EventWaitHandle? stop, uint threadId)

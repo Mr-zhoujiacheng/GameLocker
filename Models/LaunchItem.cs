@@ -164,6 +164,8 @@ public enum MonitorMetric
     GpuTemp = 1 << 12,
     /// <summary>电池当前电量百分比</summary>
     BatteryPercent = 1 << 13,
+    /// <summary>显存占用（GB）</summary>
+    GpuVram = 1 << 14,
 
     /// <summary>CPU 块的任意一项（用于决定 CPU 块是否显示）</summary>
     CpuAny = CpuUsage | CpuFreq | CpuTemp | CpuPower,
@@ -172,7 +174,7 @@ public enum MonitorMetric
 
     /// <summary>默认全开（与旧版一律显示全部指标保持一致）</summary>
     All = Fps | FrameTime | FrameGraph | CpuUsage | CpuFreq | CpuTemp | CpuPower
-        | GpuUsage | GpuFreq | GpuPower | Battery | Memory | GpuTemp | BatteryPercent
+        | GpuUsage | GpuFreq | GpuPower | Battery | Memory | GpuTemp | BatteryPercent | GpuVram
 }
 
 /// <summary>性能监控悬浮条配色（组合色：每组为帧率 / CPU / GPU / 电池 / 内存等指标分配不同颜色）</summary>
@@ -318,7 +320,7 @@ public class LaunchItem
     /// <summary>性能监控悬浮条位置（仅 WidgetKind.Monitor 使用）</summary>
     public MonitorPosition MonitorPos { get; set; } = MonitorPosition.TopCenter;
 
-    /// <summary>性能监控悬浮条大小倍率（仅 WidgetKind.Monitor 使用；叠加在自动适配之上，0.6~1.6）</summary>
+    /// <summary>性能监控悬浮条大小倍率（仅 WidgetKind.Monitor 使用；1.0 = 100%，编辑页按百分比调节，0.7~2.0）</summary>
     public double MonitorScale { get; set; } = 1.0;
 
     /// <summary>性能监控悬浮条显示哪些数据（仅 WidgetKind.Monitor 使用；默认全开）</summary>

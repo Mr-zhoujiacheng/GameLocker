@@ -116,8 +116,15 @@ public static class DebugLog
             sb.AppendLine();
 
             sb.AppendLine("=========== 显卡 / 温度诊断 ===========");
+            try { MonitorService.RefreshDiagnostics(); } catch { }
             var diag = ReadText(DiagPath);
             sb.AppendLine(diag.Length > 0 ? diag : "（本次启动没有开启性能监控，或诊断文件不存在）");
+            sb.AppendLine();
+
+            // 厂商传感器状态（仅开启监控时由提权助手写一次）：GPU 温度的来源与是否可用
+            sb.AppendLine("=========== 厂商传感器（GPU 温度）===========");
+            var vendor = ReadText(Path.Combine(Dir, "monitor-vendor.txt"));
+            sb.AppendLine(vendor.Length > 0 ? vendor : "（没有采集状态：本次启动没有开启性能监控）");
 
             var path = Path.Combine(desktop, $"GameLocker日志_{DateTime.Now:yyyyMMdd_HHmmss}.txt");
             File.WriteAllText(path, sb.ToString(), Utf8);

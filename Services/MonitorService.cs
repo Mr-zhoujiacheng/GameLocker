@@ -29,8 +29,10 @@ public sealed class MonitorSnapshot
     public double GpuMhz = double.NaN;
     /// <summary>GPU 功耗（W，NaN=不可用；来自 NVML）</summary>
     public double GpuPower = double.NaN;
-    /// <summary>GPU 温度（℃，NaN=不可用；来自 NVML / ADL）</summary>
+    /// <summary>GPU 温度（℃，NaN=不可用；来自 NVML / ADL / 厂商 WMI）</summary>
     public double GpuTemp = double.NaN;
+    /// <summary>已使用的显存（GB，NaN=不可用；核显为占用的共享内存）</summary>
+    public double GpuVram = double.NaN;
     /// <summary>电池当前电量（%，NaN=不可用）</summary>
     public double BatteryPercent = double.NaN;
     /// <summary>电池功率（W，充电时为充电功率、放电时为放电功率，NaN=不可用）</summary>
@@ -84,7 +86,12 @@ public static class MonitorService
     private static ulong _lastIdle, _lastKernel, _lastUser;
 
     private static double _gpuUsage = double.NaN;
+    private static double _gpuVram = double.NaN;
     private static double _cpuTemp = double.NaN;
+    /// <summary>提权助手通过 PawnIO 读到的 CPU 封装温度（NaN=不可用）</summary>
+    private static double _helperCpuTemp = double.NaN;
+    /// <summary>提权助手通过厂商 WMI 读到的 GPU 温度（NaN=不可用）</summary>
+    private static double _helperGpuTemp = double.NaN;
     private static double _cpuPower = double.NaN;
     private static double _cpuMhzFallback;
 
@@ -135,12 +142,17 @@ public static class MonitorService
         _tickCount = 0;
         _lastIdle = _lastKernel = _lastUser = 0;
         LastError = "";
+        // 上一次会话留下的助手温度不可复用，等新助手发布
+        _helperCpuTemp = double.NaN;
+        _helperGpuTemp = double.NaN;
 
         // 帧率：已提权 → 本地 ETW；未提权 → 拉起提权助手（UAC 取消则降级为无帧率）
         if (IsElevated())
         {
             _shared?.Dispose();
             _shared = null;
+            // 已提权：直接在本进程读 MSR（驱动缺失时静默安装），放到后台避免卡住开启流程
+            _ = Task.Run(() => PawnIoMsr.EnsureReady(installIfMissing: true));
             try
             {
                 _etw = new PresentEtwListener();
@@ -360,15 +372,29 @@ public static class MonitorService
         if (n % 2 == 0)
         {
             _gpuUsage = ReadGpuUsage();
+            _gpuVram = ReadGpuVram();
             _batteryRate = ReadBatteryRate();
         }
         if (n % 5 == 0)
         {
-            UpdateCpuTemp(ReadCpuTemp(), s.CpuUsage);
+            // 优先用 PawnIO/MSR 的真实封装温度：本进程已提权直接读，否则用提权助手回传的值
+            var msrTemp = IsElevated() ? PawnIoMsr.ReadTemperature() : _helperCpuTemp;
+            if (msrTemp is > 0 and < 130)
+            {
+                _cpuTempIsFake = false;
+                _cpuTempSameCount = 0;
+                _cpuTempLoadPeak = 0;
+                _cpuTemp = Math.Round(msrTemp * 10) / 10;
+            }
+            else
+            {
+                UpdateCpuTemp(ReadCpuTemp(), s.CpuUsage);
+            }
             _cpuPower = ReadCpuPower();
             if (_cpuMhzFallback <= 0) _cpuMhzFallback = ReadCpuMhzWmi();
         }
         s.GpuUsage = _gpuUsage;
+        s.GpuVram = _gpuVram;
         s.CpuTemp = _cpuTemp;
         s.CpuPower = _cpuPower;
         if (s.CpuMhz <= 0) s.CpuMhz = _cpuMhzFallback;
@@ -387,12 +413,14 @@ public static class MonitorService
         else if (_shared is not null)
         {
             _shared.SetTargetPid(ForegroundPid());
-            if (_shared.TryRead(out var fps, out var frameMs, out var history))
+            if (_shared.TryRead(out var fps, out var frameMs, out var history, out var helperTemp, out var helperGpuTemp))
             {
                 _helperAlive = true;
                 s.Fps = fps;
                 s.FrameMs = frameMs;
                 s.FrameHistory = history;
+                _helperCpuTemp = helperTemp;
+                _helperGpuTemp = helperGpuTemp;
             }
         }
 
@@ -665,6 +693,37 @@ public static class MonitorService
         catch { return double.NaN; }
     }
 
+    /// <summary>
+    /// 已使用的显存（GB）：WDDM 的「GPU 适配器内存」计数器，DedicatedUsage + SharedUsage 之和。
+    /// 核显没有独立显存，DedicatedUsage 通常为 0，SharedUsage 就是它占用的系统内存。
+    /// </summary>
+    private static double ReadGpuVram()
+    {
+        try
+        {
+            using var searcher = new ManagementObjectSearcher(@"root\CIMV2",
+                "SELECT Name, DedicatedUsage, SharedUsage FROM Win32_PerfFormattedData_GPUPerformanceCounters_GPUAdapterMemory");
+            double bytes = 0;
+            var found = false;
+            foreach (var o in searcher.Get())
+            {
+                if (o["DedicatedUsage"] is { } d)
+                {
+                    bytes += Convert.ToDouble(d);
+                    found = true;
+                }
+                if (o["SharedUsage"] is { } sh)
+                {
+                    bytes += Convert.ToDouble(sh);
+                    found = true;
+                }
+            }
+            if (!found || bytes <= 0) return double.NaN;
+            return Math.Round(bytes / 1024d / 1024d / 1024d, 1);
+        }
+        catch { return double.NaN; }
+    }
+
     // ---- GPU 频率 / 功耗（NVML，需 NVIDIA 驱动自带的 nvml.dll）----
 
     private static bool _nvmlTried;
@@ -694,22 +753,55 @@ public static class MonitorService
 
     private static double ReadGpuPower()
     {
+        // 驱动偶发返回异常值（部分 AMD APU 的 ADL 功耗接口会给出 590 W 这类数字），
+        // 统一在这里做合理性过滤，任何来源超过 500 W 都视为不可用
+        var watts = ReadGpuPowerRaw();
+        return watts is > 0 and < 500 ? watts : double.NaN;
+    }
+
+    private static double ReadGpuPowerRaw()
+    {
         EnsureNvml();
         if (_nvmlDevice != IntPtr.Zero)
         {
             try
             {
-                if (nvmlDeviceGetPowerUsage(_nvmlDevice, out var milliwatts) == 0 && milliwatts > 0)
+                // 大于 500 W 的读数必然是驱动异常值，直接丢弃
+                if (nvmlDeviceGetPowerUsage(_nvmlDevice, out var milliwatts) == 0
+                    && milliwatts is > 0 and < 500_000)
                     return milliwatts / 1000.0;
             }
             catch { }
         }
         var adlPower = ReadAdlPower();
         if (!double.IsNaN(adlPower)) return adlPower;
-        // Intel 核显：WDDM 适配器性能数据的 Power 字段单位是"最大功耗的百分比"，
-        // 无法换算为瓦特（本机恒为 0），因此不做兜底，界面省略功耗段
-        return double.NaN;
+        // Intel 核显：IGCL 功率域（多数核显驱动不提供，此时仍为 NaN）
+        var igclPower = IntelGpuTemp.ReadPower();
+        if (!double.IsNaN(igclPower)) return igclPower;
+        // WDDM 适配器性能数据的 Power 字段单位是"最大功耗的百分比"，
+        // 无法换算为瓦特（Intel 核显恒为 0），因此不做兜底，界面显示"—"
+        // 既非 NVIDIA 也非 AMD 时，按 Intel 核显处理：Lunar Lake 没有独立 GPU 功耗计量，
+        // 用 RAPL 的「封装 − 核心」近似 GPU/uncore 部分（空载偏低，游戏负载下有参考价值）
+        return ReadGpuPowerApprox();
     }
+
+    /// <summary>
+    /// GPU 功耗近似值（W）：RAPL 的 RAPL_Package0_PKG − RAPL_Package0_PP0。
+    /// 不是纯 GPU 功耗（含内存控制器等 uncore），仅用于没有独立 GPU 功耗传感器的核显机型。
+    /// </summary>
+    private static double ReadGpuPowerApprox()
+    {
+        // 数值来自 ReadCpuPower() 的同一次查询缓存（每 5 秒刷新一次）
+        var pkg = _raplPkg;
+        var pp0 = _raplPp0;
+        if (double.IsNaN(pkg) || double.IsNaN(pp0) || pkg <= pp0) return double.NaN;
+        var watts = (pkg - pp0) / 1000.0;
+        return watts is > 0 and < 200 ? Math.Round(watts, 1) : double.NaN;
+    }
+
+    /// <summary>RAPL 封装 / CPU 核心功耗缓存（mW，NaN=不可用）</summary>
+    private static double _raplPkg = double.NaN;
+    private static double _raplPp0 = double.NaN;
 
     private static double ReadGpuClock()
     {
@@ -726,10 +818,17 @@ public static class MonitorService
         }
         var adl = ReadAdlClock();
         if (!double.IsNaN(adl)) return adl;
-        return ReadKmtClock();
+        // Intel 核显：IGCL 频率域（WDDM 的 MaxFrequency 在掌机上常为 0，读不到时钟）
+        var igcl = IntelGpuTemp.ReadClock();
+        if (!double.IsNaN(igcl)) return igcl;
+        var kmt = ReadKmtClock();
+        return kmt > 0 ? kmt : double.NaN;
     }
 
-    /// <summary>GPU 温度（℃）：NVIDIA 走 NVML，AMD 走 ADL，Intel 核显走 IGCL；都没有时返回 NaN</summary>
+    /// <summary>
+    /// GPU 温度（℃）：NVIDIA 走 NVML，AMD 走 ADL，Intel 核显走 IGCL；
+    /// IGCL 不提供温度时退回厂商 WMI（MSI_ACPI Get_Thermal，Lunar Lake 上与 CPU 同 die，读数接近封装温度）。
+    /// </summary>
     private static double ReadGpuTemp()
     {
         EnsureNvml();
@@ -744,7 +843,15 @@ public static class MonitorService
             catch { }
         }
         var adl = ReadAdlTemp();
-        return double.IsNaN(adl) ? IntelGpuTemp.Read() : adl;
+        if (!double.IsNaN(adl)) return adl;
+
+        var igcl = IntelGpuTemp.Read();
+        if (!double.IsNaN(igcl)) return igcl;
+
+        // Intel 核显：驱动不给温度传感器时用厂商 WMI；助手回传优先（主进程未提权也能拿到）
+        if (_helperGpuTemp is > 0 and < 130) return _helperGpuTemp;
+        var vendor = MsiWmiProbe.ReadGpuTemperature();
+        return vendor is > 0 and < 130 ? vendor : double.NaN;
     }
 
     [DllImport("nvml.dll", EntryPoint = "nvmlInit_v2")]
@@ -999,14 +1106,99 @@ public static class MonitorService
                 sb.AppendLine($"WDDM 适配器: ret={aret} memFreq={aperf.MemoryFrequency} maxMem={aperf.MaxMemoryFrequency}"
                     + $" power(0.1%)={aperf.Power} temp(0.1C)={aperf.Temperature} fan={aperf.FanRPM}");
             }
-            sb.AppendLine($"GPU 最终读数: clock={ReadGpuClock()} MHz, power={ReadGpuPower()} W");
-            sb.AppendLine($"IGCL(Intel 核显温度): {IntelGpuTemp.Status} / temp={IntelGpuTemp.Read()} ℃");
-            sb.AppendLine($"CPU 温度: 原始={ReadCpuTemp()} ℃ / 固定值判定={(_cpuTempIsFake ? "是（界面显示—）" : "否")}");
+            sb.AppendLine($"GPU 最终读数: clock={ReadGpuClock()} MHz, power={ReadGpuPower()} W, vram={ReadGpuVram()} GB");
+            // 注意先 Read() 再取 Status：Status 是初始化时写的，顺序反了会显示"未尝试"
+            var igclTemp = IntelGpuTemp.Read();
+            sb.AppendLine($"ControlLib.dll={(File.Exists(Path.Combine(Environment.SystemDirectory, "ControlLib.dll")) ? "存在" : "缺失")}"
+                + $" / ze_loader.dll={(File.Exists(Path.Combine(Environment.SystemDirectory, "ze_loader.dll")) ? "存在" : "缺失")}");
+            sb.AppendLine($"IGCL 温度: {IntelGpuTemp.Status} / temp={igclTemp} ℃");
+            var igclClock = IntelGpuTemp.ReadClock();
+            sb.AppendLine($"IGCL 频率: {IntelGpuTemp.ClockStatus} / clock={igclClock} MHz");
+            var igclPower = IntelGpuTemp.ReadPower();
+            sb.AppendLine($"IGCL 功耗: {IntelGpuTemp.PowerStatus} / power={igclPower} W / {IntelGpuTemp.PowerDetail}");
+            var vendorTemp = MsiWmiProbe.ReadGpuTemperature();
+            sb.AppendLine($"厂商 WMI: {(MsiWmiProbe.Available ? "可用（" + MsiWmiProbe.MethodList + "）" : MsiWmiProbe.Status)}"
+                + $" / GPU 温度={vendorTemp} ℃ / 助手回传={_helperGpuTemp} ℃");
+            sb.AppendLine($"CPU 温度: 采用={ReadCpuTemp()} ℃ / 固定值判定={(_cpuTempIsFake ? "是（界面显示—）" : "否")}");
+            var msrTemp = IsElevated() ? PawnIoMsr.ReadTemperature() : double.NaN;
+            var msrStatus = IsElevated()
+                ? PawnIoMsr.Status
+                : (double.IsNaN(_helperCpuTemp) ? "主进程未提权，助手未回传" : "主进程未提权，由助手读取");
+            sb.AppendLine($"PawnIO/MSR: {msrStatus} / temp={msrTemp} ℃ / 助手回传={_helperCpuTemp} ℃");
+            sb.AppendLine($"厂商传感器(EC/WMI): {(_helperAlive ? "由提权助手采集（见日志末尾「厂商传感器」段）" : "监控未开启或助手未运行")}");
+            foreach (var line in ThermalZoneDetails()) sb.AppendLine("  " + line);
+            sb.AppendLine($"CPU 功耗(RAPL): {ReadCpuPower()} W");
+            sb.AppendLine($"GPU 功耗: {ReadGpuPower()} W（无独立传感器时用 RAPL PKG−PP0 近似，含 uncore）");
+            foreach (var line in PowerSourceDetails()) sb.AppendLine("  " + line);
+            sb.AppendLine($"电池功率: 放电={_batteryRate.Discharge} W / 充电={_batteryRate.Charge} W");
+            // 直接把浮层当前显示的数值写进诊断：哪一项是"—"一目了然
+            static string V(double v, string unit) => double.IsNaN(v) ? "—" : v.ToString("0.#") + unit;
+            lock (Gate)
+            {
+                var s = _snapshot;
+                sb.AppendLine($"浮层 CPU: 使用 {s.CpuUsage:0}% / 频率 {V(s.CpuMhz, "MHz")} / 温度 {V(s.CpuTemp, "℃")} / 功耗 {V(s.CpuPower, "W")}");
+                sb.AppendLine($"浮层 GPU: 使用 {V(s.GpuUsage, "%")} / 频率 {V(s.GpuMhz, "MHz")} / 温度 {V(s.GpuTemp, "℃")} / 功耗 {V(s.GpuPower, "W")}");
+                sb.AppendLine($"浮层 电池: 电量 {V(s.BatteryPercent, "%")} / 功率 {V(s.BatteryPower, "W")} / 充电={s.Charging} / 接电源={s.OnAc}");
+            }
             var dir = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData), "GameLocker");
             Directory.CreateDirectory(dir);
             File.WriteAllText(Path.Combine(dir, "monitor-diag.txt"), sb.ToString());
         }
         catch { }
+    }
+
+    /// <summary>导出日志前重新生成一次诊断（监控是否在跑都有效），保证内容反映当前状态</summary>
+    public static void RefreshDiagnostics()
+    {
+        _diagWritten = false;
+        WriteGpuDiagnostics();
+    }
+
+    /// <summary>诊断用：逐个列出性能计数器 / ACPI 热区的原始温度，便于确认"固定 28℃"是哪个源</summary>
+    private static List<string> ThermalZoneDetails()
+    {
+        var lines = new List<string>();
+        try
+        {
+            using var searcher = new ManagementObjectSearcher(@"root\CIMV2",
+                "SELECT Name, Temperature FROM Win32_PerfFormattedData_Counters_ThermalZoneInformation");
+            foreach (var o in searcher.Get())
+            {
+                if (o["Temperature"] is not { } v) continue;
+                lines.Add($"[perf] {o["Name"]} = {Convert.ToDouble(v) - 273.15:0.##} ℃");
+            }
+        }
+        catch (Exception ex) { lines.Add("[perf] 不可用：" + ex.Message); }
+        try
+        {
+            using var searcher = new ManagementObjectSearcher(@"root\WMI",
+                "SELECT InstanceName, CurrentTemperature FROM MSAcpi_ThermalZoneTemperature");
+            foreach (var o in searcher.Get())
+            {
+                if (o["CurrentTemperature"] is not { } v) continue;
+                lines.Add($"[acpi] {o["InstanceName"]} = {Convert.ToDouble(v) / 10.0 - 273.15:0.##} ℃");
+            }
+        }
+        catch (Exception ex) { lines.Add("[acpi] 不可用：" + ex.Message); }
+        return lines;
+    }
+
+    /// <summary>诊断用：列出 RAPL 能耗计量器的每个条目（CPU 封装功耗的来源）</summary>
+    private static List<string> PowerSourceDetails()
+    {
+        var lines = new List<string>();
+        try
+        {
+            using var searcher = new ManagementObjectSearcher(@"root\CIMV2",
+                "SELECT Name, Power FROM Win32_PerfFormattedData_PowerMeterCounter_EnergyMeter");
+            foreach (var o in searcher.Get())
+            {
+                var power = o["Power"] is { } v ? $"{Convert.ToDouble(v) / 1000.0:0.##} W" : "空";
+                lines.Add($"[rapl] {o["Name"]} = {power}");
+            }
+        }
+        catch (Exception ex) { lines.Add("[rapl] 不可用：" + ex.Message); }
+        return lines;
     }
 
     /// <summary>
@@ -1101,7 +1293,8 @@ public static class MonitorService
         {
             // ADL_OD6_POWER_NOW = 0
             if (ADL_Overdrive6_CurrentPower_Get(_adlAdapter, 0, out var milliwatts) != 0) return double.NaN;
-            return milliwatts > 0 ? milliwatts / 1000.0 : double.NaN;
+            // 部分 AMD APU 上这个接口会返回 590000 这类异常值（约 590 W），必须过滤
+            return milliwatts is > 0 and < 500_000 ? milliwatts / 1000.0 : double.NaN;
         }
         catch { return double.NaN; }
     }
@@ -1128,16 +1321,21 @@ public static class MonitorService
     {
         try
         {
+            double pkg = double.NaN, pp0 = double.NaN;
             using var searcher = new ManagementObjectSearcher(@"root\CIMV2",
                 "SELECT Name, Power FROM Win32_PerfFormattedData_PowerMeterCounter_EnergyMeter");
             foreach (var o in searcher.Get())
             {
                 var name = o["Name"] as string ?? "";
-                if (!name.Contains("RAPL_Package0_PKG", StringComparison.OrdinalIgnoreCase)) continue;
                 if (o["Power"] is not { } v) continue;
                 var mw = Convert.ToDouble(v);
-                if (mw > 0) return mw / 1000.0;
+                if (name.Contains("RAPL_Package0_PKG", StringComparison.OrdinalIgnoreCase)) pkg = mw;
+                else if (name.Contains("RAPL_Package0_PP0", StringComparison.OrdinalIgnoreCase)) pp0 = mw;
             }
+            // 顺手缓存给 GPU 功耗近似值用（同一次查询，避免每秒多跑一条 WMI）
+            _raplPkg = pkg;
+            _raplPp0 = pp0;
+            if (pkg > 0) return pkg / 1000.0;
         }
         catch { }
         return double.NaN;
@@ -1174,6 +1372,10 @@ public static class MonitorService
         }
         _cpuTempPrev = temp;
         if (cpuUsage > _cpuTempLoadPeak) _cpuTempLoadPeak = cpuUsage;
+
+        // Windows 下 CPU 封装温度不可能低于 30℃（真实值一般在 40℃ 以上）：
+        // 这种"低温固定值"是固件上报的环境温度，直接判假，不必等两分钟
+        if (!_cpuTempIsFake && temp < 30) _cpuTempIsFake = true;
 
         if (!_cpuTempIsFake && _cpuTempSameCount >= 24 && temp < 35 && _cpuTempLoadPeak >= 40)
             _cpuTempIsFake = true;

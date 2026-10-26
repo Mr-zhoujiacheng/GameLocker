@@ -23,6 +23,8 @@ internal sealed class MonitorShared : IDisposable
     private const int OffCount = 32;    // int  帧时间样本数
     private const int OffHistory = 40;  // double[180]，40..1479
     private const int OffMagic = 1484;  // int
+    private const int OffCpuTemp = 1492; // double 助手读到的 CPU 封装温度（PawnIO/MSR，NaN=不可用）
+    private const int OffGpuTemp = 1500; // double 助手读到的 GPU 温度（厂商 WMI，NaN=不可用）
     private const int Magic = 0x4D4F4E31; // "MON1"
 
     private const long FreshMs = 3000;
@@ -88,7 +90,7 @@ internal sealed class MonitorShared : IDisposable
     }
 
     /// <summary>助手：发布一帧统计数据（含心跳时间，主进程据此判断助手是否存活）</summary>
-    public void Publish(double fps, double frameMs, double[] history)
+    public void Publish(double fps, double frameMs, double[] history, double cpuTemp, double gpuTemp)
     {
         try
         {
@@ -96,6 +98,8 @@ internal sealed class MonitorShared : IDisposable
             _view.Write(OffSeq, seq + 1); // 奇数：写入中
             _view.Write(OffFps, fps);
             _view.Write(OffFrameMs, frameMs);
+            _view.Write(OffCpuTemp, cpuTemp);
+            _view.Write(OffGpuTemp, gpuTemp);
             var count = Math.Min(history.Length, HistoryCapacity);
             _view.Write(OffCount, count);
             for (var i = 0; i < count; i++)
@@ -107,10 +111,12 @@ internal sealed class MonitorShared : IDisposable
     }
 
     /// <summary>主进程：读一帧统计数据；助手未运行/无数据/正在写入时返回 false</summary>
-    public bool TryRead(out double fps, out double frameMs, out double[] history)
+    public bool TryRead(out double fps, out double frameMs, out double[] history, out double cpuTemp, out double gpuTemp)
     {
         fps = 0;
         frameMs = 0;
+        cpuTemp = double.NaN;
+        gpuTemp = double.NaN;
         history = [];
         try
         {
@@ -123,9 +129,13 @@ internal sealed class MonitorShared : IDisposable
                 values[i] = _view.ReadDouble(OffHistory + i * 8L);
             var f = _view.ReadDouble(OffFps);
             var ms = _view.ReadDouble(OffFrameMs);
+            var temp = _view.ReadDouble(OffCpuTemp);
+            var gtemp = _view.ReadDouble(OffGpuTemp);
             if (_view.ReadInt32(OffSeq) != seq1) return false; // 读取期间被写入，丢弃
             fps = f;
             frameMs = ms;
+            cpuTemp = temp;
+            gpuTemp = gtemp;
             history = values;
             return true;
         }

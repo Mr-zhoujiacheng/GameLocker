@@ -115,7 +115,7 @@ public sealed partial class AddItemPage : Page, ISettingsGamepad
         MonitorMetric.Fps, MonitorMetric.FrameTime, MonitorMetric.FrameGraph, MonitorMetric.Memory,
         MonitorMetric.CpuUsage, MonitorMetric.CpuFreq, MonitorMetric.CpuTemp, MonitorMetric.CpuPower,
         MonitorMetric.GpuUsage, MonitorMetric.GpuFreq, MonitorMetric.GpuPower, MonitorMetric.GpuTemp,
-        MonitorMetric.BatteryPercent, MonitorMetric.Battery
+        MonitorMetric.BatteryPercent, MonitorMetric.Battery, MonitorMetric.GpuVram
     ];
 
     // 胶囊选中/未选视觉（代码直设，不走 VisualState）
@@ -245,11 +245,11 @@ public sealed partial class AddItemPage : Page, ISettingsGamepad
         _monOptBoxes = [MonOptFps, MonOptFrameTime, MonOptGraph, MonOptMemory,
             MonOptCpuUsage, MonOptCpuFreq, MonOptCpuTemp, MonOptCpuPower,
             MonOptGpuUsage, MonOptGpuFreq, MonOptGpuPower, MonOptGpuTemp,
-            MonOptBatteryPercent, MonOptBattery];
+            MonOptBatteryPercent, MonOptBattery, MonOptVram];
         _monOptMarks = [MonOptFpsMark, MonOptFrameTimeMark, MonOptGraphMark, MonOptMemoryMark,
             MonOptCpuUsageMark, MonOptCpuFreqMark, MonOptCpuTempMark, MonOptCpuPowerMark,
             MonOptGpuUsageMark, MonOptGpuFreqMark, MonOptGpuPowerMark, MonOptGpuTempMark,
-            MonOptBatteryPercentMark, MonOptBatteryMark];
+            MonOptBatteryPercentMark, MonOptBatteryMark, MonOptVramMark];
         for (var i = 0; i < _monOptBoxes.Length; i++)
         {
             var chip = _monOptBoxes[i];
@@ -263,6 +263,9 @@ public sealed partial class AddItemPage : Page, ISettingsGamepad
                     chip.IsChecked = true;
             };
         }
+        // 监控条大小：按钮步进（手柄可聚焦、A 键可触发；Slider 手柄调不动，已换成 −/+）
+        MonSizeMinus.Click += (_, _) => SetMonSizePercent(_monSizePercent - 10);
+        MonSizePlus.Click += (_, _) => SetMonSizePercent(_monSizePercent + 10);
         BuildGamepadMapDiagram();
         // OptiScaler 下拉框选项来自服务层数组，保证与写入配置的值一致
         FillOptiCombo(OptiDllCombo, OptiScalerService.ProxyOptions);
@@ -402,9 +405,8 @@ public sealed partial class AddItemPage : Page, ISettingsGamepad
         // 性能监控：悬浮条位置（六选一）/ 大小 / 配色（组合色）
         if (MonitorRow.Visibility == vis)
         {
-            list.Add(MonSizeSmall);
-            list.Add(MonSizeNormal);
-            list.Add(MonSizeLarge);
+            list.Add(MonSizeMinus);
+            list.Add(MonSizePlus);
             list.Add(MonColorDefault);
             list.Add(MonColorNeon);
             list.Add(MonColorIce);
@@ -1004,9 +1006,8 @@ public sealed partial class AddItemPage : Page, ISettingsGamepad
         MonPosBottomCenter.IsChecked = pos == MonitorPosition.BottomCenter;
         MonPosBottomRight.IsChecked = pos == MonitorPosition.BottomRight;
 
-        MonSizeSmall.IsChecked = scale < 0.88;
-        MonSizeLarge.IsChecked = scale > 1.15;
-        MonSizeNormal.IsChecked = MonSizeSmall.IsChecked != true && MonSizeLarge.IsChecked != true;
+        // 大小按百分比回填，按 10% 取整（旧配置的 0.75 / 1.0 / 1.3 会落到 80% / 100% / 130%）
+        SetMonSizePercent((int)(Math.Round(scale * 10) * 10));
     }
 
     /// <summary>按配置回填监控条配色（组合色；旧配置无该字段时默认青彩）</summary>
@@ -1054,9 +1055,20 @@ public sealed partial class AddItemPage : Page, ISettingsGamepad
         return MonitorPosition.TopCenter;
     }
 
-    private double SelectedMonitorScale() =>
-        MonSizeSmall.IsChecked == true ? 0.75 :
-        MonSizeLarge.IsChecked == true ? 1.3 : 1.0;
+    private double SelectedMonitorScale() => _monSizePercent / 100.0;
+
+    /// <summary>当前监控条大小百分比（70~200，10% 一档）</summary>
+    private int _monSizePercent = 100;
+
+    /// <summary>设置监控条大小百分比并刷新文字，超出范围时停在边界</summary>
+    private void SetMonSizePercent(int percent)
+    {
+        _monSizePercent = Math.Clamp(percent, 70, 200);
+        MonSizeValueText.Text = $"{_monSizePercent}%";
+        // 到边界后禁用对应按钮，手柄焦点不会停在无效项上
+        MonSizeMinus.IsEnabled = _monSizePercent > 70;
+        MonSizePlus.IsEnabled = _monSizePercent < 200;
+    }
 
     private MonitorColorTheme SelectedMonitorColor()
     {
@@ -1300,6 +1312,13 @@ public sealed partial class AddItemPage : Page, ISettingsGamepad
             case Button btn when ReferenceEquals(btn, CloudSettingsButton):
                 // 游戏存档：A 键跳到 设置 → 云端备份 配置 WebDAV
                 App.Main?.NavigateSettings(typeof(CloudPage));
+                break;
+            // 性能监控：悬浮条大小 −/+ 各调一档
+            case Button btn when ReferenceEquals(btn, MonSizeMinus):
+                SetMonSizePercent(_monSizePercent - 10);
+                break;
+            case Button btn when ReferenceEquals(btn, MonSizePlus):
+                SetMonSizePercent(_monSizePercent + 10);
                 break;
             case Button btn when ReferenceEquals(btn, SaveButton):
                 _ = SaveAsync();

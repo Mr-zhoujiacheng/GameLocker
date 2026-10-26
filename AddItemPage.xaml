@@ -374,7 +374,7 @@
                 <!-- 图片组设置：轮播速度 / 切换动画 / 展示模式（仅图片组编辑时显示） -->
                 <StackPanel x:Name="PhotoSettingsPanel" Spacing="14" Visibility="Collapsed">
                     <StackPanel Spacing="4">
-                        <TextBlock Text="轮播速度" FontSize="17" FontWeight="Bold" Opacity="0.95"/>
+                        <TextBlock Text="轮播速度" FontSize="15" Opacity="0.9"/>
                         <StackPanel Orientation="Horizontal" Spacing="8">
                             <RadioButton x:Name="SpeedFastRadio" Content="快 · 30秒" GroupName="PhotoSpeed" Padding="14,10" IsChecked="True"/>
                             <RadioButton x:Name="SpeedSlowRadio" Content="慢 · 3分钟" GroupName="PhotoSpeed" Padding="14,10"/>
@@ -382,7 +382,7 @@
                         </StackPanel>
                     </StackPanel>
                     <StackPanel Orientation="Horizontal" Spacing="14">
-                        <TextBlock Text="切换动画" FontSize="17" FontWeight="Bold" Opacity="0.95" VerticalAlignment="Center"/>
+                        <TextBlock Text="切换动画" FontSize="15" Opacity="0.9" VerticalAlignment="Center"/>
                         <ToggleSwitch x:Name="AnimationToggle" OnContent="开" OffContent="关"/>
                     </StackPanel>
                 </StackPanel>
@@ -430,11 +430,15 @@
                 </StackPanel>
 
                 <!-- 性能监控小组件：悬浮条位置（小图示六选一）/ 大小 / 常开 / 配色 / 显示项目（仅监控编辑时显示） -->
-                <StackPanel x:Name="MonitorRow" Spacing="14" Visibility="Collapsed">
+                <StackPanel x:Name="MonitorRow" Spacing="12" Visibility="Collapsed">
+                    <!-- 位置在左；大小、常开在右侧上下排列 -->
+                    <Grid ColumnSpacing="28">
+                        <Grid.ColumnDefinitions>
+                            <ColumnDefinition Width="Auto"/>
+                            <ColumnDefinition Width="*"/>
+                        </Grid.ColumnDefinitions>
                     <StackPanel Spacing="4">
-                        <TextBlock Text="监控条位置" FontSize="17" FontWeight="Bold" Opacity="0.95"/>
-                        <TextBlock Text="点选小图示选择悬浮条贴在屏幕的哪个角或边" FontSize="12"
-                                   Opacity="0.6" TextWrapping="Wrap"/>
+                        <TextBlock Text="监控条位置" FontSize="15" Opacity="0.9"/>
                         <Grid HorizontalAlignment="Left" Margin="0,2,0,0"
                               ColumnSpacing="8" RowSpacing="8">
                             <Grid.ColumnDefinitions>
@@ -499,43 +503,42 @@
                         </Grid>
                     </StackPanel>
 
-                    <StackPanel Spacing="4">
-                        <TextBlock Text="监控条大小" FontSize="17" FontWeight="Bold" Opacity="0.95"/>
-                        <TextBlock Text="大小固定，不随屏幕分辨率 / 系统缩放变化；仅当屏幕宽度放不下时才会自动缩小"
-                                   FontSize="12" Opacity="0.6" TextWrapping="Wrap"/>
-                        <StackPanel Orientation="Horizontal" Spacing="8">
-                            <RadioButton x:Name="MonSizeSmall" Content="小" GroupName="MonitorSize" Padding="14,10"/>
-                            <RadioButton x:Name="MonSizeNormal" Content="标准" GroupName="MonitorSize" Padding="14,10"
-                                         IsChecked="True"/>
-                            <RadioButton x:Name="MonSizeLarge" Content="大" GroupName="MonitorSize" Padding="14,10"/>
+                        <StackPanel Grid.Column="1" Spacing="10" VerticalAlignment="Top" Margin="0,2,0,0">
+                            <StackPanel Spacing="4">
+                                <TextBlock Text="监控条大小" FontSize="15" Opacity="0.9"/>
+                                <StackPanel Orientation="Horizontal" Spacing="6">
+                                    <Button x:Name="MonSizeMinus" Content="−" Width="44" Height="40"
+                                            FontSize="19" Padding="0" ToolTipService.ToolTip="缩小 10%"/>
+                                    <TextBlock x:Name="MonSizeValueText" Text="100%" FontSize="16"
+                                               Width="52" TextAlignment="Center" VerticalAlignment="Center"/>
+                                    <Button x:Name="MonSizePlus" Content="+" Width="44" Height="40"
+                                            FontSize="19" Padding="0" ToolTipService.ToolTip="放大 10%"/>
+                                </StackPanel>
+                            </StackPanel>
+                            <StackPanel Spacing="4">
+                                <TextBlock Text="监控条常开" FontSize="15" Opacity="0.9"/>
+                                <ToggleSwitch x:Name="MonAlwaysOnToggle" HorizontalAlignment="Left"
+                                              OnContent="一直显示" OffContent="按情况显示"
+                                              ToolTipService.ToolTip="开启：主窗口切到后台也保留悬浮条；关闭：主窗口前台或有全屏游戏时才显示，节省资源。"/>
+                            </StackPanel>
                         </StackPanel>
-                    </StackPanel>
+                    </Grid>
 
                     <StackPanel Spacing="4">
-                        <TextBlock Text="监控条常开" FontSize="17" FontWeight="Bold" Opacity="0.95"/>
-                        <TextBlock Text="开启后切出本软件也一直显示；关闭则仅在本软件前台或检测到全屏游戏时显示"
-                                   FontSize="12" Opacity="0.6" TextWrapping="Wrap"/>
-                        <ToggleSwitch x:Name="MonAlwaysOnToggle" HorizontalAlignment="Left" Margin="0,2,0,0"
-                                      OnContent="一直显示" OffContent="按情况显示"
-                                      ToolTipService.ToolTip="开启：主窗口切到后台也保留悬浮条；关闭：主窗口前台或有全屏游戏时才显示，节省资源。"/>
-                    </StackPanel>
-
-                    <StackPanel Spacing="4">
-                        <TextBlock Text="监控条颜色" FontSize="17" FontWeight="Bold" Opacity="0.95"/>
-                        <TextBlock Text="背景固定为全透明；配色直接作用于每块的小标题、数值与左侧色条。色点为该方案的实际颜色，文字仅作品名"
-                                   FontSize="12" Opacity="0.6" TextWrapping="Wrap"/>
-                        <Grid ColumnSpacing="8" RowSpacing="8">
+                        <TextBlock Text="监控条颜色" FontSize="15" Opacity="0.9"/>
+                        <!-- 一行放三个，放不下的自动落到第二行，避免右侧被裁掉 -->
+                        <Grid ColumnSpacing="8" RowSpacing="8" Margin="0,2,0,0">
                             <Grid.ColumnDefinitions>
-                                <ColumnDefinition Width="*"/>
-                                <ColumnDefinition Width="*"/>
-                                <ColumnDefinition Width="*"/>
+                                <ColumnDefinition Width="Auto"/>
+                                <ColumnDefinition Width="Auto"/>
+                                <ColumnDefinition Width="Auto"/>
                             </Grid.ColumnDefinitions>
                             <Grid.RowDefinitions>
                                 <RowDefinition Height="Auto"/>
                                 <RowDefinition Height="Auto"/>
                             </Grid.RowDefinitions>
                             <RadioButton x:Name="MonColorDefault" Grid.Row="0" Grid.Column="0"
-                                         GroupName="MonitorColor" Padding="12,8" IsChecked="True">
+                                         GroupName="MonitorColor" Padding="10,7" IsChecked="True">
                                 <StackPanel Orientation="Horizontal" Spacing="8">
                                     <StackPanel Orientation="Horizontal" Spacing="3">
                                         <Ellipse Width="10" Height="10" Fill="#6FE3A0"/>
@@ -603,9 +606,8 @@
                     </StackPanel>
 
                     <StackPanel Spacing="4">
-                        <TextBlock Text="显示项目" FontSize="17" FontWeight="Bold" Opacity="0.95"/>
-                        <TextBlock Text="关闭的项不会出现在悬浮条上，至少保留一项；CPU / GPU 块只显示勾选的分项"
-                                   FontSize="12" Opacity="0.6" TextWrapping="Wrap"/>
+                        <TextBlock Text="显示项目" FontSize="15" Opacity="0.9"/>
+                        <TextBlock Text="至少保留一项" FontSize="12" Opacity="0.55"/>
                         <Grid Margin="0,2,0,0" ColumnSpacing="8" RowSpacing="8">
                             <Grid.ColumnDefinitions>
                                 <ColumnDefinition Width="*"/>
@@ -721,6 +723,13 @@
                                               HorizontalAlignment="Right" VerticalAlignment="Center"/>
                                 </Grid>
                             </ToggleButton>
+                            <ToggleButton x:Name="MonOptVram" Grid.Row="3" Grid.Column="2" Style="{StaticResource SysOptionChipStyle}">
+                                <Grid>
+                                    <TextBlock Text="显存使用" FontSize="14" Margin="0,0,22,0"/>
+                                    <FontIcon x:Name="MonOptVramMark" Glyph="&#xE711;" FontSize="14"
+                                              HorizontalAlignment="Right" VerticalAlignment="Center"/>
+                                </Grid>
+                            </ToggleButton>
                         </Grid>
                     </StackPanel>
                 </StackPanel>
@@ -830,7 +839,7 @@
                 <!-- 游戏存档小组件：备份方式（本地目录 / 云端 WebDAV 上传）/ 目标文件夹 / 保留份数（仅游戏存档编辑时显示） -->
                 <StackPanel x:Name="BackupRow" Spacing="14" Visibility="Collapsed">
                     <StackPanel Spacing="4">
-                        <TextBlock Text="备份方式" FontSize="17" FontWeight="Bold" Opacity="0.95"/>
+                        <TextBlock Text="备份方式" FontSize="15" Opacity="0.9"/>
                         <StackPanel Orientation="Horizontal" Spacing="8">
                             <RadioButton x:Name="BackupLocalRadio" Content="本地" GroupName="BackupMode" Padding="14,10"
                                          IsChecked="True" Checked="OnBackupModeChanged"/>
@@ -896,7 +905,7 @@
                 <StackPanel x:Name="GamepadMapRow" Spacing="10" Visibility="Collapsed">
                     <StackPanel Orientation="Horizontal" Spacing="8">
                         <FontIcon Glyph="&#xE7FC;" FontSize="16" Foreground="#BBD8FF" VerticalAlignment="Center"/>
-                        <TextBlock Text="手柄映射" FontSize="17" FontWeight="Bold" Opacity="0.95" VerticalAlignment="Center"/>
+                        <TextBlock Text="手柄映射" FontSize="15" Opacity="0.9" VerticalAlignment="Center"/>
                     </StackPanel>
 
                     <!-- 用法说明：要点分行（小圆点导引），替代原先的一整段折行文字 -->
@@ -976,7 +985,7 @@
                 <StackPanel x:Name="OptiScalerRow" Spacing="12" Visibility="Collapsed">
                     <StackPanel Orientation="Horizontal" Spacing="8">
                         <FontIcon Glyph="&#xE8C8;" FontSize="16" Foreground="#BBD8FF" VerticalAlignment="Center"/>
-                        <TextBlock Text="OptiScaler 设置" FontSize="17" FontWeight="Bold" Opacity="0.95" VerticalAlignment="Center"/>
+                        <TextBlock Text="OptiScaler 设置" FontSize="15" Opacity="0.9" VerticalAlignment="Center"/>
                     </StackPanel>
 
                     <Border Background="#0FFFFFFF" BorderBrush="#1FFFFFFF" BorderThickness="1"
@@ -1156,7 +1165,7 @@
                 <!-- 磁贴抽屉组件：抽屉列表（名称 + 上一个/下一个切换 + 新增/删除）。
                      抽屉里的磁贴不在这里放：主页区域内部按 X 添加、或编辑模式标记后放入、或直接拖入 -->
                 <StackPanel x:Name="DrawerRow" Spacing="10" Visibility="Collapsed">
-                    <TextBlock Text="抽屉" FontSize="17" FontWeight="Bold" Opacity="0.95"/>
+                    <TextBlock Text="抽屉" FontSize="15" Opacity="0.9"/>
                     <Grid ColumnSpacing="8">
                         <Grid.ColumnDefinitions>
                             <ColumnDefinition Width="*"/>
@@ -1193,13 +1202,13 @@
 
                 <!-- 组件标题（仅手柄映射小组件）：独立一行，显示在下方类型/大小/颜色行的上方 -->
                 <StackPanel x:Name="TitleColumn" Spacing="4" Visibility="Collapsed">
-                    <TextBlock Text="组件标题" FontSize="17" FontWeight="Bold" Opacity="0.95"/>
+                    <TextBlock Text="组件标题" FontSize="15" Opacity="0.9"/>
                     <TextBox x:Name="WidgetTitleBox" PlaceholderText="留空则显示「手柄映射」"/>
                 </StackPanel>
 
                 <!-- 系统小组件：勾选的项目才会参与右摇杆 ←→ 切换；未勾选的从切换序列中去掉 -->
                 <StackPanel x:Name="SystemOptionsPanel" Spacing="8" Visibility="Collapsed">
-                    <TextBlock Text="显示的项目" FontSize="17" FontWeight="Bold" Opacity="0.95"/>
+                    <TextBlock Text="显示的项目" FontSize="15" Opacity="0.9"/>
                     <TextBlock Text="勾选的项目才会出现在右摇杆 ←→ 的切换里" FontSize="12" Opacity="0.7" TextWrapping="Wrap"/>
                     <Grid ColumnSpacing="10" RowSpacing="10">
                         <Grid.ColumnDefinitions>
@@ -1303,7 +1312,7 @@
                         <ColumnDefinition Width="*"/>
                     </Grid.ColumnDefinitions>
                     <StackPanel x:Name="KindColumn" Grid.Column="0" Spacing="4" Margin="0,0,18,0">
-                        <TextBlock Text="类型" FontSize="17" FontWeight="Bold" Opacity="0.95"/>
+                        <TextBlock Text="类型" FontSize="15" Opacity="0.9"/>
                         <RadioButtons x:Name="KindRadios" MaxColumns="1">
                             <RadioButton x:Name="AppRadio" Content="程序" Padding="14,10" IsChecked="True"/>
                             <RadioButton x:Name="UrlRadio" Content="网站" Padding="14,10"/>
@@ -1311,7 +1320,7 @@
                         </RadioButtons>
                     </StackPanel>
                     <StackPanel x:Name="SizeColumn" Grid.Column="1" Spacing="4" Margin="0,0,18,0">
-                        <TextBlock Text="磁贴大小" FontSize="17" FontWeight="Bold" Opacity="0.95"/>
+                        <TextBlock Text="磁贴大小" FontSize="15" Opacity="0.9"/>
                         <RadioButtons x:Name="SizeRadios" MaxColumns="1">
                             <RadioButton x:Name="SmallSizeRadio" Content="小" Padding="14,10"/>
                             <RadioButton x:Name="WideSizeRadio" Content="长方形" Padding="14,10" IsChecked="True"/>
@@ -1319,7 +1328,7 @@
                         </RadioButtons>
                     </StackPanel>
                     <StackPanel x:Name="ColorColumn" Grid.Column="2" Spacing="4">
-                        <TextBlock Text="磁贴颜色" FontSize="17" FontWeight="Bold" Opacity="0.95"/>
+                        <TextBlock Text="磁贴颜色" FontSize="15" Opacity="0.9"/>
                         <Grid>
                             <Grid.ColumnDefinitions>
                                 <ColumnDefinition Width="Auto"/>

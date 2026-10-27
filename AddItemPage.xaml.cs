@@ -421,6 +421,17 @@ public sealed partial class AddItemPage : Page, ISettingsGamepad
             list.Add(MonPosBottomRight);
             list.AddRange(_monOptBoxes);
         }
+        // 屏幕键盘：输入方式 + 字母排列 + 贴左 / 贴右
+        if (KeyboardRow.Visibility == vis)
+        {
+            list.Add(KbmFull);
+            list.Add(KbmNine);
+            list.Add(KbmWubi);
+            list.Add(KbOrderAbc);
+            list.Add(KbOrderQwerty);
+            list.Add(KbDockLeft);
+            list.Add(KbDockRight);
+        }
         // 游戏存档小组件：备份方式 / 保留份数，以及按方式显示的本地面板或云端面板
         if (BackupRow.Visibility == vis)
         {
@@ -602,7 +613,7 @@ public sealed partial class AddItemPage : Page, ISettingsGamepad
             CoverRow.Visibility = w;
             // 音乐固定 2×2、系统固定"长"不可改大小；其余小组件（图片组/设置/电源/天气/映射/修改器/游戏存档/手柄映射）可编辑大小。
             // 颜色：图片组不需要（整块铺图）
-            SizeColumn.Visibility = isPhoto || item.WidgetKind is WidgetKind.Settings or WidgetKind.Power or WidgetKind.Weather or WidgetKind.Mapping or WidgetKind.Trainer or WidgetKind.Backup or WidgetKind.GamepadMap or WidgetKind.OptiScaler or WidgetKind.RecycleBin or WidgetKind.Foreground or WidgetKind.Monitor or WidgetKind.LosslessScaling
+            SizeColumn.Visibility = isPhoto || item.WidgetKind is WidgetKind.Settings or WidgetKind.Power or WidgetKind.Weather or WidgetKind.Mapping or WidgetKind.Trainer or WidgetKind.Backup or WidgetKind.GamepadMap or WidgetKind.OptiScaler or WidgetKind.RecycleBin or WidgetKind.Foreground or WidgetKind.Monitor or WidgetKind.LosslessScaling or WidgetKind.Keyboard
                 ? Microsoft.UI.Xaml.Visibility.Visible : w;
             ColorColumn.Visibility = isPhoto || TileStyle.HidesTileColor
                 ? w : Microsoft.UI.Xaml.Visibility.Visible;
@@ -642,6 +653,21 @@ public sealed partial class AddItemPage : Page, ISettingsGamepad
                 CheckMonitorColor(item.MonitorColor);
                 MonAlwaysOnToggle.IsOn = item.MonitorAlwaysOn;
                 CheckMonitorMetrics(item.MonitorMetrics);
+            }
+            // 屏幕键盘：大小、颜色 + 输入方式、贴边方向、字母排列（磁贴固定显示"屏幕键盘"，无需自定义名称）
+            var isKeyboard = item.WidgetKind == WidgetKind.Keyboard;
+            KeyboardRow.Visibility = isKeyboard ? Microsoft.UI.Xaml.Visibility.Visible : w;
+            if (isKeyboard)
+            {
+                if (string.IsNullOrWhiteSpace(NameBox.Text)) NameBox.Text = "屏幕键盘";
+                NameBox.Visibility = w;
+                KbmFull.IsChecked = item.KeyboardMode == 0;
+                KbmNine.IsChecked = item.KeyboardMode == 1;
+                KbmWubi.IsChecked = item.KeyboardMode == 2;
+                KbDockLeft.IsChecked = !item.KeyboardDockRight;
+                KbDockRight.IsChecked = item.KeyboardDockRight;
+                KbOrderAbc.IsChecked = !item.KeyboardQwerty;
+                KbOrderQwerty.IsChecked = item.KeyboardQwerty;
             }
             // 文件传输：名称、大小、颜色 + 可发送目录 / 接收目录（留空=系统下载文件夹）
             var isFileTransfer = item.WidgetKind == WidgetKind.FileTransfer;
@@ -811,6 +837,7 @@ public sealed partial class AddItemPage : Page, ISettingsGamepad
                     : item.WidgetKind == WidgetKind.Monitor ? "编辑性能监控小组件"
                     : item.WidgetKind == WidgetKind.FileTransfer ? "编辑文件传输小组件"
                     : item.WidgetKind == WidgetKind.LosslessScaling ? "编辑小黄鸭小组件"
+                    : item.WidgetKind == WidgetKind.Keyboard ? "编辑屏幕键盘小组件"
                     : item.WidgetKind == WidgetKind.Drawer ? "编辑磁贴抽屉" : "编辑音乐小组件")
                 : _isGroup ? "编辑磁贴组" : "编辑快捷项";
         }
@@ -1602,6 +1629,18 @@ public sealed partial class AddItemPage : Page, ISettingsGamepad
                         it.FileTransferSendFolder = _pendingFtSendFolder.Length == 0 ? null : _pendingFtSendFolder;
                     if (_pendingFtRecvFolder != null)
                         it.FileTransferRecvFolder = _pendingFtRecvFolder.Length == 0 ? null : _pendingFtRecvFolder;
+                }
+                else if (it.WidgetKind == WidgetKind.Keyboard)
+                {
+                    // 屏幕键盘：改大小、颜色、输入方式、贴边方向与字母排列（键盘打开时立即生效）
+                    it.Size = SelectedSize();
+                    it.TileColor = SelectedColor();
+                    it.KeyboardMode = KbmNine.IsChecked == true ? 1 : KbmWubi.IsChecked == true ? 2 : 0;
+                    it.KeyboardDockRight = KbDockRight.IsChecked == true;
+                    it.KeyboardQwerty = KbOrderQwerty.IsChecked == true;
+                    OnScreenKeyboard.ApplyDock(it.KeyboardDockRight);
+                    OnScreenKeyboard.ApplyLayout(it.KeyboardQwerty);
+                    OnScreenKeyboard.ApplyMode((KeyboardMode)it.KeyboardMode);
                 }
                 else if (it.WidgetKind == WidgetKind.LosslessScaling)
                 {

@@ -13,7 +13,7 @@
     <EnableMsixTooling>false</EnableMsixTooling>
     <ApplicationManifest>app.manifest</ApplicationManifest>
     <AssemblyName>GameLocker</AssemblyName>
-    <Version>1.9.6</Version>
+    <Version>1.9.8</Version>
     <ApplicationIcon>Assets\GameLocker.ico</ApplicationIcon>
     <NoWarn>$(NoWarn);CA1416</NoWarn>
     <!-- dotnet CLI 构建时指向 VS BuildTools 的 AppxPackage 任务目录（生成 PRI 所需） -->
@@ -45,6 +45,16 @@
     <EmbeddedResource Include="Resources\IntelMSR.bin" />
     <!-- LpcACPIEC 签名模块：ACPI EC 端口访问，用于探测厂商 EC 里的 GPU 温度 -->
     <EmbeddedResource Include="Resources\LpcACPIEC.bin" />
+    <!-- 屏幕键盘的中文拼音字典（音节 → 常用字，按频次排序） -->
+    <EmbeddedResource Include="Resources\pinyin.tsv" />
+    <!-- 屏幕键盘的双字词表（拼音 → 词语，按词频排序），用于提高两字词联想准确度 -->
+    <EmbeddedResource Include="Resources\words.tsv" />
+    <!-- 屏幕键盘的简拼表（首字母组合 → 词语，如 nh → 你好），支持只打声母联想 -->
+    <EmbeddedResource Include="Resources\abbr.tsv" />
+    <!-- 屏幕键盘的三字词表（如 shurufa → 输入法），只收最常用的 3 万词以控制体积 -->
+    <EmbeddedResource Include="Resources\words3.tsv" />
+    <!-- 屏幕键盘的五笔（86 版）码表（编码 → 候选字词，按字频排序） -->
+    <EmbeddedResource Include="Resources\wubi.tsv" />
   </ItemGroup>
 
 </Project>

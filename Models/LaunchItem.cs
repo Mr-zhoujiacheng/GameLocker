@@ -60,7 +60,9 @@ public enum WidgetKind
     /// <summary>文件传输（A/点击=打开局域网传输浮层：搜索同网段设备、连接后互发文件，收到文件需确认）</summary>
     FileTransfer,
     /// <summary>小黄鸭（Lossless Scaling 联动：A/点击=启动并切回游戏后发送补帧热键；磁贴显示安装/运行状态）</summary>
-    LosslessScaling
+    LosslessScaling,
+    /// <summary>屏幕键盘（A/点击=在屏幕左/右边缘打开竖向键盘，点键直接把字符打进当前前台应用）</summary>
+    Keyboard
 }
 
 /// <summary>手柄映射的目标类型（仅 GamepadMapping 使用）</summary>
@@ -333,6 +335,15 @@ public class LaunchItem
     /// 关闭则仅在本软件前台或检测到全屏游戏时显示</summary>
     public bool MonitorAlwaysOn { get; set; }
 
+    /// <summary>屏幕键盘贴在屏幕右侧（仅 WidgetKind.Keyboard 使用；false=贴左侧）</summary>
+    public bool KeyboardDockRight { get; set; }
+
+    /// <summary>屏幕键盘按 QWERTY 排列字母（仅 WidgetKind.Keyboard 使用；false=按 a–z 顺序）</summary>
+    public bool KeyboardQwerty { get; set; }
+
+    /// <summary>屏幕键盘输入方式（仅 WidgetKind.Keyboard 使用；0=全键 1=九键 2=五笔）</summary>
+    public int KeyboardMode { get; set; }
+
     /// <summary>文件传输的可发送目录（仅 WidgetKind.FileTransfer 使用；空=系统下载文件夹，浮层里列出该目录顶层文件）</summary>
     public string? FileTransferSendFolder { get; set; }
 
@@ -425,6 +436,7 @@ public class LaunchItem
             WidgetKind.Monitor => "\uE9D9", // 诊断（性能监控）
             WidgetKind.FileTransfer => "\uE895", // 同步（局域网文件互传）
             WidgetKind.LosslessScaling => "\uE945", // 闪电（小黄鸭补帧）
+            WidgetKind.Keyboard => "\uE765", // 键盘（屏幕键盘）
             _ => "\uE8D6"                  // 音乐（音乐控制器）
         },
         _ => "\uE7F8"                  // desktop

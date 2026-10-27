@@ -186,6 +186,34 @@ public static class KeySendService
     }
 
     /// <summary>
+    /// 按字符注入文本（KEYEVENTF_UNICODE）：直接把字符本身投递给前台窗口，
+    /// 不受系统 CapsLock / Shift 状态影响，屏幕键盘用它输入字母、数字与符号。
+    /// </summary>
+    public static uint TypeChar(char ch)
+    {
+        if (ch == '\0') return 0;
+
+        var inputs = new INPUT[2];
+        inputs[0] = new INPUT
+        {
+            type = INPUT_KEYBOARD,
+            U = new InputUnion
+            {
+                ki = new KEYBDINPUT { wVk = 0, wScan = ch, dwFlags = KEYEVENTF_UNICODE }
+            }
+        };
+        inputs[1] = new INPUT
+        {
+            type = INPUT_KEYBOARD,
+            U = new InputUnion
+            {
+                ki = new KEYBDINPUT { wVk = 0, wScan = ch, dwFlags = KEYEVENTF_UNICODE | KEYEVENTF_KEYUP }
+            }
+        };
+        return SendInput(2, inputs, Marshal.SizeOf<INPUT>());
+    }
+
+    /// <summary>
     /// 与 <see cref="Send"/> 相同的组合键注入，但逐个事件发送、事件间隔约 30ms，
     /// 更接近真人按键节奏。部分游戏/工具（如小黄鸭）对整串瞬间注入的热键反应不稳定，
     /// 拉开间隔可显著提高命中率。
@@ -314,6 +342,7 @@ public static class KeySendService
     private const uint INPUT_MOUSE = 0;
     private const uint KEYEVENTF_EXTENDEDKEY = 0x0001;
     private const uint KEYEVENTF_KEYUP = 0x0002;
+    private const uint KEYEVENTF_UNICODE = 0x0004;
     private const uint MOUSEEVENTF_LEFTDOWN = 0x0002;
     private const uint MOUSEEVENTF_LEFTUP = 0x0004;
     private const uint MOUSEEVENTF_RIGHTDOWN = 0x0008;

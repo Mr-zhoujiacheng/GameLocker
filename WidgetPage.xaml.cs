@@ -156,13 +156,23 @@ public sealed partial class WidgetPage : Page
         Size = TileSize.Wide
     };
 
+    /// <summary>预览用固定屏幕键盘项（键盘图标 + 名称；实际添加时为默认"长"尺寸）</summary>
+    private static readonly LaunchItem KeyboardPreviewItem = new()
+    {
+        Name = "屏幕键盘",
+        Target = "widget:keyboard",
+        Kind = LaunchKind.Widget,
+        WidgetKind = WidgetKind.Keyboard,
+        Size = TileSize.Wide
+    };
+
     /// <summary>预览磁贴框架（订阅天气变化时刷新文字）</summary>
     private TileStyle.WeatherTileRefs? _weatherPreviewRefs;
 
     public WidgetPage()
     {
         InitializeComponent();
-        _formControls = [MusicWidgetCard, PhotoWidgetCard, WeatherWidgetCard, MappingWidgetCard, TrainerWidgetCard, BackupWidgetCard, GamepadMapWidgetCard, OptiScalerWidgetCard, RecycleBinWidgetCard, ForegroundWidgetCard, SystemWidgetCard, MonitorWidgetCard, FileTransferWidgetCard, LosslessScalWidgetCard];
+        _formControls = [MusicWidgetCard, PhotoWidgetCard, WeatherWidgetCard, MappingWidgetCard, TrainerWidgetCard, BackupWidgetCard, GamepadMapWidgetCard, OptiScalerWidgetCard, RecycleBinWidgetCard, ForegroundWidgetCard, SystemWidgetCard, MonitorWidgetCard, FileTransferWidgetCard, LosslessScalWidgetCard, KeyboardWidgetCard];
         // 磁贴式自适应：窗口宽度变化（侧边栏 ↔ 全屏/居中）时按可用宽度重排列数
         FormScroll.SizeChanged += (_, _) => LayoutCards();
         Loaded += (_, _) => LayoutCards();
@@ -272,6 +282,10 @@ public sealed partial class WidgetPage : Page
             TileStyle.IsNoColor(LosslessScalPreviewItem));
         TileStyle.FillLosslessState(lossRefs, LosslessScalPreviewItem);
         LosslessScalPreviewHost.Content = lossTile;
+        // 屏幕键盘预览：标准磁贴外观（键盘图标 + 名称）
+        KeyboardPreviewHost.Content = TileStyle.BuildStandardTile(
+            KeyboardPreviewItem, null, w, h, TileStyle.AccentFor(KeyboardPreviewItem),
+            TileStyle.IsNoColor(KeyboardPreviewItem));
         WeatherService.StateChanged += OnWeatherChanged;
         WeatherService.EnsureFresh();
 
@@ -321,6 +335,7 @@ public sealed partial class WidgetPage : Page
         else if (ReferenceEquals(c, MonitorWidgetCard)) AddMonitorWidget();
         else if (ReferenceEquals(c, FileTransferWidgetCard)) AddFileTransferWidget();
         else if (ReferenceEquals(c, LosslessScalWidgetCard)) AddLosslessWidget();
+        else if (ReferenceEquals(c, KeyboardWidgetCard)) AddKeyboardWidget();
         else AddMusicWidget();
     }
 
@@ -707,6 +722,22 @@ public sealed partial class WidgetPage : Page
         });
     }
 
+    /// <summary>屏幕键盘组件：默认"长"尺寸（可后续编辑大小、颜色与贴边方向）；一个贴边键盘即可覆盖全部输入，只允许一个</summary>
+    private void AddKeyboardWidget()
+    {
+        var items = ConfigService.Load();
+        if (ExistsWidget(items, WidgetKind.Keyboard)) { PageTitle.Text = "屏幕键盘已在主页"; return; }
+        CommitWidget(items, new LaunchItem
+        {
+            Name = "屏幕键盘",
+            Target = "widget:keyboard",
+            Kind = LaunchKind.Widget,
+            WidgetKind = WidgetKind.Keyboard,
+            PageIndex = App.Main?.CurrentHomePage ?? 0,   // 新磁贴归到主页当前所在页
+            Size = TileSize.Wide
+        });
+    }
+
     // ---- 鼠标 ----
 
     private void OnBackClick(object sender, RoutedEventArgs e) => App.Main?.ShowMainPage();
@@ -726,6 +757,7 @@ public sealed partial class WidgetPage : Page
         else if (sender is Button { Tag: "monitor" }) AddMonitorWidget();
         else if (sender is Button { Tag: "filetransfer" }) AddFileTransferWidget();
         else if (sender is Button { Tag: "lossless" }) AddLosslessWidget();
+        else if (sender is Button { Tag: "keyboard" }) AddKeyboardWidget();
         else AddMusicWidget();
     }
 }

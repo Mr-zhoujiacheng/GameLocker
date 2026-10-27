@@ -3046,6 +3046,13 @@ public sealed partial class MainPage : Page
             // 小黄鸭联动小组件：A/点击 = 启动并切回游戏后发送补帧热键
             _ = ActivateLosslessAsync(item);
         }
+        else if (item.WidgetKind == WidgetKind.Keyboard)
+        {
+            // 屏幕键盘：A/点击 = 打开/关闭贴边竖向键盘（不抢焦点，字符直接打进当前前台应用）
+            if (!OnScreenKeyboard.Toggle(item.KeyboardDockRight, item.KeyboardQwerty,
+                    (KeyboardMode)item.KeyboardMode))
+                ShowToast("打开屏幕键盘失败：" + OnScreenKeyboard.LastError, ToastKind.Warning);
+        }
         else
         {
             // 音乐小组件：A = 播放/暂停系统当前媒体

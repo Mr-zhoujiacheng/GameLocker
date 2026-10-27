@@ -253,6 +253,22 @@
                         </StackPanel>
                     </StackPanel>
                 </Button>
+
+                <!-- 屏幕键盘：贴边竖向键盘，点键直接把字符打进当前前台应用 -->
+                <Button x:Name="KeyboardWidgetCard" Tag="keyboard" Background="#14FFFFFF" BorderThickness="1"
+                        BorderBrush="Transparent" VerticalAlignment="Top"
+                        HorizontalContentAlignment="Center" VerticalContentAlignment="Top" Padding="10" Click="OnAddClick">
+                    <StackPanel Spacing="8">
+                        <Viewbox MaxHeight="116" Stretch="Uniform" HorizontalAlignment="Center">
+                            <ContentPresenter x:Name="KeyboardPreviewHost"/>
+                        </Viewbox>
+                        <StackPanel Spacing="3">
+                            <TextBlock Text="屏幕键盘" FontSize="14" FontWeight="Bold" HorizontalAlignment="Center"/>
+                            <TextBlock Text="贴边竖向键盘，点键直接输入到前台应用"
+                                       FontSize="11" Opacity="0.7" TextWrapping="Wrap" TextAlignment="Center"/>
+                        </StackPanel>
+                    </StackPanel>
+                </Button>
             </Canvas>
         </ScrollViewer>
 

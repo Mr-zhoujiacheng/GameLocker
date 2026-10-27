@@ -130,6 +130,7 @@ public sealed partial class MainPage : Page
     public MainPage()
     {
         InitializeComponent();
+        UiSound.Open(); // 提前合成并打开音频设备，第一次手柄按键就有声
 
         Loaded += (_, _) =>
         {
@@ -868,11 +869,21 @@ public sealed partial class MainPage : Page
         ShowToast(skipped > 0 ? $"已添加 {added} 个磁贴（跳过 {skipped} 个重复/不支持）" : $"已添加 {added} 个磁贴");
     }
 
+    /// <summary>播放手柄操作音效（常规设置里关闭「操作音效」时静默）</summary>
+    private static void PlayCue(UiSoundKind kind)
+    {
+        if (SettingsService.Current.UiSoundEnabled) UiSound.Play(kind);
+    }
+
     /// <summary>
     /// 处理手柄按键。返回 true = 已消费（MainWindow 跳过默认路由）。
     /// </summary>
     public bool HandleGamepad(GamepadButtons buttons)
     {
+        // A/B 的操作反馈音：在分派之前统一发声，遮罩/抽屉/常规模式都能听到
+        if (buttons.HasFlag(GamepadButtons.A)) PlayCue(UiSoundKind.Confirm);
+        else if (buttons.HasFlag(GamepadButtons.B)) PlayCue(UiSoundKind.Back);
+
         // 添加方式选择遮罩 / 抽屉改名遮罩 / 电源菜单 / 文件传输浮层 打开：按键优先交给遮罩
         if (_choiceOpen) return HandleChoice(buttons);
         if (_renaming) return HandleRename(buttons);
@@ -2106,6 +2117,7 @@ public sealed partial class MainPage : Page
         LayoutDrawerContent(owner);
         UpdateSelection();
         BringDrawerPillIntoView();
+        if (ds.Count > 1) PlayCue(UiSoundKind.Move);
     }
 
     /// <summary>切到指定抽屉（点击标签条药丸）：保持当前层级</summary>
@@ -2214,7 +2226,7 @@ public sealed partial class MainPage : Page
     private bool MoveInDrawer(int dx, int dy)
     {
         if (_drawerInnerTiles.Count == 0) return false;
-        if (_drawerFocusPos < 0 || _drawerFocusPos >= _drawerInnerTiles.Count) { FocusDrawerItem(0); return true; }
+        if (_drawerFocusPos < 0 || _drawerFocusPos >= _drawerInnerTiles.Count) { FocusDrawerItem(0); PlayCue(UiSoundKind.Move); return true; }
         var cur = _drawerFocusPos;
         var (cx, cy) = Center(_drawerInnerTiles[cur]);
         int best = -1;
@@ -2229,7 +2241,7 @@ public sealed partial class MainPage : Page
             var score = cross * 10 + along;
             if (score < bestScore) { bestScore = score; best = i; }
         }
-        if (best >= 0) { FocusDrawerItem(best); return true; }
+        if (best >= 0) { FocusDrawerItem(best); PlayCue(UiSoundKind.Move); return true; }
         return false;
     }
 
@@ -2374,19 +2386,10 @@ public sealed partial class MainPage : Page
                     : Windows.UI.Color.FromArgb(0x40, 0xFF, 0xFF, 0xFF));
             Microsoft.UI.Xaml.Controls.Canvas.SetZIndex(t, focused ? 2 : 0);
         }
-        // 面板描边：焦点在区域内=强调色；否则恢复默认（拖拽悬停高亮期间不覆盖）
-        if (_dragOverDrawer || _drawerRegion is not { } shell) return;
-        if (_inDrawer && _drawerOwner is { } owner)
-        {
-            // 焦点环：焦点进入抽屉层时描边换成实色强调色（"当前操作对象"提示），并加粗到 3px；
-            // 透明模式下底板已去掉，焦点环再粗一点（3.5px）保持区分度
-            shell.BorderThickness = new Thickness(SettingsService.Current.DrawerTransparent ? 3.5 : 3);
-            shell.BorderBrush = new SolidColorBrush(DrawerColorSetting ?? TileStyle.AccentFor(owner));
-        }
-        else
-        {
-            ResetDrawerFrame();
-        }
+        // 面板不再单独画强调色焦点环：焦点进区域时若内外各一圈会出现"两个选中框"，
+        // 只保留内层白色选框；离开区域同样恢复默认（拖拽悬停高亮期间不覆盖）
+        if (_dragOverDrawer || _drawerRegion is null) return;
+        ResetDrawerFrame();
     }
 
     /// <summary>抽屉面板表面：常态=玻璃渐变底 + 投影；透明模式=与窗口一致的透明底、去掉投影，
@@ -4298,6 +4301,7 @@ public sealed partial class MainPage : Page
         if (best < 0) return false;
         _selected = best;
         UpdateSelection();
+        PlayCue(UiSoundKind.Move);
         return true;
     }
 

@@ -430,11 +430,13 @@ public sealed partial class WidgetPage : Page
     private void FocusForm(int i)
     {
         var c = _formControls[i];
+        // 先清掉上一项的系统焦点框：页面用自绘光标/选框，残留的焦点框不会跟着光标走
+        FocusRing.HideCurrent(XamlRoot);
         UpdateCursor(c);
         // RadioButton：只移动光标高亮，不聚焦——WinUI 键盘聚焦会自动勾选，
         // 导致"移动即变更"；按 A 才真正切换选中（与 AddItemPage 同模式）
         if (c is not RadioButton)
-            c.Focus(Microsoft.UI.Xaml.FocusState.Keyboard);
+            FocusRing.FocusWithRing(c);
         EnsureVisible(c);
     }
 

@@ -360,6 +360,8 @@ public sealed partial class AppearancePage : Page, ISettingsGamepad
     private void FocusIndex(int i)
     {
         var c = _controls[i];
+        // 先清掉上一项的系统焦点框：页面用自绘光标/选框，残留的焦点框不会跟着光标走
+        FocusRing.HideCurrent(XamlRoot);
         if (c is RadioButton or ToggleSwitch or Border)
         {
             // 单选/开关/主题卡片行：移动只移动光标（高亮），不聚焦——避免焦点/空格等连带变更；
@@ -369,7 +371,7 @@ public sealed partial class AppearancePage : Page, ISettingsGamepad
             return;
         }
         UpdateCursor(null);
-        c.Focus(Microsoft.UI.Xaml.FocusState.Keyboard);
+        if (c is Control ctl) FocusRing.FocusWithRing(ctl);
         EnsureVisible(c);
     }
 

@@ -1,4 +1,4 @@
-﻿<?xml version="1.0" encoding="utf-8"?>
+<?xml version="1.0" encoding="utf-8"?>
 <Page
     x:Class="GameLocker.GeneralPage"
     xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
@@ -55,6 +55,14 @@
                         <StackPanel Spacing="2">
                             <TextBlock Text="弹出动画" FontSize="16"/>
                             <TextBlock Text="呼出/隐藏时窗口滑入滑出过渡效果" FontSize="12" Opacity="0.6"/>
+                        </StackPanel>
+                    </ToggleSwitch.Header>
+                </ToggleSwitch>
+                <ToggleSwitch x:Name="UiSoundToggle" Padding="14,10" Toggled="OnUiSoundChanged">
+                    <ToggleSwitch.Header>
+                        <StackPanel Spacing="2">
+                            <TextBlock Text="操作音效" FontSize="16"/>
+                            <TextBlock Text="手柄移动磁贴、A/B 键的提示音（默认开启）" FontSize="12" Opacity="0.6" TextWrapping="Wrap"/>
                         </StackPanel>
                     </ToggleSwitch.Header>
                 </ToggleSwitch>

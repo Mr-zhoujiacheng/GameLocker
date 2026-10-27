@@ -755,6 +755,14 @@
                         <RadioButton x:Name="KbDockLeft" Content="贴左侧" GroupName="KeyboardDock" IsChecked="True"/>
                         <RadioButton x:Name="KbDockRight" Content="贴右侧" GroupName="KeyboardDock"/>
                     </StackPanel>
+                    <ToggleSwitch x:Name="KbTakeOverToggle" Padding="0,10,0,0" Margin="0,10,0,0">
+                        <ToggleSwitch.Header>
+                            <StackPanel Spacing="2">
+                                <TextBlock Text="接管系统屏幕键盘" FontSize="15"/>
+                                <TextBlock Text="关闭系统触屏键盘的自动弹出，改用手柄热键或本键盘打字（全局设置）" FontSize="12" Opacity="0.55" TextWrapping="Wrap"/>
+                            </StackPanel>
+                        </ToggleSwitch.Header>
+                    </ToggleSwitch>
                 </StackPanel>
 
                 <!-- 文件传输小组件：可发送目录 / 接收目录（仅文件传输编辑时显示；留空=系统下载文件夹） -->

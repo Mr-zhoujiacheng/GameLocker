@@ -29,6 +29,7 @@ internal sealed class OnScreenKeyboardWindow : IDisposable
     private const int SPI_GETWORKAREA = 0x0030;
     private const int WM_PAINT = 0x000F;
     private const int WM_ERASEBKGND = 0x0014;
+    private const int WM_TIMER = 0x0113;
     private const int WM_LBUTTONDOWN = 0x0201;
     private const int WM_LBUTTONUP = 0x0202;
     private const int WM_MOUSEMOVE = 0x0200;
@@ -46,6 +47,11 @@ internal sealed class OnScreenKeyboardWindow : IDisposable
     private const int DT_SINGLELINE = 0x0020;
     private const int TRANSPARENT = 1;
     private const uint GRADIENT_FILL_RECT_V = 0;
+    private const int MONITOR_DEFAULTTONEAREST = 2;
+    private const int TopmostTimerId = 1;
+
+    /// <summary>顶置线程定时器：任务栏也是 topmost，被它抢到前面时重新压回去（键盘要盖住任务栏）</summary>
+    private const int TopmostIntervalMs = 500;
 
     /// <summary>按键动作类型</summary>
     private enum KeyAction
@@ -59,6 +65,8 @@ internal sealed class OnScreenKeyboardWindow : IDisposable
         Caps,       // 大小写切换
         Chinese,    // 中/英（拼音）模式切换
         NineDigit,  // 九键数字键（中文拼拼音、英文连按循环字母）
+        Vk,         // 注入虚拟键（Ins/Home/方向等功能键）
+        TogglePad,  // 数字标点区切换为功能键区
         Close       // 关闭键盘
     }
 
@@ -69,6 +77,7 @@ internal sealed class OnScreenKeyboardWindow : IDisposable
         public char Character;
         public char Digit;          // 九键：该键的数字
         public string Letters = ""; // 九键：该数字对应的字母（abc / def …）
+        public int VirtualKey;      // 功能键：要注入的虚拟键码（Ins/Home/方向…）
         public KeyAction Action;
         public RECT Rect;
     }
@@ -109,6 +118,19 @@ internal sealed class OnScreenKeyboardWindow : IDisposable
     private bool _qwerty;                        // 字母按 QWERTY 排列（false=a–z 顺序）
     private KeyboardMode _mode = KeyboardMode.Full;
     private bool _chinese;                        // 中文拼音模式
+    private bool _fnPad;                          // 数字标点区切换成 Ins/Home/方向等功能键
+
+    /// <summary>数字标点页的 15 个符号（第 16 格固定为 Fn 切换键）</summary>
+    private const string SymbolPadKeys = "1234567890.,?!-";
+
+    /// <summary>功能键页：Ins/Home/PageUp… 共 15 键（第 16 格为切回符号的键）</summary>
+    private static readonly (string Label, int Vk)[] FnPadKeys =
+    [
+        ("Ins", 0x2D), ("Home", 0x24), ("PgUp", 0x21), ("Del", 0x2E),
+        ("End", 0x23), ("PgDn", 0x22), ("←", 0x25), ("↑", 0x26),
+        ("↓", 0x28), ("→", 0x27), ("PrtSc", 0x2C), ("Win", 0x5B),
+        ("Menu", 0x5D), ("F11", 0x7A), ("F12", 0x7B)
+    ];
     private readonly System.Text.StringBuilder _pinyin = new(); // 拼音/五笔/九键缓冲
     private KeyDef? _lastNineKey;                 // 九键英文连按循环用
     private int _nineTap;
@@ -196,6 +218,7 @@ internal sealed class OnScreenKeyboardWindow : IDisposable
         Reposition();
         ShowWindow(_hwnd, SW_SHOWNOACTIVATE);
         SetWindowPos(_hwnd, HWND_TOPMOST, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE);
+        SetTimer(_hwnd, TopmostTimerId, TopmostIntervalMs, IntPtr.Zero);
         _visible = true;
         KeyboardClickSound.Open(); // 提前打开音频设备，第一次按键也不会有启动延迟
         Invalidate();
@@ -205,6 +228,7 @@ internal sealed class OnScreenKeyboardWindow : IDisposable
     public void Hide()
     {
         if (_hwnd == IntPtr.Zero) return;
+        KillTimer(_hwnd, TopmostTimerId);
         ShowWindow(_hwnd, SW_HIDE);
         _visible = false;
     }
@@ -213,31 +237,47 @@ internal sealed class OnScreenKeyboardWindow : IDisposable
     {
         DestroyResources();
         KeyboardClickSound.Close();
-        if (_hwnd != IntPtr.Zero) DestroyWindow(_hwnd);
+        if (_hwnd != IntPtr.Zero)
+        {
+            KillTimer(_hwnd, TopmostTimerId);
+            DestroyWindow(_hwnd);
+        }
         _hwnd = IntPtr.Zero;
         _visible = false;
     }
 
     // ---- 布局 ----
 
-    /// <summary>按当前屏幕工作区与 DPI 重算窗口位置与列/键布局</summary>
+    /// <summary>按当前显示器与 DPI 重算窗口位置与列/键布局：整屏高，可盖住任务栏</summary>
     private void Reposition()
     {
-        var work = GetWorkArea();
+        // 键盘要盖住任务栏（含自动隐藏的任务栏），因此按显示器整屏定位，不再让出任务栏那一条；
+        // 顶置顺序由 Show 里的定时器持续压回最前
+        var mon = GetMonitorRect();
+
         _scale = Math.Max(1.0, GetDpiForWindow(_hwnd) / 96.0);
         var s = _scale;
 
-        _width = (int)Math.Round(Math.Clamp((work.Right - work.Left) * 0.23, 330 * s, 430 * s));
-        _height = work.Bottom - work.Top;
-        var x = _dockRight ? work.Right - _width : work.Left;
-        var y = work.Top;
+        _width = (int)Math.Round(Math.Clamp((mon.Right - mon.Left) * 0.23, 330 * s, 430 * s));
+        _height = Math.Max(1, mon.Bottom - mon.Top);
+        var x = _dockRight ? mon.Right - _width : mon.Left;
+        x = Math.Clamp(x, mon.Left, mon.Right - _width);
 
         _scrollY = 0;
         // 先准备好后台缓冲与按键布局，再改窗口尺寸：SetWindowPos 会同步派发 WM_PAINT，
         // 若此时后台缓冲还没建好会被跳过绘制，尺寸也可能对不上
         RecreateBackBuffer();
         LayoutKeys();
-        SetWindowPos(_hwnd, HWND_TOPMOST, x, y, _width, _height, SWP_NOACTIVATE);
+        SetWindowPos(_hwnd, HWND_TOPMOST, x, mon.Top, _width, _height, SWP_NOACTIVATE);
+    }
+
+    /// <summary>当前显示器整屏矩形（物理像素）；取不到时退回系统工作区</summary>
+    private RECT GetMonitorRect()
+    {
+        var mi = new MONITORINFO { cbSize = Marshal.SizeOf<MONITORINFO>() };
+        var mon = MonitorFromWindow(_hwnd, MONITOR_DEFAULTTONEAREST);
+        if (mon != IntPtr.Zero && GetMonitorInfoW(mon, ref mi)) return mi.rcMonitor;
+        return GetWorkArea();
     }
 
     /// <summary>
@@ -306,15 +346,29 @@ internal sealed class OnScreenKeyboardWindow : IDisposable
             AddKey(lastRow[i], lastX + i * (letterW + colGap), y, letterW, keyH);
         y += keyH + rowGap + blockGap;
 
-        // ---- 数字与标点：4 列 × 4 行（16 个最常用） ----
+        // ---- 数字与标点：4 列 × 4 行；右下角是 Fn 切换键，可换成 Ins/Home/方向等功能键 ----
         var digitW = (_width - pad * 2 - 3 * colGap) / 4;
-        const string digitKeys = "1234567890.,?!-_";
-        for (var i = 0; i < digitKeys.Length; i++)
+        for (var i = 0; i < 4 * digitRows; i++)
         {
             var row = i / 4;
             var col = i % 4;
-            AddKey(new KeyDef { Label = digitKeys[i].ToString(), Character = digitKeys[i], Action = KeyAction.Insert },
-                pad + col * (digitW + colGap), y + row * (keyH + rowGap), digitW, keyH);
+            KeyDef key;
+            if (i == 4 * digitRows - 1)
+            {
+                // 最后一格：符号页显示 Fn（切到功能键），功能键页显示 123（切回符号）
+                key = new KeyDef { Label = _fnPad ? "123" : "Fn", Action = KeyAction.TogglePad };
+            }
+            else if (_fnPad)
+            {
+                var (label, vk) = FnPadKeys[i];
+                key = new KeyDef { Label = label, VirtualKey = vk, Action = KeyAction.Vk };
+            }
+            else
+            {
+                var ch = SymbolPadKeys[i];
+                key = new KeyDef { Label = ch.ToString(), Character = ch, Action = KeyAction.Insert };
+            }
+            AddKey(key, pad + col * (digitW + colGap), y + row * (keyH + rowGap), digitW, keyH);
         }
         y += digitRows * (keyH + rowGap) + blockGap;
 
@@ -541,7 +595,9 @@ internal sealed class OnScreenKeyboardWindow : IDisposable
         {
             if (k.Rect.Bottom < clip.Top || k.Rect.Top > clip.Bottom) continue;
             var pressed = ReferenceEquals(k, _pressed);
-            var active = pressed || (k.Action == KeyAction.Chinese && _chinese);
+            var active = pressed
+                || (k.Action == KeyAction.Chinese && _chinese)
+                || (k.Action == KeyAction.TogglePad && _fnPad);
             var face = DrawKeycap(k.Rect, pressed, active);
 
             if (k.Action is KeyAction.Backspace or KeyAction.Close)
@@ -780,6 +836,15 @@ internal sealed class OnScreenKeyboardWindow : IDisposable
                     InsertNineLetter(key);
                 }
                 break;
+            case KeyAction.Vk:
+                // 功能键：直接注入前台应用（Ins/Home/方向等，扩展键标记由 KeySendService 处理）
+                KeySendService.Send(key.VirtualKey, 0);
+                break;
+            case KeyAction.TogglePad:
+                _fnPad = !_fnPad;
+                LayoutKeys();
+                Invalidate();
+                break;
             case KeyAction.Backspace:
                 if (_chinese && _pinyin.Length > 0)
                 {
@@ -898,6 +963,11 @@ internal sealed class OnScreenKeyboardWindow : IDisposable
             }
             case WM_ERASEBKGND:
                 return (IntPtr)1;
+            case WM_TIMER:
+                // 任务栏同为 topmost，切到前台时会盖住键盘；每次定时器触发都把键盘重新压到最前
+                if (_visible)
+                    SetWindowPos(hWnd, HWND_TOPMOST, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE);
+                return IntPtr.Zero;
             case WM_LBUTTONDOWN:
             {
                 var x = (short)((long)lParam & 0xFFFF);
@@ -1064,6 +1134,12 @@ internal sealed class OnScreenKeyboardWindow : IDisposable
     [DllImport("user32.dll")]
     private static extern bool SetLayeredWindowAttributes(IntPtr hWnd, int colorKey, byte alpha, int flags);
 
+    [DllImport("user32.dll")]
+    private static extern IntPtr SetTimer(IntPtr hWnd, int idEvent, int elapse, IntPtr timerFunc);
+
+    [DllImport("user32.dll")]
+    private static extern bool KillTimer(IntPtr hWnd, int idEvent);
+
     [DllImport("user32.dll", CharSet = CharSet.Unicode)]
     private static extern IntPtr DefWindowProcW(IntPtr hWnd, uint msg, IntPtr wParam, IntPtr lParam);
 
@@ -1081,6 +1157,21 @@ internal sealed class OnScreenKeyboardWindow : IDisposable
 
     [DllImport("user32.dll")]
     private static extern int ReleaseDC(IntPtr hWnd, IntPtr hdc);
+
+    [StructLayout(LayoutKind.Sequential)]
+    private struct MONITORINFO
+    {
+        public int cbSize;
+        public RECT rcMonitor;
+        public RECT rcWork;
+        public uint dwFlags;
+    }
+
+    [DllImport("user32.dll")]
+    private static extern IntPtr MonitorFromWindow(IntPtr hWnd, int flags);
+
+    [DllImport("user32.dll", CharSet = CharSet.Unicode)]
+    private static extern bool GetMonitorInfoW(IntPtr hMonitor, ref MONITORINFO info);
 
     [DllImport("user32.dll")]
     private static extern bool SystemParametersInfoW(int action, int param, ref RECT rect, int winIni);
@@ -1187,11 +1278,19 @@ internal static class OnScreenKeyboard
     /// <summary>最近一次失败原因（诊断用）</summary>
     public static string LastError { get; private set; } = "";
 
+    /// <summary>最近一次使用的键盘配置：接管系统键盘时按这套配置顶替弹出</summary>
+    private static bool _lastDockRight;
+    private static bool _lastQwerty;
+    private static KeyboardMode _lastMode = KeyboardMode.Full;
+
     /// <summary>显示/隐藏键盘；dockRight=true 贴屏幕右侧，qwerty=true 字母按 QWERTY 排列</summary>
     public static bool Toggle(bool dockRight, bool qwerty, KeyboardMode mode)
     {
         try
         {
+            _lastDockRight = dockRight;
+            _lastQwerty = qwerty;
+            _lastMode = mode;
             if (_window is null)
             {
                 var w = new OnScreenKeyboardWindow();
@@ -1221,21 +1320,52 @@ internal static class OnScreenKeyboard
         }
     }
 
+    /// <summary>按上次使用的配置直接显示键盘（接管系统屏幕键盘时用来顶替系统键盘）</summary>
+    public static void ShowLast()
+    {
+        try
+        {
+            if (_window is { IsVisible: true }) return;
+            if (_window is null)
+            {
+                var w = new OnScreenKeyboardWindow();
+                if (!w.Create())
+                {
+                    LastError = "创建键盘窗口失败";
+                    return;
+                }
+                _window = w;
+            }
+            _window.SetDock(_lastDockRight);
+            _window.SetQwerty(_lastQwerty);
+            _window.SetMode(_lastMode);
+            _window.Show();
+            LastError = "";
+        }
+        catch (Exception ex)
+        {
+            LastError = ex.Message;
+        }
+    }
+
     /// <summary>编辑页改了贴边方向后实时生效（键盘打开时立刻换边）</summary>
     public static void ApplyDock(bool dockRight)
     {
+        _lastDockRight = dockRight;
         if (_window is { IsVisible: true }) _window.SetDock(dockRight);
     }
 
     /// <summary>编辑页改了字母排列后实时生效（键盘打开时立刻换排列）</summary>
     public static void ApplyLayout(bool qwerty)
     {
+        _lastQwerty = qwerty;
         if (_window is { IsVisible: true }) _window.SetQwerty(qwerty);
     }
 
     /// <summary>编辑页改了输入方式（全键/九键/五笔）后实时生效</summary>
     public static void ApplyMode(KeyboardMode mode)
     {
+        _lastMode = mode;
         if (_window is { IsVisible: true }) _window.SetMode(mode);
     }
 }

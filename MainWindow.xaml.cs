@@ -1274,6 +1274,8 @@ public sealed partial class MainWindow : Window
         // （否则"在游戏里按 Y"会命中启动器上一次选中的磁贴，把游戏关掉）
         if (!_routing) return;
 
+        // 系统焦点框由各页面在切换光标时自行清理（FocusRing）：页面真正把焦点交给某个控件时
+        // 焦点框就是它的光标，不能在这里统一关掉，否则到边界不移动时光标会消失。
         // 修改器候选遮罩打开时，方向/A/B 全交给遮罩，避免误触底下的主页操作
         if (_trainerChoiceOpen)
         {

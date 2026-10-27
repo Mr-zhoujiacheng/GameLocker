@@ -43,6 +43,12 @@ public class AppSettings
     /// <summary>弹出/隐藏滑入滑出动画（关闭窗口时按停靠方向滑出）</summary>
     public bool SummonAnimation { get; set; } = true;
 
+    /// <summary>手柄操作音效：磁贴间移动、A 键、B 键的提示音（默认开启）</summary>
+    public bool UiSoundEnabled { get; set; } = true;
+
+    /// <summary>接管系统屏幕键盘：系统触屏键盘/屏幕键盘弹出时自动收起，改为弹出本程序键盘</summary>
+    public bool TakeOverSystemKeyboard { get; set; } = true;
+
     /// <summary>平板边缘手势呼出：从任务栏对侧屏幕边缘向中心滑动唤起窗口（左/右停靠对应左/右边缘，全屏对应上边缘）</summary>
     public bool EdgeGestureSummon { get; set; } = true;
 

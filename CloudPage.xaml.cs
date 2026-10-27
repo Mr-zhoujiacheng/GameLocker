@@ -70,7 +70,7 @@ public sealed partial class CloudPage : Page, ISettingsGamepad
     private void FocusIndex(int i)
     {
         var c = _controls[i];
-        c.Focus(FocusState.Keyboard);
+        FocusRing.FocusWithRing(c);
         EnsureVisible(c);
     }
 
@@ -79,10 +79,10 @@ public sealed partial class CloudPage : Page, ISettingsGamepad
         switch (_controls[_index])
         {
             case TextBox tb:
-                tb.Focus(FocusState.Keyboard); // 唤出系统输入法后可键盘输入
+                FocusRing.FocusWithRing(tb); // 唤出系统输入法后可键盘输入
                 break;
             case PasswordBox pb:
-                pb.Focus(FocusState.Keyboard);
+                FocusRing.FocusWithRing(pb);
                 break;
             case Button btn when ReferenceEquals(btn, SaveButton):
                 SaveConfig();

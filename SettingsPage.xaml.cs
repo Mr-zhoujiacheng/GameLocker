@@ -25,7 +25,7 @@ public sealed partial class SettingsPage : Page, ISettingsGamepad
         _ready = true;
         _index = CategoryList.SelectedIndex < 0 ? 0 : CategoryList.SelectedIndex;
         CategoryList.SelectedIndex = _index;
-        FocusIndex(_index);
+        CategoryList.ScrollIntoView(CategoryList.Items[_index]);
     }
 
     protected override void OnNavigatedFrom(NavigationEventArgs e)
@@ -54,13 +54,9 @@ public sealed partial class SettingsPage : Page, ISettingsGamepad
         if (next == _index) return;
         _index = next;
         CategoryList.SelectedIndex = next;
-        FocusIndex(next);
-    }
-
-    private void FocusIndex(int i)
-    {
-        if (CategoryList.ContainerFromIndex(i) is ListViewItem item)
-            item.Focus(Microsoft.UI.Xaml.FocusState.Keyboard);
+        // 只靠列表的选中高亮表示位置：再给 ListViewItem 设焦点会额外叠一圈系统焦点框（两层选框）
+        FocusRing.HideCurrent(XamlRoot);
+        CategoryList.ScrollIntoView(CategoryList.Items[next]);
     }
 
     /// <summary>鼠标/触摸点击分类项进入子页（ListViewItem.Tapped 对鼠标点击与触屏轻触都可靠触发）</summary>

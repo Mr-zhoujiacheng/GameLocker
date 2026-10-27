@@ -26,6 +26,8 @@ public partial class App : Application
         InstallCrashLogging();
         MigrateLegacyConfig();
         SettingsService.EnsureAutoStartPath(); // 校正开机自启路径（程序移动/改名后 Run 键会失效）
+        // 接管系统屏幕键盘：关掉触屏键盘自动弹出、收起 osk/TabTip，改用本程序键盘
+        SystemKeyboardWatcher.Apply(SettingsService.Current.TakeOverSystemKeyboard);
         Main = new MainWindow();
 
         _tray = new TrayHotkeyService();

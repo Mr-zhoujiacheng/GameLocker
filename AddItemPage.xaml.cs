@@ -53,6 +53,9 @@ public sealed partial class AddItemPage : Page, ISettingsGamepad
     /// <summary>编辑对象为小组件磁贴：仅可改名称与颜色，隐藏路径/类型/大小/图标/图片区</summary>
     private bool _isWidget;
 
+    /// <summary>正在按全局设置回填"接管系统屏幕键盘"开关：此时不回写设置</summary>
+    private bool _syncingKbTakeOver;
+
     /// <summary>本次会话中已提取/选择的图标文件名（null=未改动）</summary>
     private string? _pendingIcon;
 
@@ -267,6 +270,11 @@ public sealed partial class AddItemPage : Page, ISettingsGamepad
         MonSizeMinus.Click += (_, _) => SetMonSizePercent(_monSizePercent - 10);
         MonSizePlus.Click += (_, _) => SetMonSizePercent(_monSizePercent + 10);
         BuildGamepadMapDiagram();
+        // 屏幕键盘·接管系统键盘是全局设置，从设置读取；回填期间不回写
+        _syncingKbTakeOver = true;
+        KbTakeOverToggle.IsOn = SettingsService.Current.TakeOverSystemKeyboard;
+        _syncingKbTakeOver = false;
+        KbTakeOverToggle.Toggled += OnKbTakeOverChanged;
         // OptiScaler 下拉框选项来自服务层数组，保证与写入配置的值一致
         FillOptiCombo(OptiDllCombo, OptiScalerService.ProxyOptions);
         FillOptiCombo(OptiVersionCombo, OptiScalerService.VersionChannelOptions);
@@ -421,7 +429,7 @@ public sealed partial class AddItemPage : Page, ISettingsGamepad
             list.Add(MonPosBottomRight);
             list.AddRange(_monOptBoxes);
         }
-        // 屏幕键盘：输入方式 + 字母排列 + 贴左 / 贴右
+        // 屏幕键盘：输入方式 + 字母排列 + 贴左 / 贴右 + 接管系统键盘
         if (KeyboardRow.Visibility == vis)
         {
             list.Add(KbmFull);
@@ -431,6 +439,7 @@ public sealed partial class AddItemPage : Page, ISettingsGamepad
             list.Add(KbOrderQwerty);
             list.Add(KbDockLeft);
             list.Add(KbDockRight);
+            list.Add(KbTakeOverToggle);
         }
         // 游戏存档小组件：备份方式 / 保留份数，以及按方式显示的本地面板或云端面板
         if (BackupRow.Visibility == vis)
@@ -1222,12 +1231,20 @@ public sealed partial class AddItemPage : Page, ISettingsGamepad
         RebuildFormControls();
     }
 
+    /// <summary>接管系统屏幕键盘开关 → 保存全局设置并立即开始/停止监听</summary>
+    private void OnKbTakeOverChanged(object sender, Microsoft.UI.Xaml.RoutedEventArgs e)
+    {
+        if (_syncingKbTakeOver) return;
+        SettingsService.Update(s => s.TakeOverSystemKeyboard = KbTakeOverToggle.IsOn);
+        SystemKeyboardWatcher.Apply(KbTakeOverToggle.IsOn);
+    }
+
     private void ActivateForm()
     {
         switch (_formControls[_formIndex])
         {
             case TextBox tb:
-                tb.Focus(Microsoft.UI.Xaml.FocusState.Keyboard); // 弹出输入法后可物理键盘输入
+                FocusRing.FocusWithRing(tb); // 弹出输入法后可物理键盘输入
                 break;
             // OptiScaler 下拉框：A 键展开选项列表（展开后由 HandleOpenCombo 接管按键）
             case ComboBox cb:
@@ -1360,6 +1377,8 @@ public sealed partial class AddItemPage : Page, ISettingsGamepad
         // 透明按钮上看不见，必须显式画一圈白框
         UpdateZoneCursor(_mapZones.FirstOrDefault(z => ReferenceEquals(z.Hit, c))?.Hit);
         UpdateSysChipCursor(c is ToggleButton tb && !(c is RadioButton) ? tb : null);
+        // 先清掉上一项的系统焦点框：页面用自绘光标/选框，残留的焦点框不会跟着光标走
+        FocusRing.HideCurrent(XamlRoot);
         if (c is RadioButton rb)
         {
             // 单选按钮：移动只移动光标（高亮），不聚焦——WinUI 键盘聚焦会自动勾选，
@@ -1401,7 +1420,7 @@ public sealed partial class AddItemPage : Page, ISettingsGamepad
         UpdateRadioCursor(null);
         UpdateToggleCursor(null);
         UpdateComboCursor(null);
-        c.Focus(Microsoft.UI.Xaml.FocusState.Keyboard);
+        FocusRing.FocusWithRing(c);
         EnsureVisible(c); // 窄窗口下焦点控件自动滚入可视区
     }
 
@@ -2628,7 +2647,8 @@ public sealed partial class AddItemPage : Page, ISettingsGamepad
         if (b.HasFlag(GamepadButtons.DPadUp)) sel = Math.Max(0, sel - 1);
         else if (b.HasFlag(GamepadButtons.DPadDown)) sel = Math.Min(count - 1, sel + 1);
         FileList.SelectedIndex = sel;
-        FileList.Focus(Microsoft.UI.Xaml.FocusState.Keyboard);
+        // 只靠列表选中高亮表示位置：再给列表/条目设焦点会额外叠一圈系统焦点框（两层选框）
+        FocusRing.HideCurrent(XamlRoot);
         if (FileList.SelectedItem != null)
             FileList.ScrollIntoView(FileList.SelectedItem);
 

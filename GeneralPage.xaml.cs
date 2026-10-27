@@ -27,6 +27,7 @@ public sealed partial class GeneralPage : Page, ISettingsGamepad
         HideAfterLaunchToggle.IsOn = s.HideAfterLaunch;
         StartFullscreenToggle.IsOn = s.StartFullscreen;
         AnimationToggle.IsOn = s.SummonAnimation;
+        UiSoundToggle.IsOn = s.UiSoundEnabled;
         EdgeGestureToggle.IsOn = s.EdgeGestureSummon;
         TabletModeToggle.IsOn = s.TabletMode;
         StartMenuToggle.IsOn = s.StartMenuMode;
@@ -44,7 +45,8 @@ public sealed partial class GeneralPage : Page, ISettingsGamepad
         var list = new List<Control>
         {
             AutoStartToggle, HideAfterLaunchToggle, StartFullscreenToggle,
-            AnimationToggle, EdgeGestureToggle, TabletModeToggle, StartMenuToggle
+            AnimationToggle, UiSoundToggle,
+            EdgeGestureToggle, TabletModeToggle, StartMenuToggle
         };
         if (!StartMenuToggle.IsOn) list.AddRange([LeftRadio, CenterRadio, RightRadio]);
         _controls = list.ToArray();
@@ -194,6 +196,8 @@ public sealed partial class GeneralPage : Page, ISettingsGamepad
     private void FocusIndex(int i)
     {
         var c = _controls[i];
+        // 先清掉上一项的系统焦点框：页面用自绘光标/选框，残留的焦点框不会跟着光标走
+        FocusRing.HideCurrent(XamlRoot);
         if (c is RadioButton or ToggleSwitch)
         {
             // 单选/开关：移动只移动光标（高亮），不聚焦——避免焦点/空格等连带变更；
@@ -203,7 +207,7 @@ public sealed partial class GeneralPage : Page, ISettingsGamepad
             return;
         }
         UpdateCursor(null);
-        c.Focus(Microsoft.UI.Xaml.FocusState.Keyboard);
+        FocusRing.FocusWithRing(c);
         EnsureVisible(c);
     }
 
@@ -279,6 +283,14 @@ public sealed partial class GeneralPage : Page, ISettingsGamepad
         if (!_ready) return;
         SettingsService.Update(s => s.EdgeGestureSummon = EdgeGestureToggle.IsOn);
         App.Main?.SyncEdgeGesture();
+    }
+
+    /// <summary>操作音效开关 → 保存；打开时立刻放一声确认音，便于确认已生效</summary>
+    private void OnUiSoundChanged(object sender, Microsoft.UI.Xaml.RoutedEventArgs e)
+    {
+        if (!_ready) return;
+        SettingsService.Update(s => s.UiSoundEnabled = UiSoundToggle.IsOn);
+        if (UiSoundToggle.IsOn) UiSound.Play(UiSoundKind.Confirm);
     }
 
     /// <summary>平板模式开关 → 保存并立即隐藏/恢复本页提示条（其他页面进入时由 GamepadHintBar 自行应用）</summary>

@@ -86,7 +86,7 @@ public sealed partial class AboutPage : Page, ISettingsGamepad
         _ready = true;
         _index = LinkList.SelectedIndex < 0 ? 0 : LinkList.SelectedIndex;
         LinkList.SelectedIndex = _index;
-        FocusIndex(_index);
+        LinkList.ScrollIntoView(LinkList.Items[_index]);
 
         ShowKnownUpdate();
         // 页面可能被重建：下载中则恢复进度显示，而不是回到"下载并安装"
@@ -125,13 +125,9 @@ public sealed partial class AboutPage : Page, ISettingsGamepad
         if (next == _index) return;
         _index = next;
         LinkList.SelectedIndex = next;
-        FocusIndex(next);
-    }
-
-    private void FocusIndex(int i)
-    {
-        if (LinkList.ContainerFromIndex(i) is ListViewItem item)
-            item.Focus(Microsoft.UI.Xaml.FocusState.Keyboard);
+        // 只靠列表选中高亮表示位置：再给 ListViewItem 设焦点会额外叠一圈系统焦点框（两层选框）
+        FocusRing.HideCurrent(XamlRoot);
+        LinkList.ScrollIntoView(LinkList.Items[next]);
     }
 
     /// <summary>鼠标/触摸点击条目直接执行（Tapped 对鼠标与触屏都可靠触发）</summary>

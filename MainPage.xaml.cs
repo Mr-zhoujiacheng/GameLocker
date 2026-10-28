@@ -2386,10 +2386,18 @@ public sealed partial class MainPage : Page
                     : Windows.UI.Color.FromArgb(0x40, 0xFF, 0xFF, 0xFF));
             Microsoft.UI.Xaml.Controls.Canvas.SetZIndex(t, focused ? 2 : 0);
         }
-        // 面板不再单独画强调色焦点环：焦点进区域时若内外各一圈会出现"两个选中框"，
-        // 只保留内层白色选框；离开区域同样恢复默认（拖拽悬停高亮期间不覆盖）
-        if (_dragOverDrawer || _drawerRegion is null) return;
-        ResetDrawerFrame();
+        // 抽屉层（焦点停在抽屉本身、未进内层磁贴）：整个抽屉面板画白色粗描边，
+        // 内层时框落在内层磁贴上，面板恢复默认（拖拽悬停高亮期间不覆盖）
+        if (_dragOverDrawer || _drawerRegion is not { } shell) return;
+        if (_inDrawer && _drawerFocusPos < 0)
+        {
+            shell.BorderThickness = new Thickness(3);
+            shell.BorderBrush = new SolidColorBrush(Windows.UI.Color.FromArgb(0xE6, 0xFF, 0xFF, 0xFF));
+        }
+        else
+        {
+            ResetDrawerFrame();
+        }
     }
 
     /// <summary>抽屉面板表面：常态=玻璃渐变底 + 投影；透明模式=与窗口一致的透明底、去掉投影，

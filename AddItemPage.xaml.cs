@@ -13,6 +13,12 @@ namespace GameLocker;
 public sealed record FileEntry(string Name, string Path, bool IsFolder, bool IsParent, bool IsSelectCurrent = false)
 {
     public string Glyph => IsSelectCurrent ? "\uE73E" : IsParent ? "\uE74A" : IsFolder ? "\uE8B7" : "\uE7F8";
+
+    /// <summary>列表右侧的类型标签：上级目录 / 当前文件夹 / 文件夹 / 扩展名</summary>
+    public string Kind => IsSelectCurrent ? "当前文件夹"
+        : IsParent ? "上级目录"
+        : IsFolder ? "文件夹"
+        : System.IO.Path.GetExtension(Path).TrimStart('.').ToUpperInvariant() is { Length: > 0 } ext ? ext : "文件";
 }
 
 /// <summary>浏览模式用途</summary>
@@ -118,7 +124,7 @@ public sealed partial class AddItemPage : Page, ISettingsGamepad
         MonitorMetric.Fps, MonitorMetric.FrameTime, MonitorMetric.FrameGraph, MonitorMetric.Memory,
         MonitorMetric.CpuUsage, MonitorMetric.CpuFreq, MonitorMetric.CpuTemp, MonitorMetric.CpuPower,
         MonitorMetric.GpuUsage, MonitorMetric.GpuFreq, MonitorMetric.GpuPower, MonitorMetric.GpuTemp,
-        MonitorMetric.BatteryPercent, MonitorMetric.Battery, MonitorMetric.GpuVram
+        MonitorMetric.BatteryPercent, MonitorMetric.Battery, MonitorMetric.GpuVram, MonitorMetric.Clock
     ];
 
     // 胶囊选中/未选视觉（代码直设，不走 VisualState）
@@ -248,11 +254,11 @@ public sealed partial class AddItemPage : Page, ISettingsGamepad
         _monOptBoxes = [MonOptFps, MonOptFrameTime, MonOptGraph, MonOptMemory,
             MonOptCpuUsage, MonOptCpuFreq, MonOptCpuTemp, MonOptCpuPower,
             MonOptGpuUsage, MonOptGpuFreq, MonOptGpuPower, MonOptGpuTemp,
-            MonOptBatteryPercent, MonOptBattery, MonOptVram];
+            MonOptBatteryPercent, MonOptBattery, MonOptVram, MonOptClock];
         _monOptMarks = [MonOptFpsMark, MonOptFrameTimeMark, MonOptGraphMark, MonOptMemoryMark,
             MonOptCpuUsageMark, MonOptCpuFreqMark, MonOptCpuTempMark, MonOptCpuPowerMark,
             MonOptGpuUsageMark, MonOptGpuFreqMark, MonOptGpuPowerMark, MonOptGpuTempMark,
-            MonOptBatteryPercentMark, MonOptBatteryMark, MonOptVramMark];
+            MonOptBatteryPercentMark, MonOptBatteryMark, MonOptVramMark, MonOptClockMark];
         for (var i = 0; i < _monOptBoxes.Length; i++)
         {
             var chip = _monOptBoxes[i];
@@ -406,8 +412,12 @@ public sealed partial class AddItemPage : Page, ISettingsGamepad
             list.Add(LosslessProfileCombo);
             list.Add(LosslessNewProfileButton);
         }
-        // 映射小组件：按键捕获按钮
-        if (MappingRow.Visibility == vis) list.Add(MappingCaptureButton);
+        // 映射小组件：按键捕获按钮 + 旁边的"显示键盘"
+        if (MappingRow.Visibility == vis)
+        {
+            list.Add(MappingCaptureButton);
+            list.Add(MappingKeyboardButton);
+        }
         // 修改器小组件：打开已下载修改器目录按钮
         if (TrainerRow.Visibility == vis) list.Add(OpenTrainerFolderButton);
         // 性能监控：悬浮条位置（六选一）/ 大小 / 配色（组合色）
@@ -420,6 +430,7 @@ public sealed partial class AddItemPage : Page, ISettingsGamepad
             list.Add(MonColorIce);
             list.Add(MonColorSunset);
             list.Add(MonColorMono);
+            list.Add(MonColorAurora);
             list.Add(MonAlwaysOnToggle);
             list.Add(MonPosTopLeft);
             list.Add(MonPosTopCenter);
@@ -467,6 +478,8 @@ public sealed partial class AddItemPage : Page, ISettingsGamepad
                 list.Add(GamepadMapMouseRadio);
                 list.Add(GamepadMapPadRadio);
                 list.Add(GamepadMapCaptureButton);
+                // 输出类型为鼠标/手柄时该按钮收起，不纳入导航
+                if (GamepadMapKeyboardButton.Visibility == vis) list.Add(GamepadMapKeyboardButton);
                 list.Add(GamepadMapDeleteButton);
             }
         }
@@ -1053,6 +1066,7 @@ public sealed partial class AddItemPage : Page, ISettingsGamepad
         MonColorNeon.IsChecked = color == MonitorColorTheme.Neon;
         MonColorIce.IsChecked = color == MonitorColorTheme.Ice;
         MonColorSunset.IsChecked = color == MonitorColorTheme.Sunset;
+        MonColorAurora.IsChecked = color == MonitorColorTheme.Aurora;
         MonColorMono.IsChecked = color == MonitorColorTheme.Mono;
     }
 
@@ -1111,6 +1125,7 @@ public sealed partial class AddItemPage : Page, ISettingsGamepad
         if (MonColorNeon.IsChecked == true) return MonitorColorTheme.Neon;
         if (MonColorIce.IsChecked == true) return MonitorColorTheme.Ice;
         if (MonColorSunset.IsChecked == true) return MonitorColorTheme.Sunset;
+        if (MonColorAurora.IsChecked == true) return MonitorColorTheme.Aurora;
         if (MonColorMono.IsChecked == true) return MonitorColorTheme.Mono;
         return MonitorColorTheme.Default;
     }
@@ -1203,10 +1218,10 @@ public sealed partial class AddItemPage : Page, ISettingsGamepad
         {
             _suppressOptiTagEvent = true;
             FillOptiCombo(OptiFsr4VersionCombo,
-                [(OptiScalerService.XmxTag, "FSR4.1.1XMX")]);
+                [(OptiScalerService.XmxTag, "FSR4 OR DLSS4")]);
             OptiFsr4VersionCombo.SelectedIndex = 0;
             _suppressOptiTagEvent = false;
-            OptiFsr4VersionStatus.Text = "Intel Arc / XMX 专用模型，选中后自动下载（约 72MB）";
+            OptiFsr4VersionStatus.Text = "Intel Arc / XMX 专用模型，选中后自动下载（约 30MB）";
             OptiFsr4VersionCell.Visibility = Microsoft.UI.Xaml.Visibility.Visible;
             return;
         }
@@ -1291,9 +1306,17 @@ public sealed partial class AddItemPage : Page, ISettingsGamepad
             case Button btn when ReferenceEquals(btn, MappingCaptureButton):
                 StartMappingCapture();
                 break;
+            // 映射小组件：捕获键位旁边的"显示键盘"→ 打开屏幕键盘
+            case Button btn when ReferenceEquals(btn, MappingKeyboardButton):
+                OnScreenKeyboard.ShowLast();
+                break;
             // 手柄映射：捕获/切换选中键的输出目标
             case Button btn when ReferenceEquals(btn, GamepadMapCaptureButton):
                 DoGamepadMapCapture();
+                break;
+            // 手柄映射："显示键盘"→ 打开屏幕键盘
+            case Button btn when ReferenceEquals(btn, GamepadMapKeyboardButton):
+                OnScreenKeyboard.ShowLast();
                 break;
             // 手柄映射：删除选中键的映射
             case Button btn when ReferenceEquals(btn, GamepadMapDeleteButton):
@@ -2066,7 +2089,8 @@ public sealed partial class AddItemPage : Page, ISettingsGamepad
     /// <summary>后台预下载选中版本，并把服务层的下载进度写到状态文本上（channel=stable/beta，variant=int8/fp8/xmx）</summary>
     private async Task PrefetchAsync(string channel, string tag, TextBlock status)
     {
-        var what = tag.Length == 0 ? "最新版" : tag;
+        var what = channel == OptiScalerService.XmxVariant ? "FSR4 OR DLSS4"
+            : tag.Length == 0 ? "最新版" : tag;
         status.Text = $"正在后台下载 {what}…";
         var failed = false;
         void Handler(OptiScalerMessage m)
@@ -2211,12 +2235,15 @@ public sealed partial class AddItemPage : Page, ISettingsGamepad
         };
         SaveBackupService.OpenBackupsFolder(tmp);
     }
-    private void OnBackClick(object sender, Microsoft.UI.Xaml.RoutedEventArgs e) => Cancel();
 
     // ---- 按键捕获（键盘在页面 KeyDown/KeyUp 捕获，手柄由 MainWindow 转发到 CaptureButtons） ----
     // 同一套捕获状态服务两处：映射小组件（源可为手柄键或键盘键）与 手柄映射（源=手柄键，目标=键盘键/手柄键/鼠标键）
 
     private void OnMappingCaptureClick(object sender, Microsoft.UI.Xaml.RoutedEventArgs e) => StartMappingCapture();
+
+    /// <summary>映射小组件：捕获键位旁边"显示键盘"→ 打开本程序的屏幕键盘（触屏输入用）</summary>
+    private void OnMappingKeyboardClick(object sender, Microsoft.UI.Xaml.RoutedEventArgs e)
+        => OnScreenKeyboard.ShowLast();
 
     /// <summary>映射小组件的按键捕获入口（源：手柄键或键盘键，二选一）</summary>
     private void StartMappingCapture() => StartCapture(CaptureMode.Mapping);
@@ -2461,6 +2488,10 @@ public sealed partial class AddItemPage : Page, ISettingsGamepad
                 MappingTargetKind.Pad => "设置手柄键…",
                 _ => "设置键盘键…"
             };
+        // 只有输出类型为键盘时才显示"显示键盘"（鼠标/手柄输出用不到键盘）
+        GamepadMapKeyboardButton.Visibility = m is null || m.TargetKind == MappingTargetKind.Key
+            ? Microsoft.UI.Xaml.Visibility.Visible
+            : Microsoft.UI.Xaml.Visibility.Collapsed;
         GamepadMapDeleteButton.IsEnabled = m is not null;
     }
 
@@ -2542,6 +2573,10 @@ public sealed partial class AddItemPage : Page, ISettingsGamepad
 
     private void OnGamepadMapCaptureClick(object sender, Microsoft.UI.Xaml.RoutedEventArgs e) => DoGamepadMapCapture();
 
+    /// <summary>手柄映射编辑："显示键盘"→ 打开本程序的屏幕键盘（触屏点选目标键位用）</summary>
+    private void OnGamepadMapKeyboardClick(object sender, Microsoft.UI.Xaml.RoutedEventArgs e)
+        => OnScreenKeyboard.ShowLast();
+
     /// <summary>设置/切换选中手柄键的输出：鼠标输出循环切换按键，键盘/手柄输出进入按键捕获</summary>
     private void DoGamepadMapCapture()
     {
@@ -2605,6 +2640,13 @@ public sealed partial class AddItemPage : Page, ISettingsGamepad
         HintBar.SetHints(mode is BrowseMode.Folder
             ? "DPAD:选择|A:进入/选中|B:返回"
             : "DPAD:选择|A:进入/确认|B:返回");
+        BrowseFilter.Text = mode switch
+        {
+            BrowseMode.Icon => "只列出可执行文件与图片（.exe / .ico / .png / .jpg …），进入文件夹继续浏览",
+            BrowseMode.Cover => "只列出图片文件（.png / .jpg / .bmp …），进入文件夹继续浏览",
+            BrowseMode.Folder => "只列出文件夹，A 进入；停在任意文件夹时用页脚确认",
+            _ => "只列出可执行程序（.exe），进入文件夹继续浏览"
+        };
         NavigateTo(GetStartDir());
     }
 
@@ -2674,6 +2716,8 @@ public sealed partial class AddItemPage : Page, ISettingsGamepad
     private async void NavigateTo(string dir)
     {
         _currentDir = dir;
+        var folderName = System.IO.Path.GetFileName(dir.TrimEnd('\\', '/'));
+        BrowseTitle.Text = string.IsNullOrEmpty(folderName) ? dir : folderName;
         PathText.Text = dir;
         FileList.ItemsSource = null;
 
@@ -2723,6 +2767,15 @@ public sealed partial class AddItemPage : Page, ISettingsGamepad
         if (_currentDir != dir || _browseMode != mode) return; // 期间已切换状态，丢弃过期结果
 
         FileList.ItemsSource = entries;
+        // 卡片头部统计 + 空目录占位
+        var dirCount = entries.Count(e => e.IsFolder && !e.IsParent);
+        var fileCount = entries.Count(e => !e.IsFolder && !e.IsParent && !e.IsSelectCurrent);
+        BrowseSummary.Text = dirCount == 0 && fileCount == 0
+            ? ""
+            : $"{dirCount} 个文件夹 · {fileCount} 个文件";
+        BrowseEmpty.Visibility = entries.Count == 0
+            ? Microsoft.UI.Xaml.Visibility.Visible
+            : Microsoft.UI.Xaml.Visibility.Collapsed;
         // 越界防护：只有存在"上一级"且还有其他条目时才选到第 2 项；
         // Items 可能尚未同步到控件，设置失败不影响浏览
         try

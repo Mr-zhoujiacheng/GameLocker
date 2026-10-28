@@ -5,6 +5,97 @@
     xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
     xmlns:ctl="using:GameLocker.Controls">
 
+    <Page.Resources>
+        <!-- 开关行卡片：直角 + 浅蓝渐变底；选中时由代码改 BorderBrush 画白框 -->
+        <Style x:Key="SettingRowStyle" TargetType="Button">
+            <Setter Property="CornerRadius" Value="0"/>
+            <Setter Property="BorderThickness" Value="2"/>
+            <Setter Property="BorderBrush" Value="Transparent"/>
+            <Setter Property="Padding" Value="12,10"/>
+            <Setter Property="MinHeight" Value="72"/>
+            <Setter Property="HorizontalAlignment" Value="Stretch"/>
+            <Setter Property="VerticalAlignment" Value="Stretch"/>
+            <Setter Property="HorizontalContentAlignment" Value="Stretch"/>
+            <Setter Property="VerticalContentAlignment" Value="Center"/>
+            <Setter Property="IsTabStop" Value="False"/>
+        </Style>
+        <!-- 设置卡片（Border 版：分区内容容器） -->
+        <Style x:Key="SettingCardStyle" TargetType="Border">
+            <Setter Property="CornerRadius" Value="0"/>
+            <Setter Property="BorderThickness" Value="2"/>
+            <Setter Property="BorderBrush" Value="Transparent"/>
+            <Setter Property="Padding" Value="12,10"/>
+            <Setter Property="HorizontalAlignment" Value="Stretch"/>
+            <Setter Property="VerticalAlignment" Value="Stretch"/>
+        </Style>
+        <!-- 大色卡（可点击/可选中） -->
+        <Style x:Key="ColorCardStyle" TargetType="Button">
+            <Setter Property="CornerRadius" Value="0"/>
+            <Setter Property="BorderThickness" Value="2"/>
+            <Setter Property="BorderBrush" Value="Transparent"/>
+            <Setter Property="Padding" Value="0"/>
+            <Setter Property="MinHeight" Value="56"/>
+            <Setter Property="Background" Value="Transparent"/>
+            <Setter Property="IsTabStop" Value="False"/>
+            <Setter Property="HorizontalAlignment" Value="Stretch"/>
+            <Setter Property="VerticalAlignment" Value="Stretch"/>
+            <Setter Property="HorizontalContentAlignment" Value="Stretch"/>
+            <Setter Property="VerticalContentAlignment" Value="Stretch"/>
+        </Style>
+        <!-- 开关本体：自绘胶囊（隐去 On/Off 文字与多余留白），随 IsOn 变色、滑块滑动 -->
+        <Style x:Key="CleanToggleStyle" TargetType="ToggleSwitch">
+            <Setter Property="Template">
+                <Setter.Value>
+                    <ControlTemplate TargetType="ToggleSwitch">
+                        <Grid Width="44" Height="22" Background="Transparent">
+                            <Border Width="40" Height="20" CornerRadius="10" Background="#2AFFFFFF"
+                                    BorderThickness="1" BorderBrush="#4DFFFFFF"
+                                    HorizontalAlignment="Center" VerticalAlignment="Center"/>
+                            <Border x:Name="Fill" Width="40" Height="20" CornerRadius="10" Background="#C6FFE9A0"
+                                    Opacity="0" HorizontalAlignment="Center" VerticalAlignment="Center"/>
+                            <Ellipse x:Name="Knob" Width="14" Height="14" Fill="#FFFFFF"
+                                     HorizontalAlignment="Left" VerticalAlignment="Center" Margin="3,0,0,0">
+                                <Ellipse.RenderTransform>
+                                    <CompositeTransform/>
+                                </Ellipse.RenderTransform>
+                            </Ellipse>
+                            <VisualStateManager.VisualStateGroups>
+                                <VisualStateGroup x:Name="ToggleStates">
+                                    <VisualState x:Name="Off">
+                                        <VisualState.Setters>
+                                            <Setter Target="Knob.Fill" Value="#FFFFFF"/>
+                                        </VisualState.Setters>
+                                        <Storyboard>
+                                            <DoubleAnimation Storyboard.TargetName="Knob"
+                                                             Storyboard.TargetProperty="(UIElement.RenderTransform).(CompositeTransform.TranslateX)"
+                                                             To="0" Duration="0:0:0.12"/>
+                                            <DoubleAnimation Storyboard.TargetName="Fill"
+                                                             Storyboard.TargetProperty="Opacity"
+                                                             To="0" Duration="0:0:0.12"/>
+                                        </Storyboard>
+                                    </VisualState>
+                                    <VisualState x:Name="On">
+                                        <VisualState.Setters>
+                                            <Setter Target="Knob.Fill" Value="#1F1F1F"/>
+                                        </VisualState.Setters>
+                                        <Storyboard>
+                                            <DoubleAnimation Storyboard.TargetName="Knob"
+                                                             Storyboard.TargetProperty="(UIElement.RenderTransform).(CompositeTransform.TranslateX)"
+                                                             To="20" Duration="0:0:0.12"/>
+                                            <DoubleAnimation Storyboard.TargetName="Fill"
+                                                             Storyboard.TargetProperty="Opacity"
+                                                             To="1" Duration="0:0:0.12"/>
+                                        </Storyboard>
+                                    </VisualState>
+                                </VisualStateGroup>
+                            </VisualStateManager.VisualStateGroups>
+                        </Grid>
+                    </ControlTemplate>
+                </Setter.Value>
+            </Setter>
+        </Style>
+    </Page.Resources>
+
     <Grid Background="Transparent"
           RequestedTheme="Dark" XYFocusKeyboardNavigation="Enabled">
 
@@ -24,111 +115,239 @@
         </Grid>
 
         <!-- 内容区可滚动：窄窗口下控件不被遮盖 -->
-        <ScrollViewer x:Name="ContentScroll" Grid.Row="1" Padding="24,8" VerticalScrollBarVisibility="Hidden">
-            <StackPanel Spacing="16">
-                <ToggleSwitch x:Name="DrawerToggle" Padding="14,10" Toggled="OnToggleChanged">
-                    <ToggleSwitch.Header>
-                        <StackPanel Spacing="2">
-                            <TextBlock Text="抽屉" FontSize="16"/>
-                            <TextBlock Text="在主页下方固定显示磁贴抽屉区域：↓ 进入，LB/RB 切抽屉。关闭后区域隐藏，抽屉内容保留"
-                                       FontSize="12" Opacity="0.6" TextWrapping="Wrap"/>
-                        </StackPanel>
-                    </ToggleSwitch.Header>
-                </ToggleSwitch>
+        <ScrollViewer x:Name="ContentScroll" Grid.Row="1" Padding="20,8,20,10" VerticalScrollBarVisibility="Hidden">
+            <Grid x:Name="SwitchGrid" ColumnSpacing="10" RowSpacing="10" VerticalAlignment="Top">
+                <Grid.ColumnDefinitions>
+                    <ColumnDefinition Width="*"/>
+                    <ColumnDefinition Width="0"/>
+                </Grid.ColumnDefinitions>
+                <Grid.RowDefinitions>
+                    <RowDefinition Height="Auto"/>
+                    <RowDefinition Height="Auto"/>
+                    <RowDefinition Height="Auto"/>
+                    <RowDefinition Height="Auto"/>
+                    <RowDefinition Height="Auto"/>
+                    <RowDefinition Height="Auto"/>
+                </Grid.RowDefinitions>
 
-                <ToggleSwitch x:Name="UniformSmallToggle" Padding="14,10" Toggled="OnUniformSmallChanged">
-                    <ToggleSwitch.Header>
-                        <StackPanel Spacing="2">
-                            <TextBlock Text="统一磁贴大小" FontSize="16"/>
-                            <TextBlock Text="打开后抽屉内所有磁贴都按小磁贴（1×1）显示，忽略各自原本设定的大小"
-                                       FontSize="12" Opacity="0.6" TextWrapping="Wrap"/>
+                <!-- 抽屉 -->
+                <Button x:Name="DrawerRow" Style="{StaticResource SettingRowStyle}" Click="OnRowClick">
+                    <Button.Background>
+                        <LinearGradientBrush StartPoint="0,0" EndPoint="0,1">
+                            <GradientStop Color="#22FFFFFF" Offset="0"/>
+                            <GradientStop Color="#4AFFE9A0" Offset="1"/>
+                        </LinearGradientBrush>
+                    </Button.Background>
+                    <Grid ColumnSpacing="12">
+                        <Grid.ColumnDefinitions>
+                            <ColumnDefinition Width="Auto"/>
+                            <ColumnDefinition Width="Auto"/>
+                            <ColumnDefinition Width="*"/>
+                            <ColumnDefinition Width="Auto"/>
+                        </Grid.ColumnDefinitions>
+                        <Border Width="3" Height="40" Background="#B3FFE9A0" VerticalAlignment="Center"/>
+                        <Border Grid.Column="1" Width="34" Height="34" Background="#3DFFE9A0"
+                                BorderThickness="1" BorderBrush="#6BFFE9A0" VerticalAlignment="Center">
+                            <FontIcon Glyph="&#xE8F1;" FontSize="16"/>
+                        </Border>
+                        <StackPanel Grid.Column="2" Spacing="2" VerticalAlignment="Center">
+                            <TextBlock Text="抽屉" FontSize="15" FontWeight="SemiBold"/>
+                            <TextBlock Text="主页下方固定显示抽屉区域，↓ 进入，LB/RB 切换" FontSize="11.5"
+                                       Opacity="0.55" TextTrimming="CharacterEllipsis"/>
                         </StackPanel>
-                    </ToggleSwitch.Header>
-                </ToggleSwitch>
+                        <ToggleSwitch x:Name="DrawerToggle" Grid.Column="3" Style="{StaticResource CleanToggleStyle}"
+                                      IsHitTestVisible="False" IsTabStop="False" VerticalAlignment="Center"
+                                      OnContent="" OffContent=""
+                                      Toggled="OnToggleChanged"/>
+                    </Grid>
+                </Button>
 
-                <ToggleSwitch x:Name="AutoHideToggle" Padding="14,10" Toggled="OnAutoHideChanged">
-                    <ToggleSwitch.Header>
-                        <StackPanel Spacing="2">
-                            <TextBlock Text="自动隐藏" FontSize="16"/>
-                            <TextBlock Text="打开后抽屉平时收起在屏幕下方之外：手柄右摇杆 ↑/↓ 呼出与隐藏，触屏在软件底部上划/下划呼出与隐藏"
-                                       FontSize="12" Opacity="0.6" TextWrapping="Wrap"/>
+                <!-- 统一磁贴大小 -->
+                <Button x:Name="UniformSmallRow" Style="{StaticResource SettingRowStyle}" Click="OnRowClick">
+                    <Button.Background>
+                        <LinearGradientBrush StartPoint="0,0" EndPoint="0,1">
+                            <GradientStop Color="#22FFFFFF" Offset="0"/>
+                            <GradientStop Color="#4AFFE9A0" Offset="1"/>
+                        </LinearGradientBrush>
+                    </Button.Background>
+                    <Grid ColumnSpacing="12">
+                        <Grid.ColumnDefinitions>
+                            <ColumnDefinition Width="Auto"/>
+                            <ColumnDefinition Width="Auto"/>
+                            <ColumnDefinition Width="*"/>
+                            <ColumnDefinition Width="Auto"/>
+                        </Grid.ColumnDefinitions>
+                        <Border Width="3" Height="40" Background="#B3FFE9A0" VerticalAlignment="Center"/>
+                        <Border Grid.Column="1" Width="34" Height="34" Background="#3DFFE9A0"
+                                BorderThickness="1" BorderBrush="#6BFFE9A0" VerticalAlignment="Center">
+                            <FontIcon Glyph="&#xE7C3;" FontSize="16"/>
+                        </Border>
+                        <StackPanel Grid.Column="2" Spacing="2" VerticalAlignment="Center">
+                            <TextBlock Text="统一磁贴大小" FontSize="15" FontWeight="SemiBold"/>
+                            <TextBlock Text="抽屉内磁贴一律按 1×1 小磁贴显示" FontSize="11.5"
+                                       Opacity="0.55" TextTrimming="CharacterEllipsis"/>
                         </StackPanel>
-                    </ToggleSwitch.Header>
-                </ToggleSwitch>
+                        <ToggleSwitch x:Name="UniformSmallToggle" Grid.Column="3" Style="{StaticResource CleanToggleStyle}"
+                                      IsHitTestVisible="False" IsTabStop="False" VerticalAlignment="Center"
+                                      OnContent="" OffContent=""
+                                      Toggled="OnUniformSmallChanged"/>
+                    </Grid>
+                </Button>
 
-                <ToggleSwitch x:Name="TransparentToggle" Padding="14,10" Toggled="OnTransparentChanged">
-                    <ToggleSwitch.Header>
-                        <StackPanel Spacing="2">
-                            <TextBlock Text="透明" FontSize="16"/>
-                            <TextBlock Text="打开后抽屉不再铺玻璃底色与投影，直接与窗口背景一致；边框加粗，仍能看清抽屉范围"
-                                       FontSize="12" Opacity="0.6" TextWrapping="Wrap"/>
+                <!-- 自动隐藏 -->
+                <Button x:Name="AutoHideRow" Style="{StaticResource SettingRowStyle}" Click="OnRowClick">
+                    <Button.Background>
+                        <LinearGradientBrush StartPoint="0,0" EndPoint="0,1">
+                            <GradientStop Color="#22FFFFFF" Offset="0"/>
+                            <GradientStop Color="#4AFFE9A0" Offset="1"/>
+                        </LinearGradientBrush>
+                    </Button.Background>
+                    <Grid ColumnSpacing="12">
+                        <Grid.ColumnDefinitions>
+                            <ColumnDefinition Width="Auto"/>
+                            <ColumnDefinition Width="Auto"/>
+                            <ColumnDefinition Width="*"/>
+                            <ColumnDefinition Width="Auto"/>
+                        </Grid.ColumnDefinitions>
+                        <Border Width="3" Height="40" Background="#B3FFE9A0" VerticalAlignment="Center"/>
+                        <Border Grid.Column="1" Width="34" Height="34" Background="#3DFFE9A0"
+                                BorderThickness="1" BorderBrush="#6BFFE9A0" VerticalAlignment="Center">
+                            <FontIcon Glyph="&#xE70D;" FontSize="16"/>
+                        </Border>
+                        <StackPanel Grid.Column="2" Spacing="2" VerticalAlignment="Center">
+                            <TextBlock Text="自动隐藏" FontSize="15" FontWeight="SemiBold"/>
+                            <TextBlock Text="平时收在屏幕外：右摇杆或底部上/下划呼出" FontSize="11.5"
+                                       Opacity="0.55" TextTrimming="CharacterEllipsis"/>
                         </StackPanel>
-                    </ToggleSwitch.Header>
-                </ToggleSwitch>
+                        <ToggleSwitch x:Name="AutoHideToggle" Grid.Column="3" Style="{StaticResource CleanToggleStyle}"
+                                      IsHitTestVisible="False" IsTabStop="False" VerticalAlignment="Center"
+                                      OnContent="" OffContent=""
+                                      Toggled="OnAutoHideChanged"/>
+                    </Grid>
+                </Button>
 
-                <TextBlock Text="抽屉颜色" FontSize="15" Opacity="0.9"/>
-                <!-- 3 列 × 2 行显式 Grid：每个 RadioButton 是 Grid 直接子元素，
-                     中心坐标可靠，手柄四方向临近选择才能命中颜色行（勿用 RadioButtons 容器） -->
-                <Grid>
-                    <Grid.ColumnDefinitions>
-                        <ColumnDefinition Width="*"/>
-                        <ColumnDefinition Width="*"/>
-                        <ColumnDefinition Width="*"/>
-                    </Grid.ColumnDefinitions>
-                    <Grid.RowDefinitions>
-                        <RowDefinition Height="Auto"/>
-                        <RowDefinition Height="Auto"/>
-                    </Grid.RowDefinitions>
-                    <RadioButton x:Name="DefaultColorRadio" Grid.Row="0" Grid.Column="0" GroupName="DrawerColor"
-                                 Padding="14,10" Margin="2" Checked="OnColorChanged">
-                        <StackPanel Orientation="Horizontal" Spacing="8">
-                            <Border Width="16" Height="16" CornerRadius="4" Background="#00000000"
-                                    BorderBrush="#66FFFFFF" BorderThickness="1"/>
-                            <TextBlock Text="默认"/>
+                <!-- 透明 -->
+                <Button x:Name="TransparentRow" Style="{StaticResource SettingRowStyle}" Click="OnRowClick">
+                    <Button.Background>
+                        <LinearGradientBrush StartPoint="0,0" EndPoint="0,1">
+                            <GradientStop Color="#22FFFFFF" Offset="0"/>
+                            <GradientStop Color="#4AFFE9A0" Offset="1"/>
+                        </LinearGradientBrush>
+                    </Button.Background>
+                    <Grid ColumnSpacing="12">
+                        <Grid.ColumnDefinitions>
+                            <ColumnDefinition Width="Auto"/>
+                            <ColumnDefinition Width="Auto"/>
+                            <ColumnDefinition Width="*"/>
+                            <ColumnDefinition Width="Auto"/>
+                        </Grid.ColumnDefinitions>
+                        <Border Width="3" Height="40" Background="#B3FFE9A0" VerticalAlignment="Center"/>
+                        <Border Grid.Column="1" Width="34" Height="34" Background="#3DFFE9A0"
+                                BorderThickness="1" BorderBrush="#6BFFE9A0" VerticalAlignment="Center">
+                            <FontIcon Glyph="&#xE8C8;" FontSize="16"/>
+                        </Border>
+                        <StackPanel Grid.Column="2" Spacing="2" VerticalAlignment="Center">
+                            <TextBlock Text="透明" FontSize="15" FontWeight="SemiBold"/>
+                            <TextBlock Text="去掉玻璃底与投影，边框加粗以看清范围" FontSize="11.5"
+                                       Opacity="0.55" TextTrimming="CharacterEllipsis"/>
                         </StackPanel>
-                    </RadioButton>
-                    <RadioButton x:Name="DarkGrayRadio" Grid.Row="0" Grid.Column="1" GroupName="DrawerColor"
-                                 Padding="14,10" Margin="2" Checked="OnColorChanged">
-                        <StackPanel Orientation="Horizontal" Spacing="8">
-                            <Border Width="16" Height="16" CornerRadius="4" Background="#202020"
-                                    BorderBrush="#33FFFFFF" BorderThickness="1"/>
-                            <TextBlock Text="深灰"/>
-                        </StackPanel>
-                    </RadioButton>
-                    <RadioButton x:Name="BlackRadio" Grid.Row="0" Grid.Column="2" GroupName="DrawerColor"
-                                 Padding="14,10" Margin="2" Checked="OnColorChanged">
-                        <StackPanel Orientation="Horizontal" Spacing="8">
-                            <Border Width="16" Height="16" CornerRadius="4" Background="#000000"
-                                    BorderBrush="#33FFFFFF" BorderThickness="1"/>
-                            <TextBlock Text="黑色"/>
-                        </StackPanel>
-                    </RadioButton>
-                    <RadioButton x:Name="BlueRadio" Grid.Row="1" Grid.Column="0" GroupName="DrawerColor"
-                                 Padding="14,10" Margin="2" Checked="OnColorChanged">
-                        <StackPanel Orientation="Horizontal" Spacing="8">
-                            <Border Width="16" Height="16" CornerRadius="4" Background="#102A43"
-                                    BorderBrush="#33FFFFFF" BorderThickness="1"/>
-                            <TextBlock Text="深蓝"/>
-                        </StackPanel>
-                    </RadioButton>
-                    <RadioButton x:Name="PurpleRadio" Grid.Row="1" Grid.Column="1" GroupName="DrawerColor"
-                                 Padding="14,10" Margin="2" Checked="OnColorChanged">
-                        <StackPanel Orientation="Horizontal" Spacing="8">
-                            <Border Width="16" Height="16" CornerRadius="4" Background="#2D1B4E"
-                                    BorderBrush="#33FFFFFF" BorderThickness="1"/>
-                            <TextBlock Text="深紫"/>
-                        </StackPanel>
-                    </RadioButton>
-                    <RadioButton x:Name="GreenRadio" Grid.Row="1" Grid.Column="2" GroupName="DrawerColor"
-                                 Padding="14,10" Margin="2" Checked="OnColorChanged">
-                        <StackPanel Orientation="Horizontal" Spacing="8">
-                            <Border Width="16" Height="16" CornerRadius="4" Background="#1B3A2A"
-                                    BorderBrush="#33FFFFFF" BorderThickness="1"/>
-                            <TextBlock Text="墨绿"/>
-                        </StackPanel>
-                    </RadioButton>
-                </Grid>
-            </StackPanel>
+                        <ToggleSwitch x:Name="TransparentToggle" Grid.Column="3" Style="{StaticResource CleanToggleStyle}"
+                                      IsHitTestVisible="False" IsTabStop="False" VerticalAlignment="Center"
+                                      OnContent="" OffContent=""
+                                      Toggled="OnTransparentChanged"/>
+                    </Grid>
+                </Button>
+
+                <!-- 抽屉颜色：分区标题 + 大色卡 -->
+                <StackPanel x:Name="ColorSection" Grid.Row="2" Orientation="Horizontal" Spacing="10">
+                    <Border Width="28" Height="28" CornerRadius="8" Background="#3DFFE9A0"
+                            BorderThickness="1" BorderBrush="#6BFFE9A0" VerticalAlignment="Center">
+                        <FontIcon Glyph="&#xE790;" FontSize="14" Foreground="#FFFFE9A0"/>
+                    </Border>
+                    <TextBlock Text="抽屉颜色" FontSize="20" FontWeight="SemiBold" VerticalAlignment="Center"/>
+                </StackPanel>
+
+                <Border x:Name="ColorsCard" Grid.Row="3" Style="{StaticResource SettingCardStyle}">
+                    <Border.Background>
+                        <LinearGradientBrush StartPoint="0,0" EndPoint="0,1">
+                            <GradientStop Color="#22FFFFFF" Offset="0"/>
+                            <GradientStop Color="#4AFFE9A0" Offset="1"/>
+                        </LinearGradientBrush>
+                    </Border.Background>
+                    <Grid x:Name="ColorGrid" ColumnSpacing="8" RowSpacing="8">
+                        <Grid.ColumnDefinitions>
+                            <ColumnDefinition Width="*"/>
+                            <ColumnDefinition Width="*"/>
+                            <ColumnDefinition Width="*"/>
+                        </Grid.ColumnDefinitions>
+                        <Grid.RowDefinitions>
+                            <RowDefinition Height="Auto"/>
+                            <RowDefinition Height="Auto"/>
+                        </Grid.RowDefinitions>
+
+                        <Button x:Name="DefaultColorCard" Grid.Row="0" Grid.Column="0" Style="{StaticResource ColorCardStyle}"
+                                Click="OnColorCardClick" Tag="none">
+                            <Grid>
+                                <Border Background="Transparent"/>
+                                <FontIcon x:Name="DefaultCheck" Glyph="&#xE73E;" FontSize="15" Visibility="Collapsed"
+                                          VerticalAlignment="Center" HorizontalAlignment="Right" Margin="0,0,10,0"/>
+                                <TextBlock Text="默认" FontSize="12" VerticalAlignment="Center" HorizontalAlignment="Left"
+                                           Margin="10,0,0,0"/>
+                            </Grid>
+                        </Button>
+                        <Button x:Name="DarkGrayCard" Grid.Row="0" Grid.Column="1" Style="{StaticResource ColorCardStyle}"
+                                Click="OnColorCardClick" Tag="#202020">
+                            <Grid>
+                                <Border Background="#202020"/>
+                                <FontIcon x:Name="DarkGrayCheck" Glyph="&#xE73E;" FontSize="15" Visibility="Collapsed"
+                                          VerticalAlignment="Center" HorizontalAlignment="Right" Margin="0,0,10,0"/>
+                                <TextBlock Text="深灰" FontSize="12" VerticalAlignment="Bottom" HorizontalAlignment="Left"
+                                           Margin="10,0,0,8"/>
+                            </Grid>
+                        </Button>
+                        <Button x:Name="BlackCard" Grid.Row="0" Grid.Column="2" Style="{StaticResource ColorCardStyle}"
+                                Click="OnColorCardClick" Tag="#000000">
+                            <Grid>
+                                <Border Background="#000000"/>
+                                <FontIcon x:Name="BlackCheck" Glyph="&#xE73E;" FontSize="15" Visibility="Collapsed"
+                                          VerticalAlignment="Center" HorizontalAlignment="Right" Margin="0,0,10,0"/>
+                                <TextBlock Text="黑色" FontSize="12" VerticalAlignment="Bottom" HorizontalAlignment="Left"
+                                           Margin="10,0,0,8"/>
+                            </Grid>
+                        </Button>
+                        <Button x:Name="BlueCard" Grid.Row="1" Grid.Column="0" Style="{StaticResource ColorCardStyle}"
+                                Click="OnColorCardClick" Tag="#102A43">
+                            <Grid>
+                                <Border Background="#102A43"/>
+                                <FontIcon x:Name="BlueCheck" Glyph="&#xE73E;" FontSize="15" Visibility="Collapsed"
+                                          VerticalAlignment="Center" HorizontalAlignment="Right" Margin="0,0,10,0"/>
+                                <TextBlock Text="深蓝" FontSize="12" VerticalAlignment="Bottom" HorizontalAlignment="Left"
+                                           Margin="10,0,0,8"/>
+                            </Grid>
+                        </Button>
+                        <Button x:Name="PurpleCard" Grid.Row="1" Grid.Column="1" Style="{StaticResource ColorCardStyle}"
+                                Click="OnColorCardClick" Tag="#2D1B4E">
+                            <Grid>
+                                <Border Background="#2D1B4E"/>
+                                <FontIcon x:Name="PurpleCheck" Glyph="&#xE73E;" FontSize="15" Visibility="Collapsed"
+                                          VerticalAlignment="Center" HorizontalAlignment="Right" Margin="0,0,10,0"/>
+                                <TextBlock Text="深紫" FontSize="12" VerticalAlignment="Bottom" HorizontalAlignment="Left"
+                                           Margin="10,0,0,8"/>
+                            </Grid>
+                        </Button>
+                        <Button x:Name="GreenCard" Grid.Row="1" Grid.Column="2" Style="{StaticResource ColorCardStyle}"
+                                Click="OnColorCardClick" Tag="#1B3A2A">
+                            <Grid>
+                                <Border Background="#1B3A2A"/>
+                                <FontIcon x:Name="GreenCheck" Glyph="&#xE73E;" FontSize="15" Visibility="Collapsed"
+                                          VerticalAlignment="Center" HorizontalAlignment="Right" Margin="0,0,10,0"/>
+                                <TextBlock Text="墨绿" FontSize="12" VerticalAlignment="Bottom" HorizontalAlignment="Left"
+                                           Margin="10,0,0,8"/>
+                            </Grid>
+                        </Button>
+                    </Grid>
+                </Border>
+            </Grid>
         </ScrollViewer>
 
         <ctl:GamepadHintBar Grid.Row="2" Margin="0,8,0,12"

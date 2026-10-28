@@ -17,6 +17,17 @@ public sealed partial class AboutPage : Page, ISettingsGamepad
     private int _index;
     private bool _ready;
 
+    /// <summary>可导航卡片：检查更新 / 启动检查 / 日志 / GitHub / QQ / 打赏</summary>
+    private Button[] _cards = [];
+
+    /// <summary>点在卡片内的「导出」按钮上时，抑制卡片本身的一次点击</summary>
+    private bool _suppressCardClick;
+
+    private static readonly SolidColorBrush CursorBrush =
+        new(Windows.UI.Color.FromArgb(0xCC, 0xFF, 0xFF, 0xFF));
+    private static readonly SolidColorBrush ClearBrush =
+        new(Microsoft.UI.Colors.Transparent);
+
     /// <summary>本轮会话中找到的新版本（null=已是最新或尚未检查）</summary>
     private UpdateInfo? _update;
 
@@ -54,6 +65,11 @@ public sealed partial class AboutPage : Page, ISettingsGamepad
         AutoCheckToggle.IsOn = SettingsService.Current.AutoCheckUpdates;
         LogToggle.IsOn = SettingsService.Current.DiagnosticLog;
 
+        _cards =
+        [
+            UpdateCard, AutoCheckCard, LogCard, GithubCard, QqCard, DonateCard
+        ];
+
         // 「导出」按钮宽度跟右侧开关一致（还原），高度比开关低一点，视觉上更紧凑
         LogToggle.SizeChanged += (_, _) =>
         {
@@ -61,8 +77,34 @@ public sealed partial class AboutPage : Page, ISettingsGamepad
             ExportButton.Height = Math.Max(22, LogToggle.ActualHeight - 6);
         };
 
+        // 卡片网格：宽窗口两列并整块居中，侧边栏窄窗口回成一列
+        ContentScroll.SizeChanged += (_, _) => LayoutCards();
+        Loaded += (_, _) => { LayoutCards(); UpdateCursor(_index); };
+
         ShowKnownUpdate();
         RestoreDownloadState();
+    }
+
+    /// <summary>可否排两列的最小可用宽度</summary>
+    private const double TwoColumnMinWidth = 560;
+
+    /// <summary>按可用宽度重排：宽=两列 + 上下居中；窄=单列 + 靠上</summary>
+    private void LayoutCards()
+    {
+        if (LinkGrid is null || ContentScroll is null) return;
+        var avail = ContentScroll.ViewportWidth;
+        if (avail <= 0) return;
+        var two = avail >= TwoColumnMinWidth;
+
+        LinkGrid.ColumnDefinitions[1].Width = two
+            ? new GridLength(1, GridUnitType.Star)
+            : new GridLength(0);
+
+        for (var i = 0; i < _cards.Length; i++)
+        {
+            Grid.SetRow(_cards[i], two ? i / 2 : i);
+            Grid.SetColumn(_cards[i], two ? i % 2 : 0);
+        }
     }
 
     /// <summary>未配置的入口显示为提示文字，避免空行</summary>
@@ -84,9 +126,8 @@ public sealed partial class AboutPage : Page, ISettingsGamepad
     {
         base.OnNavigatedTo(e);
         _ready = true;
-        _index = LinkList.SelectedIndex < 0 ? 0 : LinkList.SelectedIndex;
-        LinkList.SelectedIndex = _index;
-        LinkList.ScrollIntoView(LinkList.Items[_index]);
+        _index = 0;
+        FocusIndex(0);
 
         ShowKnownUpdate();
         // 页面可能被重建：下载中则恢复进度显示，而不是回到"下载并安装"
@@ -107,60 +148,89 @@ public sealed partial class AboutPage : Page, ISettingsGamepad
     {
         if (!_ready) return;
 
-        if (buttons.HasFlag(GamepadButtons.DPadUp) || buttons.HasFlag(GamepadButtons.DPadLeft))
-            Move(-1);
-        else if (buttons.HasFlag(GamepadButtons.DPadDown) || buttons.HasFlag(GamepadButtons.DPadRight))
-            Move(1);
+        if (buttons.HasFlag(GamepadButtons.DPadUp)) MoveBy(0, -1);
+        else if (buttons.HasFlag(GamepadButtons.DPadDown)) MoveBy(0, 1);
+        else if (buttons.HasFlag(GamepadButtons.DPadLeft)) MoveBy(-1, 0);
+        else if (buttons.HasFlag(GamepadButtons.DPadRight)) MoveBy(1, 0);
         else if (buttons.HasFlag(GamepadButtons.X))
             _ = ExportAsync();
         else if (buttons.HasFlag(GamepadButtons.A))
-            Open(_index);
+            Open(_cards[_index].Tag as string);
     }
 
-    private void Move(int delta)
+    /// <summary>宽窗口两列时左右换列、上下换行；单列时四个方向都是逐项移动</summary>
+    private void MoveBy(int dx, int dy)
     {
-        var count = LinkList.Items.Count;
-        if (count == 0) return;
-        var next = Math.Clamp(_index + delta, 0, count - 1);
-        if (next == _index) return;
-        _index = next;
-        LinkList.SelectedIndex = next;
-        // 只靠列表选中高亮表示位置：再给 ListViewItem 设焦点会额外叠一圈系统焦点框（两层选框）
-        FocusRing.HideCurrent(XamlRoot);
-        LinkList.ScrollIntoView(LinkList.Items[next]);
-    }
-
-    /// <summary>鼠标/触摸点击条目直接执行（Tapped 对鼠标与触屏都可靠触发）</summary>
-    private void OnLinkTapped(object sender, Microsoft.UI.Xaml.Input.TappedRoutedEventArgs e)
-    {
-        // 点在「导出」按钮上时不要顺带切换整行的日志开关（Tapped 会冒泡到整行）
-        if (IsInsideButton(e.OriginalSource)) return;
-        var idx = LinkList.Items.IndexOf(sender);
-        if (idx >= 0)
+        var two = LinkGrid.ColumnDefinitions[1].Width.Value > 0;
+        if (!two)
         {
-            _index = idx;
-            LinkList.SelectedIndex = idx;
-            Open(idx);
+            var step = dx != 0 ? dx : dy;
+            var nextSingle = Math.Clamp(_index + step, 0, _cards.Length - 1);
+            if (nextSingle != _index) FocusIndex(nextSingle);
+            return;
         }
-    }
 
-    /// <summary>沿可视树向上找 Button：用于区分「点按钮」和「点整行」</summary>
-    private static bool IsInsideButton(object? source)
-    {
-        var current = source as DependencyObject;
-        while (current is not null)
+        var row = _index / 2;
+        var col = _index % 2;
+        if (dx != 0)
         {
-            if (current is Button) return true;
-            current = VisualTreeHelper.GetParent(current);
+            var nc = col + dx;
+            if (nc < 0 || nc > 1) return;
+            var target = row * 2 + nc;
+            if (target < _cards.Length) FocusIndex(target);
+            return;
         }
-        return false;
+
+        var nr = row + dy;
+        var rows = (_cards.Length + 1) / 2;
+        if (nr < 0 || nr >= rows) return;
+        FocusIndex(Math.Min(nr * 2 + col, _cards.Length - 1));
     }
 
-    private void Open(int index)
+    /// <summary>移动光标：白框 + 必要时滚动到可见</summary>
+    private void FocusIndex(int index)
     {
-        var tag = index >= 0 && index < LinkList.Items.Count && LinkList.Items[index] is ListViewItem item
-            ? item.Tag as string
-            : null;
+        _index = index;
+        UpdateCursor(index);
+
+        var c = _cards[index];
+        try
+        {
+            var p = c.TransformToVisual(ContentScroll).TransformPoint(new Windows.Foundation.Point(0, 0));
+            var vh = ContentScroll.ViewportHeight;
+            if (p.Y < 0)
+                ContentScroll.ChangeView(null, Math.Max(0, ContentScroll.VerticalOffset + p.Y - 8), null);
+            else if (p.Y + c.ActualHeight > vh)
+                ContentScroll.ChangeView(null, ContentScroll.VerticalOffset + p.Y + c.ActualHeight - vh + 8, null);
+        }
+        catch { }
+    }
+
+    /// <summary>给当前卡片画白框</summary>
+    private void UpdateCursor(int index)
+    {
+        for (var i = 0; i < _cards.Length; i++)
+            _cards[i].BorderBrush = i == index ? CursorBrush : ClearBrush;
+    }
+
+    /// <summary>鼠标/触摸点击卡片直接执行</summary>
+    private void OnLinkCardClick(object sender, RoutedEventArgs e)
+    {
+        // 点在卡片内的「导出」按钮上时，不再执行卡片本身（避免顺带切换日志开关）
+        if (_suppressCardClick)
+        {
+            _suppressCardClick = false;
+            return;
+        }
+        if (sender is not Button card) return;
+        var idx = Array.IndexOf(_cards, card);
+        if (idx >= 0) FocusIndex(idx);
+        Open(card.Tag as string);
+    }
+
+    /// <summary>按卡片 Tag 执行对应动作</summary>
+    private void Open(string? tag)
+    {
         switch (tag)
         {
             case "update":
@@ -347,12 +417,18 @@ public sealed partial class AboutPage : Page, ISettingsGamepad
         SettingsService.Update(s => s.DiagnosticLog = on);
         if (on) DebugLog.Reset();
         ExportSub.Text = on
-            ? "已开始记录：复现一次问题后点「导出」保存到桌面"
-            : "默认关闭。遇到问题时打开，复现一次后再导出";
+            ? "正在记录，复现问题后点「导出」保存"
+            : "默认关闭，复现问题后点「导出」保存";
     }
 
-    /// <summary>点击行内的「导出」按钮：只导出，不切换日志开关</summary>
-    private void OnExportClick(object sender, RoutedEventArgs e) => _ = ExportAsync();
+    /// <summary>点击卡片内的「导出」按钮：只导出，不切换日志开关</summary>
+    private void OnExportClick(object sender, RoutedEventArgs e)
+    {
+        _suppressCardClick = true;
+        // 卡片 Click 会紧随其后同步触发，本轮事件结束后再放开抑制
+        DispatcherQueue.TryEnqueue(() => _suppressCardClick = false);
+        _ = ExportAsync();
+    }
 
     /// <summary>把运行日志 + 显卡/温度诊断导出成一个 txt 到桌面（默认位置），结果显示在条目说明里</summary>
     private async Task ExportAsync()

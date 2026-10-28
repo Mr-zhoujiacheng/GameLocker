@@ -15,6 +15,8 @@ namespace GameLocker;
 public sealed partial class GeneralPage : Page, ISettingsGamepad
 {
     private Control[] _controls = [];
+    /// <summary>开关行卡片 → 对应开关（按 A / 点击时切换真正状态）</summary>
+    private (Button row, ToggleSwitch toggle)[] _switchRows = [];
     private int _index;
     private bool _ready;
 
@@ -35,8 +37,58 @@ public sealed partial class GeneralPage : Page, ISettingsGamepad
         else if (s.SidebarSide == DockSide.Center) CenterRadio.IsChecked = true;
         else LeftRadio.IsChecked = true;
 
+        _switchRows =
+        [
+            (AutoStartRow, AutoStartToggle),
+            (HideAfterLaunchRow, HideAfterLaunchToggle),
+            (StartFullscreenRow, StartFullscreenToggle),
+            (AnimationRow, AnimationToggle),
+            (UiSoundRow, UiSoundToggle),
+            (EdgeGestureRow, EdgeGestureToggle),
+            (TabletModeRow, TabletModeToggle),
+            (StartMenuRow, StartMenuToggle)
+        ];
+
         UpdateDockVisibility();
         RebuildControls();
+
+        // 卡片网格：宽窗口两列并整块居中，侧边栏窄窗口回成一列靠上
+        ContentScroll.SizeChanged += (_, _) => LayoutCards();
+        Loaded += (_, _) => LayoutCards();
+    }
+
+    /// <summary>可否排两列的最小可用宽度（低于此宽度文字会被挤压，改回单列）</summary>
+    private const double TwoColumnMinWidth = 560;
+
+    /// <summary>按可用宽度重排卡片：宽=两列 + 上下居中；窄=单列 + 靠上</summary>
+    private void LayoutCards()
+    {
+        if (SwitchGrid is null || ContentScroll is null) return;
+        var avail = ContentScroll.ViewportWidth;
+        if (avail <= 0) return;
+        var two = avail >= TwoColumnMinWidth;
+
+        SwitchGrid.ColumnDefinitions[1].Width = two
+            ? new GridLength(1, GridUnitType.Star)
+            : new GridLength(0);
+        SwitchGrid.VerticalAlignment = two ? VerticalAlignment.Center : VerticalAlignment.Top;
+
+        for (var i = 0; i < _switchRows.Length; i++)
+        {
+            var card = _switchRows[i].row;
+            Grid.SetRow(card, two ? i / 2 : i);
+            Grid.SetColumn(card, two ? i % 2 : 0);
+            Grid.SetColumnSpan(card, 1);
+        }
+
+        var baseRow = two ? (_switchRows.Length + 1) / 2 : _switchRows.Length;
+        foreach (var (el, r) in new (FrameworkElement el, int r)[]
+                 { (DockSideTitle, baseRow), (DockSideHint, baseRow + 1), (DockSidePanel, baseRow + 2) })
+        {
+            Grid.SetRow(el, r);
+            Grid.SetColumn(el, 0);
+            Grid.SetColumnSpan(el, 2);
+        }
     }
 
     /// <summary>按开关状态重建导航控件表：开始菜单模式下「窗口位置」整组折叠，不参与手柄导航</summary>
@@ -44,9 +96,9 @@ public sealed partial class GeneralPage : Page, ISettingsGamepad
     {
         var list = new List<Control>
         {
-            AutoStartToggle, HideAfterLaunchToggle, StartFullscreenToggle,
-            AnimationToggle, UiSoundToggle,
-            EdgeGestureToggle, TabletModeToggle, StartMenuToggle
+            AutoStartRow, HideAfterLaunchRow, StartFullscreenRow,
+            AnimationRow, UiSoundRow,
+            EdgeGestureRow, TabletModeRow, StartMenuRow
         };
         if (!StartMenuToggle.IsOn) list.AddRange([LeftRadio, CenterRadio, RightRadio]);
         _controls = list.ToArray();
@@ -184,11 +236,13 @@ public sealed partial class GeneralPage : Page, ISettingsGamepad
     {
         switch (_controls[_index])
         {
-            case ToggleSwitch ts:
-                ts.IsOn = !ts.IsOn;
-                break;
             case RadioButton rb:
                 rb.IsChecked = true;
+                break;
+            case Button row:
+                // 开关行卡片：切换对应开关（Toggled 事件里保存）
+                foreach (var (r, t) in _switchRows)
+                    if (ReferenceEquals(r, row)) { t.IsOn = !t.IsOn; break; }
                 break;
         }
     }
@@ -198,7 +252,7 @@ public sealed partial class GeneralPage : Page, ISettingsGamepad
         var c = _controls[i];
         // 先清掉上一项的系统焦点框：页面用自绘光标/选框，残留的焦点框不会跟着光标走
         FocusRing.HideCurrent(XamlRoot);
-        if (c is RadioButton or ToggleSwitch)
+        if (c is RadioButton or Button)
         {
             // 单选/开关：移动只移动光标（高亮），不聚焦——避免焦点/空格等连带变更；
             // 只有按 A（ActivateCurrent）才真正切换并保存。
@@ -211,7 +265,7 @@ public sealed partial class GeneralPage : Page, ISettingsGamepad
         EnsureVisible(c);
     }
 
-    /// <summary>高亮当前光标所在控件：单选=卡片描边，开关=柔和底色</summary>
+    /// <summary>高亮当前光标所在控件：单选/开关行=白框描边</summary>
     private void UpdateCursor(Control? cursor)
     {
         foreach (var ctl in _controls)
@@ -224,12 +278,27 @@ public sealed partial class GeneralPage : Page, ISettingsGamepad
                         ? new SolidColorBrush(Windows.UI.Color.FromArgb(0xCC, 0xFF, 0xFF, 0xFF))
                         : new SolidColorBrush(Microsoft.UI.Colors.Transparent);
                     break;
-                case ToggleSwitch ts:
-                    ts.BorderBrush = on
+                case Button row:
+                    row.BorderBrush = on
                         ? new SolidColorBrush(Windows.UI.Color.FromArgb(0xCC, 0xFF, 0xFF, 0xFF))
                         : new SolidColorBrush(Microsoft.UI.Colors.Transparent);
                     break;
             }
+        }
+    }
+
+    /// <summary>触屏/鼠标点击开关行卡片：先选中再切换（与手柄 A 一致）</summary>
+    private void OnRowClick(object sender, RoutedEventArgs e)
+    {
+        if (!_ready || sender is not Button row) return;
+        for (var i = 0; i < _switchRows.Length; i++)
+        {
+            if (!ReferenceEquals(_switchRows[i].row, row)) continue;
+            _index = Math.Max(0, Array.IndexOf(_controls, row));
+            UpdateCursor(row);
+            EnsureVisible(row);
+            _switchRows[i].toggle.IsOn = !_switchRows[i].toggle.IsOn;
+            break;
         }
     }
 

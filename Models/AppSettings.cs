@@ -11,7 +11,7 @@ public enum DockSide
 }
 
 /// <summary>磁贴主题：彩色（强调色纯色块）/ 渐变（自身颜色斜向亮暗渐变）/
-/// 玻璃（磨砂底 + 底部色条）/ 简约（无颜色固定深灰）/ 透明（无底色，全部透明，不可选颜色）</summary>
+/// 玻璃（磨砂色底）/ 简约（无颜色固定深灰）/ 透明（无底色，全部透明，不可选颜色）</summary>
 public enum TileTheme
 {
     Colorful,

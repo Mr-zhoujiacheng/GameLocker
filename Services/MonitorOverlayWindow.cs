@@ -38,6 +38,8 @@ internal sealed class MonitorOverlayWindow : IDisposable
     /// <summary>电池电量（百分比）块：只放"电量"标题 + 百分比</summary>
     private const int ChipSoc = 68;
     private const int ChipMemory = 58;
+    /// <summary>当前时间块（时:分:秒）</summary>
+    private const int ChipClock = 78;
     private const int PadH = 7;
     private const int BarHeight = 36;
 
@@ -51,6 +53,7 @@ internal sealed class MonitorOverlayWindow : IDisposable
     private int _gpuWidth;
     private int _socWidth;
     private int _memoryWidth;
+    private int _clockWidth;
     private RECT _work;
     private int _x, _y;
 
@@ -239,7 +242,7 @@ internal sealed class MonitorOverlayWindow : IDisposable
 
     /// <summary>全部块的当前总宽度（固定块 + 各动态块）</summary>
     private int TotalWidth() =>
-        Scaled(FixedChipsWidth()) + _fpsWidth + _cpuWidth + _gpuWidth + _batteryWidth + _socWidth + _memoryWidth;
+        Scaled(FixedChipsWidth()) + _fpsWidth + _cpuWidth + _gpuWidth + _batteryWidth + _socWidth + _memoryWidth + _clockWidth;
 
     /// <summary>按字体测一段文字的像素宽度</summary>
     private int MeasureText(IntPtr hdc, IntPtr font, string text, out int width)
@@ -368,6 +371,16 @@ internal sealed class MonitorOverlayWindow : IDisposable
         return string.Join(" · ", parts);
     }
 
+    /// <summary>当前时间块按文字宽度收紧（固定 8 字符）；未勾选时宽度为 0</summary>
+    private int MeasureClockWidth()
+    {
+        if (!Has(MonitorMetric.Clock)) return 0;
+        return MeasureLabelValueWidth("时间", ClockText(), 56, 0);
+    }
+
+    /// <summary>当前时间文本：24 小时制 时:分:秒</summary>
+    private static string ClockText() => DateTime.Now.ToString("HH:mm:ss");
+
     /// <summary>按实际文字重新计算 FPS / CPU / GPU / 电池 / 电量 / 内存块宽度；变化明显时返回 true（调用方负责重设区域与位置）</summary>
     private bool AdjustDynamicWidths()
     {
@@ -377,6 +390,7 @@ internal sealed class MonitorOverlayWindow : IDisposable
         var battery = MeasureBatteryWidth();
         var soc = MeasureSocWidth();
         var memory = MeasureMemoryWidth();
+        var clock = MeasureClockWidth();
         var changed = false;
         if (Math.Abs(fps - _fpsWidth) >= 4) { _fpsWidth = fps; changed = true; }
         if (Math.Abs(cpu - _cpuWidth) >= 4) { _cpuWidth = cpu; changed = true; }
@@ -384,6 +398,7 @@ internal sealed class MonitorOverlayWindow : IDisposable
         if (Math.Abs(battery - _batteryWidth) >= 4) { _batteryWidth = battery; changed = true; }
         if (Math.Abs(soc - _socWidth) >= 4) { _socWidth = soc; changed = true; }
         if (Math.Abs(memory - _memoryWidth) >= 4) { _memoryWidth = memory; changed = true; }
+        if (Math.Abs(clock - _clockWidth) >= 4) { _clockWidth = clock; changed = true; }
         if (!changed) return false;
         _width = TotalWidth();
         return true;
@@ -410,6 +425,7 @@ internal sealed class MonitorOverlayWindow : IDisposable
         _gpuWidth = Has(MonitorMetric.GpuAny) ? Scaled(ChipGpu) : 0;
         _socWidth = Has(MonitorMetric.BatteryPercent) ? Scaled(ChipSoc) : 0;
         _memoryWidth = HasMemoryBlock() ? Scaled(ChipMemory) : 0;
+        _clockWidth = Has(MonitorMetric.Clock) ? Scaled(ChipClock) : 0;
         _width = TotalWidth();
         AdjustDynamicWidths();
     }
@@ -463,6 +479,7 @@ internal sealed class MonitorOverlayWindow : IDisposable
         _gpuWidth = Has(MonitorMetric.GpuAny) ? Scaled(ChipGpu) : 0;
         _socWidth = Has(MonitorMetric.BatteryPercent) ? Scaled(ChipSoc) : 0;
         _memoryWidth = HasMemoryBlock() ? Scaled(ChipMemory) : 0;
+        _clockWidth = Has(MonitorMetric.Clock) ? Scaled(ChipClock) : 0;
         _width = TotalWidth();
     }
 
@@ -600,30 +617,34 @@ internal sealed class MonitorOverlayWindow : IDisposable
 
     /// <summary>一组指标配色（组合色）：每种方案给各数据块分配不同颜色</summary>
     private readonly record struct MonitorPalette(
-        uint Fps, uint Graph, uint Cpu, uint Gpu, uint Battery, uint Soc, uint Memory);
+        uint Fps, uint Graph, uint Cpu, uint Gpu, uint Battery, uint Soc, uint Memory, uint Clock);
 
     private MonitorPalette Palette => _color switch
     {
         MonitorColorTheme.Neon => new(
             Color(0xFF, 0x5C, 0x8A), Color(0xFF, 0xD1, 0x66), Color(0x4C, 0xFF, 0xD5),
             Color(0xB9, 0x83, 0xFF), Color(0xFF, 0x8C, 0x42), Color(0xFF, 0xB8, 0x6B),
-            Color(0x4C, 0xC2, 0xFF)),
+            Color(0x4C, 0xC2, 0xFF), Color(0x7C, 0xFF, 0xE8)),
         MonitorColorTheme.Ice => new(
             Color(0x7F, 0xE7, 0xFF), Color(0x4C, 0xC2, 0xFF), Color(0x6B, 0xB6, 0xFF),
             Color(0x8F, 0xB3, 0xFF), Color(0x9B, 0xE0, 0xFF), Color(0xB3, 0xE9, 0xFF),
-            Color(0x6F, 0xE0, 0xD8)),
+            Color(0x6F, 0xE0, 0xD8), Color(0xC9, 0xE9, 0xFF)),
         MonitorColorTheme.Sunset => new(
             Color(0xFF, 0xD1, 0x66), Color(0xFF, 0x9F, 0x5A), Color(0xFF, 0xB8, 0x6B),
             Color(0xFF, 0x8C, 0x42), Color(0xFF, 0xE0, 0xA3), Color(0xFF, 0xC4, 0x6B),
-            Color(0xFF, 0xA0, 0x7A)),
+            Color(0xFF, 0xA0, 0x7A), Color(0xFF, 0xD9, 0xA0)),
+        MonitorColorTheme.Aurora => new(
+            Color(0x7C, 0xF2, 0xC6), Color(0x6F, 0xA8, 0xFF), Color(0xA4, 0x8C, 0xFF),
+            Color(0xFF, 0x8A, 0xD4), Color(0xFF, 0xD1, 0x66), Color(0x8F, 0xE9, 0xFF),
+            Color(0x57, 0xE0, 0xC9), Color(0xD9, 0xE4, 0xFF)),
         MonitorColorTheme.Mono => new(
             Color(0xFF, 0xFF, 0xFF), Color(0xE6, 0xE6, 0xE6), Color(0xFF, 0xFF, 0xFF),
             Color(0xE6, 0xE6, 0xE6), Color(0xFF, 0xFF, 0xFF), Color(0xE6, 0xE6, 0xE6),
-            Color(0xFF, 0xFF, 0xFF)),
+            Color(0xFF, 0xFF, 0xFF), Color(0xFF, 0xFF, 0xFF)),
         _ => new(
             Color(0x6F, 0xE3, 0xA0), Color(0x4C, 0xC2, 0xFF), Color(0x6B, 0xB6, 0xFF),
             Color(0xA9, 0x9B, 0xFF), Color(0xFF, 0xC4, 0x6B), Color(0xFF, 0xD9, 0x7A),
-            Color(0x6F, 0xE0, 0xD8))
+            Color(0x6F, 0xE0, 0xD8), Color(0xBB, 0xD8, 0xFF))
     };
 
     private void DrawForeground(IntPtr hdc, int w, int h)
@@ -648,7 +669,9 @@ internal sealed class MonitorOverlayWindow : IDisposable
         if (Has(MonitorMetric.Battery))
             x = DrawChip(hdc, x, _batteryWidth, "电池功耗 · 预计", FormatBattery(snap), p.Battery);
         if (Has(MonitorMetric.BatteryPercent))
-            DrawChip(hdc, x, _socWidth, "电量", FormatSoc(snap), p.Soc);
+            x = DrawChip(hdc, x, _socWidth, "电量", FormatSoc(snap), p.Soc);
+        if (Has(MonitorMetric.Clock))
+            DrawChip(hdc, x, _clockWidth, "时间", ClockText(), p.Clock);
     }
 
     /// <summary>竖渐变深色底 + 细描边，比纯色块更有层次</summary>

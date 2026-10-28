@@ -12,8 +12,8 @@ namespace GameLocker;
 public sealed record TileThemeOption(TileTheme Theme, string Name, string Desc);
 
 /// <summary>
-/// 外观设置：窗口背景颜色 + 窗口透明度。
-/// 手柄：方向=移动焦点，A=选中颜色/按下 −/+ 调整，View(Select)/B=返回设置主页。
+/// 外观设置：窗口玻璃/透明度/宽度/背景颜色 + 磁贴主题/形状/透明度/间距。
+/// 手柄：方向=移动光标，A=切换开关/选色/±微调，View(Select)/B=返回设置主页。
 /// </summary>
 public sealed partial class AppearancePage : Page, ISettingsGamepad
 {
@@ -31,7 +31,7 @@ public sealed partial class AppearancePage : Page, ISettingsGamepad
         new(TileTheme.Colorful, "彩色磁贴", "按颜色 / 随机配色"),
         new(TileTheme.Win10, "简约磁贴", "无颜色 · 深灰"),
         new(TileTheme.Gradient, "渐变磁贴", "斜向亮暗渐变"),
-        new(TileTheme.Glass, "玻璃磁贴", "磨砂底 + 底部色条"),
+        new(TileTheme.Glass, "玻璃磁贴", "磨砂色底 · 无底部色条"),
         new(TileTheme.Transparent, "透明磁贴", "无底色 · 不选颜色"),
     ];
 
@@ -46,8 +46,20 @@ public sealed partial class AppearancePage : Page, ISettingsGamepad
     private bool _themeExpanded;
     private TileTheme _currentTheme = TileTheme.Colorful;
 
-    /// <summary>预设色：色值 → 单选控件</summary>
-    private readonly (string Hex, RadioButton Radio)[] Palette;
+    /// <summary>预设色：色值 → 大色卡 + 勾</summary>
+    private readonly (string Hex, Button Card, FontIcon Check)[] Palette;
+
+    /// <summary>开关卡片 → 对应开关（按 A / 点击卡片时切换真正状态）</summary>
+    private readonly (Button Card, ToggleSwitch Toggle)[] _switchCards;
+
+    private string _selectedColorHex = "#202020";
+
+    private static readonly SolidColorBrush CursorBrush =
+        new(Windows.UI.Color.FromArgb(0xCC, 0xFF, 0xFF, 0xFF));
+    private static readonly SolidColorBrush SelectedBrush =
+        new(Windows.UI.Color.FromArgb(0xFF, 0xB9, 0xA0, 0xFF));
+    private static readonly SolidColorBrush TransparentBrush =
+        new(Microsoft.UI.Colors.Transparent);
 
     public AppearancePage()
     {
@@ -55,12 +67,21 @@ public sealed partial class AppearancePage : Page, ISettingsGamepad
 
         Palette =
         [
-            ("#202020", DarkGrayRadio),
-            ("#000000", BlackRadio),
-            ("#102A43", BlueRadio),
-            ("#2D1B4E", PurpleRadio),
-            ("#1B3A2A", GreenRadio),
-            ("#3E2723", BrownRadio),
+            ("#202020", DarkGrayCard, DarkGrayCheck),
+            ("#000000", BlackCard, BlackCheck),
+            ("#102A43", BlueCard, BlueCheck),
+            ("#2D1B4E", PurpleCard, PurpleCheck),
+            ("#1B3A2A", GreenCard, GreenCheck),
+            ("#3E2723", BrownCard, BrownCheck),
+        ];
+
+        _switchCards =
+        [
+            (GlassCard, GlassToggle),
+            (CornerCard, TileCornerToggle),
+            (NameCard, TileNameToggle),
+            (GroupAnimCard, GroupAnimToggle),
+            (RandomColorCard, RandomColorToggle),
         ];
 
         var s = SettingsService.Current;
@@ -70,6 +91,7 @@ public sealed partial class AppearancePage : Page, ISettingsGamepad
         TileNameToggle.IsOn = s.ShowTileName;
         GroupAnimToggle.IsOn = s.GroupExpandAnimation;
         RandomColorToggle.IsOn = s.RandomTileColor;
+        _selectedColorHex = s.BackgroundColor;
         CheckColor(s.BackgroundColor);
         _opacity = Math.Clamp(s.WindowOpacity, 0.3, 1.0);
         OpacityText.Text = $"{(int)Math.Round(_opacity * 100)}%";
@@ -81,6 +103,85 @@ public sealed partial class AppearancePage : Page, ISettingsGamepad
         TileOpacityText.Text = $"{(int)Math.Round(_tileOpacity * 100)}%";
 
         SyncControls();
+
+        // 卡片网格：宽窗口两列并整块居中，侧边栏窄窗口回成一列靠上
+        ContentScroll.SizeChanged += (_, _) => { LayoutCards(); UpdateBars(); };
+        Loaded += (_, _) => { LayoutCards(); UpdateBars(); };
+    }
+
+    /// <summary>可否排两列的最小可用宽度（低于此宽度文字会被挤压，改回单列）</summary>
+    private const double TwoColumnMinWidth = 560;
+
+    /// <summary>按可用宽度重排卡片：宽=两列 + 上下居中；窄=单列 + 靠上</summary>
+    private void LayoutCards()
+    {
+        if (SettingsGrid is null || ContentScroll is null) return;
+        var avail = ContentScroll.ViewportWidth;
+        if (avail <= 0) return;
+        var two = avail >= TwoColumnMinWidth;
+
+        SettingsGrid.ColumnDefinitions[1].Width = two
+            ? new GridLength(1, GridUnitType.Star)
+            : new GridLength(0);
+        SettingsGrid.VerticalAlignment = two ? VerticalAlignment.Center : VerticalAlignment.Top;
+
+        if (two)
+        {
+            // 宽：左侧玻璃效果（保持原高度）+ 其下透明度/宽度合并卡，右侧色卡 3×2 跨两行对齐整列
+            Grid.SetRowSpan(ColorsCard, 2);
+            Place(WindowSection, 0, 0, 2);
+            Place(GlassCard, 1, 0);
+            Place(SlidersCard, 2, 0);
+            Place(ColorsCard, 1, 1);
+            Place(TileSection, 3, 0, 2);
+            Place(TileThemeCard, 4, 0, 2);
+            Place(CornerCard, 5, 0);
+            Place(NameCard, 5, 1);
+            Place(GroupAnimCard, 6, 0);
+            Place(RandomColorCard, 6, 1);
+            Place(TileOpacityCard, 7, 0);
+            Place(SpacingCard, 7, 1);
+        }
+        else
+        {
+            Grid.SetRowSpan(ColorsCard, 1);
+            var row = 0;
+            Place(WindowSection, row++, 0, 2);
+            Place(GlassCard, row++, 0, 2);
+            Place(ColorsCard, row++, 0, 2);
+            Place(SlidersCard, row++, 0, 2);
+            Place(TileSection, row++, 0, 2);
+            Place(TileThemeCard, row++, 0, 2);
+            Place(CornerCard, row++, 0, 2);
+            Place(NameCard, row++, 0, 2);
+            Place(GroupAnimCard, row++, 0, 2);
+            Place(RandomColorCard, row++, 0, 2);
+            Place(TileOpacityCard, row++, 0, 2);
+            Place(SpacingCard, row, 0, 2);
+        }
+    }
+
+    private static void Place(FrameworkElement el, int row, int col, int span = 1)
+    {
+        Grid.SetRow(el, row);
+        Grid.SetColumn(el, col);
+        Grid.SetColumnSpan(el, span);
+    }
+
+    /// <summary>滑轨填充宽度按当前值比例刷新</summary>
+    private void UpdateBars()
+    {
+        SetBar(OpacityFill, OpacityTrack, (_opacity - 0.3) / 0.7);
+        SetBar(WidthFill, WidthTrack, (_widthPct - 0.38) / 0.12);
+        SetBar(TileOpacityFill, TileOpacityTrack, (_tileOpacity - 0.3) / 0.7);
+        SetBar(SpacingFill, SpacingTrack, _spacing / 30.0);
+    }
+
+    private static void SetBar(Border fill, Grid track, double pct)
+    {
+        var w = track.ActualWidth;
+        if (w <= 0) w = 120;
+        fill.Width = Math.Max(4, w * Math.Clamp(pct, 0, 1));
     }
 
     /// <summary>按展开状态重建可导航控件列表：折叠时移除选项行，
@@ -89,29 +190,31 @@ public sealed partial class AppearancePage : Page, ISettingsGamepad
     {
         var controls = new List<FrameworkElement>
         {
-            GlassToggle,
-            DarkGrayRadio, BlackRadio, BlueRadio, PurpleRadio, GreenRadio, BrownRadio,
-            OpacityDownButton, OpacityUpButton,
-            WidthDownButton, WidthUpButton,
-            TileThemeCard
+            GlassCard, OpacityDownButton, OpacityUpButton,
+            WidthDownButton, WidthUpButton
         };
+        foreach (var (_, card, _) in Palette) controls.Add(card);
+        controls.Add(TileThemeCard);
         if (_themeExpanded) controls.AddRange(_themeRows);
-        controls.AddRange([TileCornerToggle, TileNameToggle, GroupAnimToggle, RandomColorToggle,
+        controls.AddRange([CornerCard, NameCard, GroupAnimCard, RandomColorCard,
             TileOpacityDownButton, TileOpacityUpButton, SpacingDownButton, SpacingUpButton]);
         _controls = controls;
     }
 
-    /// <summary>色值 → 勾选对应单选（避免 SelectionChanged 递归）</summary>
+    /// <summary>色值 → 勾选对应色卡（找不到预设时回落到深灰）</summary>
     private void CheckColor(string hex)
     {
-        var matched = false;
-        foreach (var (value, radio) in Palette)
+        var match = hex;
+        if (Array.FindIndex(Palette, p => string.Equals(p.Hex, hex, StringComparison.OrdinalIgnoreCase)) < 0)
+            match = Palette[0].Hex;
+        _selectedColorHex = match;
+
+        foreach (var (value, card, check) in Palette)
         {
-            var on = value == hex;
-            radio.IsChecked = on;
-            matched |= on;
+            var on = string.Equals(value, match, StringComparison.OrdinalIgnoreCase);
+            check.Visibility = on ? Visibility.Visible : Visibility.Collapsed;
+            card.BorderBrush = on ? SelectedBrush : TransparentBrush;
         }
-        if (!matched) DarkGrayRadio.IsChecked = true;
     }
 
     protected override void OnNavigatedTo(NavigationEventArgs e)
@@ -143,7 +246,7 @@ public sealed partial class AppearancePage : Page, ISettingsGamepad
             return;
         }
 
-        // 行感知导航：开关为整行单控件、−/＋ 为左右两控件、颜色为多列，
+        // 行感知导航：开关/色卡为多列，−/＋ 为一行两控件，
         // 上下在相邻行之间移动（取最接近当前列的），左右在同一行内移动。
         if (buttons.HasFlag(GamepadButtons.DPadUp)) MoveRow(-1);
         else if (buttons.HasFlag(GamepadButtons.DPadDown)) MoveRow(1);
@@ -315,46 +418,33 @@ public sealed partial class AppearancePage : Page, ISettingsGamepad
 
     private void ActivateCurrent()
     {
-        switch (_controls[_index])
+        var c = _controls[_index];
+        // 磁贴主题：A 键展开/收起卡片内列表；选项行 A 键直接选中
+        if (c is Border b && ReferenceEquals(b, TileThemeCard))
         {
-            case ToggleSwitch ts:
-                ts.IsOn = !ts.IsOn;
-                break;
-            case RadioButton rb:
-                rb.IsChecked = true;
-                break;
-            // 磁贴主题：A 键展开/收起卡片内列表；选项行 A 键直接选中
-            case Border b when ReferenceEquals(b, TileThemeCard):
-                ToggleThemeList();
-                break;
-            case Border b when TryGetTheme(b, out var theme):
-                SelectTheme(theme);
-                break;
-            case Button when ReferenceEquals(_controls[_index], OpacityDownButton):
-                ChangeOpacity(-0.1);
-                break;
-            case Button when ReferenceEquals(_controls[_index], OpacityUpButton):
-                ChangeOpacity(+0.1);
-                break;
-            case Button when ReferenceEquals(_controls[_index], WidthDownButton):
-                ChangeWidth(-0.02);
-                break;
-            case Button when ReferenceEquals(_controls[_index], WidthUpButton):
-                ChangeWidth(+0.02);
-                break;
-            case Button when ReferenceEquals(_controls[_index], TileOpacityDownButton):
-                ChangeTileOpacity(-0.1);
-                break;
-            case Button when ReferenceEquals(_controls[_index], TileOpacityUpButton):
-                ChangeTileOpacity(+0.1);
-                break;
-            case Button when ReferenceEquals(_controls[_index], SpacingDownButton):
-                ChangeSpacing(-2);
-                break;
-            case Button when ReferenceEquals(_controls[_index], SpacingUpButton):
-                ChangeSpacing(+2);
-                break;
+            ToggleThemeList();
+            return;
         }
+        if (c is Border row && TryGetTheme(row, out var theme))
+        {
+            SelectTheme(theme);
+            return;
+        }
+        if (c is not Button btn) return;
+
+        foreach (var (card, toggle) in _switchCards)
+            if (ReferenceEquals(card, btn)) { toggle.IsOn = !toggle.IsOn; return; }
+        foreach (var (hex, card, _) in Palette)
+            if (ReferenceEquals(card, btn)) { ApplyColor(hex); return; }
+
+        if (ReferenceEquals(btn, OpacityDownButton)) { ChangeOpacity(-0.1); return; }
+        if (ReferenceEquals(btn, OpacityUpButton)) { ChangeOpacity(+0.1); return; }
+        if (ReferenceEquals(btn, WidthDownButton)) { ChangeWidth(-0.02); return; }
+        if (ReferenceEquals(btn, WidthUpButton)) { ChangeWidth(+0.02); return; }
+        if (ReferenceEquals(btn, TileOpacityDownButton)) { ChangeTileOpacity(-0.1); return; }
+        if (ReferenceEquals(btn, TileOpacityUpButton)) { ChangeTileOpacity(+0.1); return; }
+        if (ReferenceEquals(btn, SpacingDownButton)) { ChangeSpacing(-2); return; }
+        if (ReferenceEquals(btn, SpacingUpButton)) { ChangeSpacing(+2); }
     }
 
     private void FocusIndex(int i)
@@ -362,9 +452,9 @@ public sealed partial class AppearancePage : Page, ISettingsGamepad
         var c = _controls[i];
         // 先清掉上一项的系统焦点框：页面用自绘光标/选框，残留的焦点框不会跟着光标走
         FocusRing.HideCurrent(XamlRoot);
-        if (c is RadioButton or ToggleSwitch or Border)
+        if (IsCursorDrawn(c))
         {
-            // 单选/开关/主题卡片行：移动只移动光标（高亮），不聚焦——避免焦点/空格等连带变更；
+            // 卡片类（开关行 / 色卡 / 主题行）：移动只重绘光标，不聚焦——避免焦点/空格等连带变更；
             // 只有按 A（ActivateCurrent）才真正切换并保存。
             UpdateCursor(c);
             EnsureVisible(c);
@@ -375,7 +465,12 @@ public sealed partial class AppearancePage : Page, ISettingsGamepad
         EnsureVisible(c);
     }
 
-    /// <summary>高亮当前光标所在控件：单选/开关/主题行=描边</summary>
+    /// <summary>该控件是否由页面自绘光标（改为 BorderBrush），而不是系统焦点框</summary>
+    private bool IsCursorDrawn(FrameworkElement c) =>
+        // 卡片与 ± 步进按钮统一自绘白框（系统焦点框在这些小按钮上几乎看不见）
+        c is Border or Button;
+
+    /// <summary>高亮当前光标所在控件：卡片/步进按钮=白框；色卡未被选中时恢复浅紫框</summary>
     private void UpdateCursor(FrameworkElement? cursor)
     {
         foreach (var ctl in _controls)
@@ -383,21 +478,17 @@ public sealed partial class AppearancePage : Page, ISettingsGamepad
             var on = ReferenceEquals(ctl, cursor);
             switch (ctl)
             {
-                case RadioButton rb:
-                    rb.BorderBrush = on
-                        ? new SolidColorBrush(Windows.UI.Color.FromArgb(0xCC, 0xFF, 0xFF, 0xFF))
-                        : new SolidColorBrush(Microsoft.UI.Colors.Transparent);
-                    break;
-                case ToggleSwitch ts:
-                    ts.BorderBrush = on
-                        ? new SolidColorBrush(Windows.UI.Color.FromArgb(0xCC, 0xFF, 0xFF, 0xFF))
-                        : new SolidColorBrush(Microsoft.UI.Colors.Transparent);
+                case Button b:
+                    var selected = false;
+                    foreach (var (hex, card, _) in Palette)
+                        if (ReferenceEquals(card, b) &&
+                            string.Equals(hex, _selectedColorHex, StringComparison.OrdinalIgnoreCase))
+                            selected = true;
+                    b.BorderBrush = on ? CursorBrush : selected ? SelectedBrush : TransparentBrush;
                     break;
                 // 主题卡片与展开的选项行：描边直接画在该行 Border 上
-                case Border b:
-                    b.BorderBrush = on
-                        ? new SolidColorBrush(Windows.UI.Color.FromArgb(0xCC, 0xFF, 0xFF, 0xFF))
-                        : new SolidColorBrush(Microsoft.UI.Colors.Transparent);
+                case Border bd:
+                    bd.BorderBrush = on ? CursorBrush : TransparentBrush;
                     break;
             }
         }
@@ -449,6 +540,54 @@ public sealed partial class AppearancePage : Page, ISettingsGamepad
         ToggleThemeList();
     }
 
+    /// <summary>点击开关卡片：光标移过去并切换（手柄走 A 键）</summary>
+    private void OnGlassCardClick(object sender, Microsoft.UI.Xaml.RoutedEventArgs e) =>
+        ToggleCard(GlassCard, GlassToggle);
+
+    private void OnCornerCardClick(object sender, Microsoft.UI.Xaml.RoutedEventArgs e) =>
+        ToggleCard(CornerCard, TileCornerToggle);
+
+    private void OnNameCardClick(object sender, Microsoft.UI.Xaml.RoutedEventArgs e) =>
+        ToggleCard(NameCard, TileNameToggle);
+
+    private void OnGroupAnimCardClick(object sender, Microsoft.UI.Xaml.RoutedEventArgs e) =>
+        ToggleCard(GroupAnimCard, GroupAnimToggle);
+
+    private void OnRandomColorCardClick(object sender, Microsoft.UI.Xaml.RoutedEventArgs e) =>
+        ToggleCard(RandomColorCard, RandomColorToggle);
+
+    private void ToggleCard(Button card, ToggleSwitch toggle)
+    {
+        if (!_ready) return;
+        SelectCard(card);
+        toggle.IsOn = !toggle.IsOn;
+    }
+
+    /// <summary>点击大色卡：选中并立即应用窗口背景色</summary>
+    private void OnColorCardClick(object sender, Microsoft.UI.Xaml.RoutedEventArgs e)
+    {
+        if (!_ready) return;
+        if (sender is not Button btn || btn.Tag is not string hex) return;
+        SelectCard(btn);
+        ApplyColor(hex);
+    }
+
+    private void SelectCard(Button card)
+    {
+        var i = _controls.IndexOf(card);
+        if (i < 0) return;
+        _index = i;
+        FocusIndex(i);
+    }
+
+    private void ApplyColor(string hex)
+    {
+        CheckColor(hex);
+        SettingsService.Update(s => s.BackgroundColor = hex);
+        App.Main?.ApplyBackground();
+        UpdateCursor(_controls.Count > _index ? _controls[_index] : null);
+    }
+
     /// <summary>按主题表生成展开列表的行（预览条 + 名称 + 说明 + 选中勾）</summary>
     private void FillTileThemes(TileTheme current)
     {
@@ -463,17 +602,9 @@ public sealed partial class AppearancePage : Page, ISettingsGamepad
 
     private Border BuildThemeRow(TileThemeOption opt)
     {
-        // 迷你预览条：与磁贴一致（玻璃加底部色条、渐变加顶部高光）
+        // 迷你预览条：与磁贴一致（玻璃用磨砂色底本身，不再叠加底部色条；渐变加顶部高光）
         var overlay = new Grid();
-        if (opt.Theme == TileTheme.Glass)
-            overlay.Children.Add(new Border
-            {
-                Height = 3,
-                VerticalAlignment = VerticalAlignment.Bottom,
-                Background = new SolidColorBrush(PreviewAccent),
-                IsHitTestVisible = false
-            });
-        else if (opt.Theme == TileTheme.Gradient)
+        if (opt.Theme == TileTheme.Gradient)
             overlay.Children.Add(new Border
             {
                 Height = 7,
@@ -602,17 +733,6 @@ public sealed partial class AppearancePage : Page, ISettingsGamepad
         SettingsService.Update(s => s.RandomTileColor = RandomColorToggle.IsOn);
     }
 
-    private void OnColorChanged(object sender, Microsoft.UI.Xaml.RoutedEventArgs e)
-    {
-        if (!_ready) return;
-        var hex = "#202020";
-        foreach (var (value, radio) in Palette)
-            if (radio.IsChecked == true) { hex = value; break; }
-
-        SettingsService.Update(s => s.BackgroundColor = hex);
-        App.Main?.ApplyBackground();
-    }
-
     /// <summary>透明度 ±0.1（范围 0.3~1.0）</summary>
     private void ChangeOpacity(double delta)
     {
@@ -620,6 +740,7 @@ public sealed partial class AppearancePage : Page, ISettingsGamepad
         OpacityText.Text = $"{(int)Math.Round(_opacity * 100)}%";
         SettingsService.Update(s => s.WindowOpacity = _opacity);
         App.Main?.ApplyBackground();
+        UpdateBars();
     }
 
     private void OnOpacityDown(object sender, Microsoft.UI.Xaml.RoutedEventArgs e) => ChangeOpacity(-0.1);
@@ -632,6 +753,7 @@ public sealed partial class AppearancePage : Page, ISettingsGamepad
         WidthText.Text = $"{(int)Math.Round(_widthPct * 100)}%";
         SettingsService.Update(s => s.SidebarWidthPercent = _widthPct);
         App.Main?.ApplySidebarLayout();
+        UpdateBars();
     }
 
     private void OnWidthDown(object sender, Microsoft.UI.Xaml.RoutedEventArgs e) => ChangeWidth(-0.02);
@@ -643,6 +765,7 @@ public sealed partial class AppearancePage : Page, ISettingsGamepad
         _spacing = Math.Clamp(_spacing + delta, 0, 30);
         SpacingText.Text = $"{(int)Math.Round(_spacing)}px";
         SettingsService.Update(s => s.TileSpacing = _spacing);
+        UpdateBars();
     }
 
     private void OnSpacingDown(object sender, Microsoft.UI.Xaml.RoutedEventArgs e) => ChangeSpacing(-2);
@@ -654,6 +777,7 @@ public sealed partial class AppearancePage : Page, ISettingsGamepad
         _tileOpacity = Math.Clamp(_tileOpacity + delta, 0.3, 1.0);
         TileOpacityText.Text = $"{(int)Math.Round(_tileOpacity * 100)}%";
         SettingsService.Update(s => s.TileOpacity = _tileOpacity);
+        UpdateBars();
     }
 
     private void OnTileOpacityDown(object sender, Microsoft.UI.Xaml.RoutedEventArgs e) => ChangeTileOpacity(-0.1);

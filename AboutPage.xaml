@@ -5,6 +5,74 @@
     xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
     xmlns:ctl="using:GameLocker.Controls">
 
+    <Page.Resources>
+        <!-- 卡片：中灰渐变底 + 直角；选中时由代码画白框 -->
+        <Style x:Key="CardStyle" TargetType="Button">
+            <Setter Property="CornerRadius" Value="0"/>
+            <Setter Property="BorderThickness" Value="2"/>
+            <Setter Property="BorderBrush" Value="Transparent"/>
+            <Setter Property="Padding" Value="12,8"/>
+            <Setter Property="MinHeight" Value="72"/>
+            <Setter Property="HorizontalAlignment" Value="Stretch"/>
+            <Setter Property="VerticalAlignment" Value="Stretch"/>
+            <Setter Property="HorizontalContentAlignment" Value="Stretch"/>
+            <Setter Property="VerticalContentAlignment" Value="Center"/>
+            <Setter Property="IsTabStop" Value="False"/>
+        </Style>
+        <!-- 开关本体：自绘灰胶囊，随 IsOn 变色、滑块滑动 -->
+        <Style x:Key="CleanToggleStyle" TargetType="ToggleSwitch">
+            <Setter Property="Template">
+                <Setter.Value>
+                    <ControlTemplate TargetType="ToggleSwitch">
+                        <Grid Width="44" Height="22" Background="Transparent">
+                            <Border Width="40" Height="20" CornerRadius="10" Background="#2AFFFFFF"
+                                    BorderThickness="1" BorderBrush="#4DFFFFFF"
+                                    HorizontalAlignment="Center" VerticalAlignment="Center"/>
+                            <Border x:Name="Fill" Width="40" Height="20" CornerRadius="10" Background="#C6D9D9D9"
+                                    Opacity="0" HorizontalAlignment="Center" VerticalAlignment="Center"/>
+                            <Ellipse x:Name="Knob" Width="14" Height="14" Fill="#FFFFFF"
+                                     HorizontalAlignment="Left" VerticalAlignment="Center" Margin="3,0,0,0">
+                                <Ellipse.RenderTransform>
+                                    <CompositeTransform/>
+                                </Ellipse.RenderTransform>
+                            </Ellipse>
+                            <VisualStateManager.VisualStateGroups>
+                                <VisualStateGroup x:Name="ToggleStates">
+                                    <VisualState x:Name="Off">
+                                        <VisualState.Setters>
+                                            <Setter Target="Knob.Fill" Value="#FFFFFF"/>
+                                        </VisualState.Setters>
+                                        <Storyboard>
+                                            <DoubleAnimation Storyboard.TargetName="Knob"
+                                                             Storyboard.TargetProperty="(UIElement.RenderTransform).(CompositeTransform.TranslateX)"
+                                                             To="0" Duration="0:0:0.12"/>
+                                            <DoubleAnimation Storyboard.TargetName="Fill"
+                                                             Storyboard.TargetProperty="Opacity"
+                                                             To="0" Duration="0:0:0.12"/>
+                                        </Storyboard>
+                                    </VisualState>
+                                    <VisualState x:Name="On">
+                                        <VisualState.Setters>
+                                            <Setter Target="Knob.Fill" Value="#1F1F1F"/>
+                                        </VisualState.Setters>
+                                        <Storyboard>
+                                            <DoubleAnimation Storyboard.TargetName="Knob"
+                                                             Storyboard.TargetProperty="(UIElement.RenderTransform).(CompositeTransform.TranslateX)"
+                                                             To="20" Duration="0:0:0.12"/>
+                                            <DoubleAnimation Storyboard.TargetName="Fill"
+                                                             Storyboard.TargetProperty="Opacity"
+                                                             To="1" Duration="0:0:0.12"/>
+                                        </Storyboard>
+                                    </VisualState>
+                                </VisualStateGroup>
+                            </VisualStateManager.VisualStateGroups>
+                        </Grid>
+                    </ControlTemplate>
+                </Setter.Value>
+            </Setter>
+        </Style>
+    </Page.Resources>
+
     <Grid Background="Transparent"
           RequestedTheme="Dark" XYFocusKeyboardNavigation="Enabled">
 
@@ -26,109 +94,223 @@
             </StackPanel>
         </Grid>
 
-        <ScrollViewer Grid.Row="1" Padding="24,8" VerticalScrollBarVisibility="Hidden">
-            <StackPanel Spacing="18">
+        <ScrollViewer x:Name="ContentScroll" Grid.Row="1" Padding="20,8,20,10" VerticalScrollBarVisibility="Hidden">
+            <StackPanel Spacing="10">
 
-                <!-- 软件标识 -->
-                <StackPanel Orientation="Horizontal" Spacing="16">
-                    <Image x:Name="AppIconImage" Width="64" Height="64" VerticalAlignment="Top"/>
-                    <StackPanel Spacing="4" VerticalAlignment="Center">
-                        <TextBlock Text="Game Locker" FontSize="20" FontWeight="SemiBold"/>
-                        <TextBlock x:Name="VersionText" FontSize="13" Opacity="0.65"/>
-                        <TextBlock Text="专注于 Win 掌机 / 平板的快捷体验" FontSize="12" Opacity="0.5"/>
-                    </StackPanel>
-                </StackPanel>
+                <!-- 软件标识卡：图标 + 名称 + 版本胶囊 + 一句话介绍 -->
+                <Border CornerRadius="0" BorderThickness="2" BorderBrush="Transparent" Padding="16,14">
+                    <Border.Background>
+                        <LinearGradientBrush StartPoint="0,0" EndPoint="0,1">
+                            <GradientStop Color="#22FFFFFF" Offset="0"/>
+                            <GradientStop Color="#33FFFFFF" Offset="1"/>
+                        </LinearGradientBrush>
+                    </Border.Background>
+                    <Grid ColumnSpacing="14">
+                        <Grid.ColumnDefinitions>
+                            <ColumnDefinition Width="Auto"/>
+                            <ColumnDefinition Width="*"/>
+                        </Grid.ColumnDefinitions>
+                        <Border Width="64" Height="64" CornerRadius="10" Background="#1FFFFFFF"
+                                BorderThickness="1" BorderBrush="#4DFFFFFF">
+                            <Image x:Name="AppIconImage" Width="56" Height="56"/>
+                        </Border>
+                        <StackPanel Grid.Column="1" Spacing="5" VerticalAlignment="Center">
+                            <TextBlock Text="Game Locker" FontSize="21" FontWeight="Bold"/>
+                            <Border Background="#26FFFFFF" BorderThickness="1" BorderBrush="#4DFFFFFF"
+                                    CornerRadius="9" Padding="9,2" HorizontalAlignment="Left">
+                                <TextBlock x:Name="VersionText" FontSize="11.5" Foreground="#FFEDEDED"/>
+                            </Border>
+                            <TextBlock Text="专注于 Win 掌机 / 平板的快捷体验" FontSize="12" Opacity="0.6"/>
+                        </StackPanel>
+                    </Grid>
+                </Border>
 
-                <!-- 软件更新：检查 GitHub 最新版本 / 下载安装 / 启动自动检查 -->
-                <ListView x:Name="LinkList" SelectionMode="Single" IsTabStop="False">
-                    <ListViewItem Tapped="OnLinkTapped" Tag="update">
-                        <Grid Padding="0,10" ColumnSpacing="14">
+                <!-- 功能入口：宽窗口两列，侧边栏窄窗口回成一列 -->
+                <Grid x:Name="LinkGrid" ColumnSpacing="10" RowSpacing="10" VerticalAlignment="Top">
+                    <Grid.ColumnDefinitions>
+                        <ColumnDefinition Width="*"/>
+                        <ColumnDefinition Width="0"/>
+                    </Grid.ColumnDefinitions>
+                    <Grid.RowDefinitions>
+                        <RowDefinition Height="Auto"/>
+                        <RowDefinition Height="Auto"/>
+                        <RowDefinition Height="Auto"/>
+                        <RowDefinition Height="Auto"/>
+                        <RowDefinition Height="Auto"/>
+                        <RowDefinition Height="Auto"/>
+                    </Grid.RowDefinitions>
+
+                    <!-- 检查更新 -->
+                    <Button x:Name="UpdateCard" Style="{StaticResource CardStyle}" Tag="update" Click="OnLinkCardClick">
+                        <Button.Background>
+                            <LinearGradientBrush StartPoint="0,0" EndPoint="0,1">
+                                <GradientStop Color="#22FFFFFF" Offset="0"/>
+                                <GradientStop Color="#33FFFFFF" Offset="1"/>
+                            </LinearGradientBrush>
+                        </Button.Background>
+                        <Grid ColumnSpacing="12">
                             <Grid.ColumnDefinitions>
                                 <ColumnDefinition Width="Auto"/>
                                 <ColumnDefinition Width="*"/>
                             </Grid.ColumnDefinitions>
-                            <FontIcon Glyph="&#xE72C;" FontSize="20" VerticalAlignment="Center"/>
-                            <StackPanel Grid.Column="1" Spacing="2">
-                                <TextBlock x:Name="UpdateTitle" Text="检查更新" FontSize="17"/>
+                            <Border Width="34" Height="34" Background="#1FFFFFFF"
+                                    BorderThickness="1" BorderBrush="#4DFFFFFF" VerticalAlignment="Center">
+                                <FontIcon Glyph="&#xE72C;" FontSize="16"/>
+                            </Border>
+                            <StackPanel Grid.Column="1" Spacing="2" VerticalAlignment="Center">
+                                <TextBlock x:Name="UpdateTitle" Text="检查更新" FontSize="15" FontWeight="SemiBold"/>
                                 <TextBlock x:Name="UpdateSub" Text="与 GitHub Releases 上的最新版本比对"
-                                           FontSize="12" Opacity="0.6" TextWrapping="Wrap"/>
+                                           FontSize="11.5" Opacity="0.55" TextWrapping="Wrap"/>
                                 <ProgressBar x:Name="UpdateProgress" Visibility="Collapsed"
-                                             Height="3" Margin="0,4,0,0" VerticalAlignment="Center"/>
+                                             Height="3" Margin="0,3,0,0" VerticalAlignment="Center"/>
                             </StackPanel>
                         </Grid>
-                    </ListViewItem>
-                    <ListViewItem Tapped="OnLinkTapped" Tag="autocheck">
-                        <Grid Padding="0,10" ColumnSpacing="14">
+                    </Button>
+
+                    <!-- 启动时检查更新 -->
+                    <Button x:Name="AutoCheckCard" Style="{StaticResource CardStyle}" Tag="autocheck" Click="OnLinkCardClick">
+                        <Button.Background>
+                            <LinearGradientBrush StartPoint="0,0" EndPoint="0,1">
+                                <GradientStop Color="#22FFFFFF" Offset="0"/>
+                                <GradientStop Color="#33FFFFFF" Offset="1"/>
+                            </LinearGradientBrush>
+                        </Button.Background>
+                        <Grid ColumnSpacing="12">
                             <Grid.ColumnDefinitions>
                                 <ColumnDefinition Width="Auto"/>
                                 <ColumnDefinition Width="*"/>
                                 <ColumnDefinition Width="Auto"/>
                             </Grid.ColumnDefinitions>
-                            <FontIcon Glyph="&#xE895;" FontSize="20" VerticalAlignment="Center"/>
-                            <StackPanel Grid.Column="1" Spacing="2">
-                                <TextBlock Text="启动时检查更新" FontSize="17"/>
-                                <TextBlock Text="启动后自动比对 GitHub 上的最新版本" FontSize="12" Opacity="0.6"/>
+                            <Border Width="34" Height="34" Background="#1FFFFFFF"
+                                    BorderThickness="1" BorderBrush="#4DFFFFFF" VerticalAlignment="Center">
+                                <FontIcon Glyph="&#xE895;" FontSize="16"/>
+                            </Border>
+                            <StackPanel Grid.Column="1" Spacing="2" VerticalAlignment="Center">
+                                <TextBlock Text="启动时检查更新" FontSize="15" FontWeight="SemiBold"/>
+                                <TextBlock Text="启动后自动比对 GitHub 上的最新版本" FontSize="11.5" Opacity="0.55"/>
                             </StackPanel>
-                            <ToggleSwitch x:Name="AutoCheckToggle" Grid.Column="2"
+                            <ToggleSwitch x:Name="AutoCheckToggle" Grid.Column="2" Style="{StaticResource CleanToggleStyle}"
                                           IsHitTestVisible="False" IsTabStop="False"
+                                          OnContent="" OffContent=""
                                           VerticalAlignment="Center"/>
                         </Grid>
-                    </ListViewItem>
-                    <ListViewItem Tapped="OnLinkTapped" Tag="log">
-                        <Grid Padding="0,10" ColumnSpacing="10">
+                    </Button>
+
+                    <!-- 记录运行日志 -->
+                    <Button x:Name="LogCard" Style="{StaticResource CardStyle}" Tag="log" Click="OnLinkCardClick">
+                        <Button.Background>
+                            <LinearGradientBrush StartPoint="0,0" EndPoint="0,1">
+                                <GradientStop Color="#22FFFFFF" Offset="0"/>
+                                <GradientStop Color="#33FFFFFF" Offset="1"/>
+                            </LinearGradientBrush>
+                        </Button.Background>
+                        <Grid ColumnSpacing="12">
                             <Grid.ColumnDefinitions>
                                 <ColumnDefinition Width="Auto"/>
                                 <ColumnDefinition Width="*"/>
                                 <ColumnDefinition Width="Auto"/>
                                 <ColumnDefinition Width="Auto"/>
                             </Grid.ColumnDefinitions>
-                            <FontIcon Glyph="&#xE7C3;" FontSize="20" VerticalAlignment="Center"/>
-                            <StackPanel Grid.Column="1" Spacing="2">
-                                <TextBlock Text="记录运行日志" FontSize="17"/>
-                                <TextBlock x:Name="ExportSub" Text="默认关闭。遇到问题时打开，复现一次后再导出"
-                                           FontSize="12" Opacity="0.6" TextWrapping="Wrap"/>
+                            <Border Width="34" Height="34" Background="#1FFFFFFF"
+                                    BorderThickness="1" BorderBrush="#4DFFFFFF" VerticalAlignment="Center">
+                                <FontIcon Glyph="&#xE7C3;" FontSize="16"/>
+                            </Border>
+                            <StackPanel Grid.Column="1" Spacing="2" VerticalAlignment="Center">
+                                <TextBlock Text="记录运行日志" FontSize="15" FontWeight="SemiBold"/>
+                                <TextBlock x:Name="ExportSub" Text="默认关闭，复现问题后点「导出」保存"
+                                           FontSize="11.5" Opacity="0.55" TextTrimming="CharacterEllipsis"/>
                             </StackPanel>
                             <Button x:Name="ExportButton" Grid.Column="2" Content="导出"
                                     Click="OnExportClick" IsTabStop="False"
-                                    FontSize="13" Padding="0"
+                                    FontSize="12" Padding="0" CornerRadius="6"
+                                    Background="#26FFFFFF" BorderThickness="0"
                                     HorizontalContentAlignment="Center"
                                     VerticalAlignment="Center"/>
-                            <ToggleSwitch x:Name="LogToggle" Grid.Column="3"
-                                          Margin="28,0,0,0"
+                            <ToggleSwitch x:Name="LogToggle" Grid.Column="3" Style="{StaticResource CleanToggleStyle}"
+                                          Margin="10,0,0,0"
                                           IsHitTestVisible="False" IsTabStop="False"
+                                          OnContent="" OffContent=""
                                           VerticalAlignment="Center"/>
                         </Grid>
-                    </ListViewItem>
-                    <ListViewItem Tapped="OnLinkTapped" Tag="github">
-                        <StackPanel Orientation="Horizontal" Spacing="14" Padding="0,10">
-                            <FontIcon Glyph="&#xE774;" FontSize="20" VerticalAlignment="Center"/>
-                            <StackPanel Spacing="2">
-                                <TextBlock Text="GitHub 仓库" FontSize="17"/>
-                                <TextBlock x:Name="GithubSub" FontSize="12" Opacity="0.6"/>
-                            </StackPanel>
-                        </StackPanel>
-                    </ListViewItem>
-                    <ListViewItem Tapped="OnLinkTapped" Tag="qq">
-                        <StackPanel Orientation="Horizontal" Spacing="14" Padding="0,10">
-                            <FontIcon Glyph="&#xE8BD;" FontSize="20" VerticalAlignment="Center"/>
-                            <StackPanel Spacing="2">
-                                <TextBlock Text="QQ 群聊" FontSize="17"/>
-                                <TextBlock x:Name="QqSub" FontSize="12" Opacity="0.6"/>
-                            </StackPanel>
-                        </StackPanel>
-                    </ListViewItem>
-                    <ListViewItem Tapped="OnLinkTapped" Tag="donate">
-                        <StackPanel Orientation="Horizontal" Spacing="14" Padding="0,10">
-                            <FontIcon Glyph="&#xEB51;" FontSize="20" VerticalAlignment="Center"/>
-                            <StackPanel Spacing="2">
-                                <TextBlock Text="打赏支持" FontSize="17"/>
-                                <TextBlock x:Name="DonateSub" FontSize="12" Opacity="0.6"/>
-                            </StackPanel>
-                        </StackPanel>
-                    </ListViewItem>
-                </ListView>
+                    </Button>
 
-                <TextBlock x:Name="CopyrightText" FontSize="12" Opacity="0.45"/>
+                    <!-- GitHub 仓库 -->
+                    <Button x:Name="GithubCard" Style="{StaticResource CardStyle}" Tag="github" Click="OnLinkCardClick">
+                        <Button.Background>
+                            <LinearGradientBrush StartPoint="0,0" EndPoint="0,1">
+                                <GradientStop Color="#22FFFFFF" Offset="0"/>
+                                <GradientStop Color="#33FFFFFF" Offset="1"/>
+                            </LinearGradientBrush>
+                        </Button.Background>
+                        <Grid ColumnSpacing="12">
+                            <Grid.ColumnDefinitions>
+                                <ColumnDefinition Width="Auto"/>
+                                <ColumnDefinition Width="*"/>
+                            </Grid.ColumnDefinitions>
+                            <Border Width="34" Height="34" Background="#1FFFFFFF"
+                                    BorderThickness="1" BorderBrush="#4DFFFFFF" VerticalAlignment="Center">
+                                <FontIcon Glyph="&#xE774;" FontSize="16"/>
+                            </Border>
+                            <StackPanel Grid.Column="1" Spacing="2" VerticalAlignment="Center">
+                                <TextBlock Text="GitHub 仓库" FontSize="15" FontWeight="SemiBold"/>
+                                <TextBlock x:Name="GithubSub" FontSize="11.5" Opacity="0.55"
+                                           TextTrimming="CharacterEllipsis"/>
+                            </StackPanel>
+                        </Grid>
+                    </Button>
+
+                    <!-- QQ 群聊 -->
+                    <Button x:Name="QqCard" Style="{StaticResource CardStyle}" Tag="qq" Click="OnLinkCardClick">
+                        <Button.Background>
+                            <LinearGradientBrush StartPoint="0,0" EndPoint="0,1">
+                                <GradientStop Color="#22FFFFFF" Offset="0"/>
+                                <GradientStop Color="#33FFFFFF" Offset="1"/>
+                            </LinearGradientBrush>
+                        </Button.Background>
+                        <Grid ColumnSpacing="12">
+                            <Grid.ColumnDefinitions>
+                                <ColumnDefinition Width="Auto"/>
+                                <ColumnDefinition Width="*"/>
+                            </Grid.ColumnDefinitions>
+                            <Border Width="34" Height="34" Background="#1FFFFFFF"
+                                    BorderThickness="1" BorderBrush="#4DFFFFFF" VerticalAlignment="Center">
+                                <FontIcon Glyph="&#xE8BD;" FontSize="16"/>
+                            </Border>
+                            <StackPanel Grid.Column="1" Spacing="2" VerticalAlignment="Center">
+                                <TextBlock Text="QQ 群聊" FontSize="15" FontWeight="SemiBold"/>
+                                <TextBlock x:Name="QqSub" FontSize="11.5" Opacity="0.55"
+                                           TextTrimming="CharacterEllipsis"/>
+                            </StackPanel>
+                        </Grid>
+                    </Button>
+
+                    <!-- 打赏支持 -->
+                    <Button x:Name="DonateCard" Style="{StaticResource CardStyle}" Tag="donate" Click="OnLinkCardClick">
+                        <Button.Background>
+                            <LinearGradientBrush StartPoint="0,0" EndPoint="0,1">
+                                <GradientStop Color="#22FFFFFF" Offset="0"/>
+                                <GradientStop Color="#33FFFFFF" Offset="1"/>
+                            </LinearGradientBrush>
+                        </Button.Background>
+                        <Grid ColumnSpacing="12">
+                            <Grid.ColumnDefinitions>
+                                <ColumnDefinition Width="Auto"/>
+                                <ColumnDefinition Width="*"/>
+                            </Grid.ColumnDefinitions>
+                            <Border Width="34" Height="34" Background="#1FFFFFFF"
+                                    BorderThickness="1" BorderBrush="#4DFFFFFF" VerticalAlignment="Center">
+                                <FontIcon Glyph="&#xEB51;" FontSize="16"/>
+                            </Border>
+                            <StackPanel Grid.Column="1" Spacing="2" VerticalAlignment="Center">
+                                <TextBlock Text="打赏支持" FontSize="15" FontWeight="SemiBold"/>
+                                <TextBlock x:Name="DonateSub" FontSize="11.5" Opacity="0.55"
+                                           TextTrimming="CharacterEllipsis"/>
+                            </StackPanel>
+                        </Grid>
+                    </Button>
+                </Grid>
+
+                <TextBlock x:Name="CopyrightText" FontSize="12" Opacity="0.45" Margin="2,0,0,0"/>
             </StackPanel>
         </ScrollViewer>
 

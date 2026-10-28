@@ -1,6 +1,7 @@
 using GameLocker.Services;
-using Microsoft.UI.Xaml.Controls;
+using Microsoft.UI.Xaml;
 using Microsoft.UI.Xaml.Media;
+using Microsoft.UI.Xaml.Controls;
 using Microsoft.UI.Xaml.Navigation;
 
 namespace GameLocker;
@@ -11,12 +12,23 @@ namespace GameLocker;
 /// </summary>
 public sealed partial class DrawerSettingsPage : Page, ISettingsGamepad
 {
-    private Control[] _controls = [];
+    /// <summary>可导航控件：4 张开关卡片 + 6 张大色卡</summary>
+    private Button[] _controls = [];
+    /// <summary>开关卡片 → 对应开关（按 A / 点击时切换真正状态）</summary>
+    private (Button row, ToggleSwitch toggle)[] _switchRows = [];
     private int _index;
     private bool _ready;
+    private string _colorHex = "none";
 
-    /// <summary>预设色：色值（"none"=默认，用抽屉自身的强调色） → 单选控件</summary>
-    private readonly (string Hex, RadioButton Radio)[] Palette;
+    /// <summary>预设色：色值（"none"=默认，用抽屉自身的强调色） → 大色卡 + 勾选标记</summary>
+    private readonly (string Hex, Button Card, FontIcon Check)[] Palette;
+
+    private static readonly SolidColorBrush CursorBrush =
+        new(Windows.UI.Color.FromArgb(0xCC, 0xFF, 0xFF, 0xFF));
+    private static readonly SolidColorBrush SelectedBrush =
+        new(Windows.UI.Color.FromArgb(0xE6, 0xFF, 0xE9, 0xA0));
+    private static readonly SolidColorBrush ClearBrush =
+        new(Microsoft.UI.Colors.Transparent);
 
     public DrawerSettingsPage()
     {
@@ -24,12 +36,12 @@ public sealed partial class DrawerSettingsPage : Page, ISettingsGamepad
 
         Palette =
         [
-            ("none", DefaultColorRadio),
-            ("#202020", DarkGrayRadio),
-            ("#000000", BlackRadio),
-            ("#102A43", BlueRadio),
-            ("#2D1B4E", PurpleRadio),
-            ("#1B3A2A", GreenRadio),
+            ("none", DefaultColorCard, DefaultCheck),
+            ("#202020", DarkGrayCard, DarkGrayCheck),
+            ("#000000", BlackCard, BlackCheck),
+            ("#102A43", BlueCard, BlueCheck),
+            ("#2D1B4E", PurpleCard, PurpleCheck),
+            ("#1B3A2A", GreenCard, GreenCheck),
         ];
 
         var s = SettingsService.Current;
@@ -37,27 +49,75 @@ public sealed partial class DrawerSettingsPage : Page, ISettingsGamepad
         UniformSmallToggle.IsOn = s.DrawerUniformSmall;
         AutoHideToggle.IsOn = s.DrawerAutoHide;
         TransparentToggle.IsOn = s.DrawerTransparent;
-        CheckColor(s.DrawerColor);
+        _colorHex = s.DrawerColor;
+
+        _switchRows =
+        [
+            (DrawerRow, DrawerToggle),
+            (UniformSmallRow, UniformSmallToggle),
+            (AutoHideRow, AutoHideToggle),
+            (TransparentRow, TransparentToggle)
+        ];
 
         _controls =
         [
-            DrawerToggle, UniformSmallToggle, AutoHideToggle, TransparentToggle,
-            DefaultColorRadio, DarkGrayRadio, BlackRadio, BlueRadio, PurpleRadio, GreenRadio
+            DrawerRow, UniformSmallRow, AutoHideRow, TransparentRow,
+            DefaultColorCard, DarkGrayCard, BlackCard, BlueCard, PurpleCard, GreenCard
         ];
+
+        UpdateColorCards();
+
+        // 卡片网格：宽窗口两列并整块居中，侧边栏窄窗口回成一列靠上
+        ContentScroll.SizeChanged += (_, _) => LayoutCards();
+        Loaded += (_, _) => LayoutCards();
     }
 
-    /// <summary>色值 → 勾选对应单选（避免 Checked 递归）</summary>
-    private void CheckColor(string hex)
+    /// <summary>可否排两列的最小可用宽度</summary>
+    private const double TwoColumnMinWidth = 560;
+
+    /// <summary>按可用宽度重排：宽=开关两列 + 上下居中；窄=单列 + 靠上</summary>
+    private void LayoutCards()
     {
-        var matched = false;
-        foreach (var (value, radio) in Palette)
+        if (SwitchGrid is null || ContentScroll is null) return;
+        var avail = ContentScroll.ViewportWidth;
+        if (avail <= 0) return;
+        var two = avail >= TwoColumnMinWidth;
+
+        SwitchGrid.ColumnDefinitions[1].Width = two
+            ? new GridLength(1, GridUnitType.Star)
+            : new GridLength(0);
+        SwitchGrid.VerticalAlignment = two ? VerticalAlignment.Center : VerticalAlignment.Top;
+
+        for (var i = 0; i < _switchRows.Length; i++)
         {
-            var on = value == hex;
-            radio.IsChecked = on;
-            matched |= on;
+            var card = _switchRows[i].row;
+            Grid.SetRow(card, two ? i / 2 : i);
+            Grid.SetColumn(card, two ? i % 2 : 0);
         }
-        if (!matched) DefaultColorRadio.IsChecked = true;
+
+        var baseRow = two ? (_switchRows.Length + 1) / 2 : _switchRows.Length;
+        Grid.SetRow(ColorSection, baseRow);
+        Grid.SetColumn(ColorSection, 0);
+        Grid.SetColumnSpan(ColorSection, 2);
+        Grid.SetRow(ColorsCard, baseRow + 1);
+        Grid.SetColumn(ColorsCard, 0);
+        Grid.SetColumnSpan(ColorsCard, 2);
     }
+
+    /// <summary>刷新色卡选中标记：选中=浅蓝描边 + 勾，未选中=无描边</summary>
+    private void UpdateColorCards()
+    {
+        foreach (var (hex, card, check) in Palette)
+        {
+            var on = hex == _colorHex;
+            check.Visibility = on ? Visibility.Visible : Visibility.Collapsed;
+            // 光标框由 UpdateCursor 单独绘制，这里只处理"选中"视觉
+            if (!ReferenceEquals(card, CursorCard()))
+                card.BorderBrush = on ? SelectedBrush : ClearBrush;
+        }
+    }
+
+    private Button? CursorCard() => _index >= 0 && _index < _controls.Length ? _controls[_index] : null;
 
     protected override void OnNavigatedTo(NavigationEventArgs e)
     {
@@ -154,7 +214,7 @@ public sealed partial class DrawerSettingsPage : Page, ISettingsGamepad
         FocusIndex(row[nc].idx);
     }
 
-    private bool TryCenter(Control c, out double x, out double y)
+    private bool TryCenter(Button c, out double x, out double y)
     {
         x = y = 0;
         if (c.ActualWidth <= 0 || c.ActualHeight <= 0) return false;
@@ -179,60 +239,73 @@ public sealed partial class DrawerSettingsPage : Page, ISettingsGamepad
 
     private void ActivateCurrent()
     {
-        switch (_controls[_index])
+        var card = _controls[_index];
+        foreach (var (row, toggle) in _switchRows)
         {
-            case ToggleSwitch ts:
-                ts.IsOn = !ts.IsOn;
-                break;
-            case RadioButton rb:
-                rb.IsChecked = true;
-                break;
+            if (!ReferenceEquals(row, card)) continue;
+            toggle.IsOn = !toggle.IsOn;
+            return;
         }
+        if (TryGetColor(card, out var hex)) ApplyColor(hex, card);
+    }
+
+    private bool TryGetColor(Button card, out string hex)
+    {
+        foreach (var (value, c, _) in Palette)
+        {
+            if (!ReferenceEquals(c, card)) continue;
+            hex = value;
+            return true;
+        }
+        hex = "none";
+        return false;
+    }
+
+    /// <summary>选中颜色：更新标记 + 立即保存并应用到主页抽屉</summary>
+    private void ApplyColor(string hex, Button card)
+    {
+        _colorHex = hex;
+        UpdateColorCards();
+        UpdateCursor(card);
+
+        SettingsService.Update(s => s.DrawerColor = hex);
+        App.Main?.ApplyDrawerSettings();
     }
 
     private void FocusIndex(int i)
     {
         var c = _controls[i];
-        // 开关/单选：移动只移动光标（高亮描边），不聚焦；按 A 才切换并保存
+        // 卡片：移动只移动光标（白框），不聚焦；按 A 才切换并保存
         UpdateCursor(c);
         EnsureVisible(c);
     }
 
-    private void UpdateCursor(Control? cursor)
+    private void UpdateCursor(Button? cursor)
     {
         foreach (var ctl in _controls)
         {
             var on = ReferenceEquals(ctl, cursor);
-            var brush = on
-                ? new SolidColorBrush(Windows.UI.Color.FromArgb(0xCC, 0xFF, 0xFF, 0xFF))
-                : new SolidColorBrush(Microsoft.UI.Colors.Transparent);
-            switch (ctl)
+            if (on)
             {
-                case ToggleSwitch ts: ts.BorderBrush = brush; break;
-                case RadioButton rb: rb.BorderBrush = brush; break;
+                ctl.BorderBrush = CursorBrush;
+            }
+            else if (TryGetColor(ctl, out var hex))
+            {
+                ctl.BorderBrush = hex == _colorHex ? SelectedBrush : ClearBrush;
+            }
+            else
+            {
+                ctl.BorderBrush = ClearBrush;
             }
         }
     }
 
-    private void EnsureVisible(Control c)
+    private void EnsureVisible(Button c)
     {
         try
         {
-            // 光标在首/尾控件：整页滚到顶/底，避免上方（分组标题）或下方内容被裁切
-            if (ReferenceEquals(c, _controls[0]))
-            {
-                ContentScroll.ChangeView(null, 0, null);
-                return;
-            }
-            if (ReferenceEquals(c, _controls[^1]))
-            {
-                ContentScroll.ChangeView(null, ContentScroll.ScrollableHeight, null);
-                return;
-            }
-
             var p = c.TransformToVisual(ContentScroll).TransformPoint(new Windows.Foundation.Point(0, 0));
             var vh = ContentScroll.ViewportHeight;
-            // 上方保留 44px 余量：分组标题（"抽屉颜色"）也能进入可视区
             if (p.Y < 44)
                 ContentScroll.ChangeView(null, Math.Max(0, ContentScroll.VerticalOffset + p.Y - 44), null);
             else if (p.Y + c.ActualHeight > vh)
@@ -243,6 +316,25 @@ public sealed partial class DrawerSettingsPage : Page, ISettingsGamepad
 
     private void OnBackClick(object sender, Microsoft.UI.Xaml.RoutedEventArgs e) =>
         App.Main?.ShowSettingsHub();
+
+    /// <summary>点击开关卡片：光标移过来并切换开关</summary>
+    private void OnRowClick(object sender, Microsoft.UI.Xaml.RoutedEventArgs e)
+    {
+        if (sender is not Button row) return;
+        var i = Array.IndexOf(_controls, row);
+        if (i >= 0) FocusIndex(i);
+        ActivateCurrent();
+    }
+
+    /// <summary>点击色卡：选中该颜色（不切换开关）</summary>
+    private void OnColorCardClick(object sender, Microsoft.UI.Xaml.RoutedEventArgs e)
+    {
+        if (sender is not Button card) return;
+        var i = Array.IndexOf(_controls, card);
+        if (i >= 0) _index = i;
+        if (TryGetColor(card, out var hex)) ApplyColor(hex, card);
+        EnsureVisible(card);
+    }
 
     private void OnToggleChanged(object sender, Microsoft.UI.Xaml.RoutedEventArgs e)
     {
@@ -273,17 +365,6 @@ public sealed partial class DrawerSettingsPage : Page, ISettingsGamepad
         if (!_ready) return;
         SettingsService.Update(s => s.DrawerTransparent = TransparentToggle.IsOn);
         // 即时应用：切换玻璃底/透明底与描边粗细
-        App.Main?.ApplyDrawerSettings();
-    }
-
-    private void OnColorChanged(object sender, Microsoft.UI.Xaml.RoutedEventArgs e)
-    {
-        if (!_ready) return;
-        var hex = "none";
-        foreach (var (value, radio) in Palette)
-            if (radio.IsChecked == true) { hex = value; break; }
-
-        SettingsService.Update(s => s.DrawerColor = hex);
         App.Main?.ApplyDrawerSettings();
     }
 

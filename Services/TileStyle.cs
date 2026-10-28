@@ -23,7 +23,7 @@ public static class TileStyle
     /// <summary>是否为渐变磁贴主题（自身颜色斜向亮暗渐变）</summary>
     public static bool IsGradientTheme => SettingsService.Current.TileTheme == TileTheme.Gradient;
 
-    /// <summary>是否为玻璃磁贴主题（磨砂底 + 底部自身颜色柔光/色条）</summary>
+    /// <summary>是否为玻璃磁贴主题（磨砂色底）</summary>
     public static bool IsGlassTheme => SettingsService.Current.TileTheme == TileTheme.Glass;
 
     /// <summary>是否为透明磁贴主题（所有磁贴无底色，隐藏磁贴颜色设置）</summary>
@@ -119,7 +119,7 @@ public static class TileStyle
         return c;
     }
 
-    /// <summary>磁贴填充：彩色=强调色纯色块；渐变=亮暗斜向渐变；玻璃=深色磨砂底+底部色晕；
+    /// <summary>磁贴填充：彩色=强调色纯色块；渐变=亮暗斜向渐变；玻璃=磨砂色底；
     /// Win10=固定深灰；透明=完全透明</summary>
     public static Brush TileFill(Windows.UI.Color accent) =>
         FillFor(SettingsService.Current.TileTheme, accent);
@@ -143,22 +143,22 @@ public static class TileStyle
                 }
             };
         if (theme == TileTheme.Glass)
-            // 统一深色磨砂底（白/黑叠加），底部透出磁贴自身颜色
+        {
+            // 磨砂色底（通透一点）：顶部白色受光 → 中段淡化的自身色 → 底部稍浓的淡自身色，
+            // 颜色一律先向白提亮再叠加，避免整块磁贴发黑、失去玻璃的通透感
+            var light = Shade(accent, 0.55);
             return new LinearGradientBrush
             {
                 StartPoint = new Windows.Foundation.Point(0, 0),
                 EndPoint = new Windows.Foundation.Point(0, 1),
                 GradientStops =
                 {
-                    new GradientStop { Color = Windows.UI.Color.FromArgb(0x3A, 0xFF, 0xFF, 0xFF), Offset = 0 },
-                    new GradientStop { Color = Windows.UI.Color.FromArgb(0x16, 0xFF, 0xFF, 0xFF), Offset = 0.55 },
-                    new GradientStop
-                    {
-                        Color = Windows.UI.Color.FromArgb(0x52, accent.R, accent.G, accent.B),
-                        Offset = 1
-                    }
+                    new GradientStop { Color = Windows.UI.Color.FromArgb(0x66, 0xFF, 0xFF, 0xFF), Offset = 0 },
+                    new GradientStop { Color = Windows.UI.Color.FromArgb(0x40, 0xFF, 0xFF, 0xFF), Offset = 0.5 },
+                    new GradientStop { Color = Windows.UI.Color.FromArgb(0x50, light.R, light.G, light.B), Offset = 1 }
                 }
             };
+        }
         return new SolidColorBrush(accent);
     }
 
@@ -216,7 +216,8 @@ public static class TileStyle
         // 主题装饰层：先加入（位于图标/名称之下），且不接管输入
         if (!noColor && IsGlassTheme)
         {
-            // 玻璃：底部自身颜色柔光 + 3px 顶部色条
+            // 玻璃：底部淡化的自身颜色柔光（无实心色条，颜色已向白提亮，保持通透）
+            var glow = Shade(accent, 0.45);
             grid.Children.Add(new Border
             {
                 Height = Math.Max(20, height * 0.45),
@@ -227,17 +228,10 @@ public static class TileStyle
                     EndPoint = new Windows.Foundation.Point(0, 1),
                     GradientStops =
                     {
-                        new GradientStop { Color = Windows.UI.Color.FromArgb(0x00, accent.R, accent.G, accent.B), Offset = 0 },
-                        new GradientStop { Color = Windows.UI.Color.FromArgb(0x48, accent.R, accent.G, accent.B), Offset = 1 }
+                        new GradientStop { Color = Windows.UI.Color.FromArgb(0x00, glow.R, glow.G, glow.B), Offset = 0 },
+                        new GradientStop { Color = Windows.UI.Color.FromArgb(0x26, glow.R, glow.G, glow.B), Offset = 1 }
                     }
                 },
-                IsHitTestVisible = false
-            });
-            grid.Children.Add(new Border
-            {
-                Height = 3,
-                VerticalAlignment = VerticalAlignment.Bottom,
-                Background = new SolidColorBrush(accent),
                 IsHitTestVisible = false
             });
         }
@@ -703,7 +697,7 @@ public static class TileStyle
             };
             stack.Children.Add(new FontIcon
             {
-                Glyph = "\uE765",
+                Glyph = "\uE71B",
                 FontSize = 24,
                 Foreground = white,
                 HorizontalAlignment = HorizontalAlignment.Center,
@@ -733,7 +727,7 @@ public static class TileStyle
             };
             row.Children.Add(new FontIcon
             {
-                Glyph = "\uE765",
+                Glyph = "\uE71B",
                 FontSize = 30,
                 Foreground = white,
                 VerticalAlignment = VerticalAlignment.Center,
@@ -764,7 +758,7 @@ public static class TileStyle
             };
             stack.Children.Add(new FontIcon
             {
-                Glyph = "\uE765",
+                Glyph = "\uE71B",
                 FontSize = 38,
                 Foreground = white,
                 HorizontalAlignment = HorizontalAlignment.Center,

@@ -1,6 +1,7 @@
 using GameLocker.Services;
-using Microsoft.UI.Xaml.Controls;
+using Microsoft.UI.Xaml;
 using Microsoft.UI.Xaml.Media;
+using Microsoft.UI.Xaml.Controls;
 using Microsoft.UI.Xaml.Navigation;
 
 namespace GameLocker;
@@ -11,7 +12,10 @@ namespace GameLocker;
 /// </summary>
 public sealed partial class TopbarPage : Page, ISettingsGamepad
 {
-    private Control[] _controls = [];
+    /// <summary>可导航的开关卡片（一卡一开关）</summary>
+    private Button[] _controls = [];
+    /// <summary>卡片 → 对应开关（按 A / 点击时切换真正状态）</summary>
+    private (Button row, ToggleSwitch toggle)[] _switchRows = [];
     private int _index;
     private bool _ready;
 
@@ -26,7 +30,42 @@ public sealed partial class TopbarPage : Page, ISettingsGamepad
         BluetoothToggle.IsOn = s.ShowBluetooth;
         GamepadIconToggle.IsOn = s.ShowGamepadIcon;
 
-        _controls = [ClockToggle, BatteryToggle, WifiToggle, BluetoothToggle, GamepadIconToggle];
+        _switchRows =
+        [
+            (ClockRow, ClockToggle),
+            (BatteryRow, BatteryToggle),
+            (WifiRow, WifiToggle),
+            (BluetoothRow, BluetoothToggle),
+            (GamepadRow, GamepadIconToggle)
+        ];
+        _controls = [ClockRow, BatteryRow, WifiRow, BluetoothRow, GamepadRow];
+
+        // 卡片网格：宽窗口两列并整块居中，侧边栏窄窗口回成一列靠上
+        ContentScroll.SizeChanged += (_, _) => LayoutCards();
+        Loaded += (_, _) => LayoutCards();
+    }
+
+    /// <summary>可否排两列的最小可用宽度</summary>
+    private const double TwoColumnMinWidth = 560;
+
+    /// <summary>按可用宽度重排卡片：宽=两列 + 上下居中；窄=单列 + 靠上</summary>
+    private void LayoutCards()
+    {
+        if (SwitchGrid is null || ContentScroll is null) return;
+        var avail = ContentScroll.ViewportWidth;
+        if (avail <= 0) return;
+        var two = avail >= TwoColumnMinWidth;
+
+        SwitchGrid.ColumnDefinitions[1].Width = two
+            ? new GridLength(1, GridUnitType.Star)
+            : new GridLength(0);
+        SwitchGrid.VerticalAlignment = two ? VerticalAlignment.Center : VerticalAlignment.Top;
+
+        for (var i = 0; i < _controls.Length; i++)
+        {
+            Grid.SetRow(_controls[i], two ? i / 2 : i);
+            Grid.SetColumn(_controls[i], two ? i % 2 : 0);
+        }
     }
 
     protected override void OnNavigatedTo(NavigationEventArgs e)
@@ -48,31 +87,55 @@ public sealed partial class TopbarPage : Page, ISettingsGamepad
         if (!_ready) return;
 
         if (buttons.HasFlag(GamepadButtons.DPadUp) || buttons.HasFlag(GamepadButtons.DPadLeft))
-            Move(-1);
+            MoveRow(-1);
         else if (buttons.HasFlag(GamepadButtons.DPadDown) || buttons.HasFlag(GamepadButtons.DPadRight))
-            Move(1);
+            MoveRow(1);
         else if (buttons.HasFlag(GamepadButtons.A))
             ActivateCurrent();
     }
 
-    private void Move(int delta)
+    /// <summary>上下移动：单列时逐个移动，两列时左右键在同行内换列、上下键换行</summary>
+    private void MoveRow(int delta)
     {
-        var next = Math.Clamp(_index + delta, 0, _controls.Length - 1);
-        if (next == _index) return;
-        _index = next;
-        FocusIndex(next);
+        var two = SwitchGrid.ColumnDefinitions[1].Width.Value > 0;
+        if (!two)
+        {
+            var next = Math.Clamp(_index + delta, 0, _controls.Length - 1);
+            if (next == _index) return;
+            _index = next;
+            FocusIndex(next);
+            return;
+        }
+
+        // 两列：行内左右（±1），跨行（±2）
+        var row = _index / 2;
+        var col = _index % 2;
+        var rows = (_controls.Length + 1) / 2;
+        if (delta == -1 && col == 1) { _index--; FocusIndex(_index); return; }
+        if (delta == 1 && col == 0 && _index + 1 < _controls.Length) { _index++; FocusIndex(_index); return; }
+
+        var targetRow = Math.Clamp(row + (delta < 0 ? -1 : 1), 0, rows - 1);
+        if (targetRow == row) return;
+        var target = Math.Min(targetRow * 2 + col, _controls.Length - 1);
+        _index = target;
+        FocusIndex(target);
     }
 
     private void ActivateCurrent()
     {
-        if (_controls[_index] is ToggleSwitch ts)
-            ts.IsOn = !ts.IsOn;
+        var row = _controls[_index];
+        foreach (var (card, toggle) in _switchRows)
+        {
+            if (!ReferenceEquals(card, row)) continue;
+            toggle.IsOn = !toggle.IsOn;
+            return;
+        }
     }
 
     private void FocusIndex(int i)
     {
         var c = _controls[i];
-        // 开关：移动只移动光标（高亮描边），不聚焦；按 A 才切换并保存
+        // 卡片：移动只移动光标（白框），不聚焦；按 A 才切换并保存
         UpdateCursor(c);
         EnsureVisible(c);
     }
@@ -81,15 +144,14 @@ public sealed partial class TopbarPage : Page, ISettingsGamepad
     {
         foreach (var ctl in _controls)
         {
-            if (ctl is not ToggleSwitch ts) continue;
-            var on = ReferenceEquals(ts, cursor);
-            ts.BorderBrush = on
+            var on = ReferenceEquals(ctl, cursor);
+            ctl.BorderBrush = on
                 ? new SolidColorBrush(Windows.UI.Color.FromArgb(0xCC, 0xFF, 0xFF, 0xFF))
                 : new SolidColorBrush(Microsoft.UI.Colors.Transparent);
         }
     }
 
-    private void EnsureVisible(Control c)
+    private void EnsureVisible(FrameworkElement c)
     {
         try
         {
@@ -105,6 +167,15 @@ public sealed partial class TopbarPage : Page, ISettingsGamepad
 
     private void OnBackClick(object sender, Microsoft.UI.Xaml.RoutedEventArgs e) =>
         App.Main?.ShowSettingsHub();
+
+    /// <summary>点击卡片：选中并把焦点光标移过来，同时切换开关</summary>
+    private void OnRowClick(object sender, Microsoft.UI.Xaml.RoutedEventArgs e)
+    {
+        if (sender is not Button row) return;
+        var i = Array.IndexOf(_controls, row);
+        if (i >= 0) FocusIndex(i);
+        ActivateCurrent();
+    }
 
     private void OnToggleChanged(object sender, Microsoft.UI.Xaml.RoutedEventArgs e)
     {

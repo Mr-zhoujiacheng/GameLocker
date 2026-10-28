@@ -123,12 +123,13 @@ internal sealed class OnScreenKeyboardWindow : IDisposable
     /// <summary>数字标点页的 15 个符号（第 16 格固定为 Fn 切换键）</summary>
     private const string SymbolPadKeys = "1234567890.,?!-";
 
-    /// <summary>功能键页：Ins/Home/PageUp… 共 15 键（第 16 格为切回符号的键）</summary>
+    /// <summary>功能键页：Ins/Home/PageUp… 共 15 键（第 16 格为切回符号的键）。
+    /// 方向键集中成一行、按 上下左右 排列，排在第 3 行（第 2 行是 End/PgDn/PrtSc/Win）</summary>
     private static readonly (string Label, int Vk)[] FnPadKeys =
     [
         ("Ins", 0x2D), ("Home", 0x24), ("PgUp", 0x21), ("Del", 0x2E),
-        ("End", 0x23), ("PgDn", 0x22), ("←", 0x25), ("↑", 0x26),
-        ("↓", 0x28), ("→", 0x27), ("PrtSc", 0x2C), ("Win", 0x5B),
+        ("End", 0x23), ("PgDn", 0x22), ("PrtSc", 0x2C), ("Win", 0x5B),
+        ("↑", 0x26), ("↓", 0x28), ("←", 0x25), ("→", 0x27),
         ("Menu", 0x5D), ("F11", 0x7A), ("F12", 0x7B)
     ];
     private readonly System.Text.StringBuilder _pinyin = new(); // 拼音/五笔/九键缓冲

@@ -45,6 +45,9 @@ public sealed class OptiScalerInspection
 /// <summary>GitHub 上的一个可选 Release（供编辑页"具体版本"下拉使用）</summary>
 public sealed record RemoteRelease(string Tag, string Url, long Size, string? Digest, bool Prerelease)
 {
+    /// <summary>发布/创建时间：列表按它倒序，"最新版"取第一条（迁库后 created_at 可能全部相同）</summary>
+    public DateTimeOffset ReleasedAt { get; init; }
+
     /// <summary>下拉框显示文案：版本号（预览版标注）· 体积</summary>
     public string Label => Size > 0
         ? $"{Tag}{(Prerelease ? "（预览）" : "")} · {Math.Max(1, Size / 1048576)}MB"
@@ -71,7 +74,7 @@ public static class OptiScalerService
     /// <summary>测试版（Beta）包目录：与正式版分开缓存，切换渠道时不会互相覆盖</summary>
     private static readonly string BetaPackageDir = Path.Combine(RootDir, "package-beta");
 
-    /// <summary>汉化版包目录：与正式版/测试版分开缓存</summary>
+    /// <summary>中文版包目录：与正式版/测试版分开缓存</summary>
     private static readonly string ZhPackageDir = Path.Combine(RootDir, "package-zh");
 
     /// <summary>本地包文件夹：用户把 zip / 7z / rar 或已解压目录放在这里（选择"本地包"时自动取用）</summary>
@@ -84,13 +87,13 @@ public static class OptiScalerService
     public static string LocalPackageFolder => LocalPackageDir;
 
     /// <summary>OptiScaler 版本渠道（值, 显示名）：正式版取官方仓库 latest Release，
-    /// 测试版取社区镜像的 pre 版本（OptiScaler-Betas），汉化版取社区简体中文 nightly 构建
+    /// 测试版取社区镜像的 pre 版本（OptiScaler-Betas），中文版取社区简体中文 nightly 构建
     /// （菜单 / ini 注释全中文，包结构与官方一致）。ini 内容与用法完全一致。</summary>
     public static readonly (string Value, string Label)[] VersionChannelOptions =
     [
         ("stable", "正式版"),
         ("beta", "测试版"),
-        ("zh", "汉化版"),
+        ("zh", "中文版"),
         ("local", "本地包")
     ];
 
@@ -195,19 +198,19 @@ public static class OptiScalerService
     /// <summary>FSR4 文件变体默认值（旧配置里为 "auto" 的数据也归到这里）</summary>
     public const string DefaultFsr4Variant = "int8";
 
-    /// <summary>FSR4.1.1 XMX：Intel Arc / XMX 专用模型，两个 DLL 一起使用，版本固定</summary>
+    /// <summary>FSR4 XMX：Intel Arc / XMX 专用模型，只有一个模型 DLL，版本固定（2026-10 换用新模型）</summary>
     public const string XmxVariant = "xmx";
-    public const string XmxTag = "4.1.1";
+    /// <summary>缓存目录标记：换新模型后加后缀，让旧缓存不命中、自动重新下载</summary>
+    public const string XmxTag = "4.1.1c";
     private const string XmxUrl =
         "https://github.com/Mr-zhoujiacheng/GameLocker/releases/download/fsr4-xmx/FSR4.1.1XMX.zip";
-    private const long XmxSize = 75108743;
-    private const string XmxSha256 = "5e40087efeb789ba1d7d61901b659b8042e8cf107486bfacd448fced143da3f4";
+    private const long XmxSize = 31801575;
+    private const string XmxSha256 = "a910977c334b5546b5d3103328d8e553efc18ddfecb3078eb23f4e8d316b9325";
 
-    /// <summary>XMX 包内的两个 DLL（缺一不可，且要覆盖到 OptiScaler 包内 FSR 模块所在目录）</summary>
+    /// <summary>XMX 包内的模型 DLL（新版单个文件即可，注入到 OptiScaler 包内 FSR 模块所在目录）</summary>
     private static readonly string[] XmxFileNames =
     [
-        "amd_fidelityfx_upscaler_dx12.dll",
-        "fsr-original.dll"
+        "amd_fidelityfx_upscaler_dx12.dll"
     ];
 
     /// <summary>FSR4 包缓存目录（按 int8 / fp8 分子目录）</summary>
@@ -274,7 +277,7 @@ public static class OptiScalerService
     private const string WikiHtmlUrl = "https://github.com/optiscaler/OptiScaler/wiki/Compatibility-List";
     private const string StableRepoApi = "https://api.github.com/repos/optiscaler/OptiScaler";
     private const string BetaRepoApi = "https://api.github.com/repos/Optiscaler-Client/OptiScaler-Betas";
-    private const string ZhRepoApi = "https://api.github.com/repos/Lxg6/OptiScaler-nightly-zh_CN";
+    private const string ZhRepoApi = "https://api.github.com/repos/GIT-LINCC/OptiScaler-nightly-zh_CN";
 
     /// <summary>兼容列表缓存有效期（超过则尝试重新抓取）</summary>
     private static readonly TimeSpan CompatTtl = TimeSpan.FromDays(7);
@@ -880,14 +883,14 @@ public static class OptiScalerService
         var (label, repo, rootBase) = channel switch
         {
             "beta" => ("OptiScaler 测试版", BetaRepoApi, BetaPackageDir),
-            "zh" => ("OptiScaler 汉化版", ZhRepoApi, ZhPackageDir),
+            "zh" => ("OptiScaler 中文版", ZhRepoApi, ZhPackageDir),
             _ => ("OptiScaler", StableRepoApi, PackageDir)
         };
         var tag = (versionTag ?? "").Trim();
 
         Report($"正在获取 {label} 版本信息…");
-        // 汉化版是每日构建，预览标记不固定（有时最新一条被标成 pre），
-        // 故"最新版"直接取 Release 列表第一条，避免 latest 接口退回到前一天
+        // 中文版是每日构建，预览标记不固定（有时最新一条被标成 pre），
+        // 故"最新版"直接取 Release 列表第一条（列表已按发布时间倒序），避免 latest 接口退回到前一天
         var asset = tag.Length == 0 && channel == "zh"
             ? (await GetReleasesAsync(repo)).FirstOrDefault()
             : await GetReleaseAsync(repo, tag);
@@ -1013,6 +1016,7 @@ public static class OptiScalerService
         var prerelease = release.TryGetProperty("prerelease", out var p) && p.ValueKind == JsonValueKind.True;
         if (!release.TryGetProperty("assets", out var assets) || assets.ValueKind != JsonValueKind.Array)
             return null;
+        var releasedAt = ReadTimestamp(release, "published_at") ?? ReadTimestamp(release, "created_at") ?? default;
 
         RemoteRelease? best = null;
         var bestScore = -1;
@@ -1032,9 +1036,16 @@ public static class OptiScalerService
 
             var size = a.TryGetProperty("size", out var s) ? s.GetInt64() : 0L;
             var digest = a.TryGetProperty("digest", out var d) ? d.GetString() : null;
-            best = new RemoteRelease(tag, url, size, digest, prerelease);
+            best = new RemoteRelease(tag, url, size, digest, prerelease) { ReleasedAt = releasedAt };
         }
         return best;
+    }
+
+    /// <summary>读取 Release 的时间字段（ISO8601，取不到返回 null）</summary>
+    private static DateTimeOffset? ReadTimestamp(JsonElement release, string name)
+    {
+        if (!release.TryGetProperty(name, out var v) || v.ValueKind != JsonValueKind.String) return null;
+        return DateTimeOffset.TryParse(v.GetString(), out var t) ? t : null;
     }
 
     /// <summary>Release 列表缓存（10 分钟），避免反复切下拉框时打 GitHub API</summary>
@@ -1069,6 +1080,8 @@ public static class OptiScalerService
             return [];
         }
 
+        // 按发布时间倒序：迁移过的仓库 created_at 可能全部相同，GitHub 默认顺序会把旧包排前面
+        list.Sort((a, b) => b.ReleasedAt.CompareTo(a.ReleasedAt));
         var arr = list.ToArray();
         lock (ReleaseCache) ReleaseCache[key] = (DateTime.UtcNow, arr);
         return arr;
@@ -1092,7 +1105,7 @@ public static class OptiScalerService
     }
 
     /// <summary>编辑页「具体版本」下拉项：首项"最新版"（空值）+ 该渠道可下载的 Release。
-    /// 正式版渠道只列非预览 Release；测试版/汉化版列全部（nightly 常被标成预览）；
+    /// 正式版渠道只列非预览 Release；测试版/中文版列全部（nightly 常被标成预览）；
     /// 本地包渠道没有版本概念，返回空。</summary>
     public static async Task<(string Value, string Label)[]> GetVersionOptionsAsync(string channel)
     {
@@ -1126,7 +1139,7 @@ public static class OptiScalerService
     public static async Task<(string Value, string Label)[]> GetFsr4VersionOptionsAsync(string variant)
     {
         // XMX 是固定版本的专用模型包，不走社区仓库的版本列表
-        if (variant == XmxVariant) return [(XmxTag, "FSR4.1.1XMX")];
+        if (variant == XmxVariant) return [(XmxTag, "FSR4 OR DLSS4")];
         if (!Fsr4Sources.TryGetValue(variant, out var src)) return [];
         var list = await GetReleasesAsync(src.Repo, variant);
         var items = list.Select(r => (r.Tag, r.Label)).ToList();
@@ -1453,7 +1466,7 @@ public static class OptiScalerService
         return root;
     }
 
-    /// <summary>取 FSR4.1.1 XMX 模型包：来源固定为本项目 Release 资源，校验大小与 SHA256 后解压</summary>
+    /// <summary>取 FSR4 OR DLSS4 模型包：来源固定为本项目 Release 资源，校验大小与 SHA256 后解压</summary>
     private static async Task<string?> GetXmxAsync()
     {
         var baseDir = Path.Combine(Fsr4Dir, XmxVariant);
@@ -1462,29 +1475,29 @@ public static class OptiScalerService
 
         Directory.CreateDirectory(baseDir);
         var tmp = Path.Combine(baseDir, "FSR4.1.1XMX.zip");
-        Report($"正在下载 FSR4.1.1 XMX（约 {XmxSize / 1048576}MB，自动选最快源）…", progress: 0);
+        Report($"正在下载 FSR4 OR DLSS4（约 {XmxSize / 1048576}MB，自动选最快源）…", progress: 0);
         try
         {
             var ok = await DownloadAssetAsync(XmxUrl, tmp, XmxSize, XmxSha256,
-                (got, total) => ReportDownload("FSR4.1.1 XMX", got, total));
-            if (!ok) { Report("FSR4.1.1 XMX 下载失败，请检查网络后重试", true); return null; }
+                (got, total) => ReportDownload("FSR4 OR DLSS4", got, total));
+            if (!ok) { Report("FSR4 OR DLSS4 下载失败，请检查网络后重试", true); return null; }
         }
         catch (Exception ex)
         {
-            DebugLog.Write($"OptiScaler: FSR4.1.1 XMX 下载异常 {ex.Message}");
-            Report("FSR4.1.1 XMX 下载失败，请检查网络后重试", true);
+            DebugLog.Write($"OptiScaler: FSR4 OR DLSS4 下载异常 {ex.Message}");
+            Report("FSR4 OR DLSS4 下载失败，请检查网络后重试", true);
             return null;
         }
 
-        Report("正在解压 FSR4.1.1 XMX…");
+        Report("正在解压 FSR4 OR DLSS4…");
         var root = await ExtractAsync(tmp, dir, XmxFileNames);
         try { File.Delete(tmp); } catch { /* 临时包删不掉无害 */ }
         if (root is null)
         {
-            Report("FSR4.1.1XMX 包解压失败（需要系统 tar.exe）", true);
+            Report("FSR4 OR DLSS4 包解压失败（需要系统 tar.exe）", true);
             return null;
         }
-        Report("FSR4.1.1XMX 已下载完成，注入时直接使用");
+        Report("FSR4 OR DLSS4 已下载完成，注入时直接使用");
         return root;
     }
 
@@ -1765,8 +1778,8 @@ public static class OptiScalerService
             }
 
             // FSR4 附加文件：官方包不含，按已知文件名补进游戏根目录（游戏硬编码哪个名字就用哪个）。
-            // XMX 是 Intel 专用模型，要覆盖到 OptiScaler 包内 FSR 模块所在目录
-            // （0.9.4 在游戏根目录、v10 在 OptiScaler\ 子目录），两个 DLL 一起放。
+            // XMX 是 Intel 专用模型（单个文件），要覆盖到 OptiScaler 包内 FSR 模块所在目录
+            // （0.9.4 在游戏根目录、v10 在 OptiScaler\ 子目录）。
             if (fsr4Root is not null)
             {
                 var fsr4Variant = Fsr4VariantOf(item);

@@ -101,6 +101,14 @@
             </Setter>
         </Style>
 
+        <!-- 分区标题 -->
+        <Style x:Key="SectionHeadStyle" TargetType="TextBlock">
+            <Setter Property="FontSize" Value="13"/>
+            <Setter Property="FontWeight" Value="SemiBold"/>
+            <Setter Property="Foreground" Value="#BBD8FF"/>
+            <Setter Property="Margin" Value="4,2,0,0"/>
+        </Style>
+
         <!-- 键位捕获按钮：外形像一枚键帽，可点可按 A -->
         <Style x:Key="KeyCapStyle" TargetType="Button">
             <Setter Property="Background" Value="#1FFFFFFF"/>
@@ -134,6 +142,9 @@
         <!-- 内容区：每张卡片就是一个手柄选中框，方向键整卡上下切换 -->
         <ScrollViewer x:Name="PageScroller" Grid.Row="1" Padding="20,4,20,12" VerticalScrollBarVisibility="Auto">
             <StackPanel Spacing="12">
+
+                <!-- 一、快捷映射：只放三个键位捕获，和下方基本操作说明分开 -->
+                <TextBlock Text="快捷映射" Style="{StaticResource SectionHeadStyle}"/>
 
                 <!-- 呼出窗口组合键 -->
                 <Border x:Name="CardSummon" Style="{StaticResource CardStyle}">
@@ -188,22 +199,14 @@
                     </StackPanel>
                 </Border>
 
-                <!-- 主页：卡内首行即三列表头，图例本身就是表格的一部分 -->
-                <Border x:Name="CardHome" Style="{StaticResource CardStyle}">
-                    <StackPanel Spacing="9">
-                        <Grid ColumnSpacing="10">
-                            <Grid.ColumnDefinitions>
-                                <ColumnDefinition Width="Auto"/>
-                                <ColumnDefinition Width="*"/>
-                            </Grid.ColumnDefinitions>
-                            <Border Grid.Column="0" Style="{StaticResource PillStyle}">
-                                <TextBlock Style="{StaticResource PillTextStyle}" Text="主页"/>
-                            </Border>
-                            <TextBlock Grid.Column="1" Text="标「—」表示该操作无等价项"
-                                       FontSize="11.5" Opacity="0.5" HorizontalAlignment="Right"
-                                       VerticalAlignment="Center"/>
-                        </Grid>
+                <!-- 分隔：快捷映射 / 基本操作 -->
+                <Border Height="1" Background="#1FFFFFFF" Margin="0,6"/>
 
+                <!-- 二、基本操作：只列通用操作，不细分到每个页面 -->
+                <TextBlock Text="基本操作" Style="{StaticResource SectionHeadStyle}"/>
+
+                <Border x:Name="CardBasic" Style="{StaticResource CardStyle}">
+                    <StackPanel Spacing="9">
                         <!-- 表头行：列宽与下方键帽行严格一致，读起来就是表格的列名 -->
                         <StackPanel Spacing="6">
                             <Grid ColumnSpacing="10">
@@ -225,47 +228,7 @@
                             <Border Height="1" Background="#1FFFFFFF"/>
                         </StackPanel>
 
-                        <ItemsControl x:Name="LvHome" Style="{StaticResource RowListStyle}"/>
-                    </StackPanel>
-                </Border>
-
-                <!-- 编辑模式 -->
-                <Border x:Name="CardEdit" Style="{StaticResource CardStyle}">
-                    <StackPanel Spacing="9">
-                        <Border Style="{StaticResource PillStyle}">
-                            <TextBlock Style="{StaticResource PillTextStyle}" Text="编辑模式"/>
-                        </Border>
-                        <ItemsControl x:Name="LvEdit" Style="{StaticResource RowListStyle}"/>
-                    </StackPanel>
-                </Border>
-
-                <!-- 设置 -->
-                <Border x:Name="CardSettings" Style="{StaticResource CardStyle}">
-                    <StackPanel Spacing="9">
-                        <Border Style="{StaticResource PillStyle}">
-                            <TextBlock Style="{StaticResource PillTextStyle}" Text="设置"/>
-                        </Border>
-                        <ItemsControl x:Name="LvSettings" Style="{StaticResource RowListStyle}"/>
-                    </StackPanel>
-                </Border>
-
-                <!-- 关于 -->
-                <Border x:Name="CardAbout" Style="{StaticResource CardStyle}">
-                    <StackPanel Spacing="9">
-                        <Border Style="{StaticResource PillStyle}">
-                            <TextBlock Style="{StaticResource PillTextStyle}" Text="关于"/>
-                        </Border>
-                        <ItemsControl x:Name="LvAbout" Style="{StaticResource RowListStyle}"/>
-                    </StackPanel>
-                </Border>
-
-                <!-- 全局呼出 -->
-                <Border x:Name="CardGlobal" Style="{StaticResource CardStyle}">
-                    <StackPanel Spacing="9">
-                        <Border Style="{StaticResource PillStyle}">
-                            <TextBlock Style="{StaticResource PillTextStyle}" Text="全局呼出"/>
-                        </Border>
-                        <ItemsControl x:Name="LvGlobal" Style="{StaticResource RowListStyle}"/>
+                        <ItemsControl x:Name="LvBasic" Style="{StaticResource RowListStyle}"/>
                     </StackPanel>
                 </Border>
             </StackPanel>

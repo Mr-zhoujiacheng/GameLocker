@@ -7,10 +7,9 @@ using Microsoft.UI.Xaml.Navigation;
 
 namespace GameLocker;
 
-/// <summary>控制设置：呼出组合键 / 键盘呼出键 / 全屏组合键捕获 + 手柄 ↔ 触控操作对照。
-/// 手柄：方向键按"整张卡片"上下切换（每次只选中一张卡，卡内说明只读、不可单独选中，
-/// 往下移动即看下一张卡的全部内容），A=捕获当前卡片的键位，View/B=返回设置主页。
-/// 键盘呼出键仅键盘有效，按下即刻呼出（无需长按），可含 Ctrl/Shift/Alt/Win 组合。</summary>
+/// <summary>控制设置：上半区「快捷映射」= 呼出组合键 / 键盘呼出键 / 全屏组合键捕获；下半区「基本操作」= 简化后的通用操作说明。
+/// 手柄：方向键按"整张卡片"上下切换（每次只选中一张卡，卡内说明只读、不可单独选中），A=捕获当前卡片的键位，
+/// View/B=返回设置主页。键盘呼出键仅键盘有效，按下即刻呼出（无需长按），可含 Ctrl/Shift/Alt/Win 组合。</summary>
 public sealed partial class KeybindPage : Page, ISettingsGamepad
 {
     private bool _ready;
@@ -28,7 +27,7 @@ public sealed partial class KeybindPage : Page, ISettingsGamepad
     private enum CaptureTarget { Summon, KeySummon, Fullscreen }
     private CaptureTarget _target;
 
-    /// <summary>手柄焦点所在卡片序号：0=呼出键 1=键盘呼出键 2=全屏键 ≥3=说明卡片</summary>
+    /// <summary>手柄焦点所在卡片序号：0=呼出键 1=键盘呼出键 2=全屏键 3=基本操作说明</summary>
     private int _focus;
 
     private Border[] _cards = default!;
@@ -46,14 +45,10 @@ public sealed partial class KeybindPage : Page, ISettingsGamepad
             SettingsService.Current.KeyboardSummonMods);
         FsCaptureText.Text = GamepadService.Describe(SettingsService.Current.FullscreenCombo);
 
-        // 说明数据源：按 ControlHelp 的分组顺序逐个卡片填充（含"关于"分组）
-        LvHome.ItemsSource = ControlHelp.Sections[0].Rows;
-        LvEdit.ItemsSource = ControlHelp.Sections[1].Rows;
-        LvSettings.ItemsSource = ControlHelp.Sections[2].Rows;
-        LvAbout.ItemsSource = ControlHelp.Sections[3].Rows;
-        LvGlobal.ItemsSource = ControlHelp.Sections[4].Rows;
+        // 说明数据源：只保留一份"基本操作"（快捷映射与说明分开，不细分到每个页面）
+        LvBasic.ItemsSource = ControlHelp.Basic;
 
-        _cards = [CardSummon, CardKeySummon, CardFullscreen, CardHome, CardEdit, CardSettings, CardAbout, CardGlobal];
+        _cards = [CardSummon, CardKeySummon, CardFullscreen, CardBasic];
         ApplyCardFocus();
 
         // 布局完成后再复位：OnNavigatedTo 时元素尚未排列，滚动偏移不可用

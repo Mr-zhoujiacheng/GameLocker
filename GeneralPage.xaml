@@ -5,6 +5,73 @@
     xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
     xmlns:ctl="using:GameLocker.Controls">
 
+    <Page.Resources>
+        <!-- 开关行卡片：直角 + 类型色渐变底；选中时由代码改 BorderBrush 画白框 -->
+        <Style x:Key="SettingRowStyle" TargetType="Button">
+            <Setter Property="CornerRadius" Value="0"/>
+            <Setter Property="BorderThickness" Value="2"/>
+            <Setter Property="BorderBrush" Value="Transparent"/>
+            <Setter Property="Padding" Value="12,10"/>
+            <Setter Property="MinHeight" Value="72"/>
+            <Setter Property="HorizontalAlignment" Value="Stretch"/>
+            <Setter Property="HorizontalContentAlignment" Value="Stretch"/>
+            <Setter Property="VerticalContentAlignment" Value="Center"/>
+            <Setter Property="IsTabStop" Value="False"/>
+        </Style>
+        <!-- 开关本体：自绘胶囊（隐去 On/Off 文字与多余留白），随 IsOn 变色、滑块滑动 -->
+        <Style x:Key="CleanToggleStyle" TargetType="ToggleSwitch">
+            <Setter Property="Template">
+                <Setter.Value>
+                    <ControlTemplate TargetType="ToggleSwitch">
+                        <Grid Width="44" Height="22" Background="Transparent">
+                            <Border Width="40" Height="20" CornerRadius="10" Background="#2AFFFFFF"
+                                    BorderThickness="1" BorderBrush="#4DFFFFFF"
+                                    HorizontalAlignment="Center" VerticalAlignment="Center"/>
+                            <Border x:Name="Fill" Width="40" Height="20" CornerRadius="10" Background="#C64CC2FF"
+                                    Opacity="0" HorizontalAlignment="Center" VerticalAlignment="Center"/>
+                            <Ellipse x:Name="Knob" Width="14" Height="14" Fill="#FFFFFF"
+                                     HorizontalAlignment="Left" VerticalAlignment="Center" Margin="3,0,0,0">
+                                <Ellipse.RenderTransform>
+                                    <CompositeTransform/>
+                                </Ellipse.RenderTransform>
+                            </Ellipse>
+                            <VisualStateManager.VisualStateGroups>
+                                <VisualStateGroup x:Name="ToggleStates">
+                                    <VisualState x:Name="Off">
+                                        <VisualState.Setters>
+                                            <Setter Target="Knob.Fill" Value="#FFFFFF"/>
+                                        </VisualState.Setters>
+                                        <Storyboard>
+                                            <DoubleAnimation Storyboard.TargetName="Knob"
+                                                             Storyboard.TargetProperty="(UIElement.RenderTransform).(CompositeTransform.TranslateX)"
+                                                             To="0" Duration="0:0:0.12"/>
+                                            <DoubleAnimation Storyboard.TargetName="Fill"
+                                                             Storyboard.TargetProperty="Opacity"
+                                                             To="0" Duration="0:0:0.12"/>
+                                        </Storyboard>
+                                    </VisualState>
+                                    <VisualState x:Name="On">
+                                        <VisualState.Setters>
+                                            <Setter Target="Knob.Fill" Value="#1F1F1F"/>
+                                        </VisualState.Setters>
+                                        <Storyboard>
+                                            <DoubleAnimation Storyboard.TargetName="Knob"
+                                                             Storyboard.TargetProperty="(UIElement.RenderTransform).(CompositeTransform.TranslateX)"
+                                                             To="20" Duration="0:0:0.12"/>
+                                            <DoubleAnimation Storyboard.TargetName="Fill"
+                                                             Storyboard.TargetProperty="Opacity"
+                                                             To="1" Duration="0:0:0.12"/>
+                                        </Storyboard>
+                                    </VisualState>
+                                </VisualStateGroup>
+                            </VisualStateManager.VisualStateGroups>
+                        </Grid>
+                    </ControlTemplate>
+                </Setter.Value>
+            </Setter>
+        </Style>
+    </Page.Resources>
+
     <Grid Background="Transparent"
           RequestedTheme="Dark" XYFocusKeyboardNavigation="Enabled">
 
@@ -24,77 +91,286 @@
         </Grid>
 
         <!-- 内容区可滚动：窄窗口下控件不被遮盖 -->
-        <ScrollViewer x:Name="ContentScroll" Grid.Row="1" Padding="24,8" VerticalScrollBarVisibility="Hidden">
-            <StackPanel Spacing="20">
-                <ToggleSwitch x:Name="AutoStartToggle" Padding="14,10" Toggled="OnToggleChanged">
-                    <ToggleSwitch.Header>
-                        <StackPanel Spacing="2">
-                            <TextBlock Text="自启动" FontSize="16"/>
-                            <TextBlock Text="开机后自动运行 Game Locker" FontSize="12" Opacity="0.6"/>
-                        </StackPanel>
-                    </ToggleSwitch.Header>
-                </ToggleSwitch>
-                <ToggleSwitch x:Name="HideAfterLaunchToggle" Padding="14,10" Toggled="OnToggleChanged">
-                    <ToggleSwitch.Header>
-                        <StackPanel Spacing="2">
-                            <TextBlock Text="启动后隐藏" FontSize="16"/>
-                            <TextBlock Text="启动程序后自动隐藏窗口到托盘" FontSize="12" Opacity="0.6"/>
-                        </StackPanel>
-                    </ToggleSwitch.Header>
-                </ToggleSwitch>
-                <ToggleSwitch x:Name="StartFullscreenToggle" Padding="14,10" Toggled="OnToggleChanged">
-                    <ToggleSwitch.Header>
-                        <StackPanel Spacing="2">
-                            <TextBlock Text="启动全屏" FontSize="16"/>
-                            <TextBlock Text="运行时直接进入全屏模式而非侧边栏" FontSize="12" Opacity="0.6"/>
-                        </StackPanel>
-                    </ToggleSwitch.Header>
-                </ToggleSwitch>
-                <ToggleSwitch x:Name="AnimationToggle" Padding="14,10" Toggled="OnToggleChanged">
-                    <ToggleSwitch.Header>
-                        <StackPanel Spacing="2">
-                            <TextBlock Text="弹出动画" FontSize="16"/>
-                            <TextBlock Text="呼出/隐藏时窗口滑入滑出过渡效果" FontSize="12" Opacity="0.6"/>
-                        </StackPanel>
-                    </ToggleSwitch.Header>
-                </ToggleSwitch>
-                <ToggleSwitch x:Name="UiSoundToggle" Padding="14,10" Toggled="OnUiSoundChanged">
-                    <ToggleSwitch.Header>
-                        <StackPanel Spacing="2">
-                            <TextBlock Text="操作音效" FontSize="16"/>
-                            <TextBlock Text="手柄移动磁贴、A/B 键的提示音（默认开启）" FontSize="12" Opacity="0.6" TextWrapping="Wrap"/>
-                        </StackPanel>
-                    </ToggleSwitch.Header>
-                </ToggleSwitch>
-                <ToggleSwitch x:Name="EdgeGestureToggle" Padding="14,10" Toggled="OnEdgeGestureChanged">
-                    <ToggleSwitch.Header>
-                        <StackPanel Spacing="2">
-                            <TextBlock Text="边缘手势呼出" FontSize="16"/>
-                            <TextBlock Text="从屏幕边缘向中心滑动唤起（左/右停靠对应左右边缘，全屏对应上边缘）" FontSize="12" Opacity="0.6"/>
-                        </StackPanel>
-                    </ToggleSwitch.Header>
-                </ToggleSwitch>
+        <ScrollViewer x:Name="ContentScroll" Grid.Row="1" Padding="20,8,20,10" VerticalScrollBarVisibility="Hidden">
+            <Grid x:Name="SwitchGrid" ColumnSpacing="10" RowSpacing="10" VerticalAlignment="Top">
+                <Grid.ColumnDefinitions>
+                    <ColumnDefinition Width="*"/>
+                    <ColumnDefinition Width="0"/>
+                </Grid.ColumnDefinitions>
+                <Grid.RowDefinitions>
+                    <RowDefinition Height="Auto"/>
+                    <RowDefinition Height="Auto"/>
+                    <RowDefinition Height="Auto"/>
+                    <RowDefinition Height="Auto"/>
+                    <RowDefinition Height="Auto"/>
+                    <RowDefinition Height="Auto"/>
+                    <RowDefinition Height="Auto"/>
+                    <RowDefinition Height="Auto"/>
+                    <RowDefinition Height="Auto"/>
+                    <RowDefinition Height="Auto"/>
+                    <RowDefinition Height="Auto"/>
+                </Grid.RowDefinitions>
 
-                <ToggleSwitch x:Name="TabletModeToggle" Padding="14,10" Toggled="OnTabletModeChanged">
-                    <ToggleSwitch.Header>
-                        <StackPanel Spacing="2">
-                            <TextBlock Text="平板模式" FontSize="16"/>
-                            <TextBlock Text="隐藏所有页面底部的手柄按键提示条" FontSize="12" Opacity="0.6"/>
+                <!-- 自启动 -->
+                <Button x:Name="AutoStartRow" Style="{StaticResource SettingRowStyle}" Click="OnRowClick">
+                    <Button.Background>
+                        <LinearGradientBrush StartPoint="0,0" EndPoint="0,1">
+                            <GradientStop Color="#12FFFFFF" Offset="0"/>
+                            <GradientStop Color="#224CC2FF" Offset="1"/>
+                        </LinearGradientBrush>
+                    </Button.Background>
+                    <Grid ColumnSpacing="12">
+                        <Grid.ColumnDefinitions>
+                            <ColumnDefinition Width="Auto"/>
+                            <ColumnDefinition Width="Auto"/>
+                            <ColumnDefinition Width="*"/>
+                            <ColumnDefinition Width="Auto"/>
+                        </Grid.ColumnDefinitions>
+                        <Border Width="3" Height="40" Background="#664CC2FF" VerticalAlignment="Center"/>
+                        <Border Grid.Column="1" Width="34" Height="34" Background="#1F4CC2FF"
+                                BorderThickness="1" BorderBrush="#3D4CC2FF" VerticalAlignment="Center">
+                            <FontIcon Glyph="&#xE7E8;" FontSize="16"/>
+                        </Border>
+                        <StackPanel Grid.Column="2" Spacing="2" VerticalAlignment="Center">
+                            <TextBlock Text="自启动" FontSize="15" FontWeight="SemiBold"/>
+                            <TextBlock Text="开机后自动运行 Game Locker" FontSize="11.5"
+                                       Opacity="0.55" TextTrimming="CharacterEllipsis"/>
                         </StackPanel>
-                    </ToggleSwitch.Header>
-                </ToggleSwitch>
+                        <ToggleSwitch x:Name="AutoStartToggle" Grid.Column="3" Style="{StaticResource CleanToggleStyle}"
+                                      IsHitTestVisible="False" VerticalAlignment="Center"
+                                      OnContent="" OffContent=""
+                                      Toggled="OnToggleChanged"/>
+                    </Grid>
+                </Button>
 
-                <ToggleSwitch x:Name="StartMenuToggle" Padding="14,10" Toggled="OnStartMenuChanged">
-                    <ToggleSwitch.Header>
-                        <StackPanel Spacing="2">
-                            <TextBlock Text="替代 Windows 开始菜单" FontSize="16"/>
-                            <TextBlock Text="窗口居中停靠在任务栏上方；Win 键与任务栏开始按钮改为呼出/收起本启动器" FontSize="12" Opacity="0.6" TextWrapping="Wrap"/>
+                <!-- 启动后隐藏 -->
+                <Button x:Name="HideAfterLaunchRow" Style="{StaticResource SettingRowStyle}" Click="OnRowClick">
+                    <Button.Background>
+                        <LinearGradientBrush StartPoint="0,0" EndPoint="0,1">
+                            <GradientStop Color="#12FFFFFF" Offset="0"/>
+                            <GradientStop Color="#224CC2FF" Offset="1"/>
+                        </LinearGradientBrush>
+                    </Button.Background>
+                    <Grid ColumnSpacing="12">
+                        <Grid.ColumnDefinitions>
+                            <ColumnDefinition Width="Auto"/>
+                            <ColumnDefinition Width="Auto"/>
+                            <ColumnDefinition Width="*"/>
+                            <ColumnDefinition Width="Auto"/>
+                        </Grid.ColumnDefinitions>
+                        <Border Width="3" Height="40" Background="#664CC2FF" VerticalAlignment="Center"/>
+                        <Border Grid.Column="1" Width="34" Height="34" Background="#1F4CC2FF"
+                                BorderThickness="1" BorderBrush="#3D4CC2FF" VerticalAlignment="Center">
+                            <FontIcon Glyph="&#xE921;" FontSize="16"/>
+                        </Border>
+                        <StackPanel Grid.Column="2" Spacing="2" VerticalAlignment="Center">
+                            <TextBlock Text="启动后隐藏" FontSize="15" FontWeight="SemiBold"/>
+                            <TextBlock Text="启动程序后自动隐藏窗口到托盘" FontSize="11.5"
+                                       Opacity="0.55" TextTrimming="CharacterEllipsis"/>
                         </StackPanel>
-                    </ToggleSwitch.Header>
-                </ToggleSwitch>
+                        <ToggleSwitch x:Name="HideAfterLaunchToggle" Grid.Column="3" Style="{StaticResource CleanToggleStyle}"
+                                      IsHitTestVisible="False" VerticalAlignment="Center"
+                                      OnContent="" OffContent=""
+                                      Toggled="OnToggleChanged"/>
+                    </Grid>
+                </Button>
 
-                <TextBlock x:Name="DockSideTitle" Text="窗口位置" FontSize="15" Opacity="0.9"/>
-                <TextBlock x:Name="DockSideHint" Text="居中时窗口不贴屏幕四边，边缘手势从顶边呼出；宽度按外观页的比例放大（38% ≈ 70% 屏宽）" FontSize="12" Opacity="0.6"/>
+                <!-- 启动全屏 -->
+                <Button x:Name="StartFullscreenRow" Style="{StaticResource SettingRowStyle}" Click="OnRowClick">
+                    <Button.Background>
+                        <LinearGradientBrush StartPoint="0,0" EndPoint="0,1">
+                            <GradientStop Color="#12FFFFFF" Offset="0"/>
+                            <GradientStop Color="#224CC2FF" Offset="1"/>
+                        </LinearGradientBrush>
+                    </Button.Background>
+                    <Grid ColumnSpacing="12">
+                        <Grid.ColumnDefinitions>
+                            <ColumnDefinition Width="Auto"/>
+                            <ColumnDefinition Width="Auto"/>
+                            <ColumnDefinition Width="*"/>
+                            <ColumnDefinition Width="Auto"/>
+                        </Grid.ColumnDefinitions>
+                        <Border Width="3" Height="40" Background="#664CC2FF" VerticalAlignment="Center"/>
+                        <Border Grid.Column="1" Width="34" Height="34" Background="#1F4CC2FF"
+                                BorderThickness="1" BorderBrush="#3D4CC2FF" VerticalAlignment="Center">
+                            <FontIcon Glyph="&#xE740;" FontSize="16"/>
+                        </Border>
+                        <StackPanel Grid.Column="2" Spacing="2" VerticalAlignment="Center">
+                            <TextBlock Text="启动全屏" FontSize="15" FontWeight="SemiBold"/>
+                            <TextBlock Text="运行时直接进入全屏模式而非侧边栏" FontSize="11.5"
+                                       Opacity="0.55" TextTrimming="CharacterEllipsis"/>
+                        </StackPanel>
+                        <ToggleSwitch x:Name="StartFullscreenToggle" Grid.Column="3" Style="{StaticResource CleanToggleStyle}"
+                                      IsHitTestVisible="False" VerticalAlignment="Center"
+                                      OnContent="" OffContent=""
+                                      Toggled="OnToggleChanged"/>
+                    </Grid>
+                </Button>
+
+                <!-- 弹出动画 -->
+                <Button x:Name="AnimationRow" Style="{StaticResource SettingRowStyle}" Click="OnRowClick">
+                    <Button.Background>
+                        <LinearGradientBrush StartPoint="0,0" EndPoint="0,1">
+                            <GradientStop Color="#12FFFFFF" Offset="0"/>
+                            <GradientStop Color="#224CC2FF" Offset="1"/>
+                        </LinearGradientBrush>
+                    </Button.Background>
+                    <Grid ColumnSpacing="12">
+                        <Grid.ColumnDefinitions>
+                            <ColumnDefinition Width="Auto"/>
+                            <ColumnDefinition Width="Auto"/>
+                            <ColumnDefinition Width="*"/>
+                            <ColumnDefinition Width="Auto"/>
+                        </Grid.ColumnDefinitions>
+                        <Border Width="3" Height="40" Background="#664CC2FF" VerticalAlignment="Center"/>
+                        <Border Grid.Column="1" Width="34" Height="34" Background="#1F4CC2FF"
+                                BorderThickness="1" BorderBrush="#3D4CC2FF" VerticalAlignment="Center">
+                            <FontIcon Glyph="&#xE768;" FontSize="16"/>
+                        </Border>
+                        <StackPanel Grid.Column="2" Spacing="2" VerticalAlignment="Center">
+                            <TextBlock Text="弹出动画" FontSize="15" FontWeight="SemiBold"/>
+                            <TextBlock Text="呼出/隐藏时窗口滑入滑出过渡效果" FontSize="11.5"
+                                       Opacity="0.55" TextTrimming="CharacterEllipsis"/>
+                        </StackPanel>
+                        <ToggleSwitch x:Name="AnimationToggle" Grid.Column="3" Style="{StaticResource CleanToggleStyle}"
+                                      IsHitTestVisible="False" VerticalAlignment="Center"
+                                      OnContent="" OffContent=""
+                                      Toggled="OnToggleChanged"/>
+                    </Grid>
+                </Button>
+
+                <!-- 操作音效 -->
+                <Button x:Name="UiSoundRow" Style="{StaticResource SettingRowStyle}" Click="OnRowClick">
+                    <Button.Background>
+                        <LinearGradientBrush StartPoint="0,0" EndPoint="0,1">
+                            <GradientStop Color="#12FFFFFF" Offset="0"/>
+                            <GradientStop Color="#224CC2FF" Offset="1"/>
+                        </LinearGradientBrush>
+                    </Button.Background>
+                    <Grid ColumnSpacing="12">
+                        <Grid.ColumnDefinitions>
+                            <ColumnDefinition Width="Auto"/>
+                            <ColumnDefinition Width="Auto"/>
+                            <ColumnDefinition Width="*"/>
+                            <ColumnDefinition Width="Auto"/>
+                        </Grid.ColumnDefinitions>
+                        <Border Width="3" Height="40" Background="#664CC2FF" VerticalAlignment="Center"/>
+                        <Border Grid.Column="1" Width="34" Height="34" Background="#1F4CC2FF"
+                                BorderThickness="1" BorderBrush="#3D4CC2FF" VerticalAlignment="Center">
+                            <FontIcon Glyph="&#xE767;" FontSize="16"/>
+                        </Border>
+                        <StackPanel Grid.Column="2" Spacing="2" VerticalAlignment="Center">
+                            <TextBlock Text="操作音效" FontSize="15" FontWeight="SemiBold"/>
+                            <TextBlock Text="手柄移动磁贴、A/B 键的提示音" FontSize="11.5"
+                                       Opacity="0.55" TextTrimming="CharacterEllipsis"/>
+                        </StackPanel>
+                        <ToggleSwitch x:Name="UiSoundToggle" Grid.Column="3" Style="{StaticResource CleanToggleStyle}"
+                                      IsHitTestVisible="False" VerticalAlignment="Center"
+                                      OnContent="" OffContent=""
+                                      Toggled="OnUiSoundChanged"/>
+                    </Grid>
+                </Button>
+
+                <!-- 边缘手势呼出 -->
+                <Button x:Name="EdgeGestureRow" Style="{StaticResource SettingRowStyle}" Click="OnRowClick">
+                    <Button.Background>
+                        <LinearGradientBrush StartPoint="0,0" EndPoint="0,1">
+                            <GradientStop Color="#12FFFFFF" Offset="0"/>
+                            <GradientStop Color="#224CC2FF" Offset="1"/>
+                        </LinearGradientBrush>
+                    </Button.Background>
+                    <Grid ColumnSpacing="12">
+                        <Grid.ColumnDefinitions>
+                            <ColumnDefinition Width="Auto"/>
+                            <ColumnDefinition Width="Auto"/>
+                            <ColumnDefinition Width="*"/>
+                            <ColumnDefinition Width="Auto"/>
+                        </Grid.ColumnDefinitions>
+                        <Border Width="3" Height="40" Background="#664CC2FF" VerticalAlignment="Center"/>
+                        <Border Grid.Column="1" Width="34" Height="34" Background="#1F4CC2FF"
+                                BorderThickness="1" BorderBrush="#3D4CC2FF" VerticalAlignment="Center">
+                            <FontIcon Glyph="&#xE927;" FontSize="16"/>
+                        </Border>
+                        <StackPanel Grid.Column="2" Spacing="2" VerticalAlignment="Center">
+                            <TextBlock Text="边缘手势呼出" FontSize="15" FontWeight="SemiBold"/>
+                            <TextBlock Text="从屏幕边缘向中心滑动唤起" FontSize="11.5"
+                                       Opacity="0.55" TextTrimming="CharacterEllipsis"/>
+                        </StackPanel>
+                        <ToggleSwitch x:Name="EdgeGestureToggle" Grid.Column="3" Style="{StaticResource CleanToggleStyle}"
+                                      IsHitTestVisible="False" VerticalAlignment="Center"
+                                      OnContent="" OffContent=""
+                                      Toggled="OnEdgeGestureChanged"/>
+                    </Grid>
+                </Button>
+
+                <!-- 平板模式 -->
+                <Button x:Name="TabletModeRow" Style="{StaticResource SettingRowStyle}" Click="OnRowClick">
+                    <Button.Background>
+                        <LinearGradientBrush StartPoint="0,0" EndPoint="0,1">
+                            <GradientStop Color="#12FFFFFF" Offset="0"/>
+                            <GradientStop Color="#224CC2FF" Offset="1"/>
+                        </LinearGradientBrush>
+                    </Button.Background>
+                    <Grid ColumnSpacing="12">
+                        <Grid.ColumnDefinitions>
+                            <ColumnDefinition Width="Auto"/>
+                            <ColumnDefinition Width="Auto"/>
+                            <ColumnDefinition Width="*"/>
+                            <ColumnDefinition Width="Auto"/>
+                        </Grid.ColumnDefinitions>
+                        <Border Width="3" Height="40" Background="#664CC2FF" VerticalAlignment="Center"/>
+                        <Border Grid.Column="1" Width="34" Height="34" Background="#1F4CC2FF"
+                                BorderThickness="1" BorderBrush="#3D4CC2FF" VerticalAlignment="Center">
+                            <FontIcon Glyph="&#xE70A;" FontSize="16"/>
+                        </Border>
+                        <StackPanel Grid.Column="2" Spacing="2" VerticalAlignment="Center">
+                            <TextBlock Text="平板模式" FontSize="15" FontWeight="SemiBold"/>
+                            <TextBlock Text="隐藏所有页面底部的手柄按键提示条" FontSize="11.5"
+                                       Opacity="0.55" TextTrimming="CharacterEllipsis"/>
+                        </StackPanel>
+                        <ToggleSwitch x:Name="TabletModeToggle" Grid.Column="3" Style="{StaticResource CleanToggleStyle}"
+                                      IsHitTestVisible="False" VerticalAlignment="Center"
+                                      OnContent="" OffContent=""
+                                      Toggled="OnTabletModeChanged"/>
+                    </Grid>
+                </Button>
+
+                <!-- 替代 Windows 开始菜单 -->
+                <Button x:Name="StartMenuRow" Style="{StaticResource SettingRowStyle}" Click="OnRowClick">
+                    <Button.Background>
+                        <LinearGradientBrush StartPoint="0,0" EndPoint="0,1">
+                            <GradientStop Color="#12FFFFFF" Offset="0"/>
+                            <GradientStop Color="#224CC2FF" Offset="1"/>
+                        </LinearGradientBrush>
+                    </Button.Background>
+                    <Grid ColumnSpacing="12">
+                        <Grid.ColumnDefinitions>
+                            <ColumnDefinition Width="Auto"/>
+                            <ColumnDefinition Width="Auto"/>
+                            <ColumnDefinition Width="*"/>
+                            <ColumnDefinition Width="Auto"/>
+                        </Grid.ColumnDefinitions>
+                        <Border Width="3" Height="40" Background="#664CC2FF" VerticalAlignment="Center"/>
+                        <Border Grid.Column="1" Width="34" Height="34" Background="#1F4CC2FF"
+                                BorderThickness="1" BorderBrush="#3D4CC2FF" VerticalAlignment="Center">
+                            <FontIcon Glyph="&#xE700;" FontSize="16"/>
+                        </Border>
+                        <StackPanel Grid.Column="2" Spacing="2" VerticalAlignment="Center">
+                            <TextBlock Text="替代 Windows 开始菜单" FontSize="15" FontWeight="SemiBold"/>
+                            <TextBlock Text="Win 键改为呼出/收起本启动器" FontSize="11.5"
+                                       Opacity="0.55" TextTrimming="CharacterEllipsis"/>
+                        </StackPanel>
+                        <ToggleSwitch x:Name="StartMenuToggle" Grid.Column="3" Style="{StaticResource CleanToggleStyle}"
+                                      IsHitTestVisible="False" VerticalAlignment="Center"
+                                      OnContent="" OffContent=""
+                                      Toggled="OnStartMenuChanged"/>
+                    </Grid>
+                </Button>
+
+                <TextBlock x:Name="DockSideTitle" Text="窗口位置" FontSize="15" FontWeight="SemiBold"
+                           Margin="2,8,0,0" Opacity="0.9"/>
+                <TextBlock x:Name="DockSideHint" Text="居中时窗口不贴屏幕四边，边缘手势从顶边呼出；宽度按外观页的比例放大（38% ≈ 70% 屏宽）"
+                           FontSize="11.5" Opacity="0.55" Margin="2,-4,0,0" TextWrapping="Wrap"/>
                 <!-- 三列并排显式 Grid（勿用 RadioButtons 容器，坐标不可靠）：手柄行感知导航左右跨列 -->
                 <Grid x:Name="DockSidePanel">
                     <Grid.ColumnDefinitions>
@@ -109,7 +385,7 @@
                     <RadioButton x:Name="RightRadio" Grid.Column="2" GroupName="DockSide"
                                  Content="右侧" Padding="14,10" Margin="2" Checked="OnSideChanged"/>
                 </Grid>
-            </StackPanel>
+            </Grid>
         </ScrollViewer>
 
         <ctl:GamepadHintBar x:Name="HintBar" Grid.Row="2" Margin="0,8,0,12"

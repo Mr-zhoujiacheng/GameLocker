@@ -314,13 +314,9 @@
             <RowDefinition Height="Auto"/>  <!-- 底部按键提示 -->
         </Grid.RowDefinitions>
 
-        <!-- 顶栏：标题 + 返回 -->
+        <!-- 顶栏：标题 -->
         <Grid Grid.Row="0" Padding="20,16">
             <TextBlock x:Name="PageTitle" Text="添加快捷项" FontSize="22" FontWeight="SemiBold" VerticalAlignment="Center"/>
-            <Button x:Name="BackButton" HorizontalAlignment="Right" VerticalAlignment="Center"
-                    Background="Transparent" BorderThickness="0" Click="OnBackClick">
-                <FontIcon Glyph="&#xE72C;" FontSize="16"/>
-            </Button>
         </Grid>
 
         <!-- 表单状态（ScrollViewer 包裹：窄窗口下内容超出可滚动，控件不被遮盖）；
@@ -398,13 +394,21 @@
                         <TextBlock x:Name="MappingText" Grid.Column="0" VerticalAlignment="Center"
                                    FontSize="15" FontWeight="SemiBold" TextTrimming="CharacterEllipsis"
                                    Text="未设置"/>
-                        <Button x:Name="MappingCaptureButton" Grid.Column="1" Margin="8,0,0,0"
-                                Click="OnMappingCaptureClick">
-                            <StackPanel Orientation="Horizontal" Spacing="6">
-                                <FontIcon Glyph="&#xE7FC;" FontSize="14"/>
-                                <TextBlock Text="捕获按键…"/>
-                            </StackPanel>
-                        </Button>
+                        <StackPanel Grid.Column="1" Orientation="Horizontal" Spacing="8">
+                            <Button x:Name="MappingCaptureButton" Click="OnMappingCaptureClick">
+                                <StackPanel Orientation="Horizontal" Spacing="6">
+                                    <FontIcon Glyph="&#xE7FC;" FontSize="14"/>
+                                    <TextBlock Text="捕获按键…"/>
+                                </StackPanel>
+                            </Button>
+                            <Button x:Name="MappingKeyboardButton" Click="OnMappingKeyboardClick"
+                                    ToolTipService.ToolTip="打开屏幕键盘，方便触屏输入">
+                                <StackPanel Orientation="Horizontal" Spacing="6">
+                                    <FontIcon Glyph="&#xE765;" FontSize="14"/>
+                                    <TextBlock Text="显示键盘"/>
+                                </StackPanel>
+                            </Button>
+                        </StackPanel>
                     </Grid>
                 </StackPanel>
 
@@ -602,6 +606,19 @@
                                     <TextBlock Text="单色" FontSize="14" VerticalAlignment="Center"/>
                                 </StackPanel>
                             </RadioButton>
+                            <RadioButton x:Name="MonColorAurora" Grid.Row="1" Grid.Column="2"
+                                         GroupName="MonitorColor" Padding="12,8">
+                                <StackPanel Orientation="Horizontal" Spacing="8">
+                                    <StackPanel Orientation="Horizontal" Spacing="3">
+                                        <Ellipse Width="10" Height="10" Fill="#7CF2C6"/>
+                                        <Ellipse Width="10" Height="10" Fill="#6FA8FF"/>
+                                        <Ellipse Width="10" Height="10" Fill="#A48CFF"/>
+                                        <Ellipse Width="10" Height="10" Fill="#FF8AD4"/>
+                                        <Ellipse Width="10" Height="10" Fill="#8FE9FF"/>
+                                    </StackPanel>
+                                    <TextBlock Text="极光" FontSize="14" VerticalAlignment="Center"/>
+                                </StackPanel>
+                            </RadioButton>
                         </Grid>
                     </StackPanel>
 
@@ -727,6 +744,13 @@
                                 <Grid>
                                     <TextBlock Text="显存使用" FontSize="14" Margin="0,0,22,0"/>
                                     <FontIcon x:Name="MonOptVramMark" Glyph="&#xE711;" FontSize="14"
+                                              HorizontalAlignment="Right" VerticalAlignment="Center"/>
+                                </Grid>
+                            </ToggleButton>
+                            <ToggleButton x:Name="MonOptClock" Grid.Row="3" Grid.Column="3" Style="{StaticResource SysOptionChipStyle}">
+                                <Grid>
+                                    <TextBlock Text="当前时间" FontSize="14" Margin="0,0,22,0"/>
+                                    <FontIcon x:Name="MonOptClockMark" Glyph="&#xE711;" FontSize="14"
                                               HorizontalAlignment="Right" VerticalAlignment="Center"/>
                                 </Grid>
                             </ToggleButton>
@@ -997,6 +1021,14 @@
                             <StackPanel Orientation="Horizontal" Spacing="10">
                                 <Button x:Name="GamepadMapCaptureButton" Style="{StaticResource ChipPrimaryButtonStyle}"
                                         Click="OnGamepadMapCaptureClick"/>
+                                <Button x:Name="GamepadMapKeyboardButton" Style="{StaticResource ChipButtonStyle}"
+                                        Click="OnGamepadMapKeyboardClick"
+                                        ToolTipService.ToolTip="打开屏幕键盘，方便触屏点选键位">
+                                    <StackPanel Orientation="Horizontal" Spacing="6">
+                                        <FontIcon Glyph="&#xE765;" FontSize="14"/>
+                                        <TextBlock Text="显示键盘"/>
+                                    </StackPanel>
+                                </Button>
                                 <Button x:Name="GamepadMapDeleteButton" Style="{StaticResource ChipButtonStyle}"
                                         Click="OnGamepadMapDeleteClick"
                                         ToolTipService.ToolTip="删除该手柄键的映射">
@@ -1062,7 +1094,7 @@
                             <TextBlock Text="OptiScaler 版本" FontSize="13" Opacity="0.72"/>
                             <ComboBox x:Name="OptiVersionCombo" HorizontalAlignment="Stretch"
                                       SelectionChanged="OnOptiVersionChanged"
-                                      ToolTipService.ToolTip="正式版：官方仓库的 Release，最稳定；测试版：社区镜像的预览版，更新更快但可能有 Bug；汉化版：社区简体中文 nightly 构建，菜单和 ini 注释均为中文；本地包：不联网，直接使用下方「本地包文件夹」里的包。"/>
+                                      ToolTipService.ToolTip="正式版：官方仓库的 Release，最稳定；测试版：社区镜像的预览版，更新更快但可能有 Bug；中文版：社区简体中文 nightly 构建，菜单和 ini 注释均为中文；本地包：不联网，直接使用下方「本地包文件夹」里的包。"/>
                         </StackPanel>
                         <StackPanel x:Name="OptiVersionTagCell" Grid.Row="0" Grid.Column="1" Spacing="5" Margin="0,0,0,14">
                             <TextBlock Text="具体版本" FontSize="13" Opacity="0.72"/>
@@ -1106,7 +1138,7 @@
                                     <TextBlock Text="FSR4 文件" FontSize="13" Opacity="0.72"/>
                                     <ComboBox x:Name="OptiFsr4FilesCombo" HorizontalAlignment="Stretch"
                                               SelectionChanged="OnOptiFsr4FilesChanged"
-                                              ToolTipService.ToolTip="FSR4 必须注入模型文件，无「不注入」选项。INT8：NVIDIA / AMD / Intel 通用，默认；FP8：AMD RDNA4 官方模型；XMX：Intel Arc 专用模型（两个 DLL 一起注入）。"/>
+                                              ToolTipService.ToolTip="FSR4 必须注入模型文件，无「不注入」选项。INT8：NVIDIA / AMD / Intel 通用，默认；FP8：AMD RDNA4 官方模型；XMX：Intel Arc 专用模型（单个模型 DLL 注入）。"/>
                                 </StackPanel>
                                 <StackPanel x:Name="OptiFsr4VersionCell" Grid.Row="1" Grid.Column="0" Grid.ColumnSpan="2"
                                             Spacing="5" Visibility="Collapsed">
@@ -1447,26 +1479,99 @@
             </Grid>
         </ScrollViewer>
 
-        <!-- 文件浏览状态 -->
-        <Grid x:Name="BrowsePanel" Grid.Row="1" Padding="20,4" Visibility="Collapsed"
-              MaxWidth="680" HorizontalAlignment="Center">
-            <Grid.RowDefinitions>
-                <RowDefinition Height="Auto"/>
-                <RowDefinition Height="*"/>
-            </Grid.RowDefinitions>
-            <TextBlock x:Name="PathText" Grid.Row="0" FontSize="13" Opacity="0.7"
-                       TextTrimming="CharacterEllipsis" Margin="4,4,4,8"/>
-            <ListView x:Name="FileList" Grid.Row="1" SelectionMode="Single"
-                      IsTabStop="False" ScrollViewer.VerticalScrollMode="Enabled">
-                <ListView.ItemTemplate>
-                    <DataTemplate x:DataType="local:FileEntry">
-                        <StackPanel Orientation="Horizontal" Spacing="10" Padding="0,4">
-                            <FontIcon Glyph="{x:Bind Glyph}" FontSize="16"/>
-                            <TextBlock Text="{x:Bind Name}" FontSize="15"/>
+        <!-- 文件浏览状态：圆角玻璃卡片（文件夹图标 + 当前目录 + 统计 + 文件列表 + 过滤提示） -->
+        <Grid x:Name="BrowsePanel" Grid.Row="1" Padding="20,4,20,8" Visibility="Collapsed"
+              MaxWidth="860" HorizontalAlignment="Stretch" VerticalAlignment="Center">
+            <Border CornerRadius="16" BorderThickness="1" BorderBrush="#1FFFFFFF" Padding="16,14,16,8">
+                <Border.Background>
+                    <LinearGradientBrush StartPoint="0,0" EndPoint="0,1">
+                        <GradientStop Color="#14FFFFFF" Offset="0"/>
+                        <GradientStop Color="#08FFFFFF" Offset="1"/>
+                    </LinearGradientBrush>
+                </Border.Background>
+                <Grid>
+                    <Grid.RowDefinitions>
+                        <RowDefinition Height="Auto"/>
+                        <RowDefinition Height="Auto"/>
+                        <RowDefinition Height="*"/>
+                        <RowDefinition Height="Auto"/>
+                    </Grid.RowDefinitions>
+
+                    <!-- 头部：图标 + 当前文件夹名 + 完整路径 + 条目统计 -->
+                    <Grid Grid.Row="0" Margin="2,0,2,10">
+                        <Grid.ColumnDefinitions>
+                            <ColumnDefinition Width="Auto"/>
+                            <ColumnDefinition Width="*"/>
+                            <ColumnDefinition Width="Auto"/>
+                        </Grid.ColumnDefinitions>
+                        <Border Width="38" Height="38" CornerRadius="10" Background="#1AFFFFFF" VerticalAlignment="Center">
+                            <FontIcon Glyph="&#xE8B7;" FontSize="19" Foreground="#BBD8FF"/>
+                        </Border>
+                        <StackPanel Grid.Column="1" Margin="12,0,10,0" VerticalAlignment="Center" Spacing="3">
+                            <TextBlock x:Name="BrowseTitle" FontSize="15" FontWeight="SemiBold"
+                                       TextTrimming="CharacterEllipsis"/>
+                            <TextBlock x:Name="PathText" FontSize="12" Opacity="0.55"
+                                       TextTrimming="CharacterEllipsis"/>
                         </StackPanel>
-                    </DataTemplate>
-                </ListView.ItemTemplate>
-            </ListView>
+                        <TextBlock x:Name="BrowseSummary" Grid.Column="2" FontSize="11.5" Opacity="0.5"
+                                   VerticalAlignment="Center"/>
+                    </Grid>
+
+                    <Border Grid.Row="1" Height="1" Background="#14FFFFFF" Margin="0,0,0,6"/>
+
+                    <Grid Grid.Row="2">
+                        <ListView x:Name="FileList" SelectionMode="Single" MaxHeight="520"
+                                  IsTabStop="False" ScrollViewer.VerticalScrollMode="Enabled">
+                            <ListView.Resources>
+                                <!-- 行底色/选中色：与全局卡片语言一致的淡白悬停 + 强调蓝选中 -->
+                                <SolidColorBrush x:Key="ListViewItemBackgroundPointerOver" Color="#12FFFFFF"/>
+                                <SolidColorBrush x:Key="ListViewItemBackgroundSelected" Color="#332E6BE6"/>
+                                <SolidColorBrush x:Key="ListViewItemBackgroundSelectedPointerOver" Color="#3D2E6BE6"/>
+                                <SolidColorBrush x:Key="ListViewItemBackgroundSelectedPressed" Color="#3D2E6BE6"/>
+                            </ListView.Resources>
+                            <ListView.ItemContainerStyle>
+                                <Style TargetType="ListViewItem">
+                                    <Setter Property="MinHeight" Value="0"/>
+                                    <Setter Property="Height" Value="46"/>
+                                    <Setter Property="Padding" Value="8,0"/>
+                                    <Setter Property="Margin" Value="0,1"/>
+                                    <Setter Property="CornerRadius" Value="10"/>
+                                    <Setter Property="HorizontalContentAlignment" Value="Stretch"/>
+                                    <Setter Property="UseSystemFocusVisuals" Value="False"/>
+                                </Style>
+                            </ListView.ItemContainerStyle>
+                            <ListView.ItemTemplate>
+                                <DataTemplate x:DataType="local:FileEntry">
+                                    <Grid Height="46">
+                                        <Grid.ColumnDefinitions>
+                                            <ColumnDefinition Width="Auto"/>
+                                            <ColumnDefinition Width="*"/>
+                                            <ColumnDefinition Width="Auto"/>
+                                        </Grid.ColumnDefinitions>
+                                        <Border Width="30" Height="30" CornerRadius="8" Background="#16FFFFFF"
+                                                VerticalAlignment="Center">
+                                            <FontIcon Glyph="{x:Bind Glyph}" FontSize="15" Opacity="0.9"/>
+                                        </Border>
+                                        <TextBlock Grid.Column="1" Text="{x:Bind Name}" FontSize="14.5"
+                                                   VerticalAlignment="Center" Margin="10,0,10,0"
+                                                   TextTrimming="CharacterEllipsis"/>
+                                        <TextBlock Grid.Column="2" Text="{x:Bind Kind}" FontSize="11.5"
+                                                   Opacity="0.45" VerticalAlignment="Center"/>
+                                    </Grid>
+                                </DataTemplate>
+                            </ListView.ItemTemplate>
+                        </ListView>
+                        <TextBlock x:Name="BrowseEmpty" Text="这里没有可选项" FontSize="13" Opacity="0.45"
+                                   HorizontalAlignment="Center" VerticalAlignment="Center" Visibility="Collapsed"/>
+                    </Grid>
+
+                    <!-- 底部过滤提示：说明当前只列出哪些内容 -->
+                    <StackPanel Grid.Row="3" Margin="2,8,2,2">
+                        <Border Height="1" Background="#12FFFFFF" Margin="0,0,0,7"/>
+                        <TextBlock x:Name="BrowseFilter" FontSize="11.5" Opacity="0.4"/>
+                    </StackPanel>
+                </Grid>
+            </Border>
         </Grid>
 
         <!-- 页脚固定操作栏：保存按钮固定在页面最下方，不随表单滚动（文件浏览时收起）；

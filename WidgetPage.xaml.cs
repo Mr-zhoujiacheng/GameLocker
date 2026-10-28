@@ -3,6 +3,7 @@ using GameLocker.Services;
 using Microsoft.UI.Xaml;
 using Microsoft.UI.Xaml.Controls;
 using Microsoft.UI.Xaml.Media;
+using Microsoft.UI.Xaml.Media.Animation;
 using Microsoft.UI.Xaml.Navigation;
 
 namespace GameLocker;
@@ -169,21 +170,134 @@ public sealed partial class WidgetPage : Page
     /// <summary>预览磁贴框架（订阅天气变化时刷新文字）</summary>
     private TileStyle.WeatherTileRefs? _weatherPreviewRefs;
 
+    /// <summary>每张卡片的说明文案：从 XAML 的 ToolTip 读一次后清空 ToolTip（避免选中时弹小提示），说明改为显示在顶栏居中位置</summary>
+    private readonly Dictionary<Button, string> _descByCard = [];
+
     public WidgetPage()
     {
         InitializeComponent();
         _formControls = [MusicWidgetCard, PhotoWidgetCard, WeatherWidgetCard, MappingWidgetCard, TrainerWidgetCard, BackupWidgetCard, GamepadMapWidgetCard, OptiScalerWidgetCard, RecycleBinWidgetCard, ForegroundWidgetCard, SystemWidgetCard, MonitorWidgetCard, FileTransferWidgetCard, LosslessScalWidgetCard, KeyboardWidgetCard];
+
+        // 说明条：有文案才显示（"已在主页"之类的提示也走这里），没文案时不留空条
+        SelDescText.RegisterPropertyChangedCallback(TextBlock.TextProperty, (_, _) =>
+        {
+            DescBar.Visibility = string.IsNullOrEmpty(SelDescText.Text) ? Visibility.Collapsed : Visibility.Visible;
+        });
+
+        // 每张卡片：背后垫两层错位卡片（右侧露出几 px 的堆叠效果），可重复添加的再加「多个」角标
+        foreach (var c in _formControls.OfType<Button>())
+        {
+            _descByCard[c] = ToolTipService.GetToolTip(c) as string ?? "";
+            ToolTipService.SetToolTip(c, null);
+            WrapStack(c);
+        }
+
+        // 选中上浮 / 按下回弹都作用在 RenderTransform 上，不影响卡片排布
+        foreach (var c in _formControls) c.RenderTransform = new CompositeTransform();
         // 磁贴式自适应：窗口宽度变化（侧边栏 ↔ 全屏/居中）时按可用宽度重排列数
         FormScroll.SizeChanged += (_, _) => LayoutCards();
-        Loaded += (_, _) => LayoutCards();
+        Loaded += (_, _) =>
+        {
+            LayoutCards();
+            AnimateTitle();
+        };
+    }
+
+    /// <summary>把卡片内容包进"堆叠纸片"：本体铺满格子（与其他卡片同高同宽），背后两层只从右侧露出 6px，不改卡片尺寸</summary>
+    private static void WrapStack(Button b)
+    {
+        if (b.Content is not UIElement content) return;
+        var fill = b.Background;
+        b.Content = null;
+        b.Padding = new Thickness(0);
+        b.Background = new SolidColorBrush(Microsoft.UI.Colors.Transparent);
+
+        var grid = new Grid();
+        grid.Children.Add(GhostSheet(new Thickness(6, 0, -6, 0), 0x1F, 0x0C));
+        grid.Children.Add(GhostSheet(new Thickness(3, 0, -3, 0), 0x2E, 0x12));
+
+        if (content is FrameworkElement fe) fe.VerticalAlignment = VerticalAlignment.Center;
+        grid.Children.Add(new Border
+        {
+            BorderThickness = new Thickness(1),
+            BorderBrush = new SolidColorBrush(Windows.UI.Color.FromArgb(0x26, 0xFF, 0xFF, 0xFF)),
+            Background = fill,
+            Padding = new Thickness(10),
+            Child = content
+        });
+
+        // 可重复添加的组件：右上角「多个」小角标
+        if (b.Tag as string is "mapping" or "gamepadmap")
+        {
+            grid.Children.Add(new Border
+            {
+                HorizontalAlignment = HorizontalAlignment.Right,
+                VerticalAlignment = VerticalAlignment.Top,
+                Margin = new Thickness(0, 9, 9, 0),
+                Background = new SolidColorBrush(Windows.UI.Color.FromArgb(0x66, 0, 0, 0)),
+                BorderThickness = new Thickness(1),
+                BorderBrush = new SolidColorBrush(Windows.UI.Color.FromArgb(0x33, 0xFF, 0xFF, 0xFF)),
+                Padding = new Thickness(6, 1, 6, 1),
+                Child = new TextBlock
+                {
+                    Text = "多个",
+                    FontSize = 10,
+                    Foreground = new SolidColorBrush(Windows.UI.Color.FromArgb(0xF0, 0xFF, 0xFF, 0xFF))
+                }
+            });
+        }
+
+        b.Content = grid;
+    }
+
+    /// <summary>一张错位"纸片"（只描边 + 淡底，作为堆叠效果的衬底）</summary>
+    private static Border GhostSheet(Thickness margin, byte borderAlpha, byte fillAlpha) => new()
+    {
+        Margin = margin,
+        BorderThickness = new Thickness(1),
+        BorderBrush = new SolidColorBrush(Windows.UI.Color.FromArgb(borderAlpha, 0xFF, 0xFF, 0xFF)),
+        Background = new SolidColorBrush(Windows.UI.Color.FromArgb(fillAlpha, 0xFF, 0xFF, 0xFF))
+    };
+
+    /// <summary>标题入场：淡入 + 轻微上移，给最上方标题一点动效</summary>
+    private void AnimateTitle()
+    {
+        if (TitlePanel.RenderTransform is not CompositeTransform t) return;
+        var sb = new Storyboard();
+        var fade = new DoubleAnimation
+        {
+            From = 0,
+            To = 1,
+            Duration = new Duration(TimeSpan.FromMilliseconds(320)),
+            EnableDependentAnimation = true,
+            EasingFunction = new CubicEase { EasingMode = EasingMode.EaseOut }
+        };
+        Storyboard.SetTarget(fade, TitlePanel);
+        Storyboard.SetTargetProperty(fade, "Opacity");
+        sb.Children.Add(fade);
+        var rise = new DoubleAnimation
+        {
+            From = 8,
+            To = 0,
+            Duration = new Duration(TimeSpan.FromMilliseconds(320)),
+            EnableDependentAnimation = true,
+            EasingFunction = new CubicEase { EasingMode = EasingMode.EaseOut }
+        };
+        Storyboard.SetTarget(rise, t);
+        Storyboard.SetTargetProperty(rise, "TranslateY");
+        sb.Children.Add(rise);
+        sb.Begin();
     }
 
     // ---- 卡片排布（仿主页 LayoutTiles：卡片尺寸固定，列数随可用宽度变，整块居中）----
 
     /// <summary>卡片宽/高与间距：宽度取侧边栏下 3 列等宽时的值（约 142），窗口变宽就多排一列，卡片本身不变大</summary>
     private const double CardW = 142;
-    private const double CardH = 204;
+    private const double CardH = 172;
     private const double CardGap = 12;
+
+    /// <summary>顶部留白：第一排选中上浮（-3）时，白框不会被 ScrollViewer 上缘裁掉</summary>
+    private const double TopPad = 8;
 
     private void LayoutCards()
     {
@@ -199,16 +313,16 @@ public sealed partial class WidgetPage : Page
         for (var i = 0; i < _formControls.Length; i++)
         {
             var c = _formControls[i];
-            var y = (double)(i / cols) * (CardH + CardGap);
+            var y = TopPad + (double)(i / cols) * (CardH + CardGap);
             c.Width = CardW;
             c.Height = CardH;
             Canvas.SetLeft(c, offsetX + i % cols * pitch);
             Canvas.SetTop(c, y);
             bottom = Math.Max(bottom, y + CardH);
         }
-        // Canvas 需要显式尺寸，纵向滚动条才能算对可滚高度
+        // Canvas 需要显式尺寸，纵向滚动条才能算对可滚高度；末尾多留 8px 给可多个卡片堆叠露出的下边
         FormPanel.Width = avail;
-        FormPanel.Height = bottom;
+        FormPanel.Height = bottom + 8;
     }
 
     protected override void OnNavigatedTo(NavigationEventArgs e)
@@ -322,6 +436,7 @@ public sealed partial class WidgetPage : Page
     private void ActivateForm()
     {
         var c = _formControls[_formIndex];
+        AnimatePress(c);
         if (ReferenceEquals(c, PhotoWidgetCard)) AddPhotoWidget();
         else if (ReferenceEquals(c, WeatherWidgetCard)) AddWeatherWidget();
         else if (ReferenceEquals(c, MappingWidgetCard)) AddMappingWidget();
@@ -440,13 +555,54 @@ public sealed partial class WidgetPage : Page
         EnsureVisible(c);
     }
 
-    /// <summary>高亮光标所在控件（描边）</summary>
+    /// <summary>高亮光标所在控件（描边），让选中卡片轻微上浮，并在顶部标题栏居中显示该组件的说明</summary>
     private void UpdateCursor(Control? cursor)
     {
         foreach (var ctl in _formControls)
-            ctl.BorderBrush = ReferenceEquals(ctl, cursor)
+        {
+            var on = ReferenceEquals(ctl, cursor);
+            ctl.BorderBrush = on
                 ? new Microsoft.UI.Xaml.Media.SolidColorBrush(Windows.UI.Color.FromArgb(0xCC, 0xFF, 0xFF, 0xFF))
                 : new Microsoft.UI.Xaml.Media.SolidColorBrush(Microsoft.UI.Colors.Transparent);
+            AnimateLift(ctl, on ? -3 : 0);
+        }
+        SelDescText.Text = cursor is Button b && _descByCard.TryGetValue(b, out var desc) ? desc : "";
+    }
+
+    /// <summary>选中上浮：选中卡片 TranslateY 缓动到 -3，其余回落到 0</summary>
+    private static void AnimateLift(UIElement c, double targetY)
+    {
+        if (c.RenderTransform is not CompositeTransform t) return;
+        var sb = new Storyboard();
+        var anim = new DoubleAnimation
+        {
+            To = targetY,
+            Duration = new Duration(TimeSpan.FromMilliseconds(140)),
+            EnableDependentAnimation = true,
+            EasingFunction = new CubicEase { EasingMode = EasingMode.EaseOut }
+        };
+        Storyboard.SetTarget(anim, t);
+        Storyboard.SetTargetProperty(anim, "TranslateY");
+        sb.Children.Add(anim);
+        sb.Begin();
+    }
+
+    /// <summary>按下回弹：缩到 0.97 再弹回 1（添加后立即跳回主页时基本看不到，用于添加被拒等停留场景）</summary>
+    private static void AnimatePress(UIElement c)
+    {
+        if (c.RenderTransform is not CompositeTransform t) return;
+        var sb = new Storyboard();
+        foreach (var prop in new[] { "ScaleX", "ScaleY" })
+        {
+            var anim = new DoubleAnimationUsingKeyFrames { EnableDependentAnimation = true };
+            anim.KeyFrames.Add(new EasingDoubleKeyFrame { KeyTime = TimeSpan.Zero, Value = 1 });
+            anim.KeyFrames.Add(new EasingDoubleKeyFrame { KeyTime = TimeSpan.FromMilliseconds(70), Value = 0.97 });
+            anim.KeyFrames.Add(new EasingDoubleKeyFrame { KeyTime = TimeSpan.FromMilliseconds(170), Value = 1 });
+            Storyboard.SetTarget(anim, t);
+            Storyboard.SetTargetProperty(anim, prop);
+            sb.Children.Add(anim);
+        }
+        sb.Begin();
     }
 
     private void EnsureVisible(Control c)
@@ -476,7 +632,7 @@ public sealed partial class WidgetPage : Page
             App.Main!.PendingDrawerInsert = null;   // 一次性请求，消费即清
             if (!DrawerService.TryInsert(items, req, it, out var error))
             {
-                PageTitle.Text = error ?? "抽屉放不下这个磁贴";
+                SelDescText.Text = error ?? "抽屉放不下这个磁贴";
                 return false;
             }
         }
@@ -496,7 +652,7 @@ public sealed partial class WidgetPage : Page
     private void AddMusicWidget()
     {
         var items = ConfigService.Load();
-        if (ExistsWidget(items, WidgetKind.Music)) { PageTitle.Text = "音乐控制器已在主页"; return; }
+        if (ExistsWidget(items, WidgetKind.Music)) { SelDescText.Text = "音乐控制器已在主页"; return; }
         CommitWidget(items, new LaunchItem
         {
             Name = "音乐控制器",
@@ -511,7 +667,7 @@ public sealed partial class WidgetPage : Page
     private void AddPhotoWidget()
     {
         var items = ConfigService.Load();
-        if (ExistsWidget(items, WidgetKind.Photos)) { PageTitle.Text = "图片组已在主页"; return; }
+        if (ExistsWidget(items, WidgetKind.Photos)) { SelDescText.Text = "图片组已在主页"; return; }
         CommitWidget(items, new LaunchItem
         {
             Name = "图片组",
@@ -527,7 +683,7 @@ public sealed partial class WidgetPage : Page
     private void AddWeatherWidget()
     {
         var items = ConfigService.Load();
-        if (ExistsWidget(items, WidgetKind.Weather)) { PageTitle.Text = "天气已在主页"; return; }
+        if (ExistsWidget(items, WidgetKind.Weather)) { SelDescText.Text = "天气已在主页"; return; }
         if (!CommitWidget(items, new LaunchItem
         {
             Name = "天气",
@@ -561,7 +717,7 @@ public sealed partial class WidgetPage : Page
     private void AddTrainerWidget()
     {
         var items = ConfigService.Load();
-        if (ExistsWidget(items, WidgetKind.Trainer)) { PageTitle.Text = "修改器已在主页"; return; }
+        if (ExistsWidget(items, WidgetKind.Trainer)) { SelDescText.Text = "修改器已在主页"; return; }
         CommitWidget(items, new LaunchItem
         {
             Name = "修改器",
@@ -578,7 +734,7 @@ public sealed partial class WidgetPage : Page
     private void AddBackupWidget()
     {
         var items = ConfigService.Load();
-        if (ExistsWidget(items, WidgetKind.Backup)) { PageTitle.Text = "游戏存档已在主页"; return; }
+        if (ExistsWidget(items, WidgetKind.Backup)) { SelDescText.Text = "游戏存档已在主页"; return; }
         CommitWidget(items, new LaunchItem
         {
             Name = "游戏存档",
@@ -611,7 +767,7 @@ public sealed partial class WidgetPage : Page
     private void AddOptiScalerWidget()
     {
         var items = ConfigService.Load();
-        if (ExistsWidget(items, WidgetKind.OptiScaler)) { PageTitle.Text = "OptiScaler 已在主页"; return; }
+        if (ExistsWidget(items, WidgetKind.OptiScaler)) { SelDescText.Text = "OptiScaler 已在主页"; return; }
         CommitWidget(items, new LaunchItem
         {
             Name = "OptiScaler",
@@ -628,7 +784,7 @@ public sealed partial class WidgetPage : Page
     private void AddRecycleBinWidget()
     {
         var items = ConfigService.Load();
-        if (ExistsWidget(items, WidgetKind.RecycleBin)) { PageTitle.Text = "回收站已在主页"; return; }
+        if (ExistsWidget(items, WidgetKind.RecycleBin)) { SelDescText.Text = "回收站已在主页"; return; }
         CommitWidget(items, new LaunchItem
         {
             Name = "回收站",
@@ -645,7 +801,7 @@ public sealed partial class WidgetPage : Page
     private void AddForegroundWidget()
     {
         var items = ConfigService.Load();
-        if (ExistsWidget(items, WidgetKind.Foreground)) { PageTitle.Text = "前台应用已在主页"; return; }
+        if (ExistsWidget(items, WidgetKind.Foreground)) { SelDescText.Text = "前台应用已在主页"; return; }
         CommitWidget(items, new LaunchItem
         {
             Name = "前台应用",
@@ -662,7 +818,7 @@ public sealed partial class WidgetPage : Page
     private void AddSystemWidget()
     {
         var items = ConfigService.Load();
-        if (ExistsWidget(items, WidgetKind.System)) { PageTitle.Text = "系统已在主页"; return; }
+        if (ExistsWidget(items, WidgetKind.System)) { SelDescText.Text = "系统已在主页"; return; }
         CommitWidget(items, new LaunchItem
         {
             Name = "系统",
@@ -679,7 +835,7 @@ public sealed partial class WidgetPage : Page
     private void AddMonitorWidget()
     {
         var items = ConfigService.Load();
-        if (ExistsWidget(items, WidgetKind.Monitor)) { PageTitle.Text = "性能监控已在主页"; return; }
+        if (ExistsWidget(items, WidgetKind.Monitor)) { SelDescText.Text = "性能监控已在主页"; return; }
         CommitWidget(items, new LaunchItem
         {
             Name = "性能监控",
@@ -695,7 +851,7 @@ public sealed partial class WidgetPage : Page
     private void AddFileTransferWidget()
     {
         var items = ConfigService.Load();
-        if (ExistsWidget(items, WidgetKind.FileTransfer)) { PageTitle.Text = "文件传输已在主页"; return; }
+        if (ExistsWidget(items, WidgetKind.FileTransfer)) { SelDescText.Text = "文件传输已在主页"; return; }
         CommitWidget(items, new LaunchItem
         {
             Name = "文件传输",
@@ -712,7 +868,7 @@ public sealed partial class WidgetPage : Page
     private void AddLosslessWidget()
     {
         var items = ConfigService.Load();
-        if (ExistsWidget(items, WidgetKind.LosslessScaling)) { PageTitle.Text = "小黄鸭已在主页"; return; }
+        if (ExistsWidget(items, WidgetKind.LosslessScaling)) { SelDescText.Text = "小黄鸭已在主页"; return; }
         CommitWidget(items, new LaunchItem
         {
             Name = "小黄鸭",
@@ -728,7 +884,7 @@ public sealed partial class WidgetPage : Page
     private void AddKeyboardWidget()
     {
         var items = ConfigService.Load();
-        if (ExistsWidget(items, WidgetKind.Keyboard)) { PageTitle.Text = "屏幕键盘已在主页"; return; }
+        if (ExistsWidget(items, WidgetKind.Keyboard)) { SelDescText.Text = "屏幕键盘已在主页"; return; }
         CommitWidget(items, new LaunchItem
         {
             Name = "屏幕键盘",
@@ -742,10 +898,20 @@ public sealed partial class WidgetPage : Page
 
     // ---- 鼠标 ----
 
-    private void OnBackClick(object sender, RoutedEventArgs e) => App.Main?.ShowMainPage();
-
     private void OnAddClick(object sender, RoutedEventArgs e)
     {
+        // 触屏 / 鼠标：第一次点按只选中（白框 + 底部说明），再点一次才真正添加
+        if (sender is Button b && !ReferenceEquals(b, _formControls[_formIndex]))
+        {
+            var i = Array.IndexOf(_formControls, b);
+            if (i >= 0)
+            {
+                _formIndex = i;
+                FocusForm(i);
+            }
+            return;
+        }
+
         if (sender is Button { Tag: "photo" }) AddPhotoWidget();
         else if (sender is Button { Tag: "weather" }) AddWeatherWidget();
         else if (sender is Button { Tag: "mapping" }) AddMappingWidget();

@@ -168,6 +168,8 @@ public enum MonitorMetric
     BatteryPercent = 1 << 13,
     /// <summary>显存占用（GB）</summary>
     GpuVram = 1 << 14,
+    /// <summary>当前时间（时:分:秒，24 小时制）</summary>
+    Clock = 1 << 15,
 
     /// <summary>CPU 块的任意一项（用于决定 CPU 块是否显示）</summary>
     CpuAny = CpuUsage | CpuFreq | CpuTemp | CpuPower,
@@ -176,7 +178,7 @@ public enum MonitorMetric
 
     /// <summary>默认全开（与旧版一律显示全部指标保持一致）</summary>
     All = Fps | FrameTime | FrameGraph | CpuUsage | CpuFreq | CpuTemp | CpuPower
-        | GpuUsage | GpuFreq | GpuPower | Battery | Memory | GpuTemp | BatteryPercent | GpuVram
+        | GpuUsage | GpuFreq | GpuPower | Battery | Memory | GpuTemp | BatteryPercent | GpuVram | Clock
 }
 
 /// <summary>性能监控悬浮条配色（组合色：每组为帧率 / CPU / GPU / 电池 / 内存等指标分配不同颜色）</summary>
@@ -190,6 +192,8 @@ public enum MonitorColorTheme
     Ice,
     /// <summary>暖阳：黄 / 橙 / 珊瑚色系</summary>
     Sunset,
+    /// <summary>极光：薄荷 / 冰蓝 / 紫 / 粉 / 青的冷暖混搭</summary>
+    Aurora,
     /// <summary>单色：全部白色，最低干扰</summary>
     Mono
 }
@@ -423,7 +427,7 @@ public class LaunchItem
             WidgetKind.TileSet => "\uE80A",// 集合（磁贴集）
             WidgetKind.Settings => "\uE713",// 齿轮（设置）
             WidgetKind.Weather => "\uE753", // 云（天气）
-            WidgetKind.Mapping => "\uE765", // 键盘（磁贴映射按键）
+            WidgetKind.Mapping => "\uE71B", // 链环（磁贴映射按键）
             WidgetKind.Trainer => "\uE90F", // 扳手（修改器）
             WidgetKind.Backup => "\uE74E", // 保存（游戏存档）
             WidgetKind.GamepadMap => "\uE7FC", // 手柄（手柄映射）

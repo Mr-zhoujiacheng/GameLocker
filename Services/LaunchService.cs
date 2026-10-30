@@ -23,8 +23,8 @@ public static class LaunchService
     private static readonly string DiagFile = Path.Combine(
         Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData), "GameLocker", "launch-diag.log");
 
-    /// <summary>临时诊断日志（排查切换窗口问题时用）</summary>
-    private static void Diag(string msg)
+    /// <summary>诊断日志（查找窗口/托盘点击等模块共用一条日志，方便定位唤醒失败原因）</summary>
+    internal static void Diag(string msg)
     {
         try
         {
@@ -53,16 +53,15 @@ public static class LaunchService
             return LaunchOutcome.Activated;
         }
 
-        // 只有隐藏窗口（缩在托盘）：外部 ShowWindow 强显会让 Chromium/Electron 类应用
-        // 内部可见状态对不上（画面不刷新、输入无响应），所以先模拟点击它的托盘图标，
-        // 让应用自己恢复窗口；点不到才退化为强显。
+        // 只有隐藏窗口（缩在托盘）：让应用自己恢复窗口 —— 模拟点击它的托盘图标，
+        // 点不到就多重试几次，不做外部强显（强显会让 Electron 白屏）。
         // 放到线程池执行：UIA/等待都要几百毫秒到几秒，不能卡住 UI 线程
         _ = Task.Run(() => ActivateTrayAppAsync(item, hwnd));
         return LaunchOutcome.Activated;
     }
 
-    /// <summary>托盘应用唤醒：点托盘图标 → 等应用自己显示窗口 → 最大化置前台；
-    /// 图标点不到或应用没反应时，退化为强制显示隐藏窗口。</summary>
+    /// <summary>托盘应用唤醒：点托盘图标 → 等应用自己显示窗口 → 最大化置前台。
+    /// 点不到图标时只多重试几次；既不外部强显（Electron 白屏），也不二次启动（会多开窗口）。</summary>
     private static async Task ActivateTrayAppAsync(LaunchItem item, IntPtr hiddenHwnd)
     {
         try
@@ -81,16 +80,39 @@ public static class LaunchService
             // 用磁贴名 / exe 名 / 隐藏窗口标题多试几次
             var candidates = new[] { item.Name, ExeLeafOf(item.Target), WindowText(hiddenHwnd) };
             Diag($"  托盘 pids=[{string.Join(",", pids)}] 候选=[{string.Join("|", candidates.Select(c => c ?? ""))}]");
-            var clicked = TrayIconService.Click(candidates);
-            Diag($"  点托盘图标 => {clicked}");
-            if (clicked)
+            // 托盘图标偶尔点不中（图标在溢出面板里换位、面板还没展开）：最多点三次；
+            // 每轮开始先看看窗口是不是已经出来了（上一次点击可能已经生效，只是显示得慢）
+            for (var attempt = 0; attempt < 3; attempt++)
             {
+                if (attempt > 0)
+                {
+                    await Task.Delay(400);
+                    pids = CollectTargetPids(item, consumeRecord: false);
+                    var early = PickShownWindow(pids, hiddenHwnd);
+                    if (early != 0)
+                    {
+                        ActivateWindow(early);
+                        await ReassertForegroundAsync(early);
+                        Diag($"  重试前已有窗口 0x{early.ToInt64():X} fg=0x{GetForegroundWindow().ToInt64():X}");
+                        return;
+                    }
+                }
+                var clicked = TrayIconService.Click(candidates);
+                Diag($"  点托盘图标（第{attempt + 1}次） => {clicked}");
+                if (!clicked) continue;
                 for (var i = 0; i < 30; i++)   // 最多约 4.5 秒等应用显示窗口
                 {
                     await Task.Delay(150);
                     var shown = PickShownWindow(pids, hiddenHwnd);
                     if (shown == 0) continue;
                     Diag($"  图标点击后出现可见窗口 0x{shown.ToInt64():X} \"{WindowText(shown)}\" 第{i * 150}ms");
+                    // 应用刚显示时还在初始化（Electron 尤其明显）：等它稳定再接管
+                    await Task.Delay(500);
+                    if (IsWindow(shown) && IsWindowVisible(shown))
+                    {
+                        var settled = PickShownWindow(pids, hiddenHwnd);
+                        if (settled != 0) shown = settled;
+                    }
                     ActivateWindow(shown);
                     await ReassertForegroundAsync(shown);
                     Diag($"  托盘路径完成 fg=0x{GetForegroundWindow().ToInt64():X}");
@@ -98,11 +120,23 @@ public static class LaunchService
                 }
             }
 
-            if (!IsWindow(hiddenHwnd)) return;
-            Diag("  托盘图标没生效，退化为强显隐藏窗口");
-            SwitchToThisWindow(hiddenHwnd, true);
-            ActivateWindow(hiddenHwnd);
-            await ReassertForegroundAsync(hiddenHwnd);
+            // 托盘图标没点成（图标被折叠/换位/应用没监听）：一律不再二次启动程序。
+            // 二次启动会额外打出一个窗口（QQ 等应用的表现就是"多开了一个页面"），
+            // 比"没打开"更糟；这里只再补一段观察时间，等应用自己把窗口显示出来。
+            for (var i = 0; i < 20; i++)   // 最多再等约 3 秒
+            {
+                await Task.Delay(150);
+                var shown = PickShownWindow(pids, hiddenHwnd);
+                if (shown == 0) continue;
+                ActivateWindow(shown);
+                await ReassertForegroundAsync(shown);
+                Diag($"  延迟出现窗口 0x{shown.ToInt64():X} fg=0x{GetForegroundWindow().ToInt64():X}");
+                return;
+            }
+
+            // 不外部强显隐藏窗口：Electron 类应用（QQ/微信等）被外部 ShowWindow 之后
+            // 画面不刷新、点击无响应（白屏假死），比"没打开"更糟。宁可放弃并提示。
+            Diag("  唤醒失败：已跳过强显与二次启动（强显让 QQ 白屏、二次启动会多开窗口），请手动点开一次");
         }
         catch (Exception ex)
         {
@@ -111,14 +145,12 @@ public static class LaunchService
     }
 
     /// <summary>托盘图标点完后等应用自己把窗口显示出来：优先认原来那个隐藏窗口，
-    /// 其次接受面积不小于它 40% 的可见窗口，避免把悬浮小窗当成"已显示"</summary>
+    /// 其次接受该进程任意够大的可见窗口。不能按"原隐藏窗口面积的比例"筛——
+    /// 原窗口可能被我们最大化过，而应用恢复时常常给回它自己保存的小面板尺寸。</summary>
     private static IntPtr PickShownWindow(HashSet<int> pids, IntPtr expected)
     {
         if (expected != 0 && IsWindow(expected) && IsWindowVisible(expected)) return expected;
-        var visible = FindVisibleProcessWindow(pids);
-        if (visible == 0) return 0;
-        var expectedArea = WindowArea(expected);
-        return expectedArea == 0 || WindowArea(visible) >= expectedArea * 0.4 ? visible : 0;
+        return FindVisibleProcessWindow(pids);
     }
 
     private static void Launch(LaunchItem item)
@@ -143,7 +175,80 @@ public static class LaunchService
         {
             _records[item.Target] = new LaunchRecord { Pid = proc.Id };
             _ = CaptureForegroundAsync(item.Target, proc.Id);
+            // 首次启动同样要"最大化 + 置前台"：等新程序把主窗口显示出来后接管。
+            // 文件夹/网站交由系统（资源管理器/浏览器）自行决定窗口大小，不强行最大化
+            if (item.Kind is not (LaunchKind.Folder or LaunchKind.Url) && !IsDirectoryTarget(item.Target))
+                _ = MaximizeLaunchedAsync(item, proc.Id);
         }
+    }
+
+    /// <summary>
+    /// 首次启动后的窗口接管：新程序从启动到显示窗口有时间差（尤其启动器型应用），
+    /// 这里每 200ms 观察一次目标进程的最大可见窗口，出现即最大化并置前台；
+    /// 窗口稳定 1.5 秒（或超过 15 秒）后收尾，再补一次前台争夺。
+    /// </summary>
+    private static async Task MaximizeLaunchedAsync(LaunchItem item, int startedPid)
+    {
+        try
+        {
+            HashSet<int> pids = [];
+            IntPtr last = 0;
+            long stableSince = 0;
+            for (var i = 0; i < 75; i++)   // 最多约 15 秒
+            {
+                await Task.Delay(200);
+                if (pids.Count == 0 || i % 5 == 0) pids = CollectTargetPids(item, consumeRecord: false);
+                if (pids.Count == 0 && startedPid != 0) pids.Add(startedPid);
+
+                // 前 2 秒先只认"真正的应用窗口"，避免把启动画面/悬浮条当成主窗
+                var hwnd = PickLaunchWindow(pids, allowSmall: i >= 10);
+                if (hwnd == 0) continue;
+                if (hwnd != last)
+                {
+                    last = hwnd;
+                    stableSince = Environment.TickCount64;
+                    ActivateWindow(hwnd);
+                    Diag($"  首次启动激活 0x{hwnd.ToInt64():X} \"{WindowText(hwnd)}\" 第{i * 200}ms");
+                }
+                else if (Environment.TickCount64 - stableSince > 1500)
+                {
+                    break;   // 窗口已稳定，后面可能弹的是文件对话框，不再接管
+                }
+            }
+
+            if (last != 0 && IsWindow(last))
+            {
+                ActivateWindow(last);
+                await ReassertForegroundAsync(last);
+                Diag($"  首次启动完成 0x{last.ToInt64():X} fg=0x{GetForegroundWindow().ToInt64():X}");
+            }
+        }
+        catch (Exception ex)
+        {
+            Debug.WriteLine($"首次启动接管失败 {item.Name}: {ex.Message}");
+        }
+    }
+
+    /// <summary>在目标进程的可见顶层窗口里挑面积最大的（allowSmall=false 时忽略悬浮条/启动小窗）</summary>
+    private static IntPtr PickLaunchWindow(HashSet<int> pids, bool allowSmall)
+    {
+        IntPtr best = 0, fallback = 0;
+        double bestArea = 0, fallbackArea = 0;
+        foreach (var hwnd in EnumVisibleTopWindows())
+        {
+            if (IsShellWindow(hwnd)) continue;
+            GetWindowThreadProcessId(hwnd, out uint pid);
+            if (!pids.Contains((int)pid)) continue;
+            var area = WindowArea(hwnd);
+            if (area <= 0) continue;
+            if (area < MinAppWindowArea)
+            {
+                if (area > fallbackArea) { fallbackArea = area; fallback = hwnd; }
+                continue;
+            }
+            if (area > bestArea) { bestArea = area; best = hwnd; }
+        }
+        return best != 0 || !allowSmall ? best : fallback;
     }
 
     /// <summary>最小化该磁贴对应的窗口（不结束进程）。返回处理的窗口数（0=未在运行）。</summary>
@@ -340,8 +445,9 @@ public static class LaunchService
         BringToForeground(hwnd);
         if (wasHidden)
         {
-            RedrawWindow(hwnd, IntPtr.Zero, IntPtr.Zero,
-                RDW_INVALIDATE | RDW_ALLCHILDREN | RDW_FRAME | RDW_UPDATENOW);
+            // 只做异步失效，去掉 RDW_UPDATENOW：同步重绘要等目标线程响应，
+            // 目标应用忙时会把调用线程一起拖住
+            RedrawWindow(hwnd, IntPtr.Zero, IntPtr.Zero, RDW_INVALIDATE | RDW_ALLCHILDREN | RDW_FRAME);
         }
         Diag($"  ActivateWindow 0x{hwnd.ToInt64():X} wasHidden={wasHidden} " +
              $"fg=0x{GetForegroundWindow().ToInt64():X} nowVis={IsWindowVisible(hwnd)}");
@@ -359,14 +465,18 @@ public static class LaunchService
         SetWindowPos(hwnd, IntPtr.Zero, 0, 0, w, h, SWP_NOMOVE | SWP_NOZORDER | SWP_NOACTIVATE);
     }
 
-    /// <summary>把窗口拉到前台：先把"本线程"挂到当前前台线程的输入队列上取得前台权限，
-    /// 失败再用 SwitchToThisWindow 兜底。注意挂的是自己而不是目标线程 —— 挂目标线程
-    /// 会把它和目标应用的消息队列并在一起，目标应用容易假死、无响应。</summary>
+    /// <summary>把窗口拉到前台：优先走非侵入路径（SwitchToThisWindow + SetForegroundWindow），
+    /// 只有被前台锁定挡住时才临时把"本线程"挂到前台线程的输入队列（挂的是自己，不挂目标线程；
+    /// 挂目标线程会把两边的消息队列并在一起，目标应用容易假死无响应）。</summary>
     private static void BringToForeground(IntPtr hwnd)
     {
         if (hwnd == 0 || !IsWindow(hwnd)) return;
         var fg = GetForegroundWindow();
         if (fg == hwnd) return;
+
+        SwitchToThisWindow(hwnd, true);
+        SetForegroundWindow(hwnd);
+        if (GetForegroundWindow() == hwnd) return;
 
         var curThread = GetCurrentThreadId();
         var fgThread = fg != 0 ? GetWindowThreadProcessId(fg, out _) : 0;
@@ -635,6 +745,7 @@ public static class LaunchService
     [DllImport("user32.dll")] private static extern bool IsWindow(IntPtr hWnd);
     [DllImport("user32.dll")] private static extern bool IsWindowVisible(IntPtr hWnd);
     [DllImport("user32.dll")] private static extern bool IsIconic(IntPtr hWnd);
+    [DllImport("user32.dll")] private static extern bool IsHungAppWindow(IntPtr hWnd);
     [DllImport("user32.dll")] private static extern bool ShowWindow(IntPtr hWnd, int nCmdShow);
     [DllImport("user32.dll")] private static extern bool SetForegroundWindow(IntPtr hWnd);
     [DllImport("user32.dll")] private static extern bool BringWindowToTop(IntPtr hWnd);
@@ -689,6 +800,9 @@ public static class LaunchService
 
     private static string WindowText(IntPtr hwnd)
     {
+        // 卡死的窗口不要读标题：GetWindowTextW 是跨进程同步消息，目标线程不响应时会一直等，
+        // 拖住调用线程（放在 UI 线程就是整个启动器"卡死"）
+        if (hwnd == 0 || IsHungAppWindow(hwnd)) return "";
         var len = GetWindowTextLengthW(hwnd);
         if (len <= 0) return "";
         var sb = new System.Text.StringBuilder(len + 1);

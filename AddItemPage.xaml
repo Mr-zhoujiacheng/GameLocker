@@ -994,6 +994,23 @@
                     </StackPanel>
 
                     <StackPanel Spacing="4">
+                        <TextBlock Text="内核版本" FontSize="15" Opacity="0.9"/>
+                        <Grid ColumnSpacing="8">
+                            <Grid.ColumnDefinitions>
+                                <ColumnDefinition Width="*"/>
+                                <ColumnDefinition Width="Auto"/>
+                            </Grid.ColumnDefinitions>
+                            <TextBlock x:Name="ProxyCoreVersionText" Grid.Column="0" FontSize="14"
+                                       VerticalAlignment="Center" TextTrimming="CharacterEllipsis"
+                                       Text="尚未下载内核，首次连接时自动下载"/>
+                            <Button x:Name="ProxyCoreUpdateButton" Grid.Column="1" Content="检查并更新"
+                                    Padding="14,8" VerticalAlignment="Stretch" Click="OnProxyCoreUpdateClick"/>
+                        </Grid>
+                        <TextBlock x:Name="ProxyCoreStatusText" FontSize="12" Opacity="0.55" TextWrapping="Wrap"
+                                   Text="显示当前内置代理内核的版本；检测到新版时可一键下载更新。"/>
+                    </StackPanel>
+
+                    <StackPanel Spacing="4">
                         <TextBlock Text="节点" FontSize="15" Opacity="0.9"/>
                         <Grid ColumnSpacing="8">
                             <Grid.ColumnDefinitions>
@@ -1024,7 +1041,7 @@
                                     VerticalAlignment="Stretch" Click="OnProxyNodeRefreshClick"/>
                         </Grid>
                         <TextBlock x:Name="ProxyNodeStatusText" FontSize="12" Opacity="0.55" TextWrapping="Wrap"
-                                   Text="填好订阅后会自动获取节点并测速；圆点：绿=快，黄=一般，红=慢。"/>
+                                   Text="进入编辑页不自动拉取；点「测速」才获取节点并测延迟，没测速前保留上一次的结果。"/>
                     </StackPanel>
                 </StackPanel>
 

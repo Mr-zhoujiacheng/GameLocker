@@ -4982,14 +4982,11 @@ public sealed partial class MainPage : Page
 
     private void LaunchItem(LaunchItem item)
     {
-        // 已运行就最大化并置前台，未运行才启动
-        var outcome = LaunchService.LaunchOrActivate(item);
-        // 切换已有窗口时一律收起启动器（开始菜单模式下也收）：启动器常驻置顶，
-        // 留在前台会盖住目标窗口，看起来"只弹了提示、窗口没切过来"。
-        // 文件夹/网站新开窗口也一样要收起，否则启动器会一直盖在上面
-        var hide = AutoHideAfterLaunch || outcome == LaunchOutcome.Activated
-                   || item.Kind is LaunchKind.Folder or LaunchKind.Url;
-        if (hide) App.Main?.HideToTray();
+        // 先收起启动器，窗口查找/激活放到后台线程：
+        // 查找要枚举全部顶层窗口并读取窗口标题（GetWindowText 是跨进程同步消息，
+        // 目标应用忙时不响应，会一直阻塞），放在 UI 线程就会表现为"整个启动器卡死"。
+        App.Main?.HideToTray();
+        _ = Task.Run(() => LaunchService.LaunchOrActivate(item));
     }
 
     /// <summary>Y=收起：把选中磁贴对应的窗口最小化（不结束进程）；未运行则提示（小组件/组磁贴不响应；修改器小组件=关闭修改器）</summary>

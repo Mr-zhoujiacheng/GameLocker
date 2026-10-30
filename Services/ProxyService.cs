@@ -4,6 +4,7 @@ using System.Net.Http;
 using System.Runtime.InteropServices;
 using System.Text;
 using System.Text.Json;
+using System.Text.RegularExpressions;
 using GameLocker.Models;
 using Microsoft.Win32;
 
@@ -488,8 +489,23 @@ public static class ProxyService
         }
 
         var entries = names.Select(n => new NodeEntry(n, delays.GetValueOrDefault(n, 0))).ToList();
+        // 缓存本次测速结果：再次进入编辑页 / 切换模式时直接复用，不再联网拉取
+        _nodeCache[CacheKey(url, ModeOf(item))] = [.. entries];
         return (true, $"共 {names.Count} 个节点", entries);
     }
+
+    /// <summary>最近一次「测速」拉到的节点（按 订阅|模式 缓存；没测过返回空列表）</summary>
+    public static List<NodeEntry> CachedNodes(string subscription, string mode)
+    {
+        if (!_nodeCache.TryGetValue(CacheKey(subscription, mode), out var nodes)) return [];
+        return [.. nodes];
+    }
+
+    private static string CacheKey(string subscription, string mode) =>
+        subscription.Trim() + "|" + mode.Trim().ToLowerInvariant();
+
+    /// <summary>编辑页节点缓存：每次测速的结果按 订阅|模式 保存</summary>
+    private static readonly Dictionary<string, List<NodeEntry>> _nodeCache = [];
 
     /// <summary>把当前设置（代理模式 + 选中节点）应用到已运行的内核；内核没跑就直接返回</summary>
     public static async Task ApplyAsync(LaunchItem item)
@@ -560,7 +576,6 @@ public static class ProxyService
         Directory.CreateDirectory(WorkDir);
         var downloadUrl = await FindCoreUrlAsync();
         if (downloadUrl is null) return false;
-
         var tempZip = Path.Combine(WorkDir, "mihomo.zip");
         // 国内直连 GitHub Releases 经常只有几十 KB/s，先走加速镜像，失败再直连
         foreach (var prefix in new[] { "https://ghfast.top/", "", "https://gh-proxy.com/" })
@@ -584,8 +599,119 @@ public static class ProxyService
         return false;
     }
 
+    // ==================== 内核版本 / 更新 ====================
+
+    private static string _coreVersion = "";
+
+    /// <summary>最近一次启动内核用的配置（更新内核后按它重启）</summary>
+    private static LaunchItem? _lastItem;
+
+    public sealed record CoreUpdateResult(bool Ok, string Message, string Version);
+
+    /// <summary>读取当前内核版本（执行 mihomo -v；未下载返回空串），结果本次运行内缓存</summary>
+    public static async Task<string> GetCoreVersionAsync()
+    {
+        if (_coreVersion.Length > 0) return _coreVersion;
+        if (!File.Exists(CoreExe)) return "";
+        try
+        {
+            var psi = new ProcessStartInfo(CoreExe, "-v")
+            {
+                UseShellExecute = false,
+                CreateNoWindow = true,
+                RedirectStandardOutput = true,
+                RedirectStandardError = true,
+                WorkingDirectory = WorkDir
+            };
+            using var p = Process.Start(psi);
+            if (p is null) return "";
+            var output = (await p.StandardOutput.ReadToEndAsync()).Trim();
+            if (output.Length == 0) output = (await p.StandardError.ReadToEndAsync()).Trim();
+            await p.WaitForExitAsync();
+            var match = Regex.Match(output, @"v?\d+(?:\.\d+)+[^\s]*");
+            _coreVersion = match.Success ? match.Value : output;
+        }
+        catch { }
+        return _coreVersion;
+    }
+
+    /// <summary>检查 GitHub 上是否有更新的内核；有则下载替换（内核运行中会先停、替换后按原配置重启）</summary>
+    public static async Task<CoreUpdateResult> CheckAndUpdateCoreAsync()
+    {
+        var current = await GetCoreVersionAsync();
+        var (url, tag) = await FindCoreReleaseAsync();
+        if (url is null) return new(false, "检查失败：无法访问 GitHub（请检查网络或代理）", current);
+
+        if (current.Length > 0 && SameVersion(current, tag))
+            return new(true, $"已是最新版本（{tag}）", current);
+
+        var restart = CoreProcessRunning();
+        Directory.CreateDirectory(WorkDir);
+        var tempZip = Path.Combine(WorkDir, "mihomo-update.zip");
+        var tempExe = Path.Combine(WorkDir, "mihomo-new.exe");
+        foreach (var prefix in new[] { "https://ghfast.top/", "", "https://gh-proxy.com/" })
+        {
+            if (!await TryDownloadAsync(prefix + url, tempZip)) continue;
+            try
+            {
+                using (var zip = ZipFile.OpenRead(tempZip))
+                {
+                    var entry = zip.Entries.FirstOrDefault(e =>
+                        e.Name.EndsWith(".exe", StringComparison.OrdinalIgnoreCase));
+                    if (entry is null) continue;
+                    try { File.Delete(tempExe); } catch { }
+                    entry.ExtractToFile(tempExe, overwrite: true);
+                }
+            }
+            catch { }
+            finally
+            {
+                try { File.Delete(tempZip); } catch { }
+            }
+            if (!File.Exists(tempExe)) continue;
+
+            if (restart)
+            {
+                KillCore();
+                await Task.Delay(300);   // 等文件句柄释放
+            }
+            try
+            {
+                File.Move(tempExe, CoreExe, overwrite: true);
+            }
+            catch (Exception ex)
+            {
+                return new(false, "替换内核失败：" + ex.Message, current);
+            }
+
+            _coreVersion = "";   // 版本变了，重新读取
+            var version = await GetCoreVersionAsync();
+            if (restart && _lastItem is not null)
+            {
+                _configSig = "";
+                await StartCoreAsync(_lastItem);
+            }
+            return new(true,
+                (current.Length > 0 ? $"已更新 {current} → {version}" : $"内核已下载（{version}）")
+                + (restart ? "，并已重启内核" : ""), version);
+        }
+        try { File.Delete(tempExe); } catch { }
+        return new(false, "下载新内核失败：请检查网络后重试（GitHub 可能需要代理）", current);
+    }
+
+    /// <summary>比较版本号（忽略前缀 v 与后缀）</summary>
+    private static bool SameVersion(string current, string latest)
+    {
+        var a = Regex.Match(current, @"\d+(?:\.\d+)+").Value;
+        var b = Regex.Match(latest, @"\d+(?:\.\d+)+").Value;
+        return a.Length > 0 && a == b;
+    }
+
     /// <summary>查询 GitHub 最新版的 windows-amd64-compatible 压缩包地址</summary>
-    private static async Task<string?> FindCoreUrlAsync()
+    private static async Task<string?> FindCoreUrlAsync() => (await FindCoreReleaseAsync()).Url;
+
+    /// <summary>查询 GitHub 最新版内核的下载地址与版本标签（失败返回 null / 空串）</summary>
+    private static async Task<(string? Url, string Tag)> FindCoreReleaseAsync()
     {
         try
         {
@@ -593,18 +719,19 @@ public static class ProxyService
                 "https://api.github.com/repos/MetaCubeX/mihomo/releases/latest");
             api.Headers.TryAddWithoutValidation("User-Agent", "GameLocker");
             using var apiResponse = await Http.SendAsync(api);
-            if (!apiResponse.IsSuccessStatusCode) return null;
+            if (!apiResponse.IsSuccessStatusCode) return (null, "");
             using var doc = JsonDocument.Parse(await apiResponse.Content.ReadAsStringAsync());
+            var tag = doc.RootElement.TryGetProperty("tag_name", out var t) ? t.GetString() ?? "" : "";
             foreach (var asset in doc.RootElement.GetProperty("assets").EnumerateArray())
             {
                 var name = asset.GetProperty("name").GetString() ?? "";
                 if (name.Contains("windows-amd64-compatible", StringComparison.OrdinalIgnoreCase)
                     && name.EndsWith(".zip", StringComparison.OrdinalIgnoreCase))
-                    return asset.GetProperty("browser_download_url").GetString();
+                    return (asset.GetProperty("browser_download_url").GetString(), tag);
             }
         }
         catch { }
-        return null;
+        return (null, "");
     }
 
     /// <summary>下载到临时文件（单次上限 2 分钟，太慢的源直接放弃换下一个）</summary>
@@ -631,6 +758,7 @@ public static class ProxyService
     /// <summary>写配置并启动内核，等待 API 与订阅就绪；成功返回空串，失败返回原因</summary>
     private static async Task<string> StartCoreAsync(LaunchItem item)
     {
+        _lastItem = item.Clone();   // 内核更新后按这份配置重启
         var port = NormalizePort(item.ProxyPort);
         var url = (item.ProxySubscription ?? "").Trim();
         if (await IsPortInUseAsync(port)) return $"端口 {port} 已被占用，请在编辑页换一个端口";

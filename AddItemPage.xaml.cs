@@ -115,6 +115,9 @@ public sealed partial class AddItemPage : Page, ISettingsGamepad
     /// <summary>小猫咪：正在按保存的节点回填下拉框（此时不触发 SelectionChanged 的状态提示）</summary>
     private bool _fillingProxyNodes;
 
+    /// <summary>小猫咪：内核版本/更新正在处理（防止重复点击）</summary>
+    private bool _proxyCoreUpdating;
+
     /// <summary>小猫咪：正在按保存的配置回填代理模式/端口（此时不触发重新拉取节点）</summary>
     private bool _syncingProxyForm;
 
@@ -465,13 +468,14 @@ public sealed partial class AddItemPage : Page, ISettingsGamepad
             list.Add(LosslessProfileCombo);
             list.Add(LosslessNewProfileButton);
         }
-        // 小猫咪：订阅链接 / 代理模式 / 本地代理端口 / 节点下拉
+        // 小猫咪：订阅链接 / 代理模式 / 本地代理端口 / 内核版本与更新 / 节点下拉
         if (ProxyRow.Visibility == vis)
         {
             list.Add(ProxySubscriptionBox);
             list.Add(ProxyRuleRadio);
             list.Add(ProxyGlobalRadio);
             list.Add(ProxyPortBox);
+            list.Add(ProxyCoreUpdateButton);
             list.Add(ProxyNodeCombo);
             list.Add(ProxyNodeRefreshButton);
         }
@@ -793,10 +797,13 @@ public sealed partial class AddItemPage : Page, ISettingsGamepad
                 ProxyGlobalRadio.IsChecked = global;
                 ProxyRuleRadio.IsChecked = !global;
                 ProxyPortBox.Text = (item.ProxyPort is >= 1 and <= 65535 ? item.ProxyPort : 7897).ToString();
-                // 先占位（只放"自动"），随后异步拉订阅节点并测速填充
+                // 只显示上一次「测速」的节点缓存，进入编辑页不联网；没测过就只放"自动"
                 FillProxyNodeOptions([], item.ProxySelected ?? "");
+                ShowCachedProxyNodes(item.ProxySubscription ?? "",
+                    string.Equals((item.ProxyMode ?? "rule").Trim(), "global", StringComparison.OrdinalIgnoreCase)
+                        ? "global" : "rule", item.ProxySelected ?? "");
                 _syncingProxyForm = false;
-                _ = LoadProxyNodesAsync();
+                _ = LoadProxyCoreVersionAsync();
             }
             // 壁纸：固定大磁贴、名称固定「壁纸」；来源 / 轮番速度 / 个性喜好 / 下载到本地
             WallpaperRow.Visibility = isWallpaper ? Microsoft.UI.Xaml.Visibility.Visible : w;
@@ -1486,6 +1493,10 @@ public sealed partial class AddItemPage : Page, ISettingsGamepad
             // 小猫咪：重新拉取订阅节点并测速
             case Button btn when ReferenceEquals(btn, ProxyNodeRefreshButton):
                 _ = LoadProxyNodesAsync();
+                break;
+            // 小猫咪：检查并更新内核版本
+            case Button btn when ReferenceEquals(btn, ProxyCoreUpdateButton):
+                OnProxyCoreUpdateClick(btn, new RoutedEventArgs());
                 break;
             case Button btn when ReferenceEquals(btn, CloudSettingsButton):
                 // 游戏存档：A 键跳到 设置 → 云端备份 配置 WebDAV
@@ -2306,13 +2317,62 @@ public sealed partial class AddItemPage : Page, ISettingsGamepad
         }
     }
 
-    /// <summary>切换规则/全局：两者的节点集合不同（规则="节点选择"分组，全局=内核 GLOBAL 分组），重新拉一次</summary>
+    /// <summary>切换规则/全局：两者的节点集合不同；不联网，先显示该模式上一次测速的结果</summary>
     private void OnProxyModeChanged(object sender, RoutedEventArgs e)
     {
         if (ProxyRow is null || ProxyGlobalRadio is null) return;   // XAML 解析阶段
         if (_syncingProxyForm || _fillingProxyNodes) return;
         if (ProxyRow.Visibility != Microsoft.UI.Xaml.Visibility.Visible) return;
-        _ = LoadProxyNodesAsync();
+        var wanted = (ProxyNodeCombo.SelectedItem as ProxyNodeOption)?.Value ?? "";
+        ShowCachedProxyNodes(ProxySubscriptionBox.Text,
+            ProxyGlobalRadio.IsChecked == true ? "global" : "rule", wanted);
+    }
+
+    /// <summary>用最近一次「测速」的缓存填充节点下拉（不联网）；没有缓存就只保留"自动"并提示点测速</summary>
+    private void ShowCachedProxyNodes(string subscription, string mode, string wanted)
+    {
+        if (ProxyNodeCombo is null || ProxyNodeStatusText is null) return;
+        var cached = ProxyService.CachedNodes(subscription, mode);
+        FillProxyNodeOptions(cached, wanted);
+        ProxyNodeStatusText.Text = cached.Count > 0
+            ? $"上次测速结果（{cached.Count} 个节点）；点「测速」可重新拉取。圆点：绿=快（≤150ms），黄=一般（≤400ms），红=慢"
+            : "还没有测速数据：点「测速」拉取节点并显示延迟（进入编辑页不会自动拉取）";
+    }
+
+    /// <summary>读取并显示当前内核版本（未下载时给出提示），不联网</summary>
+    private async Task LoadProxyCoreVersionAsync()
+    {
+        if (ProxyCoreVersionText is null) return;
+        var version = await ProxyService.GetCoreVersionAsync();
+        if (ProxyRow.Visibility != Microsoft.UI.Xaml.Visibility.Visible) return;
+        ProxyCoreVersionText.Text = version.Length > 0
+            ? $"当前内核 {version}"
+            : "尚未下载内核，首次连接时自动下载";
+    }
+
+    /// <summary>检查并更新内核：查 GitHub 最新版，确认有新版本后下载替换（内核运行中会先停再重启）</summary>
+    private async void OnProxyCoreUpdateClick(object sender, Microsoft.UI.Xaml.RoutedEventArgs e)
+    {
+        if (_proxyCoreUpdating || ProxyCoreUpdateButton is null) return;
+        _proxyCoreUpdating = true;
+        ProxyCoreUpdateButton.IsEnabled = false;
+        ProxyCoreStatusText.Text = "正在检查最新内核版本…";
+        try
+        {
+            var result = await ProxyService.CheckAndUpdateCoreAsync();
+            if (ProxyRow.Visibility != Microsoft.UI.Xaml.Visibility.Visible) return;
+            ProxyCoreStatusText.Text = result.Message;
+            if (result.Version.Length > 0) ProxyCoreVersionText.Text = $"当前内核 {result.Version}";
+        }
+        catch (Exception ex)
+        {
+            ProxyCoreStatusText.Text = "检查更新失败：" + ex.Message;
+        }
+        finally
+        {
+            _proxyCoreUpdating = false;
+            if (ProxyCoreUpdateButton is not null) ProxyCoreUpdateButton.IsEnabled = true;
+        }
     }
 
     /// <summary>选中节点后把当前选择（含延迟）提示出来</summary>

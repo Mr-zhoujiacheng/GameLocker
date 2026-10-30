@@ -4,6 +4,18 @@
 
 Game Locker 是面向 Windows 掌机与平板的手柄 / 触控优先游戏启动器：把游戏与应用收进磁贴统一管理，从启动、编辑到设置全程不需要键鼠。
 
+## 界面预览
+
+<img src="docs/screenshots/home.png" width="860" alt="主页：磁贴、天气、壁纸与顶栏">
+
+| 编辑磁贴 | 壁纸小组件 |
+| :---: | :---: |
+| <img src="docs/screenshots/edit-tile.png" width="430" alt="编辑磁贴"> | <img src="docs/screenshots/wallpaper-widget.png" width="430" alt="壁纸小组件"> |
+| **设置** | **外观** |
+| <img src="docs/screenshots/settings.png" width="430" alt="设置"> | <img src="docs/screenshots/appearance.png" width="430" alt="外观"> |
+
+<img src="docs/screenshots/about.png" width="860" alt="关于">
+
 ## 特性
 
 - **磁贴主页**：游戏与应用以磁贴展示，支持副页块切换（LT/RT）、拖拽换位与组合成组

@@ -383,6 +383,79 @@
                     </StackPanel>
                 </StackPanel>
 
+                <!-- 壁纸小组件：来源 / 轮番速度 / 个性喜好 / 下载到本地
+                     （仅壁纸编辑时显示；固定大磁贴，名称固定为「壁纸」，不可改大小与颜色） -->
+                <StackPanel x:Name="WallpaperRow" Spacing="14" Visibility="Collapsed">
+                    <StackPanel Spacing="4">
+                        <TextBlock Text="图片来源" FontSize="15" Opacity="0.9"/>
+                        <StackPanel Orientation="Horizontal" Spacing="8">
+                            <RadioButton x:Name="WpSourceBingRadio" Content="Bing 每日壁纸" GroupName="WallpaperSource" Padding="14,10" IsChecked="True"/>
+                            <RadioButton x:Name="WpSourcePicsumRadio" Content="Picsum 随机壁纸" GroupName="WallpaperSource" Padding="14,10"/>
+                        </StackPanel>
+                    </StackPanel>
+                    <StackPanel Spacing="4">
+                        <TextBlock Text="轮番速度" FontSize="15" Opacity="0.9"/>
+                        <StackPanel Orientation="Horizontal" Spacing="8">
+                            <RadioButton x:Name="WpSpeedFastRadio" Content="快 · 1分钟" GroupName="WallpaperSpeed" Padding="14,10"/>
+                            <RadioButton x:Name="WpSpeedSlowRadio" Content="慢 · 10分钟" GroupName="WallpaperSpeed" Padding="14,10" IsChecked="True"/>
+                            <RadioButton x:Name="WpSpeedArtRadio" Content="长 · 30分钟" GroupName="WallpaperSpeed" Padding="14,10"/>
+                        </StackPanel>
+                    </StackPanel>
+                    <StackPanel Spacing="8">
+                        <TextBlock Text="个性喜好" FontSize="15" Opacity="0.9"/>
+                        <Border HorizontalAlignment="Left" CornerRadius="8" Background="#18FFFFFF" BorderBrush="#22FFFFFF" BorderThickness="1">
+                            <Image x:Name="WpPreview" Height="150" Stretch="Uniform"/>
+                        </Border>
+                        <TextBlock x:Name="WpCurrentText" FontSize="12" Opacity="0.7" TextTrimming="CharacterEllipsis"
+                                   Text="当前壁纸：—"/>
+                        <TextBlock x:Name="WpPreferenceText" FontSize="12" Opacity="0.7" Text="已收藏 0 张 · 已排除 0 张"/>
+                        <StackPanel Orientation="Horizontal" Spacing="8">
+                            <Button x:Name="WpLikeButton" Click="OnWpLikeClick" ToolTipService.ToolTip="收藏后这张壁纸在轮播中出现得更频繁">
+                                <StackPanel Orientation="Horizontal" Spacing="6">
+                                    <FontIcon Glyph="&#xEB51;" FontSize="14"/>
+                                    <TextBlock Text="收藏当前"/>
+                                </StackPanel>
+                            </Button>
+                            <Button x:Name="WpBlockButton" Click="OnWpBlockClick" ToolTipService.ToolTip="排除后这张壁纸不再参与轮播">
+                                <StackPanel Orientation="Horizontal" Spacing="6">
+                                    <FontIcon Glyph="&#xE711;" FontSize="14"/>
+                                    <TextBlock Text="排除当前"/>
+                                </StackPanel>
+                            </Button>
+                            <Button x:Name="WpClearButton" Click="OnWpClearClick">
+                                <StackPanel Orientation="Horizontal" Spacing="6">
+                                    <FontIcon Glyph="&#xE74D;" FontSize="14"/>
+                                    <TextBlock Text="清空喜好"/>
+                                </StackPanel>
+                            </Button>
+                        </StackPanel>
+                    </StackPanel>
+                    <StackPanel Spacing="8">
+                        <TextBlock Text="本地缓存" FontSize="15" Opacity="0.9"/>
+                        <StackPanel Orientation="Horizontal" Spacing="8">
+                            <Button x:Name="WpDownloadButton" Click="OnWpDownloadClick" ToolTipService.ToolTip="立即下载多张壁纸到本地缓存目录">
+                                <StackPanel Orientation="Horizontal" Spacing="6">
+                                    <FontIcon Glyph="&#xE896;" FontSize="14"/>
+                                    <TextBlock Text="下载到本地"/>
+                                </StackPanel>
+                            </Button>
+                            <Button x:Name="WpOpenFolderButton" Click="OnWpOpenFolderClick" ToolTipService.ToolTip="在资源管理器中打开壁纸缓存目录">
+                                <StackPanel Orientation="Horizontal" Spacing="6">
+                                    <FontIcon Glyph="&#xE8B7;" FontSize="14"/>
+                                    <TextBlock Text="打开文件夹"/>
+                                </StackPanel>
+                            </Button>
+                            <Button x:Name="WpClearCacheButton" Click="OnWpClearCacheClick" ToolTipService.ToolTip="删除本地缓存的壁纸，之后会重新下载（收藏与排除名单保留）">
+                                <StackPanel Orientation="Horizontal" Spacing="6">
+                                    <FontIcon Glyph="&#xE74D;" FontSize="14"/>
+                                    <TextBlock Text="清除缓存"/>
+                                </StackPanel>
+                            </Button>
+                        </StackPanel>
+                        <TextBlock x:Name="WpStatusText" FontSize="12" Opacity="0.7" TextWrapping="Wrap"/>
+                    </StackPanel>
+                </StackPanel>
+
                 <!-- 映射小组件：映射按键（仅映射编辑时显示） -->
                 <StackPanel x:Name="MappingRow" Spacing="4" Visibility="Collapsed">
                     <TextBlock Text="映射按键" FontSize="15" Opacity="0.9"/>
@@ -888,6 +961,70 @@
                         </Grid>
                         <TextBlock x:Name="LosslessProfileHint" FontSize="12" Opacity="0.55" TextWrapping="Wrap"
                                    Text="下拉框读取小黄鸭的配置；「新建配置」会打开小黄鸭，配置建好后重新展开下拉框即可选择。"/>
+                    </StackPanel>
+                </StackPanel>
+
+                <!-- 小猫咪小组件：订阅链接 / 混合端口 / 指定节点（仅小猫咪编辑时显示） -->
+                <StackPanel x:Name="ProxyRow" Spacing="14" Visibility="Collapsed">
+                    <StackPanel Spacing="4">
+                        <TextBlock Text="订阅链接" FontSize="15" Opacity="0.9"/>
+                        <TextBox x:Name="ProxySubscriptionBox" FontSize="14"
+                                 PlaceholderText="https://.../api/v1/client/subscribe?token=..."/>
+                        <TextBlock Text="填 Clash / Mihomo 格式的订阅链接。组件会自动启动本地内核、拉取节点并开启系统代理。"
+                                   FontSize="12" Opacity="0.55" TextWrapping="Wrap"/>
+                    </StackPanel>
+
+                    <StackPanel Spacing="4">
+                        <TextBlock Text="代理模式" FontSize="15" Opacity="0.9"/>
+                        <StackPanel Orientation="Horizontal" Spacing="8">
+                            <RadioButton x:Name="ProxyRuleRadio" Content="规则" GroupName="ProxyMode" Padding="14,10"
+                                         IsChecked="True" Checked="OnProxyModeChanged"/>
+                            <RadioButton x:Name="ProxyGlobalRadio" Content="全局" GroupName="ProxyMode" Padding="14,10"
+                                         Checked="OnProxyModeChanged"/>
+                        </StackPanel>
+                        <TextBlock Text="规则 = 按订阅自带的分流规则；全局 = 所有流量都走选中的节点。"
+                                   FontSize="12" Opacity="0.55" TextWrapping="Wrap"/>
+                    </StackPanel>
+
+                    <StackPanel Spacing="4">
+                        <TextBlock Text="本地代理端口" FontSize="15" Opacity="0.9"/>
+                        <TextBox x:Name="ProxyPortBox" FontSize="14" PlaceholderText="7897" InputScope="Number"/>
+                        <TextBlock Text="A 键连接时把 Windows 系统代理指向 127.0.0.1:该端口（自动选择混合端口），默认 7897。"
+                                   FontSize="12" Opacity="0.55" TextWrapping="Wrap"/>
+                    </StackPanel>
+
+                    <StackPanel Spacing="4">
+                        <TextBlock Text="节点" FontSize="15" Opacity="0.9"/>
+                        <Grid ColumnSpacing="8">
+                            <Grid.ColumnDefinitions>
+                                <ColumnDefinition Width="*"/>
+                                <ColumnDefinition Width="Auto"/>
+                            </Grid.ColumnDefinitions>
+                            <ComboBox x:Name="ProxyNodeCombo" Grid.Column="0" HorizontalAlignment="Stretch" FontSize="14"
+                                      PlaceholderText="自动（由内核决定）" SelectionChanged="OnProxyNodeChanged">
+                                <ComboBox.ItemTemplate>
+                                    <DataTemplate x:DataType="local:ProxyNodeOption">
+                                        <Grid ColumnSpacing="8">
+                                            <Grid.ColumnDefinitions>
+                                                <ColumnDefinition Width="Auto"/>
+                                                <ColumnDefinition Width="*"/>
+                                                <ColumnDefinition Width="Auto"/>
+                                            </Grid.ColumnDefinitions>
+                                            <Ellipse Grid.Column="0" Width="9" Height="9" VerticalAlignment="Center"
+                                                     Fill="{x:Bind DotBrush}"/>
+                                            <TextBlock Grid.Column="1" Text="{x:Bind Label}" FontSize="14"
+                                                       VerticalAlignment="Center" TextTrimming="CharacterEllipsis"/>
+                                            <TextBlock Grid.Column="2" Text="{x:Bind DelayText}" FontSize="12" Opacity="0.6"
+                                                       VerticalAlignment="Center"/>
+                                        </Grid>
+                                    </DataTemplate>
+                                </ComboBox.ItemTemplate>
+                            </ComboBox>
+                            <Button x:Name="ProxyNodeRefreshButton" Grid.Column="1" Content="测速" Padding="14,8"
+                                    VerticalAlignment="Stretch" Click="OnProxyNodeRefreshClick"/>
+                        </Grid>
+                        <TextBlock x:Name="ProxyNodeStatusText" FontSize="12" Opacity="0.55" TextWrapping="Wrap"
+                                   Text="填好订阅后会自动获取节点并测速；圆点：绿=快，黄=一般，红=慢。"/>
                     </StackPanel>
                 </StackPanel>
 

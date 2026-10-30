@@ -29,6 +29,7 @@ public sealed partial class TopbarPage : Page, ISettingsGamepad
         WifiToggle.IsOn = s.ShowWifi;
         BluetoothToggle.IsOn = s.ShowBluetooth;
         GamepadIconToggle.IsOn = s.ShowGamepadIcon;
+        NotificationToggle.IsOn = s.ShowNotifications;
 
         _switchRows =
         [
@@ -36,13 +37,78 @@ public sealed partial class TopbarPage : Page, ISettingsGamepad
             (BatteryRow, BatteryToggle),
             (WifiRow, WifiToggle),
             (BluetoothRow, BluetoothToggle),
-            (GamepadRow, GamepadIconToggle)
+            (GamepadRow, GamepadIconToggle),
+            (NotificationRow, NotificationToggle)
         ];
-        _controls = [ClockRow, BatteryRow, WifiRow, BluetoothRow, GamepadRow];
+        _controls = [ClockRow, BatteryRow, WifiRow, BluetoothRow, GamepadRow, NotificationRow];
 
         // 卡片网格：宽窗口两列并整块居中，侧边栏窄窗口回成一列靠上
         ContentScroll.SizeChanged += (_, _) => LayoutCards();
-        Loaded += (_, _) => LayoutCards();
+        Loaded += (_, _) =>
+        {
+            LayoutCards();
+            UpdatePreview();
+        };
+    }
+
+    /// <summary>
+    /// 顶栏预览：用和主页顶栏一模一样的圆角气泡，按当前开关 + 真实设备状态演示效果。
+    /// 拨动任一开关（A 键/点击）都会重新调用，所以能立刻看到图标出现/消失。
+    /// </summary>
+    private async void UpdatePreview()
+    {
+        var s = SettingsService.Current;
+
+        // 左：时钟用当前时间充当示例
+        var now = DateTime.Now;
+        PreviewClockText.Text = now.ToString("HH:mm");
+        PreviewDateText.Text = $"{now:M月d日} {"日一二三四五六"[(int)now.DayOfWeek]}";
+        PreviewClock.Visibility = s.ShowClock ? Visibility.Visible : Visibility.Collapsed;
+
+        // 右：四枚状态气泡，颜色规则与主页一致（Wi-Fi/蓝牙按无线电开关状态着色）
+        var wifiOn = await RadioService.IsOnAsync(Windows.Devices.Radios.RadioKind.WiFi)
+                     ?? NetworkService.IsWifiConnected();
+        var btOn = await RadioService.IsOnAsync(Windows.Devices.Radios.RadioKind.Bluetooth)
+                   ?? NetworkService.IsBluetoothConnected();
+        UpdateStatusIcon(PreviewWifiBubble, PreviewWifiIcon, s.ShowWifi, wifiOn);
+        UpdateStatusIcon(PreviewBluetoothBubble, PreviewBluetoothIcon, s.ShowBluetooth, btOn);
+
+        var pct = BatteryService.GetPercent();
+        var showBattery = s.ShowBattery && pct is not null;
+        PreviewBatteryBubble.Visibility = showBattery ? Visibility.Visible : Visibility.Collapsed;
+        if (showBattery)
+        {
+            var (glyph, color) = BatteryService.Describe(pct!.Value);
+            PreviewBatteryIcon.Glyph = glyph;
+            PreviewBatteryIcon.Foreground = new SolidColorBrush(color);
+        }
+
+        PreviewGamepadBubble.Visibility = s.ShowGamepadIcon ? Visibility.Visible : Visibility.Collapsed;
+        PreviewGamepadIcon.Foreground = new SolidColorBrush(
+            App.Main?.Gamepad.HasGamepad == true
+                ? Windows.UI.Color.FromArgb(0xFF, 0x3F, 0xC0, 0x5B)
+                : Windows.UI.Color.FromArgb(0xFF, 0xE8, 0x50, 0x4A));
+
+        PreviewNotificationBubble.Visibility = s.ShowNotifications ? Visibility.Visible : Visibility.Collapsed;
+
+        // 五枚状态图标全关时，外面的玻璃框一起隐藏
+        var anyStatus = s.ShowWifi || s.ShowBluetooth || showBattery || s.ShowGamepadIcon || s.ShowNotifications;
+        PreviewTray.Visibility = anyStatus ? Visibility.Visible : Visibility.Collapsed;
+
+        // 顶栏各项全关时给个说明，避免预览条只剩一条空底
+        var anyShown = s.ShowClock || s.ShowWifi || s.ShowBluetooth || showBattery
+                       || s.ShowGamepadIcon || s.ShowNotifications;
+        PreviewEmpty.Visibility = anyShown ? Visibility.Collapsed : Visibility.Visible;
+    }
+
+    private static void UpdateStatusIcon(Border bubble, FontIcon icon, bool show, bool on)
+    {
+        bubble.Visibility = show ? Visibility.Visible : Visibility.Collapsed;
+        if (!show) return;
+        icon.Foreground = new SolidColorBrush(on
+            ? Windows.UI.Color.FromArgb(0xFF, 0x3F, 0xC0, 0x5B)   // 绿=开着
+            : Windows.UI.Color.FromArgb(0xFF, 0xFF, 0xFF, 0xFF)); // 白=关着
+        icon.Opacity = on ? 1.0 : 0.35;
     }
 
     /// <summary>可否排两列的最小可用宽度</summary>
@@ -59,7 +125,8 @@ public sealed partial class TopbarPage : Page, ISettingsGamepad
         SwitchGrid.ColumnDefinitions[1].Width = two
             ? new GridLength(1, GridUnitType.Star)
             : new GridLength(0);
-        SwitchGrid.VerticalAlignment = two ? VerticalAlignment.Center : VerticalAlignment.Top;
+        // 整块（预览 + 开关卡）一起居中/靠上，预览与开关宽度一致、紧挨着
+        ContentStack.VerticalAlignment = two ? VerticalAlignment.Center : VerticalAlignment.Top;
 
         for (var i = 0; i < _controls.Length; i++)
         {
@@ -86,39 +153,50 @@ public sealed partial class TopbarPage : Page, ISettingsGamepad
     {
         if (!_ready) return;
 
-        if (buttons.HasFlag(GamepadButtons.DPadUp) || buttons.HasFlag(GamepadButtons.DPadLeft))
-            MoveRow(-1);
-        else if (buttons.HasFlag(GamepadButtons.DPadDown) || buttons.HasFlag(GamepadButtons.DPadRight))
-            MoveRow(1);
+        // 宽窗口两列：左右在同行内换列、上下换行；窄窗口单列：四个方向都逐项移动
+        if (buttons.HasFlag(GamepadButtons.DPadUp)) MoveBy(0, -1);
+        else if (buttons.HasFlag(GamepadButtons.DPadDown)) MoveBy(0, 1);
+        else if (buttons.HasFlag(GamepadButtons.DPadLeft)) MoveBy(-1, 0);
+        else if (buttons.HasFlag(GamepadButtons.DPadRight)) MoveBy(1, 0);
         else if (buttons.HasFlag(GamepadButtons.A))
             ActivateCurrent();
     }
 
-    /// <summary>上下移动：单列时逐个移动，两列时左右键在同行内换列、上下键换行</summary>
-    private void MoveRow(int delta)
+    private void MoveBy(int dx, int dy)
     {
         var two = SwitchGrid.ColumnDefinitions[1].Width.Value > 0;
+
         if (!two)
         {
-            var next = Math.Clamp(_index + delta, 0, _controls.Length - 1);
+            var step = dx != 0 ? dx : dy;
+            var next = Math.Clamp(_index + step, 0, _controls.Length - 1);
             if (next == _index) return;
             _index = next;
             FocusIndex(next);
             return;
         }
 
-        // 两列：行内左右（±1），跨行（±2）
         var row = _index / 2;
         var col = _index % 2;
-        var rows = (_controls.Length + 1) / 2;
-        if (delta == -1 && col == 1) { _index--; FocusIndex(_index); return; }
-        if (delta == 1 && col == 0 && _index + 1 < _controls.Length) { _index++; FocusIndex(_index); return; }
 
-        var targetRow = Math.Clamp(row + (delta < 0 ? -1 : 1), 0, rows - 1);
-        if (targetRow == row) return;
-        var target = Math.Min(targetRow * 2 + col, _controls.Length - 1);
-        _index = target;
-        FocusIndex(target);
+        if (dx != 0)
+        {
+            var nc = col + dx;
+            if (nc < 0 || nc > 1) return;
+            var target = row * 2 + nc;
+            if (target >= _controls.Length) return;
+            _index = target;
+            FocusIndex(target);
+            return;
+        }
+
+        var rows = (_controls.Length + 1) / 2;
+        var targetRow = row + dy;
+        if (targetRow < 0 || targetRow >= rows) return;
+        var targetIndex = Math.Min(targetRow * 2 + col, _controls.Length - 1);
+        if (targetIndex == _index) return;
+        _index = targetIndex;
+        FocusIndex(targetIndex);
     }
 
     private void ActivateCurrent()
@@ -187,9 +265,11 @@ public sealed partial class TopbarPage : Page, ISettingsGamepad
             s.ShowWifi = WifiToggle.IsOn;
             s.ShowBluetooth = BluetoothToggle.IsOn;
             s.ShowGamepadIcon = GamepadIconToggle.IsOn;
+            s.ShowNotifications = NotificationToggle.IsOn;
         });
-        // 即时应用到主页顶栏（若已创建）
+        // 即时应用到主页顶栏（若已创建），并刷新本页预览
         App.Main?.ApplyTopbarVisibility();
+        UpdatePreview();
     }
 
     public bool IsCapturing => false;

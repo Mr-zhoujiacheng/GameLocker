@@ -105,8 +105,8 @@ public sealed partial class AppearancePage : Page, ISettingsGamepad
         SyncControls();
 
         // 卡片网格：宽窗口两列并整块居中，侧边栏窄窗口回成一列靠上
-        ContentScroll.SizeChanged += (_, _) => { LayoutCards(); UpdateBars(); };
-        Loaded += (_, _) => { LayoutCards(); UpdateBars(); };
+        ContentScroll.SizeChanged += (_, _) => { LayoutCards(); LayoutThemeOptions(); UpdateBars(); };
+        Loaded += (_, _) => { LayoutCards(); LayoutThemeOptions(); UpdateBars(); };
     }
 
     /// <summary>可否排两列的最小可用宽度（低于此宽度文字会被挤压，改回单列）</summary>
@@ -588,7 +588,7 @@ public sealed partial class AppearancePage : Page, ISettingsGamepad
         UpdateCursor(_controls.Count > _index ? _controls[_index] : null);
     }
 
-    /// <summary>按主题表生成展开列表的行（预览条 + 名称 + 说明 + 选中勾）</summary>
+    /// <summary>按主题表生成展开列表的卡片（大预览块 + 名称 + 说明 + 选中勾）</summary>
     private void FillTileThemes(TileTheme current)
     {
         TileThemeList.Children.Clear();
@@ -598,16 +598,46 @@ public sealed partial class AppearancePage : Page, ISettingsGamepad
         foreach (var opt in ThemeOptions)
             TileThemeList.Children.Add(BuildThemeRow(opt));
         ApplyThemeSelection(current);
+        LayoutThemeOptions();
+    }
+
+    /// <summary>主题选项排布：可用宽度够就两列，否则单列（与卡片网格同一套宽度判断）</summary>
+    private const double ThemeTwoColumnMinWidth = 420;
+
+    private void LayoutThemeOptions()
+    {
+        if (TileThemeList is null || _themeRows.Count == 0) return;
+        var avail = ContentScroll?.ViewportWidth ?? 0;
+        var two = avail >= ThemeTwoColumnMinWidth;
+
+        // 先补齐行/列定义，再分配位置（行索引超出定义个数会落到隐式行里，高度不可控）
+        var rowCount = two ? (_themeRows.Count + 1) / 2 : _themeRows.Count;
+        TileThemeList.RowDefinitions.Clear();
+        for (var i = 0; i < rowCount; i++)
+            TileThemeList.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });
+
+        TileThemeList.ColumnDefinitions.Clear();
+        TileThemeList.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
+        if (two)
+            TileThemeList.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
+
+        TileThemeList.ColumnSpacing = two ? 10 : 0;
+        for (var i = 0; i < _themeRows.Count; i++)
+        {
+            var row = _themeRows[i];
+            Grid.SetColumn(row, two ? i % 2 : 0);
+            Grid.SetRow(row, two ? i / 2 : i);
+        }
     }
 
     private Border BuildThemeRow(TileThemeOption opt)
     {
-        // 迷你预览条：与磁贴一致（玻璃用磨砂色底本身，不再叠加底部色条；渐变加顶部高光）
+        // 大预览块：与磁贴一致（玻璃用磨砂色底本身，不再叠加底部色条；渐变加顶部高光）
         var overlay = new Grid();
         if (opt.Theme == TileTheme.Gradient)
             overlay.Children.Add(new Border
             {
-                Height = 7,
+                Height = 14,
                 VerticalAlignment = VerticalAlignment.Top,
                 Background = new LinearGradientBrush
                 {
@@ -623,9 +653,9 @@ public sealed partial class AppearancePage : Page, ISettingsGamepad
             });
         var swatch = new Border
         {
-            Width = 30,
-            Height = 20,
-            CornerRadius = new CornerRadius(3),
+            Width = 52,
+            Height = 52,
+            CornerRadius = new CornerRadius(8),
             Background = TileStyle.FillFor(opt.Theme, PreviewAccent),
             BorderBrush = new SolidColorBrush(Windows.UI.Color.FromArgb(0x40, 0xFF, 0xFF, 0xFF)),
             BorderThickness = new Thickness(1),
@@ -636,24 +666,25 @@ public sealed partial class AppearancePage : Page, ISettingsGamepad
         var name = new TextBlock
         {
             Text = opt.Name,
-            FontSize = 13,
+            FontSize = 14,
             FontWeight = Microsoft.UI.Text.FontWeights.SemiBold
         };
         var desc = new TextBlock
         {
             Text = opt.Desc,
-            FontSize = 11,
+            FontSize = 11.5,
             Foreground = new SolidColorBrush(Windows.UI.Color.FromArgb(0x99, 0xFF, 0xFF, 0xFF)),
-            TextTrimming = TextTrimming.CharacterEllipsis
+            TextWrapping = TextWrapping.Wrap,
+            MaxLines = 2
         };
-        var text = new StackPanel { Spacing = 1, Margin = new Thickness(10, 0, 8, 0), VerticalAlignment = VerticalAlignment.Center };
+        var text = new StackPanel { Spacing = 3, Margin = new Thickness(12, 0, 8, 0), VerticalAlignment = VerticalAlignment.Center };
         text.Children.Add(name);
         text.Children.Add(desc);
 
         var check = new FontIcon
         {
             Glyph = "\uE73E",
-            FontSize = 13,
+            FontSize = 14,
             VerticalAlignment = VerticalAlignment.Center,
             Visibility = Visibility.Collapsed
         };
@@ -670,10 +701,12 @@ public sealed partial class AppearancePage : Page, ISettingsGamepad
 
         var row = new Border
         {
-            Padding = new Thickness(8, 6, 10, 6),
-            CornerRadius = new CornerRadius(8),
+            Padding = new Thickness(10),
+            CornerRadius = new CornerRadius(10),
             BorderBrush = new SolidColorBrush(Microsoft.UI.Colors.Transparent),
             BorderThickness = new Thickness(1.5),
+            MinHeight = 78,
+            HorizontalAlignment = HorizontalAlignment.Stretch,
             Child = grid
         };
         // 选项行自行处理点按并阻止冒泡，避免误触外层卡片把列表收起

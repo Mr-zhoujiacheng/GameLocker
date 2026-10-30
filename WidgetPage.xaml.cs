@@ -167,6 +167,16 @@ public sealed partial class WidgetPage : Page
         Size = TileSize.Wide
     };
 
+    /// <summary>预览用固定 Clash 项（白色猫头剪影 + 连接状态；实际添加时为默认"长"尺寸）</summary>
+    private static readonly LaunchItem ClashPreviewItem = new()
+    {
+        Name = "Clash",
+        Target = "widget:clash",
+        Kind = LaunchKind.Widget,
+        WidgetKind = WidgetKind.Clash,
+        Size = TileSize.Wide
+    };
+
     /// <summary>预览磁贴框架（订阅天气变化时刷新文字）</summary>
     private TileStyle.WeatherTileRefs? _weatherPreviewRefs;
 
@@ -176,7 +186,7 @@ public sealed partial class WidgetPage : Page
     public WidgetPage()
     {
         InitializeComponent();
-        _formControls = [MusicWidgetCard, PhotoWidgetCard, WeatherWidgetCard, MappingWidgetCard, TrainerWidgetCard, BackupWidgetCard, GamepadMapWidgetCard, OptiScalerWidgetCard, RecycleBinWidgetCard, ForegroundWidgetCard, SystemWidgetCard, MonitorWidgetCard, FileTransferWidgetCard, LosslessScalWidgetCard, KeyboardWidgetCard];
+        _formControls = [MusicWidgetCard, PhotoWidgetCard, WeatherWidgetCard, MappingWidgetCard, TrainerWidgetCard, BackupWidgetCard, GamepadMapWidgetCard, OptiScalerWidgetCard, RecycleBinWidgetCard, ForegroundWidgetCard, SystemWidgetCard, MonitorWidgetCard, FileTransferWidgetCard, LosslessScalWidgetCard, KeyboardWidgetCard, ClashWidgetCard, WallpaperWidgetCard];
 
         // 说明条：有文案才显示（"已在主页"之类的提示也走这里），没文案时不留空条
         SelDescText.RegisterPropertyChangedCallback(TextBlock.TextProperty, (_, _) =>
@@ -400,6 +410,16 @@ public sealed partial class WidgetPage : Page
         KeyboardPreviewHost.Content = TileStyle.BuildStandardTile(
             KeyboardPreviewItem, null, w, h, TileStyle.AccentFor(KeyboardPreviewItem),
             TileStyle.IsNoColor(KeyboardPreviewItem));
+        // 小猫咪预览：与主页同一构建（地球图标 + 连接状态 + 服务器）
+        var (clashTile, clashRefs) = TileStyle.BuildProxyTile(
+            ClashPreviewItem, w, h, TileStyle.AccentFor(ClashPreviewItem),
+            TileStyle.IsNoColor(ClashPreviewItem));
+        ProxyService.Poll(ClashPreviewItem);
+        TileStyle.FillProxyTile(clashRefs, ClashPreviewItem);
+        ClashPreviewHost.Content = clashTile;
+        // 壁纸预览：与主页同一构建（固定大磁贴，占位提示）；实际添加后由主页轮播本地壁纸
+        var (wallpaperTile, _) = TileStyle.BuildWallpaperTile(w, h, null, "壁纸\n轮番展示");
+        WallpaperPreviewHost.Content = wallpaperTile;
         WeatherService.StateChanged += OnWeatherChanged;
         WeatherService.EnsureFresh();
 
@@ -451,6 +471,8 @@ public sealed partial class WidgetPage : Page
         else if (ReferenceEquals(c, FileTransferWidgetCard)) AddFileTransferWidget();
         else if (ReferenceEquals(c, LosslessScalWidgetCard)) AddLosslessWidget();
         else if (ReferenceEquals(c, KeyboardWidgetCard)) AddKeyboardWidget();
+        else if (ReferenceEquals(c, ClashWidgetCard)) AddClashWidget();
+        else if (ReferenceEquals(c, WallpaperWidgetCard)) AddWallpaperWidget();
         else AddMusicWidget();
     }
 
@@ -896,8 +918,40 @@ public sealed partial class WidgetPage : Page
         });
     }
 
-    // ---- 鼠标 ----
+    /// <summary>小猫咪组件：默认"长"尺寸（可后续编辑大小、颜色与 API/端口等参数），只允许一个</summary>
+    private void AddClashWidget()
+    {
+        var items = ConfigService.Load();
+        if (ExistsWidget(items, WidgetKind.Clash)) { SelDescText.Text = "Clash 已在主页"; return; }
+        CommitWidget(items, new LaunchItem
+        {
+            Name = "Clash",
+            Target = "widget:clash",
+            Kind = LaunchKind.Widget,
+            WidgetKind = WidgetKind.Clash,
+            PageIndex = App.Main?.CurrentHomePage ?? 0,   // 新磁贴归到主页当前所在页
+            Size = TileSize.Wide
+        });
+    }
 
+    /// <summary>壁纸组件：固定大磁贴、名称固定「壁纸」，只允许一个；来源/喜好/速度在编辑页设置</summary>
+    private void AddWallpaperWidget()
+    {
+        var items = ConfigService.Load();
+        if (ExistsWidget(items, WidgetKind.Wallpaper)) { SelDescText.Text = "壁纸已在主页"; return; }
+        CommitWidget(items, new LaunchItem
+        {
+            Name = "壁纸",
+            Target = "widget:wallpaper",
+            Kind = LaunchKind.Widget,
+            WidgetKind = WidgetKind.Wallpaper,
+            PageIndex = App.Main?.CurrentHomePage ?? 0,   // 新磁贴归到主页当前所在页
+            Size = TileSize.Large,
+            SlideshowSpeed = PhotoSpeed.Slow
+        });
+    }
+
+    // ---- 鼠标 ----
     private void OnAddClick(object sender, RoutedEventArgs e)
     {
         // 触屏 / 鼠标：第一次点按只选中（白框 + 底部说明），再点一次才真正添加
@@ -926,6 +980,8 @@ public sealed partial class WidgetPage : Page
         else if (sender is Button { Tag: "filetransfer" }) AddFileTransferWidget();
         else if (sender is Button { Tag: "lossless" }) AddLosslessWidget();
         else if (sender is Button { Tag: "keyboard" }) AddKeyboardWidget();
+        else if (sender is Button { Tag: "clash" }) AddClashWidget();
+        else if (sender is Button { Tag: "wallpaper" }) AddWallpaperWidget();
         else AddMusicWidget();
     }
 }

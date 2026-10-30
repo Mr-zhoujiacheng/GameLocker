@@ -378,8 +378,9 @@
                                 </FontIcon.RenderTransform>
                             </FontIcon>
                         </Grid>
-                        <StackPanel x:Name="TileThemeList" Visibility="Collapsed"
-                                    Margin="0,10,0,0" Spacing="4"/>
+                        <!-- 展开的主题选项：大卡片，宽窗口两列、窄窗口单列（位置由 LayoutThemeOptions 计算） -->
+                        <Grid x:Name="TileThemeList" Visibility="Collapsed"
+                              Margin="0,12,0,0" ColumnSpacing="10" RowSpacing="10"/>
                     </StackPanel>
                 </Border>
 

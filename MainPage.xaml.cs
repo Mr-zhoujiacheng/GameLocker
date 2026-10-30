@@ -1,4 +1,6 @@
 using System.Collections.ObjectModel;
+using System.Diagnostics;
+using Windows.Devices.Radios;
 using GameLocker.Models;
 using GameLocker.Services;
 using GameLocker.Controls;
@@ -14,7 +16,7 @@ namespace GameLocker;
 
 /// <summary>
 /// 主页：Win10 磁贴风格画布（小/长方形/大三种尺寸，自动流式排布），支持多页（副页）横向切换。
-/// 手柄：方向=选择，A=启动（组磁贴=展开/收起），Y=关闭程序（编辑模式内 Y=删除，组=拆分组，成员=移出组），
+/// 手柄：方向=选择，A=启动（已运行则最大化置前台；组磁贴=展开/收起），Y=最小化窗口（编辑模式内 Y=删除，组=拆分组，成员=移出组），
 /// LT/RT=切换副页，LB/RB=页内滚动；
 /// L3=移动模式：A 抓取磁贴后方向=移动、再 A 放下，X=多选标记、标记≥2 按 A 组合为组，B/L3=退出。
 /// 返回 true 表示按键已被本页消费，MainWindow 不再默认处理。
@@ -120,6 +122,12 @@ public sealed partial class MainPage : Page
     /// <summary>当前显示的小黄鸭磁贴引用（重排时重建；安装/运行状态变化时只改文字与圆点）</summary>
     private readonly Dictionary<TileStyle.LosslessTileRefs, LaunchItem> _lossRefs = [];
 
+    /// <summary>当前显示的小猫咪磁贴引用（重排时重建；连接状态/服务器变化时只改文字与圆点）</summary>
+    private readonly Dictionary<TileStyle.ProxyTileRefs, LaunchItem> _proxyRefs = [];
+
+    /// <summary>当前显示的壁纸小组件磁贴引用（重排时重建；value=显示序列索引）</summary>
+    private readonly Dictionary<TileStyle.WallpaperTileRefs, int> _wallpaperRefs = [];
+
     /// <summary>长按目标=手柄映射磁贴时记录（长按=关闭映射）</summary>
     private LaunchItem? _lpRemapItem;
 
@@ -131,6 +139,11 @@ public sealed partial class MainPage : Page
     {
         InitializeComponent();
         UiSound.Open(); // 提前合成并打开音频设备，第一次手柄按键就有声
+        HookStatusBubbles(); // 顶栏状态图标：单击快捷动作，长按进系统设置
+        // 已读时间持久化：重启后仍能提示"上次打开通知中心之后到达"的通知；
+        // 从未打开过时按"最近一天"起算，避免历史旧通知也亮绿点
+        _notificationSeen = ParseSeenTime(SettingsService.Current.NotificationSeenTime)
+                            ?? DateTime.Now.AddDays(-1);
 
         Loaded += (_, _) =>
         {
@@ -225,6 +238,8 @@ public sealed partial class MainPage : Page
         UpdateBattery();
         // 网络状态无需秒级刷新，每 5 秒查询一次
         if (_tickCount % 5 == 0) UpdateNetwork();
+        // 新通知到达 → 亮绿点（3 秒一次，读注册表开销很小）
+        if (_tickCount % 3 == 0) UpdateNotificationDot();
         _tickCount++;
         // 音乐磁贴进度秒级刷新
         if (_musicRefs.Count > 0) RefreshMusicTiles();
@@ -232,29 +247,79 @@ public sealed partial class MainPage : Page
         if (_monRefs.Count > 0) RefreshMonitorTiles();
         // 小黄鸭磁贴安装/运行状态秒级刷新
         if (_lossRefs.Count > 0) RefreshLosslessTiles();
+        // 小猫咪磁贴连接状态/节点：每 3 秒探测一次内核（异步，不阻塞 UI）
+        if (_proxyRefs.Count > 0 && _tickCount % 3 == 0)
+        {
+            var first = _proxyRefs.Values.First();
+            _ = ProxyService.RefreshAsync(first).ContinueWith(_ => DispatcherQueue.TryEnqueue(RefreshProxyTiles));
+        }
     }
 
     private int _tickCount;
 
-    /// <summary>顶栏 Wi-Fi / 蓝牙图标：已连接绿色，未连接白色；关闭开关时隐藏</summary>
-    private void UpdateNetwork()
+    /// <summary>顶栏 Wi-Fi / 蓝牙图标：无线电开着=绿色，关着=白色降透明度（点了就能开关，所以按开关状态着色）；
+    /// 读不到无线电（无该硬件/无权限）时退回"是否有连接"判断</summary>
+    private async void UpdateNetwork()
     {
         var s = SettingsService.Current;
-        UpdateStatusIcon(WifiIcon, s.ShowWifi, NetworkService.IsWifiConnected());
-        UpdateStatusIcon(BluetoothIcon, s.ShowBluetooth, NetworkService.IsBluetoothConnected());
+        var wifiOn = await RadioService.IsOnAsync(RadioKind.WiFi) ?? NetworkService.IsWifiConnected();
+        var btOn = await RadioService.IsOnAsync(RadioKind.Bluetooth) ?? NetworkService.IsBluetoothConnected();
+        UpdateStatusIcon(WifiBubble, WifiIcon, s.ShowWifi, wifiOn);
+        UpdateStatusIcon(BluetoothBubble, BluetoothIcon, s.ShowBluetooth, btOn);
     }
 
-    private static void UpdateStatusIcon(Microsoft.UI.Xaml.Controls.FontIcon icon, bool show, bool connected)
+    private static void UpdateStatusIcon(Border bubble, Microsoft.UI.Xaml.Controls.FontIcon icon,
+                                         bool show, bool on)
     {
-        if (!show)
+        bubble.Visibility = show ? Visibility.Visible : Visibility.Collapsed;
+        if (!show) return;
+        icon.Foreground = new SolidColorBrush(on
+            ? Windows.UI.Color.FromArgb(0xFF, 0x3F, 0xC0, 0x5B)   // 绿=开着
+            : Windows.UI.Color.FromArgb(0xFF, 0xFF, 0xFF, 0xFF)); // 白=关着
+        icon.Opacity = on ? 1.0 : 0.35;                          // 关着时降透明度，一眼看出是"关"
+    }
+
+    /// <summary>最近一次"已读"通知的时间：新通知到达时间晚于它才亮绿点</summary>
+    private DateTime _notificationSeen = DateTime.Now;
+
+    /// <summary>解析持久化的已读时间（UTC ISO 8601 → 本地时间）；空/异常返回 null</summary>
+    private static DateTime? ParseSeenTime(string? text)
+    {
+        if (string.IsNullOrWhiteSpace(text)) return null;
+        try
         {
-            icon.Visibility = Visibility.Collapsed;
+            return DateTime.Parse(text, null, System.Globalization.DateTimeStyles.RoundtripKind).ToLocalTime();
+        }
+        catch
+        {
+            return null;
+        }
+    }
+
+    /// <summary>标记通知已读（打开通知中心时调用），并写入设置持久化</summary>
+    private void MarkNotificationsSeen()
+    {
+        _notificationSeen = DateTime.Now;
+        NotificationDot.Visibility = Visibility.Collapsed;
+        var iso = _notificationSeen.ToUniversalTime().ToString("o");
+        SettingsService.Update(s => s.NotificationSeenTime = iso);
+    }
+
+    /// <summary>通知小绿点：有比上次打开通知中心更新的通知时显示（读注册表里各应用的最后通知时间）</summary>
+    private void UpdateNotificationDot()
+    {
+        var s = SettingsService.Current;
+        NotificationHost.Visibility = s.ShowNotifications ? Visibility.Visible : Visibility.Collapsed;
+        if (!s.ShowNotifications)
+        {
+            NotificationDot.Visibility = Visibility.Collapsed;
             return;
         }
-        icon.Visibility = Visibility.Visible;
-        icon.Foreground = new SolidColorBrush(connected
-            ? Windows.UI.Color.FromArgb(0xFF, 0x3F, 0xC0, 0x5B)  // 绿=已连接
-            : Microsoft.UI.Colors.White);                        // 白=未连接
+
+        var last = NotificationService.LastAddedTime();
+        NotificationDot.Visibility = last is not null && last > _notificationSeen
+            ? Visibility.Visible
+            : Visibility.Collapsed;
     }
 
     /// <summary>顶栏电池图标：每 10% 一格（Segoe MDL2 Battery0~10），颜色按电量分档；无电池设备/关闭开关时隐藏</summary>
@@ -263,18 +328,13 @@ public sealed partial class MainPage : Page
         var pct = BatteryService.GetPercent();
         if (!SettingsService.Current.ShowBattery || pct is null)
         {
-            BatteryIcon.Visibility = Visibility.Collapsed;
+            BatteryBubble.Visibility = Visibility.Collapsed;
             return;
         }
-        BatteryIcon.Visibility = Visibility.Visible;
+        BatteryBubble.Visibility = Visibility.Visible;
 
-        var level = Math.Clamp((int)Math.Ceiling(pct.Value / 10.0), 0, 10);
-        // Battery0~9 = E850~E859，Battery10 = E83F
-        BatteryIcon.Glyph = level == 10 ? "\uE83F" : ((char)(0xE850 + level)).ToString();
-
-        var color = pct >= 80 ? Windows.UI.Color.FromArgb(0xFF, 0x3F, 0xC0, 0x5B)    // 绿
-                  : pct >= 20 ? Windows.UI.Color.FromArgb(0xFF, 0xFF, 0xD3, 0x4D)    // 黄
-                  : Windows.UI.Color.FromArgb(0xFF, 0xE8, 0x50, 0x4A);               // 红
+        var (glyph, color) = BatteryService.Describe(pct.Value);
+        BatteryIcon.Glyph = glyph;
         BatteryIcon.Foreground = new SolidColorBrush(color);
     }
 
@@ -301,12 +361,128 @@ public sealed partial class MainPage : Page
         }
     }
 
+    /// <summary>顶栏手柄状态：连接=绿色，未连接=红色</summary>
     public void SetGamepadStatus(bool connected)
     {
         GamepadIcon.Foreground = new SolidColorBrush(connected
             ? Windows.UI.Color.FromArgb(0xFF, 0x3F, 0xC0, 0x5B)   // 绿
             : Windows.UI.Color.FromArgb(0xFF, 0xE8, 0x50, 0x4A)); // 红
-        GamepadIcon.Opacity = 1.0;
+    }
+
+    /// <summary>顶栏状态图标的快捷动作 / 对应系统设置页</summary>
+    private enum StatusBubbleAction { Wifi, Bluetooth, Battery, Gamepad, Notifications }
+
+    /// <summary>给五枚状态气泡挂指针交互：单击=快捷动作，长按 600ms=打开对应 Windows 设置</summary>
+    private void HookStatusBubbles()
+    {
+        HookStatusBubble(WifiBubble, StatusBubbleAction.Wifi);
+        HookStatusBubble(BluetoothBubble, StatusBubbleAction.Bluetooth);
+        HookStatusBubble(BatteryBubble, StatusBubbleAction.Battery);
+        HookStatusBubble(GamepadBubble, StatusBubbleAction.Gamepad);
+        HookStatusBubble(NotificationBubble, StatusBubbleAction.Notifications);
+        // 五枚图标全被设置关闭时，外面那枚玻璃框也一起收起来（宽度归零即视为没有图标）
+        StatusIcons.SizeChanged += (_, e) =>
+            StatusTray.Visibility = e.NewSize.Width > 4 ? Visibility.Visible : Visibility.Collapsed;
+    }
+
+    private void HookStatusBubble(Border bubble, StatusBubbleAction action)
+    {
+        var idle = new SolidColorBrush(Windows.UI.Color.FromArgb(0x1E, 0xFF, 0xFF, 0xFF));
+        var hover = new SolidColorBrush(Windows.UI.Color.FromArgb(0x36, 0xFF, 0xFF, 0xFF));
+        var down = new SolidColorBrush(Windows.UI.Color.FromArgb(0x12, 0xFF, 0xFF, 0xFF));
+
+        var hold = new DispatcherTimer { Interval = TimeSpan.FromMilliseconds(600) };
+        var heldFired = false;   // 已按长按处理过，松开时不再触发单击
+
+        // 触屏/鼠标悬停时的轻微提亮，让这些气泡看起来是可点的
+        bubble.PointerEntered += (_, _) => bubble.Background = hover;
+        bubble.PointerExited += (_, _) => bubble.Background = idle;
+
+        bubble.PointerPressed += (_, e) =>
+        {
+            heldFired = false;
+            bubble.CapturePointer(e.Pointer);
+            bubble.Background = down;
+            hold.Start();
+        };
+
+        hold.Tick += (_, _) =>
+        {
+            hold.Stop();
+            heldFired = true;
+            OpenStatusSetting(action);   // 长按：直接打开对应的 Windows 设置页
+        };
+
+        bubble.PointerReleased += (_, e) =>
+        {
+            hold.Stop();
+            bubble.ReleasePointerCapture(e.Pointer);
+            bubble.Background = hover;
+            if (!heldFired) _ = ActivateStatusBubbleAsync(action);
+        };
+
+        bubble.PointerCaptureLost += (_, _) =>
+        {
+            hold.Stop();
+            bubble.Background = idle;
+        };
+    }
+
+    /// <summary>单击：Wi-Fi/蓝牙 直接开关无线电，通知=打开通知中心，电池/手柄 打开对应系统设置页；点击后启动器先收起</summary>
+    private async Task ActivateStatusBubbleAsync(StatusBubbleAction action)
+    {
+        App.Main?.HideToTray();   // 先收起启动器，把系统设置/桌面让出来
+
+        if (action == StatusBubbleAction.Notifications)
+        {
+            // 等启动器收起动画结束，Win+N 才不会落到启动器自己身上
+            await Task.Delay(220);
+            NotificationService.OpenCenter();
+            MarkNotificationsSeen();   // 打开即视为已读（并持久化，重启后不再亮）
+            return;
+        }
+
+        if (action is not (StatusBubbleAction.Wifi or StatusBubbleAction.Bluetooth))
+        {
+            OpenStatusSetting(action);
+            return;
+        }
+
+        var isWifi = action == StatusBubbleAction.Wifi;
+        var name = isWifi ? "Wi-Fi" : "蓝牙";
+        var state = await RadioService.ToggleAsync(isWifi ? RadioKind.WiFi : RadioKind.Bluetooth);
+        if (state is null)
+        {
+            // 系统不给关（无权限/无该无线电）：退化成打开对应设置页，不让点击落空
+            OpenStatusSetting(action);
+            return;
+        }
+
+        ShowToast($"{name}已{(state.Value ? "开启" : "关闭")}");
+        await Task.Delay(400);   // 等系统更新连接状态后再刷新图标颜色
+        UpdateNetwork();
+        SetGamepadStatus(App.Main?.Gamepad.HasGamepad ?? false);
+    }
+
+    private void OpenStatusSetting(StatusBubbleAction action)
+    {
+        App.Main?.HideToTray();   // 长按/点击进设置时同样收起启动器
+        var uri = action switch
+        {
+            StatusBubbleAction.Wifi => "ms-settings:network-wifi",
+            StatusBubbleAction.Bluetooth => "ms-settings:bluetooth",
+            StatusBubbleAction.Battery => "ms-settings:batterysaver",  // 设置 → 系统 → 电源和电池
+            StatusBubbleAction.Notifications => "ms-settings:notifications",
+            _ => "ms-settings:bluetooth"                                // 手柄：蓝牙和其他设备（"设备"页）
+        };
+        try
+        {
+            System.Diagnostics.Process.Start(new System.Diagnostics.ProcessStartInfo(uri) { UseShellExecute = true });
+        }
+        catch (Exception ex)
+        {
+            Debug.WriteLine($"打开设置页失败 {uri}: {ex.Message}");
+        }
     }
 
     protected override void OnNavigatedTo(NavigationEventArgs e)
@@ -334,6 +510,10 @@ public sealed partial class MainPage : Page
         SlideshowService.CurrentChanged += OnSlideshowChanged;
         SlideshowService.Start();
         RefreshPhotoTiles();
+        // 壁纸小组件：定时轮播本地壁纸，换图时只刷新磁贴内容不重建
+        WallpaperService.Changed += OnWallpaperChanged;
+        WallpaperService.Start();
+        RefreshWallpaperTiles();
         // 天气小组件：数据在后台线程取得，事件 marshal 后刷新磁贴；窗口显示时按需补一次刷新（30 分钟过期）
         WeatherService.StateChanged += OnWeatherChanged;
         WeatherService.EnsureFresh();
@@ -386,14 +566,16 @@ public sealed partial class MainPage : Page
     private void OnOptiScalerStatus(OptiScalerMessage m) =>
         DispatcherQueue.TryEnqueue(() => ShowToast(m.Text, m.Error ? ToastKind.Warning : ToastKind.Success, m.Progress));
 
-    /// <summary>按设置显示/隐藏顶栏时钟、网络/电池与手柄图标</summary>
+    /// <summary>按设置显示/隐藏顶栏时钟、网络/电池、手柄与通知图标</summary>
     public void ApplyTopbarVisibility()
     {
         var s = SettingsService.Current;
         ClockPanel.Visibility = s.ShowClock ? Visibility.Visible : Visibility.Collapsed;
-        GamepadPanel.Visibility = s.ShowGamepadIcon ? Visibility.Visible : Visibility.Collapsed;
+        GamepadBubble.Visibility = s.ShowGamepadIcon ? Visibility.Visible : Visibility.Collapsed;
+        NotificationHost.Visibility = s.ShowNotifications ? Visibility.Visible : Visibility.Collapsed;
         UpdateBattery();
         UpdateNetwork();
+        UpdateNotificationDot();
     }
 
     /// <summary>全屏/居中模式下抽屉面板宽度占窗口宽度的比例（这两种模式窗口很宽，铺满会显得横向过长）</summary>
@@ -599,6 +781,8 @@ public sealed partial class MainPage : Page
         SystemMediaService.StateChanged -= OnMusicStateChanged;
         SlideshowService.CurrentChanged -= OnSlideshowChanged;
         SlideshowService.Stop();
+        WallpaperService.Changed -= OnWallpaperChanged;
+        WallpaperService.Stop();
         WeatherService.StateChanged -= OnWeatherChanged;
         TrainerService.StatusChanged -= OnTrainerStatus;
         SaveBackupService.StatusChanged -= OnBackupStatus;
@@ -888,6 +1072,7 @@ public sealed partial class MainPage : Page
         if (_choiceOpen) return HandleChoice(buttons);
         if (_renaming) return HandleRename(buttons);
         if (_powerOpen) return HandlePower(buttons);
+        if (_wallpaperOpen) return HandleWallpaper(buttons);
         if (_fileTransferOpen) return HandleFileTransfer(buttons);
 
         // LT/RT：左右循环切换主页（副页），带滑动动画；本身不参与其它语义
@@ -1007,7 +1192,8 @@ public sealed partial class MainPage : Page
         if (buttons.HasFlag(GamepadButtons.DPadRight)) { MoveSelection(1, 0); return true; }
         if (buttons.HasFlag(GamepadButtons.A)) { ActivateSelected(); return true; }
         // 常规模式 Y：OptiScaler 磁贴=注入；游戏存档磁贴=同步存档（用最近一份备份覆盖回本地）；
-        // 回收站磁贴=一键清空回收站；前台应用磁贴=强制结束当前前台应用；系统磁贴无定义（消费按键）；否则关闭选中磁贴对应的运行中程序
+        // 回收站磁贴=一键清空回收站；前台应用磁贴=强制结束当前前台应用；系统磁贴无定义（消费按键）；
+        // 壁纸磁贴=收藏当前壁纸；否则关闭选中磁贴对应的运行中程序
         if (buttons.HasFlag(GamepadButtons.Y))
         {
             if (IsOptiSelected()) OptiScalerService.Activate(_display[_selected].item);
@@ -1016,6 +1202,8 @@ public sealed partial class MainPage : Page
             else if (IsForegroundSelected()) CloseForegroundApp();
             else if (IsSystemSelected()) ShowToast("系统小组件：右摇杆←→切换 · A 开关 · LB/RB 调整");
             else if (IsLosslessSelected()) LaunchLossless(_display[_selected].item);
+            else if (IsProxySelected()) _ = RefreshFastestProxyAsync(_display[_selected].item);
+            else if (IsWallpaperSelected()) LikeSelectedWallpaper();
             else CloseSelected();
             return true;
         }
@@ -1185,6 +1373,8 @@ public sealed partial class MainPage : Page
         _sysRefs.Clear();
         _monRefs.Clear();
         _lossRefs.Clear();
+        _proxyRefs.Clear();
+        _wallpaperRefs.Clear();
         // 磁贴重建：旧的徽章引用失效
         _settingsTile = null;
         _badge = SettingsBadge.None;
@@ -1210,6 +1400,8 @@ public sealed partial class MainPage : Page
             // 设置/电源常驻磁贴固定 1×1，其余可编辑尺寸
             var (w, h) = item.Kind == LaunchKind.Widget && item.WidgetKind == WidgetKind.Music
                 ? (2, 2)
+                : item.Kind == LaunchKind.Widget && item.WidgetKind == WidgetKind.Wallpaper
+                    ? (2, 2)
                 : item.Kind == LaunchKind.Widget && item.WidgetKind == WidgetKind.System
                     ? (2, 1)
                     : TileStyle.IsFixedTile(item) ? (1, 1)
@@ -1363,6 +1555,21 @@ public sealed partial class MainPage : Page
             return photoTile;
         }
 
+        // 壁纸小组件磁贴：铺满当前轮播壁纸；A/点击 = 弹窗询问设为桌面还是锁屏壁纸
+        if (item.Kind == LaunchKind.Widget && item.WidgetKind == WidgetKind.Wallpaper)
+        {
+            WallpaperService.Register(item);
+            var (wallpaperTile, wallpaperRefs) = TileStyle.BuildWallpaperTile(
+                width, height, WallpaperService.CurrentImage(item), WallpaperService.Placeholder(item));
+            wallpaperRefs.InfoText.Text = WallpaperService.InfoOf(item);
+            wallpaperTile.Tag = index;
+            _wallpaperRefs[wallpaperRefs] = index;
+            wallpaperTile.Tapped += (_, _) => OnTileTapped(index, () => OpenWallpaperMenu(item));
+            wallpaperTile.DoubleTapped += (_, _) => HandleDoubleTap(index);
+            AttachEditGestures(wallpaperTile, item, group, index, false);
+            return wallpaperTile;
+        }
+
         // 天气小组件磁贴：显示当前位置当天天气，A 键/点击 = 刷新（只改文字不重建磁贴）
         if (item.Kind == LaunchKind.Widget && item.WidgetKind == WidgetKind.Weather)
         {
@@ -1483,6 +1690,21 @@ public sealed partial class MainPage : Page
             AttachEditGestures(lossTile, item, group, index, false);
             TileStyle.FillLosslessState(lossRefs, item); // 建好即显示安装/运行状态
             return lossTile;
+        }
+
+        // 小猫咪小组件磁贴：A/点击 = 开关系统代理连接，Y = 测速并选择最快的服务器
+        if (item.Kind == LaunchKind.Widget && item.WidgetKind == WidgetKind.Clash)
+        {
+            var (proxyTile, proxyRefs) = TileStyle.BuildProxyTile(item, width, height, accent, noColor);
+            proxyTile.Tag = index;
+            _proxyRefs[proxyRefs] = item;
+            proxyTile.Tapped += (_, _) => OnTileTapped(index, () => ActivateAt(index));
+            proxyTile.DoubleTapped += (_, _) => HandleDoubleTap(index);
+            AttachEditGestures(proxyTile, item, group, index, false);
+            ProxyService.Poll(item);              // 建好即显示当前连接状态（同步，不阻塞）
+            TileStyle.FillProxyTile(proxyRefs, item);
+            _ = ProxyService.RefreshAsync(item).ContinueWith(_ => DispatcherQueue.TryEnqueue(RefreshProxyTiles));
+            return proxyTile;
         }
 
         // 标准磁贴（背景图片铺满 / 强调色底+图标+名称）：与小组件页预览共用同一构建
@@ -3064,6 +3286,16 @@ public sealed partial class MainPage : Page
                     (KeyboardMode)item.KeyboardMode))
                 ShowToast("打开屏幕键盘失败：" + OnScreenKeyboard.LastError, ToastKind.Warning);
         }
+        else if (item.WidgetKind == WidgetKind.Clash)
+        {
+            // 小猫咪：A/点击 = 打开/关闭连接（系统代理开关）
+            _ = ToggleProxyAsync(item);
+        }
+        else if (item.WidgetKind == WidgetKind.Wallpaper)
+        {
+            // 壁纸小组件：A/点击 = 弹窗询问设为桌面还是锁屏壁纸
+            OpenWallpaperMenu(item);
+        }
         else
         {
             // 音乐小组件：A = 播放/暂停系统当前媒体
@@ -3460,6 +3692,14 @@ public sealed partial class MainPage : Page
         return group is null && item.Kind == LaunchKind.Widget && item.WidgetKind == WidgetKind.LosslessScaling;
     }
 
+    /// <summary>当前选中的是否为顶层小猫咪小组件磁贴（决定 Y 键是测速选最快服务器而不是关闭程序）</summary>
+    private bool IsProxySelected()
+    {
+        if (_selected < 0 || _selected >= _display.Count) return false;
+        var (item, group) = _display[_selected];
+        return group is null && item.Kind == LaunchKind.Widget && item.WidgetKind == WidgetKind.Clash;
+    }
+
     /// <summary>当前选中的是否为顶层性能监控小组件磁贴（决定 A 键是开/关监控、Y 键是关闭监控）</summary>
     private bool IsMonitorSelected()
     {
@@ -3643,6 +3883,123 @@ public sealed partial class MainPage : Page
         _powerIn?.Stop();
         _powerIn = sb;
         sb.Begin();
+    }
+
+    // ---- 壁纸浮层（壁纸磁贴 A/点击打开：设为桌面壁纸 / 设为锁屏壁纸） ----
+
+    private bool _wallpaperOpen;
+    private bool _wallpaperBusy;   // 已确认某项、正在设置（防止重复触发）
+    private bool _wallpaperWired;  // 点按事件只挂一次
+    private int _wallpaperIndex;
+    private Storyboard? _wallpaperIn;
+    private Border[] _wallpaperCards = [];
+    private LaunchItem? _wallpaperItem;
+
+    /// <summary>打开壁纸浮层：默认停在"桌面壁纸"，A 才执行</summary>
+    private void OpenWallpaperMenu(LaunchItem item)
+    {
+        if (_wallpaperOpen) return;
+        _wallpaperOpen = true;
+        _wallpaperBusy = false;
+        _wallpaperIndex = 0;
+        _wallpaperItem = item;
+        _wallpaperCards = [WallpaperDesktop, WallpaperLock];
+        if (!_wallpaperWired)
+        {
+            _wallpaperWired = true;
+            WallpaperMask.Tapped += (_, _) => CloseWallpaperMenu();
+            WallpaperDesktop.Tapped += (_, _) => ChooseWallpaper(0);
+            WallpaperLock.Tapped += (_, _) => ChooseWallpaper(1);
+        }
+        WallpaperOverlay.Visibility = Visibility.Visible;
+        UpdateWallpaperCursor();
+        PlayWallpaperIn();
+    }
+
+    private void CloseWallpaperMenu()
+    {
+        _wallpaperIn?.Stop();
+        WallpaperPanel.Opacity = 1;
+        WallpaperOverlay.Visibility = Visibility.Collapsed;
+        _wallpaperOpen = false;
+        _wallpaperItem = null;
+    }
+
+    /// <summary>入场：遮罩淡入 + 面板淡入、轻微放大并自下而上归位（与电源菜单一致的手感）</summary>
+    private void PlayWallpaperIn()
+    {
+        var maskFade = new DoubleAnimation { From = 0, To = 1, Duration = TimeSpan.FromMilliseconds(150) };
+        Storyboard.SetTarget(maskFade, WallpaperMask);
+        Storyboard.SetTargetProperty(maskFade, "Opacity");
+
+        var panelFade = new DoubleAnimation { From = 0, To = 1, Duration = TimeSpan.FromMilliseconds(180) };
+        Storyboard.SetTarget(panelFade, WallpaperPanel);
+        Storyboard.SetTargetProperty(panelFade, "Opacity");
+
+        var ease = new CubicEase { EasingMode = EasingMode.EaseOut };
+        var scaleX = new DoubleAnimation { From = 0.92, To = 1, Duration = TimeSpan.FromMilliseconds(230), EasingFunction = ease };
+        Storyboard.SetTarget(scaleX, WallpaperPanelTransform);
+        Storyboard.SetTargetProperty(scaleX, "ScaleX");
+        var scaleY = new DoubleAnimation { From = 0.92, To = 1, Duration = TimeSpan.FromMilliseconds(230), EasingFunction = ease };
+        Storyboard.SetTarget(scaleY, WallpaperPanelTransform);
+        Storyboard.SetTargetProperty(scaleY, "ScaleY");
+        var rise = new DoubleAnimation { From = 26, To = 0, Duration = TimeSpan.FromMilliseconds(260), EasingFunction = ease };
+        Storyboard.SetTarget(rise, WallpaperPanelTransform);
+        Storyboard.SetTargetProperty(rise, "TranslateY");
+
+        var sb = new Storyboard();
+        sb.Children.Add(maskFade);
+        sb.Children.Add(panelFade);
+        sb.Children.Add(scaleX);
+        sb.Children.Add(scaleY);
+        sb.Children.Add(rise);
+        _wallpaperIn?.Stop();
+        _wallpaperIn = sb;
+        sb.Begin();
+    }
+
+    private bool HandleWallpaper(GamepadButtons b)
+    {
+        if (b.HasFlag(GamepadButtons.DPadUp) || b.HasFlag(GamepadButtons.DPadLeft))
+        { _wallpaperIndex = (_wallpaperIndex + _wallpaperCards.Length - 1) % _wallpaperCards.Length; UpdateWallpaperCursor(); return true; }
+        if (b.HasFlag(GamepadButtons.DPadDown) || b.HasFlag(GamepadButtons.DPadRight))
+        { _wallpaperIndex = (_wallpaperIndex + 1) % _wallpaperCards.Length; UpdateWallpaperCursor(); return true; }
+        if (b.HasFlag(GamepadButtons.A)) { ChooseWallpaper(_wallpaperIndex); return true; }
+        if (b.HasFlag(GamepadButtons.B) || b.HasFlag(GamepadButtons.View) || b.HasFlag(GamepadButtons.X))
+        { CloseWallpaperMenu(); return true; }
+        return true; // 遮罩打开时吞掉其余按键，避免误触发主页操作
+    }
+
+    private void UpdateWallpaperCursor()
+    {
+        var accentBr = new SolidColorBrush(Windows.UI.Color.FromArgb(0xFF, 0x4C, 0xC2, 0xFF));
+        var idleBr = new SolidColorBrush(Windows.UI.Color.FromArgb(0x1F, 0xFF, 0xFF, 0xFF));
+        var accentBg = new SolidColorBrush(Windows.UI.Color.FromArgb(0x26, 0x4C, 0xC2, 0xFF));
+        var idleBg = new SolidColorBrush(Windows.UI.Color.FromArgb(0x14, 0xFF, 0xFF, 0xFF));
+        for (var i = 0; i < _wallpaperCards.Length; i++)
+        {
+            var on = i == _wallpaperIndex;
+            _wallpaperCards[i].BorderBrush = on ? accentBr : idleBr;
+            _wallpaperCards[i].BorderThickness = new Thickness(on ? 2 : 1.5);
+            _wallpaperCards[i].Background = on ? accentBg : idleBg;
+        }
+    }
+
+    /// <summary>选中某项：先关遮罩，再把当前壁纸设为桌面（index=0）或锁屏（index=1）</summary>
+    private void ChooseWallpaper(int index)
+    {
+        if (!_wallpaperOpen || _wallpaperBusy) return;
+        _wallpaperBusy = true;
+        var item = _wallpaperItem;
+        CloseWallpaperMenu();
+        var file = item is null ? null : WallpaperService.CurrentFile(item);
+        if (file is null)
+        {
+            ShowToast("壁纸还没下载好，请稍后再试", ToastKind.Warning);
+            return;
+        }
+        var (ok, message) = WallpaperService.Apply(file, index == 1);
+        ShowToast(message, ok ? ToastKind.Success : ToastKind.Warning);
     }
 
     // ==================== 文件传输浮层（WidgetKind.FileTransfer）====================
@@ -4017,6 +4374,34 @@ public sealed partial class MainPage : Page
         }
     }
 
+    /// <summary>壁纸轮播/下载状态变化（在 UI 线程触发）：刷新壁纸磁贴</summary>
+    private void OnWallpaperChanged() => DispatcherQueue.TryEnqueue(RefreshWallpaperTiles);
+
+    /// <summary>刷新所有壁纸小组件磁贴的当前壁纸（换图时只换 Source，不重建磁贴）</summary>
+    private void RefreshWallpaperTiles()
+    {
+        foreach (var (refs, index) in _wallpaperRefs)
+        {
+            if (index < 0 || index >= _display.Count) continue;
+            var item = _display[index].item;
+            var img = WallpaperService.CurrentImage(item);
+            refs.InfoText.Text = WallpaperService.InfoOf(item);
+            if (img != null && !ReferenceEquals(refs.Img.Source, img))
+            {
+                refs.Img.Source = img;
+                refs.Img.Visibility = Visibility.Visible;
+                refs.Placeholder.Visibility = Visibility.Collapsed;
+                FadeIn(refs.Img); // 轮播动画：淡入
+            }
+            else if (img == null)
+            {
+                refs.Img.Visibility = Visibility.Collapsed;
+                refs.Placeholder.Visibility = Visibility.Visible;
+                refs.Placeholder.Text = WallpaperService.Placeholder(item);
+            }
+        }
+    }
+
     /// <summary>刷新所有天气小组件磁贴的显示（数据变化时只改文字不重建磁贴）</summary>
     private void RefreshWeatherTiles()
     {
@@ -4051,6 +4436,36 @@ public sealed partial class MainPage : Page
     private void RefreshLosslessTiles()
     {
         foreach (var (refs, item) in _lossRefs) TileStyle.FillLosslessState(refs, item);
+    }
+
+    /// <summary>刷新小猫咪磁贴的连接状态与当前服务器</summary>
+    private void RefreshProxyTiles()
+    {
+        foreach (var (refs, item) in _proxyRefs) TileStyle.FillProxyTile(refs, item);
+    }
+
+    /// <summary>小猫咪 A 键：开关连接，并按结果显示提示</summary>
+    private async Task ToggleProxyAsync(LaunchItem item)
+    {
+        var hint = ProxyService.FirstRunHint();
+        if (hint is not null) ShowToast(hint, ToastKind.Success);
+        var result = await ProxyService.ToggleAsync(item);
+        RefreshProxyTiles();
+        if (result.Ok) PersistLayout(); // 记住实际连接的节点
+        ShowToast(result.Message, result.Ok
+            ? (result.On ? ToastKind.Success : ToastKind.Warning)
+            : ToastKind.Warning);
+    }
+
+    /// <summary>小猫咪 Y 键：更新订阅并选最快节点，按结果显示提示</summary>
+    private async Task RefreshFastestProxyAsync(LaunchItem item)
+    {
+        var hint = ProxyService.FirstRunHint();
+        ShowToast(hint ?? "正在更新订阅并测速…", ToastKind.Success);
+        var result = await ProxyService.RefreshFastestAsync(item);
+        RefreshProxyTiles();
+        if (result.Ok) PersistLayout(); // 记住最快的节点，下次启动继续用它
+        ShowToast(result.Message, result.Ok ? ToastKind.Success : ToastKind.Warning);
     }
 
     /// <summary>当前焦点所在的系统小组件磁贴项（磁贴区选中 或 抽屉内层焦点）；不是系统小组件返回 null</summary>
@@ -4235,7 +4650,52 @@ public sealed partial class MainPage : Page
             TileScroll.ChangeView(null,
                 Math.Max(0, Canvas.GetTop(_tiles[_selected]) - 40), null, false);
         UpdateDrawerSelection(); // 区域内部焦点描边 / 面板"在区域内"强调色
+        UpdateWallpaperInfo();   // 壁纸磁贴：选中时显示标题与壁纸信息，光标移开即隐藏
         UpdateHintForSelection();
+    }
+
+    /// <summary>壁纸磁贴信息条：只有当前选中的壁纸磁贴显示，其它一律隐藏</summary>
+    private void UpdateWallpaperInfo()
+    {
+        foreach (var (refs, index) in _wallpaperRefs)
+        {
+            var show = !_inDrawer && index == _selected && index >= 0 && index < _display.Count;
+            refs.InfoBar.Visibility = show ? Visibility.Visible : Visibility.Collapsed;
+            if (!show) continue;
+            var item = _display[index].item;
+            refs.InfoTitle.Text = "壁纸";
+            refs.InfoText.Text = WallpaperService.InfoOf(item);
+        }
+    }
+
+    /// <summary>当前选中的是不是壁纸小组件磁贴</summary>
+    private bool IsWallpaperSelected() =>
+        _selected >= 0 && _selected < _display.Count
+        && _display[_selected].item is { Kind: LaunchKind.Widget, WidgetKind: WidgetKind.Wallpaper };
+
+    /// <summary>Y：收藏当前壁纸（收藏的壁纸在轮播中出现得更频繁，并持久化到配置）</summary>
+    private void LikeSelectedWallpaper()
+    {
+        if (!IsWallpaperSelected()) return;
+        var item = _display[_selected].item;
+        var file = WallpaperService.CurrentFile(item);
+        if (file is null)
+        {
+            ShowToast("壁纸还没下载好，请稍后再试", ToastKind.Warning);
+            return;
+        }
+        var name = Path.GetFileName(file);
+        if (item.WallpaperLiked.Any(n => string.Equals(n, name, StringComparison.OrdinalIgnoreCase)))
+        {
+            ShowToast("这张壁纸已经收藏过了", ToastKind.Warning);
+            return;
+        }
+        item.WallpaperBlocked.RemoveAll(n => string.Equals(n, name, StringComparison.OrdinalIgnoreCase));
+        item.WallpaperLiked.Add(name);
+        ConfigService.Save(_items.ToList());
+        WallpaperService.Register(item);
+        UpdateWallpaperInfo();
+        ShowToast("已收藏当前壁纸", ToastKind.Success);
     }
 
     /// <summary>按当前选中项替换底部提示条：音乐/图片组磁贴=只显示对应操作提示（主页提示暂时隐藏），其他=恢复主页提示（编辑模式不处理，由 UpdateHintBar 负责）</summary>
@@ -4247,7 +4707,7 @@ public sealed partial class MainPage : Page
                 ? "DPAD:切抽屉|A:进入|X:添加磁贴|Y:添加抽屉|B:退出" // 抽屉层：按键只作用于抽屉
                 : FocusedDrawerItem() is { Kind: LaunchKind.Widget, WidgetKind: WidgetKind.System }
                     ? "DPAD:选择内层|←→:切换项|A:开关/打开|LB/RB:调整|B:返回抽屉" // 内层系统小组件
-                    : "DPAD:选择内层|A:启动|X:添加|Y:关闭|B:返回抽屉"); // 内层：按键作用于内层磁贴
+                    : "DPAD:选择内层|A:启动|X:添加|Y:最小化|B:返回抽屉"); // 内层：按键作用于内层磁贴
         else if (IsMusicSelected())
             HintBar.SetHints("DPAD:切换选择|A:播放/暂停|LB:上一曲|RB:下一曲");
         else if (IsPhotoSelected())
@@ -4274,10 +4734,12 @@ public sealed partial class MainPage : Page
             HintBar.SetHints("DPAD:切换选择|A:开启/关闭监控|R3:编辑|L3:排列|B:隐藏");
         else if (IsLosslessSelected())
             HintBar.SetHints("DPAD:切换选择|A:开关插帧|Y:打开小黄鸭|R3:编辑|L3:排列|B:隐藏");
+        else if (IsWallpaperSelected())
+            HintBar.SetHints("DPAD:切换选择|A:应用壁纸|Y:收藏壁纸|R3:编辑|L3:排列|B:隐藏");
         else if (IsFixedSelected())
             HintBar.SetHints("DPAD:选择|A:打开|L3:排列|VIEW:设置|B:隐藏"); // 设置/电源常驻磁贴不可编辑
         else if (IsClosableSelected())
-            HintBar.SetHints("DPAD:选择|A:启动|Y:关闭|X:添加|R3:编辑|L3:排列|VIEW:设置|B:隐藏");
+            HintBar.SetHints("DPAD:选择|A:打开|Y:最小化|X:添加|R3:编辑|L3:排列|VIEW:设置|B:隐藏");
         else
             HintBar.SetHints(DrawerService.FindDrawer(_items.ToList()) is null
                 ? "DPAD:选择|A:启动|X:添加|R3:编辑|L3:排列|VIEW:设置|B:隐藏"
@@ -4520,11 +4982,17 @@ public sealed partial class MainPage : Page
 
     private void LaunchItem(LaunchItem item)
     {
-        LaunchService.Launch(item);
-        if (AutoHideAfterLaunch) App.Main?.HideToTray();
+        // 已运行就最大化并置前台，未运行才启动
+        var outcome = LaunchService.LaunchOrActivate(item);
+        // 切换已有窗口时一律收起启动器（开始菜单模式下也收）：启动器常驻置顶，
+        // 留在前台会盖住目标窗口，看起来"只弹了提示、窗口没切过来"。
+        // 文件夹/网站新开窗口也一样要收起，否则启动器会一直盖在上面
+        var hide = AutoHideAfterLaunch || outcome == LaunchOutcome.Activated
+                   || item.Kind is LaunchKind.Folder or LaunchKind.Url;
+        if (hide) App.Main?.HideToTray();
     }
 
-    /// <summary>Y=关闭：结束选中磁贴对应的运行中程序；未运行则提示（小组件/组磁贴不响应；修改器小组件=关闭修改器）</summary>
+    /// <summary>Y=收起：把选中磁贴对应的窗口最小化（不结束进程）；未运行则提示（小组件/组磁贴不响应；修改器小组件=关闭修改器）</summary>
     private void CloseSelected()
     {
         if (_selected < 0 || _selected >= _display.Count) return;
@@ -4539,7 +5007,7 @@ public sealed partial class MainPage : Page
         CloseItem(item);
     }
 
-    /// <summary>关闭磁贴对应的前台窗口（Y 键与长按共用）：程序/网站/文件夹；修改器小组件=关闭修改器</summary>
+    /// <summary>收起磁贴对应的窗口（Y 键与长按共用）：程序/网站/文件夹一律最小化；修改器小组件=关闭修改器</summary>
     private void CloseItem(LaunchItem item)
     {
         // 系统小组件：一个磁贴里没有"可关闭的程序"，Y 交给上层做提示（避免提示"未找到运行中的程序"）
@@ -4557,10 +5025,10 @@ public sealed partial class MainPage : Page
             return;
         }
 
-        var killed = LaunchService.Close(item);
-        ShowToast(killed > 0 ? $"已关闭 {item.Name}" : $"{item.Name} 未在运行",
-            killed > 0 ? ToastKind.Success : ToastKind.Warning);
-        if (killed > 0) App.Main?.KeepForeground(); // 目标关闭后启动器保持前台不最小化
+        var minimized = LaunchService.Minimize(item);
+        ShowToast(minimized > 0 ? $"已最小化 {item.Name}" : $"{item.Name} 未在运行",
+            minimized > 0 ? ToastKind.Success : ToastKind.Warning);
+        if (minimized > 0) App.Main?.KeepForeground(); // 目标最小化后启动器保持前台不最小化
     }
 
     private void PersistLayout()

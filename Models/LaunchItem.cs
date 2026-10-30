@@ -62,7 +62,11 @@ public enum WidgetKind
     /// <summary>小黄鸭（Lossless Scaling 联动：A/点击=启动并切回游戏后发送补帧热键；磁贴显示安装/运行状态）</summary>
     LosslessScaling,
     /// <summary>屏幕键盘（A/点击=在屏幕左/右边缘打开竖向键盘，点键直接把字符打进当前前台应用）</summary>
-    Keyboard
+    Keyboard,
+    /// <summary>小猫咪（订阅式代理：A/点击=开关连接，Y=更新订阅并选最快节点）</summary>
+    Clash,
+    /// <summary>壁纸（轮番展示在线壁纸，固定大磁贴；A/点击=询问设为桌面或锁屏壁纸）</summary>
+    Wallpaper
 }
 
 /// <summary>手柄映射的目标类型（仅 GamepadMapping 使用）</summary>
@@ -361,6 +365,27 @@ public class LaunchItem
     /// 空=不指定，完全跟随小黄鸭自己的匹配）</summary>
     public string? LosslessProfile { get; set; }
 
+    /// <summary>小猫咪：Clash/Mihomo 订阅链接（仅 WidgetKind.Clash 使用）</summary>
+    public string ProxySubscription { get; set; } = "";
+
+    /// <summary>小猫咪：本地混合代理端口（仅 WidgetKind.Clash 使用；默认 7897）</summary>
+    public int ProxyPort { get; set; } = 7897;
+
+    /// <summary>小猫咪：当前选中的节点名（仅 WidgetKind.Clash 使用；空=由内核自动决定）</summary>
+    public string ProxySelected { get; set; } = "";
+
+    /// <summary>小猫咪：代理模式（"rule"=规则，"global"=全局；仅 WidgetKind.Clash 使用）</summary>
+    public string ProxyMode { get; set; } = "rule";
+
+    /// <summary>壁纸来源（仅 WidgetKind.Wallpaper 使用）："bing"=Bing 每日壁纸，"picsum"=Picsum 随机壁纸</summary>
+    public string WallpaperSource { get; set; } = "bing";
+
+    /// <summary>收藏的壁纸文件名（仅 WidgetKind.Wallpaper 使用；收藏的壁纸在轮播中出现得更频繁）</summary>
+    public List<string> WallpaperLiked { get; set; } = [];
+
+    /// <summary>排除的壁纸文件名（仅 WidgetKind.Wallpaper 使用；排除的壁纸不再参与轮播）</summary>
+    public List<string> WallpaperBlocked { get; set; } = [];
+
     /// <summary>深拷贝一个快捷项（含组成员），用于复制/迁移时与源数据隔离</summary>
     public LaunchItem Clone() => new()
     {
@@ -405,6 +430,13 @@ public class LaunchItem
         FileTransferRecvFolder = FileTransferRecvFolder,
         LosslessPath = LosslessPath,
         LosslessProfile = LosslessProfile,
+        ProxySubscription = ProxySubscription,
+        ProxyPort = ProxyPort,
+        ProxySelected = ProxySelected,
+        ProxyMode = ProxyMode,
+        WallpaperSource = WallpaperSource,
+        WallpaperLiked = [.. WallpaperLiked],
+        WallpaperBlocked = [.. WallpaperBlocked],
         GamepadMappings = [.. GamepadMappings.Select(m => m.Clone())],
         Members = [.. Members.Select(m => m.Clone())],
         Drawers = Drawers is null ? null : [.. Drawers.Select(d => d.Clone())]
@@ -441,6 +473,8 @@ public class LaunchItem
             WidgetKind.FileTransfer => "\uE895", // 同步（局域网文件互传）
             WidgetKind.LosslessScaling => "\uE945", // 闪电（小黄鸭补帧）
             WidgetKind.Keyboard => "\uE765", // 键盘（屏幕键盘）
+            WidgetKind.Clash => "\U0001F431", // 猫脸字形（小猫咪磁贴实际绘制白色猫头剪影，此值仅作兜底）
+            WidgetKind.Wallpaper => "\uE8B9", // 图片（壁纸磁贴实际铺满当前壁纸）
             _ => "\uE8D6"                  // 音乐（音乐控制器）
         },
         _ => "\uE7F8"                  // desktop

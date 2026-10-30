@@ -317,6 +317,38 @@
                         <TextBlock Text="屏幕键盘" FontSize="14" HorizontalAlignment="Center"/>
                     </StackPanel>
                 </Button>
+                <!-- 小猫咪：蓝紫 -->
+                <Button x:Name="ClashWidgetCard" Tag="clash" Style="{StaticResource WidgetCardStyle}" Click="OnAddClick"
+                        ToolTipService.ToolTip="Clash：A 开关系统代理连接，Y 测速并自动选择最快的服务器">
+                    <Button.Background>
+                        <LinearGradientBrush StartPoint="0,0" EndPoint="0,1">
+                            <GradientStop Color="#12FFFFFF" Offset="0"/>
+                            <GradientStop Color="#386E7BFF" Offset="1"/>
+                        </LinearGradientBrush>
+                    </Button.Background>
+                    <StackPanel Spacing="10">
+                        <Viewbox MaxHeight="126" Stretch="Uniform" HorizontalAlignment="Center">
+                            <ContentPresenter x:Name="ClashPreviewHost"/>
+                        </Viewbox>
+                        <TextBlock Text="Clash" FontSize="14" HorizontalAlignment="Center"/>
+                    </StackPanel>
+                </Button>
+                <!-- 壁纸：青蓝 -->
+                <Button x:Name="WallpaperWidgetCard" Tag="wallpaper" Style="{StaticResource WidgetCardStyle}" Click="OnAddClick"
+                        ToolTipService.ToolTip="轮番展示 Bing / Picsum 壁纸，固定大磁贴；A 可设为桌面或锁屏壁纸">
+                    <Button.Background>
+                        <LinearGradientBrush StartPoint="0,0" EndPoint="0,1">
+                            <GradientStop Color="#12FFFFFF" Offset="0"/>
+                            <GradientStop Color="#384CC2FF" Offset="1"/>
+                        </LinearGradientBrush>
+                    </Button.Background>
+                    <StackPanel Spacing="10">
+                        <Viewbox MaxHeight="126" Stretch="Uniform" HorizontalAlignment="Center">
+                            <ContentPresenter x:Name="WallpaperPreviewHost"/>
+                        </Viewbox>
+                        <TextBlock Text="壁纸" FontSize="14" HorizontalAlignment="Center"/>
+                    </StackPanel>
+                </Button>
             </Canvas>
         </ScrollViewer>
 

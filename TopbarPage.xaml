@@ -1,4 +1,4 @@
-<?xml version="1.0" encoding="utf-8"?>
+﻿<?xml version="1.0" encoding="utf-8"?>
 <Page
     x:Class="GameLocker.TopbarPage"
     xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
@@ -71,6 +71,16 @@
                 </Setter.Value>
             </Setter>
         </Style>
+        <!-- 顶栏状态图标：与主页顶栏同一套（46×46 独立圆角气泡，整组再套一枚大圆角玻璃框） -->
+        <Style x:Key="StatusBubbleStyle" TargetType="Border">
+            <Setter Property="Width" Value="46"/>
+            <Setter Property="Height" Value="46"/>
+            <Setter Property="CornerRadius" Value="12"/>
+            <Setter Property="Background" Value="#1EFFFFFF"/>
+            <Setter Property="BorderBrush" Value="#14FFFFFF"/>
+            <Setter Property="BorderThickness" Value="1"/>
+            <Setter Property="VerticalAlignment" Value="Center"/>
+        </Style>
     </Page.Resources>
 
     <Grid Background="Transparent"
@@ -91,14 +101,82 @@
             </StackPanel>
         </Grid>
 
-        <!-- 内容区可滚动：窄窗口下控件不被遮盖 -->
+        <!-- 内容区可滚动：窄窗口下控件不被遮盖。
+             预览条与开关卡同属一个内容块，宽度一致、一起居中/靠上，并与开关紧挨着显示 -->
         <ScrollViewer x:Name="ContentScroll" Grid.Row="1" Padding="20,8,20,10" VerticalScrollBarVisibility="Hidden">
-            <Grid x:Name="SwitchGrid" ColumnSpacing="10" RowSpacing="10" VerticalAlignment="Top">
+            <StackPanel x:Name="ContentStack" Spacing="12" VerticalAlignment="Top">
+
+                <!-- 顶栏预览：按当前开关实时演示主页顶栏的样子（拨动下面的开关即刻生效） -->
+                <StackPanel x:Name="PreviewBlock" Spacing="6">
+                    <TextBlock Text="顶栏预览" FontSize="11.5" Opacity="0.55"/>
+                    <Border Padding="14,10" CornerRadius="12" Background="#14FFFFFF"
+                            BorderBrush="#1FFFFFFF" BorderThickness="1" MinHeight="58">
+                        <Grid>
+                            <Grid.ColumnDefinitions>
+                                <ColumnDefinition Width="*"/>
+                                <ColumnDefinition Width="Auto"/>
+                            </Grid.ColumnDefinitions>
+
+                            <!-- 左：时钟（与主页顶栏同一套：2px 渐隐竖线 + 字距微调） -->
+                            <Grid x:Name="PreviewClock" Grid.Column="0" ColumnSpacing="8" VerticalAlignment="Center">
+                                <Grid.ColumnDefinitions>
+                                    <ColumnDefinition Width="Auto"/>
+                                    <ColumnDefinition Width="Auto"/>
+                                </Grid.ColumnDefinitions>
+                                <Border Width="2" Height="26" VerticalAlignment="Center" CornerRadius="1">
+                                    <Border.Background>
+                                        <LinearGradientBrush StartPoint="0,0" EndPoint="0,1">
+                                            <GradientStop Color="#8C4CC2FF" Offset="0"/>
+                                            <GradientStop Color="#004CC2FF" Offset="1"/>
+                                        </LinearGradientBrush>
+                                    </Border.Background>
+                                </Border>
+                                <StackPanel Grid.Column="1" Spacing="0">
+                                    <TextBlock x:Name="PreviewClockText" Text="--:--" FontSize="26" FontWeight="SemiBold"
+                                               CharacterSpacing="25"/>
+                                    <TextBlock x:Name="PreviewDateText" Text="" FontSize="11.5" Opacity="0.65"
+                                               CharacterSpacing="30"/>
+                                </StackPanel>
+                            </Grid>
+
+                            <!-- 全部关闭时的占位提示 -->
+                            <TextBlock x:Name="PreviewEmpty" Grid.Column="0" Text="顶栏图标已全部关闭"
+                                       FontSize="12" Opacity="0.4" VerticalAlignment="Center" Visibility="Collapsed"/>
+
+                            <!-- 右：状态图标（收在一枚大圆角玻璃框里，与主页一致） -->
+                            <Border x:Name="PreviewTray" Grid.Column="1" CornerRadius="24" Padding="6" BorderThickness="1"
+                                    Background="#12FFFFFF" BorderBrush="#33FFFFFF" VerticalAlignment="Center">
+                                <StackPanel Orientation="Horizontal" Spacing="6">
+                                    <Border x:Name="PreviewWifiBubble" Style="{StaticResource StatusBubbleStyle}">
+                                        <FontIcon x:Name="PreviewWifiIcon" Glyph="&#xE701;" FontSize="26"/>
+                                    </Border>
+                                    <Border x:Name="PreviewBluetoothBubble" Style="{StaticResource StatusBubbleStyle}">
+                                        <FontIcon x:Name="PreviewBluetoothIcon" Glyph="&#xE702;" FontSize="26"/>
+                                    </Border>
+                                    <Border x:Name="PreviewBatteryBubble" Style="{StaticResource StatusBubbleStyle}">
+                                        <FontIcon x:Name="PreviewBatteryIcon" Glyph="&#xE850;" FontSize="26"/>
+                                    </Border>
+                                    <Border x:Name="PreviewGamepadBubble" Style="{StaticResource StatusBubbleStyle}">
+                                        <FontIcon x:Name="PreviewGamepadIcon" Glyph="&#xE7FC;" FontSize="26"/>
+                                    </Border>
+                                    <Border x:Name="PreviewNotificationBubble" Style="{StaticResource StatusBubbleStyle}">
+                                        <FontIcon x:Name="PreviewNotificationIcon" Glyph="&#xEA8F;" FontSize="26"/>
+                                    </Border>
+                                </StackPanel>
+                            </Border>
+                        </Grid>
+                    </Border>
+                </StackPanel>
+
+                <Grid x:Name="SwitchGrid" ColumnSpacing="10" RowSpacing="10">
                 <Grid.ColumnDefinitions>
                     <ColumnDefinition Width="*"/>
                     <ColumnDefinition Width="0"/>
                 </Grid.ColumnDefinitions>
                 <Grid.RowDefinitions>
+                    <RowDefinition Height="Auto"/>
+                    <RowDefinition Height="Auto"/>
+                    <RowDefinition Height="Auto"/>
                     <RowDefinition Height="Auto"/>
                     <RowDefinition Height="Auto"/>
                     <RowDefinition Height="Auto"/>
@@ -263,7 +341,40 @@
                                       Toggled="OnToggleChanged"/>
                     </Grid>
                 </Button>
-            </Grid>
+
+                <!-- 通知 -->
+                <Button x:Name="NotificationRow" Style="{StaticResource SettingRowStyle}" Click="OnRowClick">
+                    <Button.Background>
+                        <LinearGradientBrush StartPoint="0,0" EndPoint="0,1">
+                            <GradientStop Color="#22FFFFFF" Offset="0"/>
+                            <GradientStop Color="#4A4CC2FF" Offset="1"/>
+                        </LinearGradientBrush>
+                    </Button.Background>
+                    <Grid ColumnSpacing="12">
+                        <Grid.ColumnDefinitions>
+                            <ColumnDefinition Width="Auto"/>
+                            <ColumnDefinition Width="Auto"/>
+                            <ColumnDefinition Width="*"/>
+                            <ColumnDefinition Width="Auto"/>
+                        </Grid.ColumnDefinitions>
+                        <Border Width="3" Height="40" Background="#B34CC2FF" VerticalAlignment="Center"/>
+                        <Border Grid.Column="1" Width="34" Height="34" Background="#3D4CC2FF"
+                                BorderThickness="1" BorderBrush="#6B4CC2FF" VerticalAlignment="Center">
+                            <FontIcon Glyph="&#xEA8F;" FontSize="16"/>
+                        </Border>
+                        <StackPanel Grid.Column="2" Spacing="2" VerticalAlignment="Center">
+                            <TextBlock Text="通知" FontSize="15" FontWeight="SemiBold"/>
+                            <TextBlock Text="点击打开通知中心，有新通知时右上角亮绿点" FontSize="11.5"
+                                       Opacity="0.55" TextTrimming="CharacterEllipsis"/>
+                        </StackPanel>
+                        <ToggleSwitch x:Name="NotificationToggle" Grid.Column="3" Style="{StaticResource CleanToggleStyle}"
+                                      IsHitTestVisible="False" IsTabStop="False" VerticalAlignment="Center"
+                                      OnContent="" OffContent=""
+                                      Toggled="OnToggleChanged"/>
+                    </Grid>
+                </Button>
+                </Grid>
+            </StackPanel>
         </ScrollViewer>
 
         <ctl:GamepadHintBar Grid.Row="2" Margin="0,8,0,12"

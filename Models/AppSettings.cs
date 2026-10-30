@@ -120,6 +120,12 @@ public class AppSettings
     /// <summary>顶栏显示蓝牙图标</summary>
     public bool ShowBluetooth { get; set; }
 
+    /// <summary>顶栏显示通知图标（点击打开 Windows 通知中心）</summary>
+    public bool ShowNotifications { get; set; } = true;
+
+    /// <summary>上次打开通知中心的时间（UTC ISO 8601）：比它晚的通知才亮绿点；持久化，重启后仍能提示未读</summary>
+    public string NotificationSeenTime { get; set; } = "";
+
     /// <summary>窗口背景颜色（#RRGGBB 十六进制）</summary>
     public string BackgroundColor { get; set; } = "#202020";
 

@@ -672,8 +672,11 @@ public sealed partial class MainWindow : Window
     private bool _animating;
     private IntPtr _hwnd;
 
-    // 当前窗口移动动画状态（CompositionTarget.Rendering 每帧推进）
+    // 当前窗口移动动画状态（CompositionTarget.Rendering 每帧推进 + 定时器兜底）
     private EventHandler<object>? _renderHandler;
+    private Microsoft.UI.Dispatching.DispatcherQueueTimer? _animTimer;
+    private long _animRenderMs;      // 渲染帧最近一次推进的时刻
+    private long _animTimerSeenMs;   // 定时器上次检查时看到的渲染时刻
     private System.Diagnostics.Stopwatch? _animSw;
     private double _animFromX, _animFromY, _animToX, _animToY;
     private bool _animEaseOut;
@@ -741,7 +744,10 @@ public sealed partial class MainWindow : Window
             AppWindow.Move(p);
     }
 
-    /// <summary>逐帧移动窗口 from→to，由 CompositionTarget.Rendering 驱动（与合成器 vsync 对齐）</summary>
+    /// <summary>逐帧移动窗口 from→to，由 CompositionTarget.Rendering 驱动（与合成器 vsync 对齐）。
+    /// 合成器在没有新帧时不会派发 Rendering（窗口被遮挡/完全在屏外时尤其明显），
+    /// 单靠它会让动画偶发卡死，故同时挂一个 16ms 定时器：渲染帧正常推进时定时器让位，
+    /// 渲染帧超过一帧没有到来时由定时器接管推进。</summary>
     private void AnimateMove(Windows.Graphics.PointInt32 from, Windows.Graphics.PointInt32 to,
         int ms, bool easeOut, Action? done)
     {
@@ -749,20 +755,49 @@ public sealed partial class MainWindow : Window
         _animating = true;
         _animFromX = from.X; _animFromY = from.Y;
         _animToX = to.X; _animToY = to.Y;
-        _animMs = ms; _animEaseOut = easeOut; _animDone = done;
+        _animMs = Math.Max(1, ms); _animEaseOut = easeOut; _animDone = done;
+        _animRenderMs = 0;
+        _animTimerSeenMs = 0;
         _animSw = System.Diagnostics.Stopwatch.StartNew();
         _renderHandler = OnRenderFrame;
         Microsoft.UI.Xaml.Media.CompositionTarget.Rendering += _renderHandler;
+        // 兜底定时器：与渲染帧同样的时间基准，重复驱动也不会跳位
+        _animTimer ??= DispatcherQueue.CreateTimer();
+        _animTimer.Interval = TimeSpan.FromMilliseconds(16);
+        _animTimer.IsRepeating = true;
+        _animTimer.Tick += OnAnimTimerTick;
+        _animTimer.Start();
     }
 
     private void OnRenderFrame(object? sender, object e)
     {
         if (_animSw == null) return;
+        _animRenderMs = _animSw.ElapsedMilliseconds;
+        AdvanceMoveFrame();
+    }
+
+    /// <summary>兜底：渲染帧正常到来时让位；超过一帧没有渲染帧就自己推进</summary>
+    private void OnAnimTimerTick(Microsoft.UI.Dispatching.DispatcherQueueTimer sender, object args)
+    {
+        if (_animSw == null) return;
+        if (_animRenderMs != _animTimerSeenMs)
+        {
+            _animTimerSeenMs = _animRenderMs;   // 合成器在正常出帧，交给 Rendering
+            return;
+        }
+        AdvanceMoveFrame();
+    }
+
+    /// <summary>按已过去的时间推进一帧；到点后落位并回调完成</summary>
+    private void AdvanceMoveFrame()
+    {
+        if (_animSw == null) return;
         double t = Math.Clamp(_animSw.ElapsedMilliseconds / (double)_animMs, 0, 1);
         double k = _animEaseOut ? 1 - Math.Pow(1 - t, 3) : t * t * t;
-        MoveWindowTo(new Windows.Graphics.PointInt32(
+        var pos = new Windows.Graphics.PointInt32(
             (int)Math.Round(_animFromX + (_animToX - _animFromX) * k),
-            (int)Math.Round(_animFromY + (_animToY - _animFromY) * k)));
+            (int)Math.Round(_animFromY + (_animToY - _animFromY) * k));
+        MoveWindowTo(t >= 1 ? new Windows.Graphics.PointInt32((int)_animToX, (int)_animToY) : pos);
         if (t >= 1)
         {
             var done = _animDone;
@@ -777,6 +812,11 @@ public sealed partial class MainWindow : Window
         {
             Microsoft.UI.Xaml.Media.CompositionTarget.Rendering -= _renderHandler;
             _renderHandler = null;
+        }
+        if (_animTimer != null)
+        {
+            _animTimer.Stop();
+            _animTimer.Tick -= OnAnimTimerTick;
         }
         _animSw = null;
         _animDone = null;

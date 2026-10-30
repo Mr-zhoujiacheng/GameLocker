@@ -28,6 +28,7 @@ public static class ConfigService
                 if (items is not null)
                 {
                     MigrateTileSets(items);
+                    MigrateClashName(items);
                     EnsureSettingsTile(items);
                     return items;
                 }
@@ -69,6 +70,35 @@ public static class ConfigService
             items.Remove(set);
         }
         Save(items);
+    }
+
+    /// <summary>
+    /// 一次性迁移：小猫咪小组件显示名统一为 "Clash"（旧配置里存的是"小猫咪"）。
+    /// 该小组件的名称现在固定不可改，这里统一纠正旧名字，有改动才落盘。
+    /// </summary>
+    private static void MigrateClashName(List<LaunchItem> items)
+    {
+        var changed = false;
+        foreach (var it in AllItems(items))
+        {
+            if (it.Kind != LaunchKind.Widget || it.WidgetKind != WidgetKind.Clash || it.Name == "Clash")
+                continue;
+            it.Name = "Clash";
+            changed = true;
+        }
+        if (changed) Save(items);
+    }
+
+    /// <summary>顶层快捷项 + 抽屉内层磁贴（抽屉可嵌套，递归展开）</summary>
+    private static IEnumerable<LaunchItem> AllItems(IEnumerable<LaunchItem> items)
+    {
+        foreach (var it in items)
+        {
+            yield return it;
+            foreach (var drawer in it.Drawers ?? [])
+                foreach (var inner in AllItems(drawer.Items))
+                    yield return inner;
+        }
     }
 
     /// <summary>

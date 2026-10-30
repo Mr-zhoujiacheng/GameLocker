@@ -7,8 +7,8 @@ using Microsoft.UI.Xaml.Navigation;
 
 namespace GameLocker;
 
-/// <summary>控制设置：上半区「快捷映射」= 呼出组合键 / 键盘呼出键 / 全屏组合键捕获；下半区「基本操作」= 简化后的通用操作说明。
-/// 手柄：方向键按"整张卡片"上下切换（每次只选中一张卡，卡内说明只读、不可单独选中），A=捕获当前卡片的键位，
+/// <summary>控制设置：上半区「快捷映射」= 呼出组合键 / 键盘呼出键 / 全屏组合键捕获 + 恢复默认；下半区「基本操作」= 简化后的通用操作说明。
+/// 手柄：方向键按行上下切换（快捷映射逐行选中，基本操作整卡选中），A=捕获当前行的键位 / 恢复默认，
 /// View/B=返回设置主页。键盘呼出键仅键盘有效，按下即刻呼出（无需长按），可含 Ctrl/Shift/Alt/Win 组合。</summary>
 public sealed partial class KeybindPage : Page, ISettingsGamepad
 {
@@ -27,15 +27,35 @@ public sealed partial class KeybindPage : Page, ISettingsGamepad
     private enum CaptureTarget { Summon, KeySummon, Fullscreen }
     private CaptureTarget _target;
 
-    /// <summary>手柄焦点所在卡片序号：0=呼出键 1=键盘呼出键 2=全屏键 3=基本操作说明</summary>
+    /// <summary>手柄焦点：0=呼出键 1=键盘呼出键 2=全屏键 3=恢复默认 4=基本操作卡</summary>
     private int _focus;
 
     private Border[] _cards = default!;
 
-    private readonly SolidColorBrush _cardIdleBg = new(Windows.UI.Color.FromArgb(0x14, 0xFF, 0xFF, 0xFF));
-    private readonly SolidColorBrush _cardFocusBg = new(Windows.UI.Color.FromArgb(0x26, 0xFF, 0xFF, 0xFF));
-    private readonly SolidColorBrush _lineIdle = new(Windows.UI.Color.FromArgb(0x26, 0xFF, 0xFF, 0xFF));
-    private readonly SolidColorBrush _lineFocus = new(Windows.UI.Color.FromArgb(0xFF, 0x4C, 0xC2, 0xFF));
+    private const int BasicFocus = 4;
+
+    private readonly Brush _cardIdleBg = CardGradient(0x22, 0x33);
+    private readonly Brush _cardFocusBg = CardGradient(0x2E, 0x4D);
+    private readonly Brush _lineIdle = new SolidColorBrush(Windows.UI.Color.FromArgb(0x26, 0xFF, 0xFF, 0xFF));
+    private readonly Brush _lineFocus = new SolidColorBrush(Windows.UI.Color.FromArgb(0xE6, 0xFF, 0xFF, 0xFF));
+
+    /// <summary>卡片底色：白→浅灰竖向渐变（与关于页同一套灰阶）</summary>
+    private static LinearGradientBrush CardGradient(byte topAlpha, byte bottomAlpha) => new()
+    {
+        StartPoint = new Windows.Foundation.Point(0, 0),
+        EndPoint = new Windows.Foundation.Point(0, 1),
+        GradientStops =
+        {
+            new GradientStop
+            {
+                Color = Windows.UI.Color.FromArgb(topAlpha, 0xFF, 0xFF, 0xFF), Offset = 0
+            },
+            new GradientStop
+            {
+                Color = Windows.UI.Color.FromArgb(bottomAlpha, 0xB7, 0xE6, 0xB0), Offset = 1
+            }
+        }
+    };
 
     public KeybindPage()
     {
@@ -48,17 +68,46 @@ public sealed partial class KeybindPage : Page, ISettingsGamepad
         // 说明数据源：只保留一份"基本操作"（快捷映射与说明分开，不细分到每个页面）
         LvBasic.ItemsSource = ControlHelp.Basic;
 
-        _cards = [CardSummon, CardKeySummon, CardFullscreen, CardBasic];
+        _cards = [CardSummon, CardKeySummon, CardFullscreen, CardReset, CardBasic];
         ApplyCardFocus();
+
+        // 快捷映射四张卡：宽窗口两列，侧边栏窄窗口回成一列
+        PageScroller.SizeChanged += (_, _) => LayoutCards();
 
         // 布局完成后再复位：OnNavigatedTo 时元素尚未排列，滚动偏移不可用
         Loaded += (_, _) =>
         {
+            LayoutCards();
             _focus = 0;
             ApplyCardFocus();
             PageScroller.ScrollToVerticalOffset(0);
             Focus(FocusState.Programmatic); // 键盘方向键等价于手柄方向键（整卡切换）
         };
+    }
+
+    private const double TwoColumnMinWidth = 520;
+
+    /// <summary>当前是否为两列布局（决定方向键的移动规则）</summary>
+    private bool _twoColumn;
+
+    /// <summary>按可用宽度重排快捷映射：宽=两列两行，窄=单列四行</summary>
+    private void LayoutCards()
+    {
+        if (MapGrid is null || PageScroller is null) return;
+        var avail = PageScroller.ViewportWidth;
+        if (avail <= 0) return;
+        var two = avail >= TwoColumnMinWidth;
+        _twoColumn = two;
+
+        MapGrid.ColumnDefinitions[1].Width = two
+            ? new GridLength(1, GridUnitType.Star)
+            : new GridLength(0);
+
+        for (var i = 0; i < 4; i++)
+        {
+            Grid.SetRow(_cards[i], two ? i / 2 : i);
+            Grid.SetColumn(_cards[i], two ? i % 2 : 0);
+        }
     }
 
     protected override void OnNavigatedTo(NavigationEventArgs e)
@@ -82,8 +131,11 @@ public sealed partial class KeybindPage : Page, ISettingsGamepad
     {
         if (!_ready || IsCapturing) return;
 
-        if (buttons.HasFlag(GamepadButtons.DPadUp) || buttons.HasFlag(GamepadButtons.DPadLeft)) Move(-1);
-        else if (buttons.HasFlag(GamepadButtons.DPadDown) || buttons.HasFlag(GamepadButtons.DPadRight)) Move(1);
+        // 两列布局下方向键按"上下走行、左右走列"移动，不能把左右合并到上下
+        if (buttons.HasFlag(GamepadButtons.DPadUp)) Move(MoveDirection.Up);
+        else if (buttons.HasFlag(GamepadButtons.DPadDown)) Move(MoveDirection.Down);
+        else if (buttons.HasFlag(GamepadButtons.DPadLeft)) Move(MoveDirection.Left);
+        else if (buttons.HasFlag(GamepadButtons.DPadRight)) Move(MoveDirection.Right);
         else if (buttons.HasFlag(GamepadButtons.A)) ActivateCapture();
     }
 
@@ -100,13 +152,19 @@ public sealed partial class KeybindPage : Page, ISettingsGamepad
         switch (e.Key)
         {
             case Windows.System.VirtualKey.Up:
-            case Windows.System.VirtualKey.Left:
-                Move(-1);
+                Move(MoveDirection.Up);
                 e.Handled = true;
                 break;
             case Windows.System.VirtualKey.Down:
+                Move(MoveDirection.Down);
+                e.Handled = true;
+                break;
+            case Windows.System.VirtualKey.Left:
+                Move(MoveDirection.Left);
+                e.Handled = true;
+                break;
             case Windows.System.VirtualKey.Right:
-                Move(1);
+                Move(MoveDirection.Right);
                 e.Handled = true;
                 break;
             case Windows.System.VirtualKey.Enter:
@@ -153,22 +211,54 @@ public sealed partial class KeybindPage : Page, ISettingsGamepad
         }
     }
 
-    /// <summary>A 键：捕获当前选中卡片对应的键位（呼出键/键盘呼出键/全屏键之外均为只读说明卡，无动作）</summary>
+    /// <summary>A 键：捕获当前卡片的键位；"恢复默认"卡则还原全部键位</summary>
     private void ActivateCapture()
     {
-        if (_focus == 0) StartCapture(CaptureTarget.Summon);
-        else if (_focus == 1) StartCapture(CaptureTarget.KeySummon);
-        else if (_focus == 2) StartCapture(CaptureTarget.Fullscreen);
+        switch (_focus)
+        {
+            case 0: StartCapture(CaptureTarget.Summon); break;
+            case 1: StartCapture(CaptureTarget.KeySummon); break;
+            case 2: StartCapture(CaptureTarget.Fullscreen); break;
+            case 3: ResetDefaults(); break;
+        }
     }
 
-    /// <summary>整卡上下移动：每次只切换一张卡片，并把该卡滚到可视区顶部，方便直接读完卡内全部内容</summary>
-    private void Move(int delta)
+    private enum MoveDirection { Up, Down, Left, Right }
+
+    /// <summary>方向键移动：两列布局下 ↑↓ 走同一列的上一行/下一行，←→ 走同行的左右；
+    /// 单列布局下只有 ↑↓ 有效。基本操作卡是整行卡，上下移动都落在它上面。</summary>
+    private void Move(MoveDirection dir)
     {
-        var next = Math.Clamp(_focus + delta, 0, _cards.Length - 1);
+        var next = _focus;
+        if (_twoColumn)
+        {
+            switch (dir)
+            {
+                case MoveDirection.Up:
+                    if (_focus == BasicFocus) next = 2;
+                    else if (_focus >= 2) next = _focus - 2;
+                    break;
+                case MoveDirection.Down:
+                    if (_focus < 2) next = _focus + 2;
+                    else if (_focus < BasicFocus) next = BasicFocus;
+                    break;
+                case MoveDirection.Left:
+                    if (_focus is 1 or 3) next = _focus - 1;
+                    break;
+                case MoveDirection.Right:
+                    if (_focus is 0 or 2) next = _focus + 1;
+                    break;
+            }
+        }
+        else if (dir is MoveDirection.Up or MoveDirection.Down)
+        {
+            next = Math.Clamp(_focus + (dir == MoveDirection.Up ? -1 : 1), 0, BasicFocus);
+        }
+
         if (next == _focus) return;
         _focus = next;
         ApplyCardFocus();
-        ScrollCardToTop(_cards[_focus]);
+        EnsureCardVisible(_cards[_focus]);
     }
 
     /// <summary>刷新选中样式：只有当前卡片有高亮描边与加亮底色</summary>
@@ -182,14 +272,20 @@ public sealed partial class KeybindPage : Page, ISettingsGamepad
         }
     }
 
-    /// <summary>把卡片滚到外层 PageScroller 可视区顶部（留 8px 余量）</summary>
-    private void ScrollCardToTop(FrameworkElement card)
+    /// <summary>确保当前卡片完整可见：只在它超出可视区时才滚最小距离（留 8px 余量），
+    /// 和关于页/外观页一样不做"滚到顶部"，避免每按一次方向键整页跳动</summary>
+    private void EnsureCardVisible(FrameworkElement card)
     {
         try
         {
-            var y = card.TransformToVisual(PageScroller)
-                .TransformPoint(new Windows.Foundation.Point(0, 0)).Y;
-            PageScroller.ScrollToVerticalOffset(PageScroller.VerticalOffset + y - 8);
+            var p = card.TransformToVisual(PageScroller)
+                .TransformPoint(new Windows.Foundation.Point(0, 0));
+            var vh = PageScroller.ViewportHeight;
+            if (vh <= 0) return;
+            if (p.Y < 0)
+                PageScroller.ChangeView(null, Math.Max(0, PageScroller.VerticalOffset + p.Y - 8), null);
+            else if (p.Y + card.ActualHeight > vh)
+                PageScroller.ChangeView(null, PageScroller.VerticalOffset + p.Y + card.ActualHeight - vh + 8, null);
         }
         catch { /* 未连接视觉树时忽略 */ }
     }
@@ -205,6 +301,29 @@ public sealed partial class KeybindPage : Page, ISettingsGamepad
 
     /// <summary>鼠标点击全屏键位按钮</summary>
     private void OnFsCaptureClick(object sender, RoutedEventArgs e) => StartCapture(CaptureTarget.Fullscreen);
+
+    /// <summary>鼠标点击"恢复默认键位"</summary>
+    private void OnResetClick(object sender, RoutedEventArgs e) => ResetDefaults();
+
+    /// <summary>还原全部键位到初始值（呼出=LT+RT，键盘=F7，全屏=菜单键），保存并立即生效</summary>
+    private void ResetDefaults()
+    {
+        if (IsCapturing) return;
+        var d = new GameLocker.Models.AppSettings();   // 直接取模型里的默认值，避免硬编码
+        SettingsService.Update(s =>
+        {
+            s.SummonCombo = d.SummonCombo;
+            s.FullscreenCombo = d.FullscreenCombo;
+            s.KeyboardSummonKey = d.KeyboardSummonKey;
+            s.KeyboardSummonMods = d.KeyboardSummonMods;
+        });
+        App.Main?.Gamepad.SetSummonCombo(d.SummonCombo);
+        App.Main?.Gamepad.SetFullscreenCombo(d.FullscreenCombo);
+        App.Main?.SyncKeyboardHook();
+        CaptureText.Text = GamepadService.Describe(d.SummonCombo);
+        KeyCaptureText.Text = KeySendService.MappingLabel(0, d.KeyboardSummonKey, d.KeyboardSummonMods);
+        FsCaptureText.Text = GamepadService.Describe(d.FullscreenCombo);
+    }
 
     /// <summary>进入捕获模式：等待用户按下组合键并松开。
     /// 捕获期间暂停全局键盘钩子，避免正在捕获的按键被钩子吞掉。</summary>

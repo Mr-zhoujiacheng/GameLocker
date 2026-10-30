@@ -34,6 +34,30 @@ public enum BrowseMode
     Cover
 }
 
+/// <summary>小猫咪编辑页的节点下拉项：Value 为空表示"自动"，Delay 为延迟毫秒（0=没测到）</summary>
+public sealed record ProxyNodeOption(string Value, string Label, int Delay)
+{
+    private static readonly Microsoft.UI.Xaml.Media.SolidColorBrush FastBrush =
+        new(Windows.UI.Color.FromArgb(0xFF, 0x4A, 0xD1, 0x64));
+    private static readonly Microsoft.UI.Xaml.Media.SolidColorBrush MidBrush =
+        new(Windows.UI.Color.FromArgb(0xFF, 0xE8, 0xB3, 0x3B));
+    private static readonly Microsoft.UI.Xaml.Media.SolidColorBrush SlowBrush =
+        new(Windows.UI.Color.FromArgb(0xFF, 0xE8, 0x55, 0x55));
+    private static readonly Microsoft.UI.Xaml.Media.SolidColorBrush UnknownBrush =
+        new(Windows.UI.Color.FromArgb(0x66, 0xFF, 0xFF, 0xFF));
+
+    /// <summary>延迟文字：自动项留空，超时显示"—"</summary>
+    public string DelayText => Value.Length == 0 ? "" : Delay > 0 ? $"{Delay} ms" : "—";
+
+    /// <summary>红黄绿圆点：≤150ms 绿、≤400ms 黄、更慢红；没测到=灰；自动项不画圆点</summary>
+    public Microsoft.UI.Xaml.Media.SolidColorBrush? DotBrush => Value.Length == 0
+        ? null
+        : Delay <= 0 ? UnknownBrush
+        : Delay <= 150 ? FastBrush
+        : Delay <= 400 ? MidBrush
+        : SlowBrush;
+}
+
 /// <summary>
 /// 添加/编辑快捷项页（独立页面，完全手柄操作）。
 /// 表单模式：方向=移动焦点，A=文本框聚焦输入/切换类型/按下按钮，B/Select=返回主页。
@@ -50,6 +74,11 @@ public sealed partial class AddItemPage : Page, ISettingsGamepad
 
     // 编辑模式状态
     private LaunchItem? _editing;
+
+    /// <summary>壁纸编辑页当前操作的小组件（收藏/排除/下载都作用在它的当前壁纸上）</summary>
+    private LaunchItem? _wallpaperItem;
+    private List<string> _wallpaperLiked = [];
+    private List<string> _wallpaperBlocked = [];
     private string _origTarget = "";
     private string _origName = "";
 
@@ -79,6 +108,15 @@ public sealed partial class AddItemPage : Page, ISettingsGamepad
 
     /// <summary>磁贴抽屉：当前正在编辑的抽屉下标</summary>
     private int _drawerCursor;
+
+    /// <summary>小猫咪：节点列表正在加载（防止重复请求）</summary>
+    private bool _proxyNodesLoading;
+
+    /// <summary>小猫咪：正在按保存的节点回填下拉框（此时不触发 SelectionChanged 的状态提示）</summary>
+    private bool _fillingProxyNodes;
+
+    /// <summary>小猫咪：正在按保存的配置回填代理模式/端口（此时不触发重新拉取节点）</summary>
+    private bool _syncingProxyForm;
 
     /// <summary>当前浏览是否为"图片组选文件夹"（区别于普通 Folder 类型项选路径）</summary>
     private bool _pickingPhotoFolder;
@@ -398,6 +436,21 @@ public sealed partial class AddItemPage : Page, ISettingsGamepad
             list.Add(SpeedArtRadio);
             list.Add(AnimationToggle);
         }
+        // 壁纸：来源 / 轮番速度 / 收藏与排除 / 下载到本地
+        if (WallpaperRow.Visibility == vis)
+        {
+            list.Add(WpSourceBingRadio);
+            list.Add(WpSourcePicsumRadio);
+            list.Add(WpSpeedFastRadio);
+            list.Add(WpSpeedSlowRadio);
+            list.Add(WpSpeedArtRadio);
+            list.Add(WpLikeButton);
+            list.Add(WpBlockButton);
+            list.Add(WpClearButton);
+            list.Add(WpDownloadButton);
+            list.Add(WpOpenFolderButton);
+            list.Add(WpClearCacheButton);
+        }
         // 文件传输：可发送目录 / 接收目录
         if (FileTransferRow.Visibility == vis)
         {
@@ -411,6 +464,16 @@ public sealed partial class AddItemPage : Page, ISettingsGamepad
             list.Add(LosslessClearButton);
             list.Add(LosslessProfileCombo);
             list.Add(LosslessNewProfileButton);
+        }
+        // 小猫咪：订阅链接 / 代理模式 / 本地代理端口 / 节点下拉
+        if (ProxyRow.Visibility == vis)
+        {
+            list.Add(ProxySubscriptionBox);
+            list.Add(ProxyRuleRadio);
+            list.Add(ProxyGlobalRadio);
+            list.Add(ProxyPortBox);
+            list.Add(ProxyNodeCombo);
+            list.Add(ProxyNodeRefreshButton);
         }
         // 映射小组件：按键捕获按钮 + 旁边的"显示键盘"
         if (MappingRow.Visibility == vis)
@@ -628,6 +691,7 @@ public sealed partial class AddItemPage : Page, ISettingsGamepad
             TargetRow.Visibility = w;
             KindColumn.Visibility = w;
             var isPhoto = item.WidgetKind == WidgetKind.Photos;
+            var isWallpaper = item.WidgetKind == WidgetKind.Wallpaper;
             // 图标/图片：小组件均不可换（固定样式或整块铺图）
             IconHeaderText.Visibility = w;
             IconRow.Visibility = w;
@@ -635,9 +699,9 @@ public sealed partial class AddItemPage : Page, ISettingsGamepad
             CoverRow.Visibility = w;
             // 音乐固定 2×2、系统固定"长"不可改大小；其余小组件（图片组/设置/电源/天气/映射/修改器/游戏存档/手柄映射）可编辑大小。
             // 颜色：图片组不需要（整块铺图）
-            SizeColumn.Visibility = isPhoto || item.WidgetKind is WidgetKind.Settings or WidgetKind.Power or WidgetKind.Weather or WidgetKind.Mapping or WidgetKind.Trainer or WidgetKind.Backup or WidgetKind.GamepadMap or WidgetKind.OptiScaler or WidgetKind.RecycleBin or WidgetKind.Foreground or WidgetKind.Monitor or WidgetKind.LosslessScaling or WidgetKind.Keyboard
+            SizeColumn.Visibility = isPhoto || item.WidgetKind is WidgetKind.Settings or WidgetKind.Power or WidgetKind.Weather or WidgetKind.Mapping or WidgetKind.Trainer or WidgetKind.Backup or WidgetKind.GamepadMap or WidgetKind.OptiScaler or WidgetKind.RecycleBin or WidgetKind.Foreground or WidgetKind.Monitor or WidgetKind.LosslessScaling or WidgetKind.Keyboard or WidgetKind.Clash
                 ? Microsoft.UI.Xaml.Visibility.Visible : w;
-            ColorColumn.Visibility = isPhoto || TileStyle.HidesTileColor
+            ColorColumn.Visibility = isPhoto || isWallpaper || TileStyle.HidesTileColor
                 ? w : Microsoft.UI.Xaml.Visibility.Visible;
             PhotoFolderRow.Visibility = isPhoto
                 ? Microsoft.UI.Xaml.Visibility.Visible : w;
@@ -714,6 +778,43 @@ public sealed partial class AddItemPage : Page, ISettingsGamepad
                 LosslessPathText.Text = string.IsNullOrWhiteSpace(item.LosslessPath)
                     ? "自动检测（Steam 库）" : item.LosslessPath!;
                 ReloadLosslessProfiles(item.LosslessProfile);
+            }
+            // 小猫咪：订阅链接 / 代理模式 / 本地代理端口 / 节点下拉（磁贴固定显示 "Clash"，不允许改名）
+            var isProxy = item.WidgetKind == WidgetKind.Clash;
+            ProxyRow.Visibility = isProxy ? Microsoft.UI.Xaml.Visibility.Visible : w;
+            if (isProxy)
+            {
+                NameBox.Text = "Clash";
+                NameBox.Visibility = w;
+                _syncingProxyForm = true;
+                ProxySubscriptionBox.Text = item.ProxySubscription ?? "";
+                var global = string.Equals((item.ProxyMode ?? "rule").Trim(), "global",
+                    StringComparison.OrdinalIgnoreCase);
+                ProxyGlobalRadio.IsChecked = global;
+                ProxyRuleRadio.IsChecked = !global;
+                ProxyPortBox.Text = (item.ProxyPort is >= 1 and <= 65535 ? item.ProxyPort : 7897).ToString();
+                // 先占位（只放"自动"），随后异步拉订阅节点并测速填充
+                FillProxyNodeOptions([], item.ProxySelected ?? "");
+                _syncingProxyForm = false;
+                _ = LoadProxyNodesAsync();
+            }
+            // 壁纸：固定大磁贴、名称固定「壁纸」；来源 / 轮番速度 / 个性喜好 / 下载到本地
+            WallpaperRow.Visibility = isWallpaper ? Microsoft.UI.Xaml.Visibility.Visible : w;
+            if (isWallpaper)
+            {
+                NameBox.Text = "壁纸";
+                NameBox.Visibility = w;
+                _wallpaperItem = item;
+                _wallpaperLiked = [.. item.WallpaperLiked];
+                _wallpaperBlocked = [.. item.WallpaperBlocked];
+                var picsum = string.Equals(item.WallpaperSource, "picsum", StringComparison.OrdinalIgnoreCase);
+                WpSourcePicsumRadio.IsChecked = picsum;
+                WpSourceBingRadio.IsChecked = !picsum;
+                WpSpeedFastRadio.IsChecked = item.SlideshowSpeed == PhotoSpeed.Fast;
+                WpSpeedSlowRadio.IsChecked = item.SlideshowSpeed == PhotoSpeed.Slow;
+                WpSpeedArtRadio.IsChecked = item.SlideshowSpeed == PhotoSpeed.Art;
+                UpdateWallpaperPreferenceText();
+                _ = LoadWallpaperPreviewAsync(item);
             }
             // OptiScaler：名称、大小、颜色 + 注入 DLL 名 / ini 关键项 / 本地包 / 一键还原
             var isOptiScaler = item.WidgetKind == WidgetKind.OptiScaler;
@@ -831,6 +932,8 @@ public sealed partial class AddItemPage : Page, ISettingsGamepad
             MonitorRow.Visibility = Microsoft.UI.Xaml.Visibility.Collapsed;
             FileTransferRow.Visibility = Microsoft.UI.Xaml.Visibility.Collapsed;
             LosslessRow.Visibility = Microsoft.UI.Xaml.Visibility.Collapsed;
+            ProxyRow.Visibility = Microsoft.UI.Xaml.Visibility.Collapsed;
+            WallpaperRow.Visibility = Microsoft.UI.Xaml.Visibility.Collapsed;
         }
     }
 
@@ -860,6 +963,8 @@ public sealed partial class AddItemPage : Page, ISettingsGamepad
                     : item.WidgetKind == WidgetKind.FileTransfer ? "编辑文件传输小组件"
                     : item.WidgetKind == WidgetKind.LosslessScaling ? "编辑小黄鸭小组件"
                     : item.WidgetKind == WidgetKind.Keyboard ? "编辑屏幕键盘小组件"
+                    : item.WidgetKind == WidgetKind.Clash ? "编辑 Clash 小组件"
+                    : item.WidgetKind == WidgetKind.Wallpaper ? "编辑壁纸小组件"
                     : item.WidgetKind == WidgetKind.Drawer ? "编辑磁贴抽屉" : "编辑音乐小组件")
                 : _isGroup ? "编辑磁贴组" : "编辑快捷项";
         }
@@ -885,6 +990,8 @@ public sealed partial class AddItemPage : Page, ISettingsGamepad
             MonitorRow.Visibility = Microsoft.UI.Xaml.Visibility.Collapsed;
             FileTransferRow.Visibility = Microsoft.UI.Xaml.Visibility.Collapsed;
             LosslessRow.Visibility = Microsoft.UI.Xaml.Visibility.Collapsed;
+            ProxyRow.Visibility = Microsoft.UI.Xaml.Visibility.Collapsed;
+            WallpaperRow.Visibility = Microsoft.UI.Xaml.Visibility.Collapsed;
             _pendingLosslessPath = null;
             _pickingLosslessPath = false;
             LosslessPathText.Text = "自动检测（Steam 库）";
@@ -1376,6 +1483,10 @@ public sealed partial class AddItemPage : Page, ISettingsGamepad
                 // 游戏存档：A 键打开当前备份目标目录
                 OpenBackupFolder();
                 break;
+            // 小猫咪：重新拉取订阅节点并测速
+            case Button btn when ReferenceEquals(btn, ProxyNodeRefreshButton):
+                _ = LoadProxyNodesAsync();
+                break;
             case Button btn when ReferenceEquals(btn, CloudSettingsButton):
                 // 游戏存档：A 键跳到 设置 → 云端备份 配置 WebDAV
                 App.Main?.NavigateSettings(typeof(CloudPage));
@@ -1694,6 +1805,30 @@ public sealed partial class AddItemPage : Page, ISettingsGamepad
                     it.LosslessProfile = string.IsNullOrWhiteSpace(profile) ? null : profile;
                     LosslessScalingService.InvalidateCache(); // 路径变化后让磁贴状态立即重新检测
                 }
+                else if (it.WidgetKind == WidgetKind.Clash)
+                {
+                    // 小猫咪：改大小、颜色与订阅链接 / 代理模式 / 本地代理端口 / 指定节点；名称固定为 "Clash"
+                    it.Name = "Clash";
+                    it.Size = SelectedSize();
+                    it.TileColor = SelectedColor();
+                    it.ProxySubscription = ProxySubscriptionBox.Text.Trim();
+                    var port = int.TryParse(ProxyPortBox.Text.Trim(), out var p) && p is >= 1 and <= 65535 ? p : 7897;
+                    it.ProxyPort = port;
+                    it.ProxyMode = ProxyGlobalRadio.IsChecked == true ? "global" : "rule";
+                    it.ProxySelected = (ProxyNodeCombo.SelectedItem as ProxyNodeOption)?.Value ?? "";
+                    // 内核可能正在跑：立即把新的模式与选中节点生效（没跑则等下次连接时重建配置）
+                    _ = ProxyService.ApplyAsync(it);
+                }
+                else if (it.WidgetKind == WidgetKind.Wallpaper)
+                {
+                    // 壁纸：名称固定「壁纸」、固定大磁贴；改来源 / 关键词 / Key / 轮番速度 / 个性喜好
+                    it.Name = "壁纸";
+                    it.Size = TileSize.Large;
+                    ApplyWallpaperFormTo(it);
+                    it.WallpaperLiked = [.. _wallpaperLiked];
+                    it.WallpaperBlocked = [.. _wallpaperBlocked];
+                    WallpaperService.Register(it); // 立即按新来源与速度重建轮播池
+                }
                 else if (it.WidgetKind == WidgetKind.Mapping)
                 {
                     // 映射：改标题、大小、颜色与映射按键（手柄键或键盘键二选一）；
@@ -1855,6 +1990,116 @@ public sealed partial class AddItemPage : Page, ISettingsGamepad
         App.Main?.ShowMainPage();
     }
 
+    /// <summary>把壁纸编辑页的来源/轮番速度写回目标项（保存与"下载到本地"共用）</summary>
+    private void ApplyWallpaperFormTo(LaunchItem target)
+    {
+        target.WallpaperSource = WpSourcePicsumRadio.IsChecked == true ? "picsum" : "bing";
+        target.SlideshowSpeed = WpSpeedFastRadio.IsChecked == true ? PhotoSpeed.Fast
+            : WpSpeedArtRadio.IsChecked == true ? PhotoSpeed.Art : PhotoSpeed.Slow;
+    }
+
+    /// <summary>进入编辑页：先显示当前壁纸，本地还没有缓存时顺手拉两张（不阻塞页面）</summary>
+    private async Task LoadWallpaperPreviewAsync(LaunchItem item)
+    {
+        ShowWallpaperPreview(item);
+        if (WallpaperService.CurrentFile(item) is null)
+        {
+            await WallpaperService.DownloadMoreAsync(item, 2);
+            ShowWallpaperPreview(item);
+        }
+    }
+
+    private void ShowWallpaperPreview(LaunchItem item)
+    {
+        WpPreview.Source = WallpaperService.CurrentImage(item);
+        var file = WallpaperService.CurrentFile(item);
+        WpCurrentText.Text = file is null ? "当前壁纸：—" : "当前壁纸：" + Path.GetFileName(file);
+        WpStatusText.Text = $"本地已缓存 {WallpaperService.CachedCount(item)} 张壁纸";
+    }
+
+    private void UpdateWallpaperPreferenceText()
+    {
+        WpPreferenceText.Text = $"已收藏 {_wallpaperLiked.Count} 张 · 已排除 {_wallpaperBlocked.Count} 张";
+    }
+
+    private void OnWpLikeClick(object sender, Microsoft.UI.Xaml.RoutedEventArgs e) => ToggleWallpaperPreference(true);
+
+    private void OnWpBlockClick(object sender, Microsoft.UI.Xaml.RoutedEventArgs e) => ToggleWallpaperPreference(false);
+
+    /// <summary>收藏 / 排除当前壁纸：两者互斥，收藏的多出现、排除的不再出现</summary>
+    private void ToggleWallpaperPreference(bool like)
+    {
+        if (_wallpaperItem is null) return;
+        var file = WallpaperService.CurrentFile(_wallpaperItem);
+        if (file is null)
+        {
+            WpStatusText.Text = "还没有可用的壁纸，先点「下载到本地」";
+            return;
+        }
+        var name = Path.GetFileName(file);
+        _wallpaperLiked.RemoveAll(n => string.Equals(n, name, StringComparison.OrdinalIgnoreCase));
+        _wallpaperBlocked.RemoveAll(n => string.Equals(n, name, StringComparison.OrdinalIgnoreCase));
+        if (like) _wallpaperLiked.Add(name); else _wallpaperBlocked.Add(name);
+        UpdateWallpaperPreferenceText();
+        WpStatusText.Text = like ? "已收藏这张（轮播中会更常出现）" : "已排除这张（之后不再出现）";
+    }
+
+    private void OnWpClearClick(object sender, Microsoft.UI.Xaml.RoutedEventArgs e)
+    {
+        _wallpaperLiked.Clear();
+        _wallpaperBlocked.Clear();
+        UpdateWallpaperPreferenceText();
+        WpStatusText.Text = "已清空收藏与排除";
+    }
+
+    private async void OnWpDownloadClick(object sender, Microsoft.UI.Xaml.RoutedEventArgs e)
+    {
+        if (_wallpaperItem is null) return;
+        var target = _wallpaperItem.Clone();
+        ApplyWallpaperFormTo(target); // 用界面上的最新来源/关键词下载，不必先保存
+        WpDownloadButton.IsEnabled = false;
+        WpStatusText.Text = "正在下载壁纸…";
+        try
+        {
+            var (_, message) = await WallpaperService.DownloadMoreAsync(target, 10);
+            ShowWallpaperPreview(target);
+            WpStatusText.Text = message;
+        }
+        finally
+        {
+            WpDownloadButton.IsEnabled = true;
+        }
+    }
+
+    /// <summary>在资源管理器中打开壁纸缓存目录（不存在则先创建）</summary>
+    private void OnWpOpenFolderClick(object sender, Microsoft.UI.Xaml.RoutedEventArgs e)
+    {
+        try
+        {
+            Directory.CreateDirectory(WallpaperService.CacheDir);
+            System.Diagnostics.Process.Start(new System.Diagnostics.ProcessStartInfo
+            {
+                FileName = WallpaperService.CacheDir,
+                UseShellExecute = true
+            });
+        }
+        catch (Exception ex)
+        {
+            WpStatusText.Text = "打开文件夹失败：" + ex.Message;
+        }
+    }
+
+    /// <summary>清除本地缓存的壁纸（收藏/排除名单保留），随后自动重新下载</summary>
+    private void OnWpClearCacheClick(object sender, Microsoft.UI.Xaml.RoutedEventArgs e)
+    {
+        if (_wallpaperItem is null) return;
+        var target = _wallpaperItem.Clone();
+        ApplyWallpaperFormTo(target);
+        var (_, message) = WallpaperService.ClearCache(target);
+        ShowWallpaperPreview(target);
+        WpStatusText.Text = message;
+    }
+
     private void OnSaveClick(object sender, Microsoft.UI.Xaml.RoutedEventArgs e) => _ = SaveAsync();
     private void OnBrowseClick(object sender, Microsoft.UI.Xaml.RoutedEventArgs e)
         => EnterBrowse(FolderRadio.IsChecked == true ? BrowseMode.Folder : BrowseMode.Program);
@@ -1971,6 +2216,122 @@ public sealed partial class AddItemPage : Page, ISettingsGamepad
         EnterBrowse(BrowseMode.Folder);
     }
     private void OnOpenBackupFolderClick(object sender, Microsoft.UI.Xaml.RoutedEventArgs e) => OpenBackupFolder();
+
+    // ---- 小猫咪编辑：代理模式（规则/全局）与节点下拉（自动获取订阅节点 + 延迟圆点）----
+
+    /// <summary>把节点列表灌进下拉框（首项"自动（由内核决定）"），并尽量选中 saved 节点</summary>
+    private void FillProxyNodeOptions(List<ProxyService.NodeEntry> nodes, string selected)
+    {
+        if (ProxyNodeCombo is null) return;
+        _fillingProxyNodes = true;
+        try
+        {
+            ProxyNodeCombo.Items.Clear();
+            ProxyNodeCombo.Items.Add(new ProxyNodeOption("", "自动（由内核决定）", 0));
+            foreach (var n in nodes)
+                ProxyNodeCombo.Items.Add(new ProxyNodeOption(n.Name, n.Name, n.Delay));
+
+            var want = (selected ?? "").Trim();
+            var index = 0;
+            if (want.Length > 0)
+            {
+                for (var i = 1; i < ProxyNodeCombo.Items.Count; i++)
+                {
+                    var opt = ProxyNodeCombo.Items[i] as ProxyNodeOption;
+                    if (opt != null && string.Equals(opt.Value, want, StringComparison.Ordinal))
+                    {
+                        index = i;
+                        break;
+                    }
+                }
+            }
+            ProxyNodeCombo.SelectedIndex = index;
+        }
+        finally
+        {
+            _fillingProxyNodes = false;
+        }
+    }
+
+    /// <summary>按表单里的订阅链接/端口/模式拉取节点并测速，灌进节点下拉框</summary>
+    private async Task LoadProxyNodesAsync()
+    {
+        if (ProxyNodeCombo is null || ProxyNodeStatusText is null || ProxyNodeRefreshButton is null) return;
+        if (ProxyRow.Visibility != Microsoft.UI.Xaml.Visibility.Visible) return;   // 当前不是小猫咪编辑页
+        if (_proxyNodesLoading) return;
+
+        var subscription = ProxySubscriptionBox.Text.Trim();
+        if (subscription.Length == 0)
+        {
+            FillProxyNodeOptions([], "");
+            ProxyNodeStatusText.Text = "先填订阅链接并保存，再回来这里选节点。";
+            return;
+        }
+
+        _proxyNodesLoading = true;
+        ProxyNodeRefreshButton.IsEnabled = false;
+        ProxyNodeStatusText.Text = "正在拉取订阅节点并测速…（首次可能需要一会儿）";
+        var wanted = (ProxyNodeCombo.SelectedItem as ProxyNodeOption)?.Value ?? "";
+        var typedPort = int.TryParse(ProxyPortBox.Text.Trim(), out var typed) && typed is >= 1 and <= 65535 ? typed : 7897;
+        // 用临时项调内核：不影响已保存的配置，只用来取节点与延迟
+        var probe = new LaunchItem
+        {
+            Kind = LaunchKind.Widget,
+            WidgetKind = WidgetKind.Clash,
+            ProxySubscription = subscription,
+            ProxyPort = typedPort,
+            ProxyMode = ProxyGlobalRadio.IsChecked == true ? "global" : "rule",
+            ProxySelected = ""
+        };
+        try
+        {
+            var (ok, message, nodes) = await ProxyService.FetchNodesAsync(probe);
+            if (ProxyRow.Visibility != Microsoft.UI.Xaml.Visibility.Visible) return;   // 已经离开编辑页
+            // 端口被占用时内核会自动避开，把实际端口写回表单，免得保存后连不上
+            if (probe.ProxyPort is >= 1 and <= 65535 && probe.ProxyPort != typedPort)
+                ProxyPortBox.Text = probe.ProxyPort.ToString();
+            FillProxyNodeOptions(nodes, wanted);
+            ProxyNodeStatusText.Text = ok
+                ? $"{message}；圆点：绿=快（≤150ms），黄=一般（≤400ms），红=慢"
+                : message;
+        }
+        catch (Exception ex)
+        {
+            ProxyNodeStatusText.Text = "获取节点失败：" + ex.Message;
+        }
+        finally
+        {
+            _proxyNodesLoading = false;
+            if (ProxyNodeRefreshButton is not null) ProxyNodeRefreshButton.IsEnabled = true;
+        }
+    }
+
+    /// <summary>切换规则/全局：两者的节点集合不同（规则="节点选择"分组，全局=内核 GLOBAL 分组），重新拉一次</summary>
+    private void OnProxyModeChanged(object sender, RoutedEventArgs e)
+    {
+        if (ProxyRow is null || ProxyGlobalRadio is null) return;   // XAML 解析阶段
+        if (_syncingProxyForm || _fillingProxyNodes) return;
+        if (ProxyRow.Visibility != Microsoft.UI.Xaml.Visibility.Visible) return;
+        _ = LoadProxyNodesAsync();
+    }
+
+    /// <summary>选中节点后把当前选择（含延迟）提示出来</summary>
+    private void OnProxyNodeChanged(object sender, SelectionChangedEventArgs e)
+    {
+        if (ProxyNodeStatusText is null) return;
+        if (_fillingProxyNodes || _syncingProxyForm) return;
+        var opt = ProxyNodeCombo.SelectedItem as ProxyNodeOption;
+        if (opt is null || opt.Value.Length == 0)
+        {
+            ProxyNodeStatusText.Text = "自动：由内核在节点中选择（圆点：绿=快，黄=一般，红=慢）";
+            return;
+        }
+        ProxyNodeStatusText.Text = opt.Delay > 0
+            ? $"已选 {opt.Value}（{opt.Delay} ms）"
+            : $"已选 {opt.Value}（未测到延迟）";
+    }
+
+    private void OnProxyNodeRefreshClick(object sender, Microsoft.UI.Xaml.RoutedEventArgs e) => _ = LoadProxyNodesAsync();
 
     // OptiScaler 编辑：版本渠道（正式版/测试版/本地包，本地包展开文件夹）+ 具体版本浏览下载 /
     // FSR4 版本浏览下载 / 一键还原 / 打开数据目录

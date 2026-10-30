@@ -264,8 +264,10 @@ public static class TileStyle
         double iconSize = small ? 40 : 48;
         var iconMargin = smallWithName ? new Thickness(0, 10, 0, 0) : new Thickness(0);
         var iconAlign = smallWithName ? VerticalAlignment.Top : VerticalAlignment.Center;
-        UIElement icon = item.HasIcon
-            ? new Image
+        var isClash = item.Kind == LaunchKind.Widget && item.WidgetKind == WidgetKind.Clash;
+        UIElement icon;
+        if (item.HasIcon)
+            icon = new Image
             {
                 Source = item.IconImage,
                 Width = iconSize,
@@ -273,8 +275,17 @@ public static class TileStyle
                 HorizontalAlignment = HorizontalAlignment.Center,
                 VerticalAlignment = iconAlign,
                 Margin = iconMargin
-            }
-            : new FontIcon
+            };
+        else if (isClash)
+        {
+            // 小猫咪用白色猫头剪影（矢量，与磁贴图标同色）
+            var cat = MakeCatIcon(small ? 30 : 40, new SolidColorBrush(Microsoft.UI.Colors.White));
+            cat.VerticalAlignment = iconAlign;
+            cat.Margin = iconMargin;
+            icon = cat;
+        }
+        else
+            icon = new FontIcon
             {
                 Glyph = item.Glyph,
                 FontSize = small ? 30 : 40,
@@ -375,6 +386,111 @@ public static class TileStyle
         var grid = new Grid();
         grid.Children.Add(refs.Img);
         grid.Children.Add(refs.Placeholder);
+
+        var tile = new Border
+        {
+            Width = width,
+            Height = height,
+            CornerRadius = new CornerRadius(Radius),
+            Background = new SolidColorBrush(Windows.UI.Color.FromArgb(0x18, 0xFF, 0xFF, 0xFF)),
+            BorderBrush = new SolidColorBrush(Windows.UI.Color.FromArgb(0x40, 0xFF, 0xFF, 0xFF)),
+            BorderThickness = new Thickness(1),
+            Child = grid
+        };
+        tile.Opacity = Opacity;
+        refs.Tile = tile;
+        return (tile, refs);
+    }
+
+    /// <summary>壁纸小组件磁贴的可刷新元素引用（轮播换图时只换 Source，不重建磁贴，保留选中框）</summary>
+    public sealed class WallpaperTileRefs
+    {
+        public Border Tile = null!;           // 磁贴外壳（淡入动画作用于此，连圆角一起裁切）
+        public Image Img = null!;             // 当前壁纸
+        public TextBlock Placeholder = null!; // 无图占位提示
+        public Border InfoBar = null!;        // 选中时显示的信息条（标题 + 壁纸信息）
+        public TextBlock InfoTitle = null!;   // 信息条标题（固定「壁纸」）
+        public TextBlock InfoText = null!;    // 信息条详情（来源 · 第几张 · 本地缓存数）
+    }
+
+    /// <summary>
+    /// 构建壁纸小组件磁贴：外壳与普通磁贴一致（圆角/描边/透明度），内容区铺满当前壁纸（居中裁切），
+    /// 不显示名称角标；无图时显示占位提示。
+    /// </summary>
+    public static (Border Tile, WallpaperTileRefs Refs) BuildWallpaperTile(
+        double width, double height, ImageSource? current, string placeholder)
+    {
+        var refs = new WallpaperTileRefs
+        {
+            Img = new Image
+            {
+                Source = current,
+                Stretch = Microsoft.UI.Xaml.Media.Stretch.UniformToFill,
+                Visibility = current != null ? Visibility.Visible : Visibility.Collapsed
+            },
+            Placeholder = new TextBlock
+            {
+                Text = placeholder,
+                FontSize = 13,
+                Opacity = 0.85,
+                TextWrapping = TextWrapping.Wrap,
+                TextAlignment = Microsoft.UI.Xaml.TextAlignment.Center,
+                HorizontalAlignment = HorizontalAlignment.Center,
+                VerticalAlignment = VerticalAlignment.Center,
+                MaxWidth = width - 20,
+                IsHitTestVisible = false,
+                Visibility = current != null ? Visibility.Collapsed : Visibility.Visible
+            }
+        };
+
+        var grid = new Grid();
+        grid.Children.Add(refs.Img);
+        grid.Children.Add(refs.Placeholder);
+
+        // 信息条：仅主页选中该磁贴时显示（标题 + 来源/序号/缓存数），选中移开即隐藏
+        refs.InfoTitle = new TextBlock
+        {
+            Text = "壁纸",
+            FontSize = 15,
+            FontWeight = Microsoft.UI.Text.FontWeights.SemiBold,
+            Foreground = new SolidColorBrush(Microsoft.UI.Colors.White)
+        };
+        refs.InfoText = new TextBlock
+        {
+            Text = "",
+            FontSize = 11,
+            Opacity = 0.78,
+            Foreground = new SolidColorBrush(Microsoft.UI.Colors.White),
+            TextTrimming = TextTrimming.CharacterEllipsis,
+            TextWrapping = TextWrapping.NoWrap
+        };
+        refs.InfoBar = new Border
+        {
+            Visibility = Visibility.Collapsed,
+            VerticalAlignment = VerticalAlignment.Bottom,
+            IsHitTestVisible = false,
+            Padding = new Thickness(10, 8, 10, 8),
+            Background = new LinearGradientBrush
+            {
+                StartPoint = new Windows.Foundation.Point(0, 0),
+                EndPoint = new Windows.Foundation.Point(0, 1),
+                GradientStops =
+                {
+                    new GradientStop { Color = Windows.UI.Color.FromArgb(0x00, 0, 0, 0), Offset = 0 },
+                    new GradientStop { Color = Windows.UI.Color.FromArgb(0xD9, 0, 0, 0), Offset = 1 }
+                }
+            },
+            Child = new StackPanel
+            {
+                Spacing = 1,
+                Children =
+                {
+                    refs.InfoTitle,
+                    refs.InfoText
+                }
+            }
+        };
+        grid.Children.Add(refs.InfoBar);
 
         var tile = new Border
         {
@@ -2031,5 +2147,217 @@ public static class TileStyle
         refs.Icon.Glyph = SystemPanelService.Glyph(panel);
         refs.Name.Text = SystemPanelService.Label(panel);
         refs.Reading.Text = SystemPanelService.Reading(panel);
+    }
+
+    // ==================== 小猫咪（简易代理）====================
+
+    /// <summary>小猫咪磁贴的可刷新元素引用（连接状态或服务器变化时只改文字与圆点，不重建磁贴）</summary>
+    public sealed class ProxyTileRefs
+    {
+        public Border Tile = null!;                          // 磁贴外壳
+        public Microsoft.UI.Xaml.Shapes.Ellipse Dot = null!; // 连接状态圆点
+        public TextBlock Status = null!;                     // 已连接/已断开
+        public TextBlock Node = null!;                       // 当前服务器（长/大尺寸才有）
+        public TextBlock Summary = null!;                    // 按键摘要（仅大尺寸）
+    }
+
+    /// <summary>白色猫头剪影：两只耳朵 + 圆下巴的矢量路径，与磁贴图标同色、可任意缩放不变形</summary>
+    private static Viewbox MakeCatIcon(double size, Brush brush)
+    {
+        // WinUI 3 没有 Geometry.Parse，用 XamlBindingHelper 把路径字符串转成几何对象
+        var data = (Geometry)Microsoft.UI.Xaml.Markup.XamlBindingHelper.ConvertValue(
+            typeof(Geometry),
+            "M8,28 L12,4 L28,18 C31,15 33,15 36,18 L52,4 L56,28 " +
+            "C56,46 46,58 32,58 C18,58 8,46 8,28 Z");
+        var path = new Microsoft.UI.Xaml.Shapes.Path
+        {
+            Data = data,
+            Fill = brush,
+            Stretch = Stretch.Fill,
+            IsHitTestVisible = false
+        };
+        return new Viewbox
+        {
+            Width = size,
+            Height = size,
+            Stretch = Stretch.Uniform,
+            Child = path,
+            HorizontalAlignment = HorizontalAlignment.Center,
+            VerticalAlignment = VerticalAlignment.Center,
+            IsHitTestVisible = false
+        };
+    }
+
+    /// <summary>
+    /// 构建小猫咪小组件磁贴：外壳与普通磁贴一致，内容按尺寸分档——
+    /// 小(1×1)=图标+连接状态；长(2×1)=图标+名称+状态+服务器；大(2×2)=再加班按键摘要。
+    /// 状态与服务器由 FillProxyTile 写入。
+    /// </summary>
+    public static (Border Tile, ProxyTileRefs Refs) BuildProxyTile(
+        LaunchItem item, double width, double height, Windows.UI.Color accent, bool noColor)
+    {
+        var white = new SolidColorBrush(Microsoft.UI.Colors.White);
+        var label = string.IsNullOrWhiteSpace(item.Name) ? "Clash" : item.Name;
+
+        var refs = new ProxyTileRefs();
+
+        Grid StatusRow(double fontSize)
+        {
+            var host = new Grid { HorizontalAlignment = HorizontalAlignment.Center };
+            var stack = new StackPanel
+            {
+                Orientation = Orientation.Horizontal,
+                Spacing = 6,
+                VerticalAlignment = VerticalAlignment.Center
+            };
+            refs.Dot = new Microsoft.UI.Xaml.Shapes.Ellipse
+            {
+                Width = 8,
+                Height = 8,
+                Fill = new SolidColorBrush(Windows.UI.Color.FromArgb(0x66, 0xFF, 0xFF, 0xFF)),
+                VerticalAlignment = VerticalAlignment.Center,
+                IsHitTestVisible = false
+            };
+            refs.Status = new TextBlock
+            {
+                Text = "已断开",
+                FontSize = fontSize,
+                Opacity = 0.85,
+                Foreground = white,
+                IsHitTestVisible = false
+            };
+            stack.Children.Add(refs.Dot);
+            stack.Children.Add(refs.Status);
+            host.Children.Add(stack);
+            return host;
+        }
+
+        TextBlock NodeText(double fontSize, double maxWidth) => new()
+        {
+            Text = "服务器 —",
+            FontSize = fontSize,
+            Opacity = 0.7,
+            Foreground = white,
+            HorizontalAlignment = HorizontalAlignment.Center,
+            TextTrimming = TextTrimming.CharacterEllipsis,
+            MaxWidth = maxWidth,
+            IsHitTestVisible = false
+        };
+
+        var grid = new Grid();
+        if (item.Size == TileSize.Small)
+        {
+            refs.Summary = new TextBlock { Visibility = Visibility.Collapsed };
+            var stack = new StackPanel
+            {
+                Spacing = 4,
+                HorizontalAlignment = HorizontalAlignment.Center,
+                VerticalAlignment = VerticalAlignment.Center
+            };
+            stack.Children.Add(MakeCatIcon(24, white));
+            stack.Children.Add(StatusRow(10));
+            refs.Node = new TextBlock { Visibility = Visibility.Collapsed };
+            grid.Children.Add(stack);
+        }
+        else if (item.Size == TileSize.Wide)
+        {
+            var row = new StackPanel
+            {
+                Orientation = Orientation.Horizontal,
+                Spacing = 10,
+                HorizontalAlignment = HorizontalAlignment.Center,
+                VerticalAlignment = VerticalAlignment.Center
+            };
+            row.Children.Add(MakeCatIcon(30, white));
+            var col = new StackPanel { Spacing = 3, VerticalAlignment = VerticalAlignment.Center };
+            col.Children.Add(new TextBlock
+            {
+                Text = label,
+                FontSize = 16,
+                FontWeight = Microsoft.UI.Text.FontWeights.SemiBold,
+                Foreground = white,
+                TextTrimming = TextTrimming.CharacterEllipsis,
+                MaxWidth = width - 96,
+                IsHitTestVisible = false
+            });
+            col.Children.Add(StatusRow(12));
+            refs.Node = NodeText(11, width - 96);
+            refs.Node.HorizontalAlignment = HorizontalAlignment.Left;
+            col.Children.Add(refs.Node);
+            row.Children.Add(col);
+            grid.Children.Add(row);
+            refs.Summary = new TextBlock { Visibility = Visibility.Collapsed };
+        }
+        else
+        {
+            var stack = new StackPanel
+            {
+                Spacing = 5,
+                Margin = new Thickness(12, 10, 12, 10),
+                HorizontalAlignment = HorizontalAlignment.Center,
+                VerticalAlignment = VerticalAlignment.Center
+            };
+            stack.Children.Add(MakeCatIcon(36, white));
+            stack.Children.Add(new TextBlock
+            {
+                Text = label,
+                FontSize = 18,
+                FontWeight = Microsoft.UI.Text.FontWeights.SemiBold,
+                Foreground = white,
+                HorizontalAlignment = HorizontalAlignment.Center,
+                TextTrimming = TextTrimming.CharacterEllipsis,
+                MaxWidth = width - 28,
+                IsHitTestVisible = false
+            });
+            stack.Children.Add(StatusRow(13));
+            refs.Node = NodeText(12, width - 28);
+            stack.Children.Add(refs.Node);
+            refs.Summary = new TextBlock
+            {
+                Text = "A:连接 · Y:最快",
+                FontSize = 11,
+                Opacity = 0.75,
+                Foreground = white,
+                HorizontalAlignment = HorizontalAlignment.Center,
+                TextTrimming = TextTrimming.CharacterEllipsis,
+                MaxWidth = width - 28,
+                IsHitTestVisible = false
+            };
+            stack.Children.Add(refs.Summary);
+            grid.Children.Add(stack);
+        }
+
+        var tile = new Border
+        {
+            Width = width,
+            Height = height,
+            CornerRadius = new CornerRadius(Radius),
+            Background = noColor ? new SolidColorBrush(Windows.UI.Color.FromArgb(0, 0, 0, 0)) : TileFill(accent),
+            BorderBrush = new SolidColorBrush(Windows.UI.Color.FromArgb(0x40, 0xFF, 0xFF, 0xFF)),
+            BorderThickness = new Thickness(1),
+            Child = grid
+        };
+        tile.Opacity = Opacity;
+        refs.Tile = tile;
+        return (tile, refs);
+    }
+
+    /// <summary>把连接状态与当前节点写入磁贴引用</summary>
+    public static void FillProxyTile(ProxyTileRefs refs, LaunchItem item)
+    {
+        var s = ProxyService.Current;
+
+        refs.Dot.Fill = new SolidColorBrush(
+            s.Connected ? Windows.UI.Color.FromArgb(0xFF, 0x66, 0xE0, 0x8A)      // 绿：已连接
+            : s.Running ? Windows.UI.Color.FromArgb(0xFF, 0x4C, 0xC2, 0xFF)       // 蓝：内核已启动未连代理
+            : Windows.UI.Color.FromArgb(0x66, 0xFF, 0xFF, 0xFF));                 // 灰白：未启动
+        refs.Status.Text = s.Connected ? "已连接" : s.Running ? "已启动" : "未连接";
+
+        if (refs.Node.Visibility != Visibility.Collapsed)
+            refs.Node.Text = s.Running
+                ? (s.Node.Length > 0 ? s.Node : "未选择节点")
+                : string.IsNullOrWhiteSpace(item.ProxySubscription) ? "未配置订阅" : "A 开始代理";
+        if (refs.Summary.Visibility != Visibility.Collapsed)
+            refs.Summary.Text = "A:连接 · Y:最快";
     }
 }

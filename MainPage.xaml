@@ -1,10 +1,23 @@
-<?xml version="1.0" encoding="utf-8"?>
+﻿<?xml version="1.0" encoding="utf-8"?>
 <Page
     x:Class="GameLocker.MainPage"
     NavigationCacheMode="Required"
     xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
     xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
     xmlns:ctl="using:GameLocker.Controls">
+
+    <Page.Resources>
+        <!-- 顶栏状态图标：每枚图标仍有自己的圆角气泡（悬停/按下提亮），整组再收在一枚大圆角框里 -->
+        <Style x:Key="StatusBubbleStyle" TargetType="Border">
+            <Setter Property="Width" Value="46"/>
+            <Setter Property="Height" Value="46"/>
+            <Setter Property="CornerRadius" Value="12"/>
+            <Setter Property="Background" Value="#1EFFFFFF"/>
+            <Setter Property="BorderBrush" Value="#14FFFFFF"/>
+            <Setter Property="BorderThickness" Value="1"/>
+            <Setter Property="VerticalAlignment" Value="Center"/>
+        </Style>
+    </Page.Resources>
 
     <Grid Background="Transparent" RequestedTheme="Dark"
           AllowDrop="True" DragOver="OnDragOver" DragLeave="OnDragLeave" Drop="OnDrop">
@@ -17,22 +30,73 @@
 
         <!-- 顶栏：时钟 + 手柄状态 -->
         <Grid Grid.Row="0" Padding="20,12">
-            <StackPanel x:Name="ClockPanel" VerticalAlignment="Center" Spacing="0">
-                <TextBlock x:Name="ClockText" Text="00:00" FontSize="30" FontWeight="SemiBold"
-                           FontFamily="Segoe UI Variable Display, Segoe UI"/>
-                <TextBlock x:Name="DateText" Text="" FontSize="13" Opacity="0.7"/>
-                <!-- 编辑模式：进入 L3 排列时替换整个时钟+日期模块，白色大字；高度与时钟+日期两行一致，顶栏不跳动 -->
-                <TextBlock x:Name="EditModeText" Text="编辑模式" FontSize="34" FontWeight="Bold"
-                           Foreground="White" Height="58" VerticalAlignment="Center" Visibility="Collapsed"/>
-            </StackPanel>
-            <StackPanel HorizontalAlignment="Right" Orientation="Horizontal" Spacing="8" VerticalAlignment="Center">
-                <FontIcon x:Name="WifiIcon" Glyph="&#xE701;" FontSize="14"/>
-                <FontIcon x:Name="BluetoothIcon" Glyph="&#xE702;" FontSize="14"/>
-                <FontIcon x:Name="BatteryIcon" Glyph="&#xE850;" FontSize="22"/>
-                <StackPanel x:Name="GamepadPanel" Orientation="Horizontal" Spacing="8">
-                    <FontIcon x:Name="GamepadIcon" Glyph="&#xE7FC;" FontSize="16"/>
+            <!-- 时钟：左侧 2px 渐隐竖线 + 时间/日期两行（轻改精致版） -->
+            <Grid x:Name="ClockPanel" VerticalAlignment="Center" ColumnSpacing="10">
+                <Grid.ColumnDefinitions>
+                    <ColumnDefinition Width="Auto"/>
+                    <ColumnDefinition Width="Auto"/>
+                </Grid.ColumnDefinitions>
+                <Border Width="2" Height="34" VerticalAlignment="Center" CornerRadius="1">
+                    <Border.Background>
+                        <LinearGradientBrush StartPoint="0,0" EndPoint="0,1">
+                            <GradientStop Color="#8C4CC2FF" Offset="0"/>
+                            <GradientStop Color="#004CC2FF" Offset="1"/>
+                        </LinearGradientBrush>
+                    </Border.Background>
+                </Border>
+                <StackPanel Grid.Column="1" Spacing="0">
+                    <TextBlock x:Name="ClockText" Text="00:00" FontSize="32" FontWeight="SemiBold"
+                               CharacterSpacing="25"
+                               FontFamily="Segoe UI Variable Display, Segoe UI"/>
+                    <TextBlock x:Name="DateText" Text="" FontSize="12.5" Opacity="0.65"
+                               CharacterSpacing="30" Margin="0,1,0,0"/>
+                    <!-- 编辑模式：进入 L3 排列时替换整个时钟+日期模块，白色大字；高度与时钟+日期两行一致，顶栏不跳动 -->
+                    <TextBlock x:Name="EditModeText" Text="编辑模式" FontSize="34" FontWeight="Bold"
+                               Foreground="White" Height="58" VerticalAlignment="Center" Visibility="Collapsed"/>
                 </StackPanel>
-            </StackPanel>
+            </Grid>
+            <!-- 顶栏状态区：五枚图标收在一枚大圆角"玻璃框"里（渐变底 + 斜向亮边），
+                 图标本身只有悬停/按下时提亮；状态只靠颜色区分
+                 （Wi-Fi/蓝牙 绿=开启，电池 绿/黄/红，手柄 绿=已连接 / 红=未连接） -->
+            <Border x:Name="StatusTray" HorizontalAlignment="Right" VerticalAlignment="Center"
+                    CornerRadius="24" Padding="6" BorderThickness="1">
+                <Border.Background>
+                    <LinearGradientBrush StartPoint="0,0" EndPoint="0,1">
+                        <GradientStop Color="#2AFFFFFF" Offset="0"/>
+                        <GradientStop Color="#0AFFFFFF" Offset="1"/>
+                    </LinearGradientBrush>
+                </Border.Background>
+                <Border.BorderBrush>
+                    <LinearGradientBrush StartPoint="0,0" EndPoint="1,1">
+                        <GradientStop Color="#59FFFFFF" Offset="0"/>
+                        <GradientStop Color="#12FFFFFF" Offset="0.6"/>
+                        <GradientStop Color="#2EFFFFFF" Offset="1"/>
+                    </LinearGradientBrush>
+                </Border.BorderBrush>
+                <StackPanel x:Name="StatusIcons" Orientation="Horizontal" Spacing="6">
+                    <Border x:Name="WifiBubble" Style="{StaticResource StatusBubbleStyle}">
+                        <FontIcon x:Name="WifiIcon" Glyph="&#xE701;" FontSize="26"/>
+                    </Border>
+                    <Border x:Name="BluetoothBubble" Style="{StaticResource StatusBubbleStyle}">
+                        <FontIcon x:Name="BluetoothIcon" Glyph="&#xE702;" FontSize="26"/>
+                    </Border>
+                    <Border x:Name="BatteryBubble" Style="{StaticResource StatusBubbleStyle}">
+                        <FontIcon x:Name="BatteryIcon" Glyph="&#xE850;" FontSize="26"/>
+                    </Border>
+                    <Border x:Name="GamepadBubble" Style="{StaticResource StatusBubbleStyle}">
+                        <FontIcon x:Name="GamepadIcon" Glyph="&#xE7FC;" FontSize="26"/>
+                    </Border>
+                    <!-- 通知：点击打开 Windows 通知中心；有新通知时右上角亮小绿点 -->
+                    <Grid x:Name="NotificationHost" Width="46" Height="46" VerticalAlignment="Center">
+                        <Border x:Name="NotificationBubble" Style="{StaticResource StatusBubbleStyle}">
+                            <FontIcon x:Name="NotificationIcon" Glyph="&#xEA8F;" FontSize="26"/>
+                        </Border>
+                        <Ellipse x:Name="NotificationDot" Width="10" Height="10" Fill="#3FC05B"
+                                 HorizontalAlignment="Right" VerticalAlignment="Top"
+                                 Margin="0,2,2,0" Visibility="Collapsed"/>
+                    </Grid>
+                </StackPanel>
+            </Border>
         </Grid>
 
         <!-- 磁贴区（上）+ 抽屉面板（下）：两行 Grid —— 抽屉固定在主页下方独立区域，
@@ -322,6 +386,74 @@
 
                     <!-- 触屏：图标行贴住面板底边，图标放大后可点按（DPAD=切换，A=执行，B=取消） -->
                     <ctl:GamepadHintBar x:Name="PowerHintBar" TouchMode="True"
+                                        HorizontalAlignment="Center" Margin="0,8,0,0"
+                                        Hints="DPAD:选择|A:执行|B:取消"/>
+                </StackPanel>
+            </Border>
+        </Grid>
+
+        <!-- 壁纸遮罩：壁纸磁贴 A/点击打开 —— 询问把当前壁纸设为桌面壁纸还是锁屏壁纸。
+             DPAD 选择、A 执行、B/点空白取消；点击某一项直接执行（选中项强调色描边高亮） -->
+        <Grid x:Name="WallpaperOverlay" Grid.Row="0" Grid.RowSpan="3" Visibility="Collapsed">
+            <Border x:Name="WallpaperMask" Background="#D80A0C10"/>
+
+            <Border x:Name="WallpaperPanel" HorizontalAlignment="Center" VerticalAlignment="Center"
+                    CornerRadius="24" Padding="18,20,18,0"
+                    BorderBrush="#2EFFFFFF" BorderThickness="1.2"
+                    RenderTransformOrigin="0.5,0.5">
+                <Border.Background>
+                    <LinearGradientBrush StartPoint="0,0" EndPoint="0.35,1">
+                        <GradientStop Color="#F22A2E36" Offset="0"/>
+                        <GradientStop Color="#F21A1D23" Offset="1"/>
+                    </LinearGradientBrush>
+                </Border.Background>
+                <Border.RenderTransform>
+                    <CompositeTransform x:Name="WallpaperPanelTransform" ScaleX="1" ScaleY="1"/>
+                </Border.RenderTransform>
+
+                <StackPanel Width="304" Spacing="10">
+                    <!-- 标题：蓝色壁纸徽章 + 标题/说明 -->
+                    <StackPanel Orientation="Horizontal" Spacing="12" Margin="2,0,0,6">
+                        <Border Width="44" Height="44" CornerRadius="22" Background="#264CC2FF" VerticalAlignment="Center">
+                            <FontIcon Glyph="&#xE8B9;" FontSize="20" Foreground="#4CC2FF"/>
+                        </Border>
+                        <StackPanel VerticalAlignment="Center" Spacing="1">
+                            <TextBlock Text="壁纸" FontSize="21" FontWeight="SemiBold"/>
+                            <TextBlock Text="把当前壁纸设为…" FontSize="12" Opacity="0.55"/>
+                        </StackPanel>
+                    </StackPanel>
+
+                    <!-- 桌面壁纸 -->
+                    <Border x:Name="WallpaperDesktop" Height="52" CornerRadius="14" Padding="14,0"
+                            Background="#14FFFFFF" BorderBrush="#1FFFFFFF" BorderThickness="1.5">
+                        <Grid>
+                            <StackPanel Orientation="Horizontal" Spacing="12" VerticalAlignment="Center">
+                                <Border Width="32" Height="32" CornerRadius="10" Background="#266FA8FF">
+                                    <FontIcon Glyph="&#xE7F8;" FontSize="15" Foreground="#6FA8FF"/>
+                                </Border>
+                                <TextBlock Text="设为桌面壁纸" FontSize="16" VerticalAlignment="Center"/>
+                            </StackPanel>
+                            <FontIcon Glyph="&#xE76C;" FontSize="11" Opacity="0.35"
+                                      HorizontalAlignment="Right" VerticalAlignment="Center"/>
+                        </Grid>
+                    </Border>
+
+                    <!-- 锁屏壁纸 -->
+                    <Border x:Name="WallpaperLock" Height="52" CornerRadius="14" Padding="14,0"
+                            Background="#14FFFFFF" BorderBrush="#1FFFFFFF" BorderThickness="1.5">
+                        <Grid>
+                            <StackPanel Orientation="Horizontal" Spacing="12" VerticalAlignment="Center">
+                                <Border Width="32" Height="32" CornerRadius="10" Background="#269B7DFF">
+                                    <FontIcon Glyph="&#xE72E;" FontSize="15" Foreground="#B9A2FF"/>
+                                </Border>
+                                <TextBlock Text="设为锁屏壁纸" FontSize="16" VerticalAlignment="Center"/>
+                            </StackPanel>
+                            <FontIcon Glyph="&#xE76C;" FontSize="11" Opacity="0.35"
+                                      HorizontalAlignment="Right" VerticalAlignment="Center"/>
+                        </Grid>
+                    </Border>
+
+                    <ctl:GamepadHintBar x:Name="WallpaperHintBar" TouchMode="True"
                                         HorizontalAlignment="Center" Margin="0,8,0,0"
                                         Hints="DPAD:选择|A:执行|B:取消"/>
                 </StackPanel>

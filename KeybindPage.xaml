@@ -1,4 +1,4 @@
-﻿<?xml version="1.0" encoding="utf-8"?>
+<?xml version="1.0" encoding="utf-8"?>
 <Page
     x:Class="GameLocker.KeybindPage"
     IsTabStop="True"
@@ -10,49 +10,64 @@
     <Page.Resources>
         <!-- 卡片：手柄焦点以"整张卡片"为一个选中框（代码里只改描边与底色），卡内内容只读 -->
         <Style x:Key="CardStyle" TargetType="Border">
-            <Setter Property="Background" Value="#14FFFFFF"/>
-            <Setter Property="BorderBrush" Value="#26FFFFFF"/>
+            <Setter Property="Background">
+                <Setter.Value>
+                    <LinearGradientBrush StartPoint="0,0" EndPoint="0,1">
+                        <GradientStop Color="#22FFFFFF" Offset="0"/>
+                        <GradientStop Color="#33B7E6B0" Offset="1"/>
+                    </LinearGradientBrush>
+                </Setter.Value>
+            </Setter>
+            <Setter Property="BorderBrush" Value="#3DFFFFFF"/>
             <Setter Property="BorderThickness" Value="2"/>
-            <Setter Property="CornerRadius" Value="12"/>
+            <Setter Property="CornerRadius" Value="10"/>
             <Setter Property="Padding" Value="16,12,14,12"/>
         </Style>
 
-        <!-- 场景标签：卡片左上角的小胶囊 -->
-        <Style x:Key="PillStyle" TargetType="Border">
-            <Setter Property="Background" Value="#2A4C9AFF"/>
-            <Setter Property="CornerRadius" Value="9"/>
-            <Setter Property="Padding" Value="10,3"/>
-            <Setter Property="HorizontalAlignment" Value="Left"/>
+        <!-- 卡片内的小徽标：给每一行键位一个图形锚点，卡片再多也能一眼区分 -->
+        <Style x:Key="CardBadgeStyle" TargetType="Border">
+            <Setter Property="Width" Value="20"/>
+            <Setter Property="Height" Value="20"/>
+            <Setter Property="CornerRadius" Value="6"/>
+            <Setter Property="Background" Value="#33B7E6B0"/>
+            <Setter Property="BorderThickness" Value="1"/>
+            <Setter Property="BorderBrush" Value="#59B7E6B0"/>
+            <Setter Property="VerticalAlignment" Value="Center"/>
         </Style>
-        <Style x:Key="PillTextStyle" TargetType="TextBlock">
-            <Setter Property="FontSize" Value="12.5"/>
+        <Style x:Key="CardTitleStyle" TargetType="TextBlock">
+            <Setter Property="FontSize" Value="14"/>
             <Setter Property="FontWeight" Value="SemiBold"/>
-            <Setter Property="Foreground" Value="#BBD8FF"/>
+            <Setter Property="VerticalAlignment" Value="Center"/>
+        </Style>
+        <Style x:Key="RowDescStyle" TargetType="TextBlock">
+            <Setter Property="FontSize" Value="12.5"/>
+            <Setter Property="Opacity" Value="0.6"/>
+            <Setter Property="TextWrapping" Value="Wrap"/>
         </Style>
 
         <!-- 键帽：手柄操作与触屏操作共用同款样式，保证两列外观完全一致 -->
         <Style x:Key="ChipStyle" TargetType="Border">
-            <Setter Property="Background" Value="#1FFFFFFF"/>
-            <Setter Property="BorderBrush" Value="#3DFFFFFF"/>
+            <Setter Property="Background" Value="#26B7E6B0"/>
+            <Setter Property="BorderBrush" Value="#4DB7E6B0"/>
             <Setter Property="BorderThickness" Value="1,1,1,2"/>
-            <Setter Property="CornerRadius" Value="7"/>
+            <Setter Property="CornerRadius" Value="8"/>
             <Setter Property="Padding" Value="8,4"/>
             <Setter Property="VerticalAlignment" Value="Top"/>
         </Style>
         <Style x:Key="ChipTextStyle" TargetType="TextBlock">
             <Setter Property="FontSize" Value="13"/>
             <Setter Property="FontWeight" Value="SemiBold"/>
-            <Setter Property="Foreground" Value="#9ECBFF"/>
+            <Setter Property="Foreground" Value="#F2F2F2"/>
             <Setter Property="HorizontalAlignment" Value="Center"/>
             <Setter Property="TextAlignment" Value="Center"/>
             <Setter Property="TextWrapping" Value="Wrap"/>
         </Style>
 
-        <!-- 表头文字：与键帽同列对齐，用浅蓝弱化字表示"列名"而非数据 -->
+        <!-- 表头文字：与键帽同列对齐，用浅灰弱化字表示"列名"而非数据 -->
         <Style x:Key="HeadTextStyle" TargetType="TextBlock">
             <Setter Property="FontSize" Value="12"/>
             <Setter Property="FontWeight" Value="SemiBold"/>
-            <Setter Property="Foreground" Value="#7FB6F0"/>
+            <Setter Property="Foreground" Value="#C6EEC0"/>
             <Setter Property="HorizontalAlignment" Value="Center"/>
             <Setter Property="TextAlignment" Value="Center"/>
         </Style>
@@ -62,9 +77,9 @@
         <DataTemplate x:Key="RowTpl" x:DataType="local:ControlRow">
             <Grid ColumnSpacing="10">
                 <Grid.ColumnDefinitions>
-                    <ColumnDefinition Width="116"/>
-                    <ColumnDefinition Width="116"/>
-                    <ColumnDefinition Width="*"/>
+                    <ColumnDefinition Width="108"/>
+                    <ColumnDefinition Width="108"/>
+                    <ColumnDefinition Width="*" MinWidth="120"/>
                 </Grid.ColumnDefinitions>
 
                 <Border Grid.Column="0" Style="{StaticResource ChipStyle}">
@@ -80,7 +95,7 @@
                         <ColumnDefinition Width="Auto"/>
                         <ColumnDefinition Width="*"/>
                     </Grid.ColumnDefinitions>
-                    <FontIcon Grid.Column="0" Glyph="&#xE76C;" FontSize="10" Foreground="#4CC2FF"
+                    <FontIcon Grid.Column="0" Glyph="&#xE76C;" FontSize="10" Foreground="#B7E6B0"
                               VerticalAlignment="Center"/>
                     <TextBlock Grid.Column="1" Text="{x:Bind Effect}" FontSize="13.5"
                                FontWeight="SemiBold" Foreground="White"
@@ -101,18 +116,26 @@
             </Setter>
         </Style>
 
-        <!-- 分区标题 -->
-        <Style x:Key="SectionHeadStyle" TargetType="TextBlock">
-            <Setter Property="FontSize" Value="13"/>
+        <!-- 分区标题徽标 -->
+        <Style x:Key="SectionBadgeStyle" TargetType="Border">
+            <Setter Property="Width" Value="28"/>
+            <Setter Property="Height" Value="28"/>
+            <Setter Property="CornerRadius" Value="8"/>
+            <Setter Property="Background" Value="#33B7E6B0"/>
+            <Setter Property="BorderThickness" Value="1"/>
+            <Setter Property="BorderBrush" Value="#59B7E6B0"/>
+            <Setter Property="VerticalAlignment" Value="Center"/>
+        </Style>
+        <Style x:Key="SectionTitleStyle" TargetType="TextBlock">
+            <Setter Property="FontSize" Value="20"/>
             <Setter Property="FontWeight" Value="SemiBold"/>
-            <Setter Property="Foreground" Value="#BBD8FF"/>
-            <Setter Property="Margin" Value="4,2,0,0"/>
+            <Setter Property="VerticalAlignment" Value="Center"/>
         </Style>
 
         <!-- 键位捕获按钮：外形像一枚键帽，可点可按 A -->
         <Style x:Key="KeyCapStyle" TargetType="Button">
-            <Setter Property="Background" Value="#1FFFFFFF"/>
-            <Setter Property="BorderBrush" Value="#3DFFFFFF"/>
+            <Setter Property="Background" Value="#26B7E6B0"/>
+            <Setter Property="BorderBrush" Value="#59B7E6B0"/>
             <Setter Property="BorderThickness" Value="1,1,1,2"/>
             <Setter Property="CornerRadius" Value="8"/>
             <Setter Property="Padding" Value="14,6"/>
@@ -140,70 +163,108 @@
         </Grid>
 
         <!-- 内容区：每张卡片就是一个手柄选中框，方向键整卡上下切换 -->
-        <ScrollViewer x:Name="PageScroller" Grid.Row="1" Padding="20,4,20,12" VerticalScrollBarVisibility="Auto">
+        <ScrollViewer x:Name="PageScroller" Grid.Row="1" Padding="20,4,20,18" VerticalScrollBarVisibility="Auto">
             <StackPanel Spacing="12">
 
                 <!-- 一、快捷映射：只放三个键位捕获，和下方基本操作说明分开 -->
-                <TextBlock Text="快捷映射" Style="{StaticResource SectionHeadStyle}"/>
+                <StackPanel Orientation="Horizontal" Spacing="10" Margin="0,2,0,0">
+                    <Border Style="{StaticResource SectionBadgeStyle}">
+                        <FontIcon Glyph="&#xE7FC;" FontSize="14" Foreground="#FFDDF4D6"/>
+                    </Border>
+                    <TextBlock Text="快捷映射" Style="{StaticResource SectionTitleStyle}"/>
+                </StackPanel>
 
-                <!-- 呼出窗口组合键 -->
-                <Border x:Name="CardSummon" Style="{StaticResource CardStyle}">
-                    <StackPanel Spacing="9">
-                        <Border Style="{StaticResource PillStyle}">
-                            <TextBlock Style="{StaticResource PillTextStyle}" Text="呼出窗口组合键"/>
-                        </Border>
-                        <StackPanel Orientation="Horizontal" Spacing="12">
-                            <Button x:Name="CaptureButton" Style="{StaticResource KeyCapStyle}" Click="OnCaptureClick">
-                                <TextBlock x:Name="CaptureText" FontSize="15" FontWeight="SemiBold" Foreground="#CFE2FF"/>
+                <!-- 四个键位各占一张卡，两列排布（窄窗口自动回成一列，见 LayoutCards） -->
+                <Grid x:Name="MapGrid" ColumnSpacing="12" RowSpacing="12">
+                    <Grid.ColumnDefinitions>
+                        <ColumnDefinition Width="*"/>
+                        <ColumnDefinition Width="*"/>
+                    </Grid.ColumnDefinitions>
+                    <Grid.RowDefinitions>
+                        <RowDefinition Height="Auto"/>
+                        <RowDefinition Height="Auto"/>
+                        <RowDefinition Height="Auto"/>
+                        <RowDefinition Height="Auto"/>
+                    </Grid.RowDefinitions>
+
+                    <!-- 呼出窗口组合键 -->
+                    <Border x:Name="CardSummon" Style="{StaticResource CardStyle}" Grid.Row="0" Grid.Column="0">
+                        <StackPanel Spacing="8">
+                            <StackPanel Orientation="Horizontal" Spacing="8">
+                                <Border Style="{StaticResource CardBadgeStyle}">
+                                    <FontIcon Glyph="&#xE7FC;" FontSize="11" Foreground="#FFDDF4D6"/>
+                                </Border>
+                                <TextBlock Text="呼出窗口" Style="{StaticResource CardTitleStyle}"/>
+                            </StackPanel>
+                            <Button x:Name="CaptureButton" Style="{StaticResource KeyCapStyle}"
+                                    Click="OnCaptureClick" HorizontalAlignment="Left">
+                                <TextBlock x:Name="CaptureText" FontSize="16" FontWeight="SemiBold" Foreground="#F0F0F0"/>
                             </Button>
-                            <TextBlock Text="按 A 或点击后按住想要的组合键，全部松开即保存"
-                                       FontSize="12.5" Opacity="0.55" VerticalAlignment="Center" TextWrapping="Wrap"/>
+                            <TextBlock Text="长按 1 秒呼出或收起启动器" Style="{StaticResource RowDescStyle}"/>
                         </StackPanel>
-                    </StackPanel>
-                </Border>
+                    </Border>
 
-                <!-- 键盘呼出键（仅键盘，按下即刻呼出，无需长按） -->
-                <Border x:Name="CardKeySummon" Style="{StaticResource CardStyle}">
-                    <StackPanel Spacing="9">
-                        <Border Style="{StaticResource PillStyle}">
-                            <TextBlock Style="{StaticResource PillTextStyle}" Text="键盘呼出键"/>
-                        </Border>
-                        <Grid ColumnSpacing="12">
-                            <Grid.ColumnDefinitions>
-                                <ColumnDefinition Width="Auto"/>
-                                <ColumnDefinition Width="*"/>
-                            </Grid.ColumnDefinitions>
-                            <Button Grid.Column="0" x:Name="KeyCaptureButton" Style="{StaticResource KeyCapStyle}"
-                                    Click="OnKeyCaptureClick" VerticalAlignment="Center">
-                                <TextBlock x:Name="KeyCaptureText" FontSize="15" FontWeight="SemiBold" Foreground="#CFE2FF"/>
+                    <!-- 键盘呼出键（仅键盘，按下即刻呼出，无需长按） -->
+                    <Border x:Name="CardKeySummon" Style="{StaticResource CardStyle}" Grid.Row="0" Grid.Column="1">
+                        <StackPanel Spacing="8">
+                            <StackPanel Orientation="Horizontal" Spacing="8">
+                                <Border Style="{StaticResource CardBadgeStyle}">
+                                    <FontIcon Glyph="&#xE765;" FontSize="11" Foreground="#FFDDF4D6"/>
+                                </Border>
+                                <TextBlock Text="键盘呼出键" Style="{StaticResource CardTitleStyle}"/>
+                            </StackPanel>
+                            <Button x:Name="KeyCaptureButton" Style="{StaticResource KeyCapStyle}"
+                                    Click="OnKeyCaptureClick" HorizontalAlignment="Left">
+                                <TextBlock x:Name="KeyCaptureText" FontSize="16" FontWeight="SemiBold" Foreground="#F0F0F0"/>
                             </Button>
-                            <TextBlock Grid.Column="1" Text="按 A 或点击后按下想要的按键（可含 Ctrl/Shift/Alt/Win），松开即保存；再按呼出键收起"
-                                       FontSize="12.5" Opacity="0.55" VerticalAlignment="Center" TextWrapping="Wrap"/>
-                        </Grid>
-                    </StackPanel>
-                </Border>
-
-                <!-- 切换全屏组合键 -->
-                <Border x:Name="CardFullscreen" Style="{StaticResource CardStyle}">
-                    <StackPanel Spacing="9">
-                        <Border Style="{StaticResource PillStyle}">
-                            <TextBlock Style="{StaticResource PillTextStyle}" Text="切换全屏组合键"/>
-                        </Border>
-                        <StackPanel Orientation="Horizontal" Spacing="12">
-                            <Button x:Name="FsCaptureButton" Style="{StaticResource KeyCapStyle}" Click="OnFsCaptureClick">
-                                <TextBlock x:Name="FsCaptureText" FontSize="15" FontWeight="SemiBold" Foreground="#CFE2FF"/>
-                            </Button>
-                            <TextBlock Text="按 A 或点击后按住想要的组合键，全部松开即保存"
-                                       FontSize="12.5" Opacity="0.55" VerticalAlignment="Center" TextWrapping="Wrap"/>
+                            <TextBlock Text="按下即刻呼出，可带 Ctrl / Shift / Alt / Win" Style="{StaticResource RowDescStyle}"/>
                         </StackPanel>
-                    </StackPanel>
-                </Border>
+                    </Border>
+
+                    <!-- 切换全屏组合键 -->
+                    <Border x:Name="CardFullscreen" Style="{StaticResource CardStyle}" Grid.Row="1" Grid.Column="0">
+                        <StackPanel Spacing="8">
+                            <StackPanel Orientation="Horizontal" Spacing="8">
+                                <Border Style="{StaticResource CardBadgeStyle}">
+                                    <FontIcon Glyph="&#xE740;" FontSize="11" Foreground="#FFDDF4D6"/>
+                                </Border>
+                                <TextBlock Text="切换全屏" Style="{StaticResource CardTitleStyle}"/>
+                            </StackPanel>
+                            <Button x:Name="FsCaptureButton" Style="{StaticResource KeyCapStyle}"
+                                    Click="OnFsCaptureClick" HorizontalAlignment="Left">
+                                <TextBlock x:Name="FsCaptureText" FontSize="16" FontWeight="SemiBold" Foreground="#F0F0F0"/>
+                            </Button>
+                            <TextBlock Text="长按 1 秒在全屏与侧边栏之间切换" Style="{StaticResource RowDescStyle}"/>
+                        </StackPanel>
+                    </Border>
+
+                    <!-- 恢复默认键位 -->
+                    <Border x:Name="CardReset" Style="{StaticResource CardStyle}" Grid.Row="1" Grid.Column="1">
+                        <StackPanel Spacing="8">
+                            <StackPanel Orientation="Horizontal" Spacing="8">
+                                <Border Style="{StaticResource CardBadgeStyle}">
+                                    <FontIcon Glyph="&#xE7A7;" FontSize="11" Foreground="#FFDDF4D6"/>
+                                </Border>
+                                <TextBlock Text="恢复默认" Style="{StaticResource CardTitleStyle}"/>
+                            </StackPanel>
+                            <Button x:Name="ResetButton" Content="恢复默认键位" Style="{StaticResource KeyCapStyle}"
+                                    Click="OnResetClick" HorizontalAlignment="Left"
+                                    FontSize="14" Foreground="#F0F0F0"/>
+                            <TextBlock Text="呼出键、键盘呼出键、全屏键都还原为初始值" Style="{StaticResource RowDescStyle}"/>
+                        </StackPanel>
+                    </Border>
+                </Grid>
 
                 <!-- 分隔：快捷映射 / 基本操作 -->
-                <Border Height="1" Background="#1FFFFFFF" Margin="0,6"/>
+                <Border Height="1" Background="#1FB7E6B0" Margin="0,6"/>
 
                 <!-- 二、基本操作：只列通用操作，不细分到每个页面 -->
-                <TextBlock Text="基本操作" Style="{StaticResource SectionHeadStyle}"/>
+                <StackPanel Orientation="Horizontal" Spacing="10" Margin="0,2,0,0">
+                    <Border Style="{StaticResource SectionBadgeStyle}">
+                        <FontIcon Glyph="&#xE71D;" FontSize="14" Foreground="#FFDDF4D6"/>
+                    </Border>
+                    <TextBlock Text="基本操作" Style="{StaticResource SectionTitleStyle}"/>
+                </StackPanel>
 
                 <Border x:Name="CardBasic" Style="{StaticResource CardStyle}">
                     <StackPanel Spacing="9">
@@ -211,15 +272,15 @@
                         <StackPanel Spacing="6">
                             <Grid ColumnSpacing="10">
                                 <Grid.ColumnDefinitions>
-                                    <ColumnDefinition Width="116"/>
-                                    <ColumnDefinition Width="116"/>
-                                    <ColumnDefinition Width="*"/>
+                                    <ColumnDefinition Width="108"/>
+                                    <ColumnDefinition Width="108"/>
+                                    <ColumnDefinition Width="*" MinWidth="120"/>
                                 </Grid.ColumnDefinitions>
                                 <TextBlock Grid.Column="0" Text="手柄操作" Style="{StaticResource HeadTextStyle}"/>
                                 <TextBlock Grid.Column="1" Text="触屏操作" Style="{StaticResource HeadTextStyle}"/>
                                 <StackPanel Grid.Column="2" Orientation="Horizontal" Spacing="6"
                                             HorizontalAlignment="Left">
-                                    <FontIcon Glyph="&#xE76C;" FontSize="10" Foreground="#4CC2FF"
+                                    <FontIcon Glyph="&#xE76C;" FontSize="10" Foreground="#B7E6B0"
                                               VerticalAlignment="Center"/>
                                     <TextBlock Text="实际操作效果" Style="{StaticResource HeadTextStyle}"
                                                HorizontalAlignment="Left"/>
@@ -235,6 +296,6 @@
         </ScrollViewer>
 
         <ctl:GamepadHintBar Grid.Row="2" Margin="0,8,0,12"
-                            Hints="DPAD:切换卡片|A:捕获键位|B:返回"/>
+                            Hints="DPAD:切换|A:捕获/恢复|B:返回"/>
     </Grid>
 </Page>

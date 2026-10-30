@@ -26,9 +26,9 @@
                     <ControlTemplate TargetType="ToggleSwitch">
                         <Grid Width="44" Height="22" Background="Transparent">
                             <Border Width="40" Height="20" CornerRadius="10" Background="#2AFFFFFF"
-                                    BorderThickness="1" BorderBrush="#4DFFFFFF"
+                                    BorderThickness="1" BorderBrush="#59E6E6E6"
                                     HorizontalAlignment="Center" VerticalAlignment="Center"/>
-                            <Border x:Name="Fill" Width="40" Height="20" CornerRadius="10" Background="#C6D9D9D9"
+                            <Border x:Name="Fill" Width="40" Height="20" CornerRadius="10" Background="#C6E6E6E6"
                                     Opacity="0" HorizontalAlignment="Center" VerticalAlignment="Center"/>
                             <Ellipse x:Name="Knob" Width="14" Height="14" Fill="#FFFFFF"
                                      HorizontalAlignment="Left" VerticalAlignment="Center" Margin="3,0,0,0">
@@ -102,7 +102,7 @@
                     <Border.Background>
                         <LinearGradientBrush StartPoint="0,0" EndPoint="0,1">
                             <GradientStop Color="#22FFFFFF" Offset="0"/>
-                            <GradientStop Color="#33FFFFFF" Offset="1"/>
+                            <GradientStop Color="#33E6E6E6" Offset="1"/>
                         </LinearGradientBrush>
                     </Border.Background>
                     <Grid ColumnSpacing="14">
@@ -110,15 +110,15 @@
                             <ColumnDefinition Width="Auto"/>
                             <ColumnDefinition Width="*"/>
                         </Grid.ColumnDefinitions>
-                        <Border Width="64" Height="64" CornerRadius="10" Background="#1FFFFFFF"
-                                BorderThickness="1" BorderBrush="#4DFFFFFF">
+                        <Border Width="64" Height="64" CornerRadius="10" Background="#2EE6E6E6"
+                                BorderThickness="1" BorderBrush="#59E6E6E6">
                             <Image x:Name="AppIconImage" Width="56" Height="56"/>
                         </Border>
                         <StackPanel Grid.Column="1" Spacing="5" VerticalAlignment="Center">
                             <TextBlock Text="Game Locker" FontSize="21" FontWeight="Bold"/>
-                            <Border Background="#26FFFFFF" BorderThickness="1" BorderBrush="#4DFFFFFF"
+                            <Border Background="#33E6E6E6" BorderThickness="1" BorderBrush="#59E6E6E6"
                                     CornerRadius="9" Padding="9,2" HorizontalAlignment="Left">
-                                <TextBlock x:Name="VersionText" FontSize="11.5" Foreground="#FFEDEDED"/>
+                                <TextBlock x:Name="VersionText" FontSize="11.5" Foreground="#FFF2F2F2"/>
                             </Border>
                             <TextBlock Text="专注于 Win 掌机 / 平板的快捷体验" FontSize="12" Opacity="0.6"/>
                         </StackPanel>
@@ -145,7 +145,7 @@
                         <Button.Background>
                             <LinearGradientBrush StartPoint="0,0" EndPoint="0,1">
                                 <GradientStop Color="#22FFFFFF" Offset="0"/>
-                                <GradientStop Color="#33FFFFFF" Offset="1"/>
+                                <GradientStop Color="#33E6E6E6" Offset="1"/>
                             </LinearGradientBrush>
                         </Button.Background>
                         <Grid ColumnSpacing="12">
@@ -153,8 +153,8 @@
                                 <ColumnDefinition Width="Auto"/>
                                 <ColumnDefinition Width="*"/>
                             </Grid.ColumnDefinitions>
-                            <Border Width="34" Height="34" Background="#1FFFFFFF"
-                                    BorderThickness="1" BorderBrush="#4DFFFFFF" VerticalAlignment="Center">
+                            <Border Width="34" Height="34" Background="#2EE6E6E6"
+                                    BorderThickness="1" BorderBrush="#59E6E6E6" VerticalAlignment="Center">
                                 <FontIcon Glyph="&#xE72C;" FontSize="16"/>
                             </Border>
                             <StackPanel Grid.Column="1" Spacing="2" VerticalAlignment="Center">
@@ -172,7 +172,7 @@
                         <Button.Background>
                             <LinearGradientBrush StartPoint="0,0" EndPoint="0,1">
                                 <GradientStop Color="#22FFFFFF" Offset="0"/>
-                                <GradientStop Color="#33FFFFFF" Offset="1"/>
+                                <GradientStop Color="#33E6E6E6" Offset="1"/>
                             </LinearGradientBrush>
                         </Button.Background>
                         <Grid ColumnSpacing="12">
@@ -181,8 +181,8 @@
                                 <ColumnDefinition Width="*"/>
                                 <ColumnDefinition Width="Auto"/>
                             </Grid.ColumnDefinitions>
-                            <Border Width="34" Height="34" Background="#1FFFFFFF"
-                                    BorderThickness="1" BorderBrush="#4DFFFFFF" VerticalAlignment="Center">
+                            <Border Width="34" Height="34" Background="#2EE6E6E6"
+                                    BorderThickness="1" BorderBrush="#59E6E6E6" VerticalAlignment="Center">
                                 <FontIcon Glyph="&#xE895;" FontSize="16"/>
                             </Border>
                             <StackPanel Grid.Column="1" Spacing="2" VerticalAlignment="Center">
@@ -201,7 +201,7 @@
                         <Button.Background>
                             <LinearGradientBrush StartPoint="0,0" EndPoint="0,1">
                                 <GradientStop Color="#22FFFFFF" Offset="0"/>
-                                <GradientStop Color="#33FFFFFF" Offset="1"/>
+                                <GradientStop Color="#33E6E6E6" Offset="1"/>
                             </LinearGradientBrush>
                         </Button.Background>
                         <Grid ColumnSpacing="12">
@@ -211,8 +211,8 @@
                                 <ColumnDefinition Width="Auto"/>
                                 <ColumnDefinition Width="Auto"/>
                             </Grid.ColumnDefinitions>
-                            <Border Width="34" Height="34" Background="#1FFFFFFF"
-                                    BorderThickness="1" BorderBrush="#4DFFFFFF" VerticalAlignment="Center">
+                            <Border Width="34" Height="34" Background="#2EE6E6E6"
+                                    BorderThickness="1" BorderBrush="#59E6E6E6" VerticalAlignment="Center">
                                 <FontIcon Glyph="&#xE7C3;" FontSize="16"/>
                             </Border>
                             <StackPanel Grid.Column="1" Spacing="2" VerticalAlignment="Center">
@@ -223,7 +223,7 @@
                             <Button x:Name="ExportButton" Grid.Column="2" Content="导出"
                                     Click="OnExportClick" IsTabStop="False"
                                     FontSize="12" Padding="0" CornerRadius="6"
-                                    Background="#26FFFFFF" BorderThickness="0"
+                                    Background="#33E6E6E6" BorderThickness="0"
                                     HorizontalContentAlignment="Center"
                                     VerticalAlignment="Center"/>
                             <ToggleSwitch x:Name="LogToggle" Grid.Column="3" Style="{StaticResource CleanToggleStyle}"
@@ -239,7 +239,7 @@
                         <Button.Background>
                             <LinearGradientBrush StartPoint="0,0" EndPoint="0,1">
                                 <GradientStop Color="#22FFFFFF" Offset="0"/>
-                                <GradientStop Color="#33FFFFFF" Offset="1"/>
+                                <GradientStop Color="#33E6E6E6" Offset="1"/>
                             </LinearGradientBrush>
                         </Button.Background>
                         <Grid ColumnSpacing="12">
@@ -247,8 +247,8 @@
                                 <ColumnDefinition Width="Auto"/>
                                 <ColumnDefinition Width="*"/>
                             </Grid.ColumnDefinitions>
-                            <Border Width="34" Height="34" Background="#1FFFFFFF"
-                                    BorderThickness="1" BorderBrush="#4DFFFFFF" VerticalAlignment="Center">
+                            <Border Width="34" Height="34" Background="#2EE6E6E6"
+                                    BorderThickness="1" BorderBrush="#59E6E6E6" VerticalAlignment="Center">
                                 <FontIcon Glyph="&#xE774;" FontSize="16"/>
                             </Border>
                             <StackPanel Grid.Column="1" Spacing="2" VerticalAlignment="Center">
@@ -264,7 +264,7 @@
                         <Button.Background>
                             <LinearGradientBrush StartPoint="0,0" EndPoint="0,1">
                                 <GradientStop Color="#22FFFFFF" Offset="0"/>
-                                <GradientStop Color="#33FFFFFF" Offset="1"/>
+                                <GradientStop Color="#33E6E6E6" Offset="1"/>
                             </LinearGradientBrush>
                         </Button.Background>
                         <Grid ColumnSpacing="12">
@@ -272,8 +272,8 @@
                                 <ColumnDefinition Width="Auto"/>
                                 <ColumnDefinition Width="*"/>
                             </Grid.ColumnDefinitions>
-                            <Border Width="34" Height="34" Background="#1FFFFFFF"
-                                    BorderThickness="1" BorderBrush="#4DFFFFFF" VerticalAlignment="Center">
+                            <Border Width="34" Height="34" Background="#2EE6E6E6"
+                                    BorderThickness="1" BorderBrush="#59E6E6E6" VerticalAlignment="Center">
                                 <FontIcon Glyph="&#xE8BD;" FontSize="16"/>
                             </Border>
                             <StackPanel Grid.Column="1" Spacing="2" VerticalAlignment="Center">
@@ -289,7 +289,7 @@
                         <Button.Background>
                             <LinearGradientBrush StartPoint="0,0" EndPoint="0,1">
                                 <GradientStop Color="#22FFFFFF" Offset="0"/>
-                                <GradientStop Color="#33FFFFFF" Offset="1"/>
+                                <GradientStop Color="#33E6E6E6" Offset="1"/>
                             </LinearGradientBrush>
                         </Button.Background>
                         <Grid ColumnSpacing="12">
@@ -297,8 +297,8 @@
                                 <ColumnDefinition Width="Auto"/>
                                 <ColumnDefinition Width="*"/>
                             </Grid.ColumnDefinitions>
-                            <Border Width="34" Height="34" Background="#1FFFFFFF"
-                                    BorderThickness="1" BorderBrush="#4DFFFFFF" VerticalAlignment="Center">
+                            <Border Width="34" Height="34" Background="#2EE6E6E6"
+                                    BorderThickness="1" BorderBrush="#59E6E6E6" VerticalAlignment="Center">
                                 <FontIcon Glyph="&#xEB51;" FontSize="16"/>
                             </Border>
                             <StackPanel Grid.Column="1" Spacing="2" VerticalAlignment="Center">

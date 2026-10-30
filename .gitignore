@@ -13,5 +13,8 @@ obj/
 # 打包发布产物
 *.zip
 
+# dotnet publish 产物（不含 GameLocker.pri，不参与打包）
+publish/
+
 # 日志
 *.log

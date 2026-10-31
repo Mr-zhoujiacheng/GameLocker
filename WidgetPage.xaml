@@ -150,7 +150,7 @@
 
                 <!-- 游戏存档：蓝 -->
                 <Button x:Name="BackupWidgetCard" Tag="backup" Style="{StaticResource WidgetCardStyle}" Click="OnAddClick"
-                        ToolTipService.ToolTip="一键备份当前游戏存档；Y 键把当前游戏的存档同步处理">
+                        ToolTipService.ToolTip="一键备份当前游戏存档；退出游戏后按 Y 键从最新备份恢复（覆盖本地）">
                     <Button.Background>
                         <LinearGradientBrush StartPoint="0,0" EndPoint="0,1">
                             <GradientStop Color="#12FFFFFF" Offset="0"/>

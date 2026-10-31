@@ -283,6 +283,11 @@ public sealed partial class AddItemPage : Page, ISettingsGamepad
     public AddItemPage()
     {
         InitializeComponent();
+        HintBar.HintTapped += key =>
+        {
+            if (_browsing)
+                HandleBrowse(Controls.GamepadHintBar.ToGamepadButtons(key));
+        };
         _sysOptBoxes = [SysOptSettings, SysOptThisPc, SysOptVolume, SysOptBrightness, SysOptWifi, SysOptBluetooth, SysOptHotspot, SysOptNightLight];
         _sysOptMarks = [SysOptSettingsMark, SysOptThisPcMark, SysOptVolumeMark, SysOptBrightnessMark, SysOptWifiMark, SysOptBluetoothMark, SysOptHotspotMark, SysOptNightLightMark];
         for (var i = 0; i < _sysOptBoxes.Length; i++)
@@ -1499,7 +1504,7 @@ public sealed partial class AddItemPage : Page, ISettingsGamepad
                 OnProxyCoreUpdateClick(btn, new RoutedEventArgs());
                 break;
             case Button btn when ReferenceEquals(btn, CloudSettingsButton):
-                // 游戏存档：A 键跳到 设置 → 云端备份 配置 WebDAV
+                // 游戏存档：A 键跳到 设置 → 云端备份 配置 天翼云
                 App.Main?.NavigateSettings(typeof(CloudPage));
                 break;
             // 性能监控：悬浮条大小 −/+ 各调一档
@@ -2616,7 +2621,7 @@ public sealed partial class AddItemPage : Page, ISettingsGamepad
 
     private void OnOptiOpenFolderClick(object sender, Microsoft.UI.Xaml.RoutedEventArgs e) => OptiScalerService.OpenFolder();
 
-    // 备份方式切换：本地面板 / 云端面板互换（云端面板只展示 WebDAV 配置状态）
+    // 备份方式切换：本地面板 / 云端面板互换（云端面板只展示 天翼云 配置状态）
     private void OnBackupModeChanged(object sender, Microsoft.UI.Xaml.RoutedEventArgs e)
     {
         if (BackupCloudPanel is null) return; // XAML 解析阶段（IsChecked="True" 触发）此时控件尚未创建
@@ -2624,7 +2629,7 @@ public sealed partial class AddItemPage : Page, ISettingsGamepad
         RebuildFormControls();
     }
 
-    /// <summary>按当前备份方式切换面板，并刷新云端（WebDAV）配置状态</summary>
+    /// <summary>按当前备份方式切换面板，并刷新云端（天翼云）配置状态</summary>
     private void UpdateBackupPanels()
     {
         var cloud = BackupCloudRadio.IsChecked == true;
@@ -2633,10 +2638,12 @@ public sealed partial class AddItemPage : Page, ISettingsGamepad
         BackupLocalPanel.Visibility = cloud ? collapsed : visible;
         BackupCloudPanel.Visibility = cloud ? visible : collapsed;
 
-        var acct = WebDavService.CurrentAccount();
-        CloudStateText.Text = acct is null
-            ? "未配置（无法云端备份）"
-            : $"已配置：{acct.Value.User} → {SettingsService.Current.WebDavRootFolder}";
+        var name = CloudBackupProvider.DisplayName;
+        CloudStateText.Text = !CloudBackupProvider.IsSignedIn
+            ? $"{name}未登录（无法云端备份）"
+            : $"{name}：{CloudBackupProvider.AccountName} → {CloudBackupProvider.RootFolder}";
+        CloudHintText.Text = $"备份会上传到{(name == "百度网盘" ? "百度网盘" : "天翼云盘")}；" +
+            "请先打开上方「云端备份设置」，用对应网盘 App 扫码登录。";
     }
 
     // 游戏存档编辑：「打开云端备份设置」跳到 设置 → 云端备份
@@ -3058,6 +3065,7 @@ public sealed partial class AddItemPage : Page, ISettingsGamepad
             BrowseMode.Folder => "选择文件夹",
             _ => "选择程序（.exe）"
         };
+        HintBar.TouchMode = true;
         HintBar.SetHints(mode is BrowseMode.Folder
             ? "DPAD:选择|A:进入/选中|B:返回"
             : "DPAD:选择|A:进入/确认|B:返回");
@@ -3065,7 +3073,7 @@ public sealed partial class AddItemPage : Page, ISettingsGamepad
         {
             BrowseMode.Icon => "只列出可执行文件与图片（.exe / .ico / .png / .jpg …），进入文件夹继续浏览",
             BrowseMode.Cover => "只列出图片文件（.png / .jpg / .bmp …），进入文件夹继续浏览",
-            BrowseMode.Folder => "只列出文件夹，A 进入；停在任意文件夹时用页脚确认",
+            BrowseMode.Folder => "A 进入文件夹，选择列表中的“选择当前文件夹”后按 A 确认",
             _ => "只列出可执行程序（.exe），进入文件夹继续浏览"
         };
         NavigateTo(GetStartDir());
@@ -3083,6 +3091,7 @@ public sealed partial class AddItemPage : Page, ISettingsGamepad
         FormScroll.Visibility = Microsoft.UI.Xaml.Visibility.Visible;
         FooterBar.Visibility = Microsoft.UI.Xaml.Visibility.Visible;
         PageTitle.Text = _isGroup ? "编辑磁贴组" : _editing != null ? "编辑快捷项" : "添加快捷项";
+        HintBar.TouchMode = false;
         HintBar.SetHints("DPAD:选择|A:确认/切换|X:保存|B:返回");
         FocusForm(_formIndex);
     }

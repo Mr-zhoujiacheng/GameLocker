@@ -1,3 +1,5 @@
+using System.Text.Json;
+using System.Text.Json.Serialization;
 using GameLocker.Services;
 
 namespace GameLocker.Models;
@@ -10,15 +12,33 @@ public enum DockSide
     Center
 }
 
-/// <summary>磁贴主题：彩色（强调色纯色块）/ 渐变（自身颜色斜向亮暗渐变）/
-/// 玻璃（磨砂色底）/ 简约（无颜色固定深灰）/ 透明（无底色，全部透明，不可选颜色）</summary>
+/// <summary>磁贴主题：彩色（强调色纯色块）/ 纯黑（OLED 省电极简）/ 全息（幻彩渐变）/
+/// 亚克力（磨砂云母质感）/ 极光（青绿→蓝→紫渐变）/ 蒸汽波（橙→粉→紫日落渐变）/
+/// 线框（无底色彩色描边）/ 拟物（实体按键立体质感）</summary>
 public enum TileTheme
 {
     Colorful,
-    Win10,
-    Gradient,
-    Glass,
-    Transparent
+    OledBlack,
+    Holographic,
+    Acrylic,
+    Aurora,
+    Vaporwave,
+    Outline,
+    Bevel
+}
+
+/// <summary>磁贴主题兼容读取：旧配置里已删除的主题值（简约/渐变/玻璃/透明）自动回退为彩色，
+/// 避免整份设置 JSON 因未知枚举值反序列化失败而被重置。</summary>
+public sealed class TileThemeCompatConverter : JsonConverter<TileTheme>
+{
+    public override TileTheme Read(ref Utf8JsonReader reader, Type typeToConvert, JsonSerializerOptions options) =>
+        reader.TokenType == JsonTokenType.String
+        && Enum.TryParse(reader.GetString(), out TileTheme value)
+            ? value
+            : TileTheme.Colorful;
+
+    public override void Write(Utf8JsonWriter writer, TileTheme value, JsonSerializerOptions options) =>
+        writer.WriteStringValue(value.ToString());
 }
 
 /// <summary>磁贴圆角样式（与主题独立设置）</summary>
@@ -26,6 +46,13 @@ public enum TileCorner
 {
     Rounded,
     Square
+}
+
+/// <summary>云端备份使用的网盘</summary>
+public enum CloudProvider
+{
+    Tianyi,
+    Baidu
 }
 
 /// <summary>应用设置（JSON 持久化，见 SettingsService）</summary>
@@ -64,10 +91,11 @@ public class AppSettings
     /// <summary>主页总页数（含主主页；副页块在添加方式（X 键）里新增，主页用 LT/RT 循环切换）</summary>
     public int HomePageCount { get; set; } = 1;
 
-    /// <summary>磁贴主题（彩色 / 简约 / 渐变 / 玻璃 / 透明磁贴）</summary>
+    /// <summary>磁贴主题（彩色 / 纯黑 / 全息 / 亚克力 / 极光 / 蒸汽波 / 线框 / 拟物磁贴）；旧主题值读取时自动回退彩色</summary>
+    [JsonConverter(typeof(TileThemeCompatConverter))]
     public TileTheme TileTheme { get; set; } = TileTheme.Colorful;
 
-    /// <summary>磁贴圆角样式：未设置时按主题默认（彩色=圆角，简约/渐变/玻璃/透明=方形）</summary>
+    /// <summary>磁贴圆角样式：未设置时按主题默认（彩色/亚克力/极光/蒸汽波/拟物=圆角，纯黑/全息/线框=方形）</summary>
     public TileCorner? TileCornerShape { get; set; }
 
     /// <summary>磁贴透明度（0.3~1.0，1 为完全不透明）</summary>
@@ -155,12 +183,12 @@ public class AppSettings
     /// <summary>键盘呼出键的修饰键标志（Ctrl=1/Shift=2/Alt=4/Win=8，见 KeySendService.Mod*）</summary>
     public int KeyboardSummonMods { get; set; }
 
-    /// <summary>云端备份（WebDAV）：服务器地址，默认坚果云；也可改为群晖 / Nextcloud 等自建网盘地址</summary>
-    public string WebDavUrl { get; set; } = "https://dav.jianguoyun.com/dav/";
+    /// <summary>天翼云备份根目录（存档位于 /{该目录}/{游戏名}/）</summary>
+    public string TianyiRootFolder { get; set; } = "GameLocker";
 
-    /// <summary>云端备份（WebDAV）：登录账号（坚果云为注册邮箱）</summary>
-    public string WebDavUser { get; set; } = "";
+    /// <summary>百度网盘备份根目录（存档位于 /{该目录}/{游戏名}/）</summary>
+    public string BaiduRootFolder { get; set; } = "GameLocker";
 
-    /// <summary>云端备份（WebDAV）：云端根目录名（存档位于 /{该目录}/{游戏名}/）</summary>
-    public string WebDavRootFolder { get; set; } = "GameLocker";
+    /// <summary>云端备份使用的网盘：天翼云 / 百度网盘</summary>
+    public CloudProvider CloudProvider { get; set; } = CloudProvider.Tianyi;
 }

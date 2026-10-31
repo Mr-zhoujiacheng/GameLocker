@@ -69,6 +69,8 @@ public static class TrainerService
     /// <summary>最近一个非本程序的前台窗口标题</summary>
     public static string LastWindowTitle { get; private set; } = "";
 
+    private static string? _lastGameExePath;
+
     /// <summary>
     /// 捕获当前前台窗口所属进程（由 MainWindow 定时调用，窗口隐藏期间也要持续调用）：
     /// 只在"看起来像游戏"的窗口上更新 LastExeName / LastWindowTitle。
@@ -90,6 +92,9 @@ public static class TrainerService
             if (string.IsNullOrWhiteSpace(title)) return; // 无标题的窗口不认作游戏
             if (!string.Equals(LastExeName, exe, StringComparison.OrdinalIgnoreCase))
                 DebugLog.Write($"修改器: 记录前台游戏 exe={exe} 标题={title}");
+            if (!string.Equals(LastExeName, exe, StringComparison.OrdinalIgnoreCase))
+                _lastGameExePath = null;
+            try { _lastGameExePath = p.MainModule?.FileName; } catch { }
             LastExeName = exe;
             LastWindowTitle = title;
         }
@@ -214,7 +219,7 @@ public static class TrainerService
     public static string? CurrentGameExePath()
     {
         var p = GameInstallPath();
-        return p.Length == 0 ? null : p;
+        return p.Length == 0 ? _lastGameExePath : p;
     }
 
     // ---- 状态上报 ----

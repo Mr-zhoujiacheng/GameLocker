@@ -126,5 +126,54 @@
                 </StackPanel>
             </Border>
         </Grid>
+
+        <Grid x:Name="SaveRestoreOverlay" RequestedTheme="Dark" Visibility="Collapsed">
+            <Border x:Name="SaveRestoreMask" Background="#D80A0C10" Tapped="OnSaveRestoreMaskTapped"/>
+            <Border x:Name="SaveRestorePanel" HorizontalAlignment="Center" VerticalAlignment="Center"
+                    CornerRadius="24" Padding="18,18,18,0" Margin="12"
+                    BorderBrush="#2EFFFFFF" BorderThickness="1.2" RenderTransformOrigin="0.5,0.5">
+                <Border.Background>
+                    <LinearGradientBrush StartPoint="0,0" EndPoint="0.35,1">
+                        <GradientStop Color="#F22A2E36" Offset="0"/>
+                        <GradientStop Color="#F21A1D23" Offset="1"/>
+                    </LinearGradientBrush>
+                </Border.Background>
+                <Border.RenderTransform>
+                    <CompositeTransform x:Name="SaveRestorePanelTransform"/>
+                </Border.RenderTransform>
+                <Grid Width="520" MaxHeight="680" RowSpacing="10">
+                    <Grid.RowDefinitions>
+                        <RowDefinition Height="Auto"/>
+                        <RowDefinition Height="*"/>
+                        <RowDefinition Height="Auto"/>
+                    </Grid.RowDefinitions>
+                    <Grid ColumnSpacing="12" Margin="2,0,0,2">
+                        <Grid.ColumnDefinitions>
+                            <ColumnDefinition Width="Auto"/>
+                            <ColumnDefinition Width="*"/>
+                        </Grid.ColumnDefinitions>
+                        <Border Width="44" Height="44" CornerRadius="22" Background="#264CC2FF" VerticalAlignment="Center">
+                            <FontIcon Glyph="&#xE8B7;" FontSize="19" Foreground="#4CC2FF"/>
+                        </Border>
+                        <StackPanel Grid.Column="1" VerticalAlignment="Center" Spacing="1">
+                            <TextBlock x:Name="SaveRestoreTitle" Text="恢复存档" FontSize="21" FontWeight="SemiBold"/>
+                            <TextBlock x:Name="SaveRestoreSubtitle" FontSize="12" Opacity="0.6" TextTrimming="CharacterEllipsis"/>
+                        </StackPanel>
+                    </Grid>
+                    <ScrollViewer Grid.Row="1" VerticalScrollBarVisibility="Auto" HorizontalScrollMode="Disabled">
+                        <StackPanel Spacing="10">
+                            <TextBlock x:Name="SaveRestoreDescription" FontSize="12" Opacity="0.65" TextWrapping="Wrap" Margin="4,0"/>
+                            <Border CornerRadius="14" Padding="14,10" Background="#2A4CC2FF" BorderBrush="#554CC2FF" BorderThickness="1">
+                                <TextBlock x:Name="SaveRestoreWarning" FontSize="12" TextWrapping="Wrap"/>
+                            </Border>
+                            <StackPanel x:Name="SaveRestoreList" Spacing="6"/>
+                        </StackPanel>
+                    </ScrollViewer>
+                    <ctl:GamepadHintBar x:Name="SaveRestoreHintBar" Grid.Row="2" TouchMode="True"
+                                        HorizontalAlignment="Center" Margin="0,8,0,0"
+                                        Hints="DPAD:选择|A:恢复|X:同步|B:取消"/>
+                </Grid>
+            </Border>
+        </Grid>
     </Grid>
 </Window>

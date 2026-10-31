@@ -38,7 +38,7 @@ public enum WidgetKind
     Mapping,
     /// <summary>修改器（按当前游戏进程自动下载并打开最新的风灵月影修改器；大小与颜色可改）</summary>
     Trainer,
-    /// <summary>游戏存档（一键扫描并备份当前正在玩的游戏的存档；可选备份到本地目录或 WebDAV 云端）</summary>
+    /// <summary>游戏存档（一键扫描并备份当前正在玩的游戏的存档；可选备份到本地目录或 天翼云 云端）</summary>
     Backup,
     /// <summary>手柄映射（把若干手柄按键映射成键盘/鼠标/手柄输出；A/点击=开关映射，长按=关闭映射）</summary>
     GamepadMap,
@@ -118,7 +118,7 @@ public enum BackupMode
 {
     /// <summary>本地：默认 %APPDATA%\GameLocker\backups（可在编辑页指定其他文件夹）</summary>
     Local,
-    /// <summary>云端：通过 WebDAV 上传到网盘（需先在 设置 → 云端备份 填地址/账号/应用密码）</summary>
+    /// <summary>云端：通过 天翼云 上传到网盘（需先在云端备份设置扫码登录）</summary>
     Cloud
 }
 
@@ -275,7 +275,7 @@ public class LaunchItem
     /// <summary>键盘映射的修饰键标志（仅 WidgetKind.Mapping 使用；见 KeySendService.Mod*）</summary>
     public int MappingMods { get; set; }
 
-    /// <summary>游戏存档目标：本地目录 / WebDAV 云端上传（仅 WidgetKind.Backup 使用）</summary>
+    /// <summary>游戏存档目标：本地目录 / 天翼云 云端上传（仅 WidgetKind.Backup 使用）</summary>
     public BackupMode BackupMode { get; set; } = BackupMode.Local;
 
     /// <summary>游戏存档目标文件夹绝对路径（仅 WidgetKind.Backup 且 BackupMode=Local 时生效；

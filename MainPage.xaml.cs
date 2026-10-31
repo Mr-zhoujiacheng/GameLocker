@@ -78,9 +78,7 @@ public sealed partial class MainPage : Page
     private bool _suppressTap;          // 长按/拖拽完成后吞掉随后的 Tapped
     private Microsoft.UI.Xaml.DispatcherTimer? _lpTimer;  // 长按计时器
     private Border? _lpTile;
-    private LaunchItem? _lpCloseItem;  // 长按目标=可关闭磁贴时记录（null=设置磁贴进编辑 / 游戏存档磁贴走同步）
-    private LaunchItem? _lpSyncItem;   // 长按目标=游戏存档磁贴时记录（长按=同步存档）
-    private LaunchItem? _lpOptiItem;   // 长按目标=OptiScaler 磁贴时记录（长按=注入）
+    private LaunchItem? _lpItem;  // 长按目标，统一执行 Y 动作
     private Windows.Foundation.Point _lpStart;
     private uint _lpPointerId;
 
@@ -128,9 +126,6 @@ public sealed partial class MainPage : Page
     /// <summary>当前显示的壁纸小组件磁贴引用（重排时重建；value=显示序列索引）</summary>
     private readonly Dictionary<TileStyle.WallpaperTileRefs, int> _wallpaperRefs = [];
 
-    /// <summary>长按目标=手柄映射磁贴时记录（长按=关闭映射）</summary>
-    private LaunchItem? _lpRemapItem;
-
     /// <summary>磁贴间距（像素，可在外观设置调节）；磁贴基本单位固定</summary>
     private static double Gap => TileStyle.Gap;
     private const double Unit = TileStyle.Unit;
@@ -160,10 +155,16 @@ public sealed partial class MainPage : Page
         _sysTimer = new DispatcherTimer { Interval = TimeSpan.FromMilliseconds(1500) };
         _sysTimer.Tick += async (_, _) =>
         {
-            if (_sysRefs.Count == 0) return;
-            await SystemPanelService.RefreshRadiosAsync(); // 射频状态靠 WinRT 异步读，读完再刷新磁贴
-            await SystemPanelService.RefreshBrightnessAsync(); // 亮度走 WMI，放到线程池读，不占 UI 线程
-            RefreshSystemTiles();
+            if (!_pageWorkActive || _sysRefreshBusy || _sysRefs.Count == 0) return;
+            _sysRefreshBusy = true;
+            try
+            {
+                await SystemPanelService.RefreshRadiosAsync();
+                if (!_pageWorkActive) return;
+                await SystemPanelService.RefreshBrightnessAsync();
+                if (_pageWorkActive) RefreshSystemTiles();
+            }
+            finally { _sysRefreshBusy = false; }
         };
 
         // 抽屉"自动隐藏"：开关开启时，启动就处于收起状态（由右摇杆↑ / 底部上划呼出）
@@ -204,6 +205,7 @@ public sealed partial class MainPage : Page
         ChoiceHintBar.HintTapped += key => HandleChoice(GamepadHintBar.ToGamepadButtons(key));
         RenameHintBar.HintTapped += key => HandleRename(GamepadHintBar.ToGamepadButtons(key));
         PowerHintBar.HintTapped += key => HandlePower(GamepadHintBar.ToGamepadButtons(key));
+        WallpaperHintBar.HintTapped += key => HandleWallpaper(GamepadHintBar.ToGamepadButtons(key));
         FileTransferHintBar.HintTapped += key => HandleFileTransfer(GamepadHintBar.ToGamepadButtons(key));
         // 文件传输浮层：点空白处关闭
         FileTransferMask.Tapped += (_, _) => CloseFileTransfer();
@@ -225,6 +227,44 @@ public sealed partial class MainPage : Page
 
     private readonly DispatcherTimer _clockTimer;
     private readonly DispatcherTimer _sysTimer;
+    private bool _pageWorkActive;
+    private bool _sysRefreshBusy;
+    private bool _imagesReleased;
+    private int _backgroundVersion;
+
+    public async void SetBackground(bool background)
+    {
+        var version = ++_backgroundVersion;
+        if (!background)
+        {
+            if (_imagesReleased)
+            {
+                _imagesReleased = false;
+                LayoutTiles();
+            }
+            ResumePageWork();
+            return;
+        }
+
+        PausePageWork();
+        // 快速切换时保留图片；持续隐藏后再释放，避开收起动画。
+        await Task.Delay(TimeSpan.FromSeconds(10));
+        if (version != _backgroundVersion || _pageWorkActive) return;
+        ReleaseTileImages(TileHost);
+        ReleaseTileImages(DrawerHost);
+        SlideshowService.ReleaseImageCache();
+        WallpaperService.ReleaseImageCache();
+        _imagesReleased = true;
+    }
+
+    private static void ReleaseTileImages(DependencyObject root)
+    {
+        if (root is Image image) image.Source = null;
+        if (root is Border { Background: ImageBrush brush }) brush.ImageSource = null;
+        if (root is Panel { Background: ImageBrush panelBrush }) panelBrush.ImageSource = null;
+        for (var i = 0; i < VisualTreeHelper.GetChildrenCount(root); i++)
+            ReleaseTileImages(VisualTreeHelper.GetChild(root, i));
+    }
 
     private void UpdateClock()
     {
@@ -251,7 +291,7 @@ public sealed partial class MainPage : Page
         if (_proxyRefs.Count > 0 && _tickCount % 3 == 0)
         {
             var first = _proxyRefs.Values.First();
-            _ = ProxyService.RefreshAsync(first).ContinueWith(_ => DispatcherQueue.TryEnqueue(RefreshProxyTiles));
+            _ = ProxyService.RefreshAsync(first).ContinueWith(_ => QueuePageRefresh(RefreshProxyTiles));
         }
     }
 
@@ -494,11 +534,19 @@ public sealed partial class MainPage : Page
         // 保证「打开则抽屉开」恒成立，同时作为往抽屉里添加磁贴的唯一入口
         if (SettingsService.Current.DrawerEnabled && DrawerService.EnsureHost(_items, _page))
             ConfigService.Save(_items.ToList());
+        _imagesReleased = false;
         Reload(); // 内部 UpdateSelection 会按当前选中项设置底部提示条
         LayoutPageDots();
         // 页面实例可能重建：主动同步手柄连接状态，避免图标回退默认白色
         SetGamepadStatus(App.Main?.Gamepad.HasGamepad ?? false);
         ApplyTopbarVisibility();
+        ResumePageWork();
+    }
+
+    private void ResumePageWork()
+    {
+        if (_pageWorkActive) return;
+        _pageWorkActive = true;
         UpdateClock();
         _clockTimer.Start();
         // 音乐小组件：接管系统媒体控制（SMTC），状态变化即时刷新磁贴
@@ -540,19 +588,28 @@ public sealed partial class MainPage : Page
     /// <summary>系统小组件首次读数：射频 + 亮度都在后台线程读，读完刷新磁贴（避免 UI 线程做 WMI 调用）</summary>
     private async Task InitSystemReadingsAsync()
     {
-        await SystemPanelService.RefreshRadiosAsync();
-        await SystemPanelService.RefreshBrightnessAsync();
-        RefreshSystemTiles();
+        if (!_pageWorkActive || _sysRefreshBusy || _sysRefs.Count == 0) return;
+        _sysRefreshBusy = true;
+        try
+        {
+            await SystemPanelService.RefreshRadiosAsync();
+            if (!_pageWorkActive) return;
+            await SystemPanelService.RefreshBrightnessAsync();
+            if (_pageWorkActive) RefreshSystemTiles();
+        }
+        finally { _sysRefreshBusy = false; }
     }
 
-    private void OnMusicStateChanged() =>
-        DispatcherQueue.TryEnqueue(RefreshMusicTiles);
+    private void QueuePageRefresh(Action refresh) =>
+        DispatcherQueue.TryEnqueue(() => { if (_pageWorkActive) refresh(); });
+
+    private void OnMusicStateChanged() => QueuePageRefresh(RefreshMusicTiles);
 
     private void OnSlideshowChanged() =>
-        DispatcherQueue.TryEnqueue(RefreshPhotoTiles);
+        QueuePageRefresh(RefreshPhotoTiles);
 
     private void OnWeatherChanged() =>
-        DispatcherQueue.TryEnqueue(RefreshWeatherTiles);
+        QueuePageRefresh(RefreshWeatherTiles);
 
     /// <summary>修改器取回进度：事件来自后台线程，marshal 回 UI 线程后用顶部提示条反馈（失败用警告样式）</summary>
     private void OnTrainerStatus(TrainerMessage m) =>
@@ -770,13 +827,18 @@ public sealed partial class MainPage : Page
     protected override void OnNavigatedFrom(NavigationEventArgs e)
     {
         base.OnNavigatedFrom(e);
+        ++_backgroundVersion;
+        PausePageWork();
+    }
+
+    private void PausePageWork()
+    {
+        if (!_pageWorkActive) return;
+        _pageWorkActive = false;
+        CancelPendingTap();
+        _pageDotsTimer.Stop();
         // 双保险：任何导航离开都取消未决长按，避免计时器在后台触发
-        _lpTimer?.Stop();
-        _lpTile = null;
-        _lpCloseItem = null;
-        _lpSyncItem = null;
-        _lpRemapItem = null;
-        _lpOptiItem = null;
+        CancelLongPress();
         _clockTimer.Stop();
         SystemMediaService.StateChanged -= OnMusicStateChanged;
         SlideshowService.CurrentChanged -= OnSlideshowChanged;
@@ -789,7 +851,7 @@ public sealed partial class MainPage : Page
         OptiScalerService.StatusChanged -= OnOptiScalerStatus;
         GamepadRemapService.StateChanged -= OnRemapStateChanged;
         ForegroundWatcherService.StateChanged -= OnForegroundChanged;
-        ForegroundWatcherService.Stop();
+        ForegroundWatcherService.Pause();
         _sysTimer.Stop();
     }
 
@@ -1196,15 +1258,10 @@ public sealed partial class MainPage : Page
         // 壁纸磁贴=收藏当前壁纸；否则关闭选中磁贴对应的运行中程序
         if (buttons.HasFlag(GamepadButtons.Y))
         {
-            if (IsOptiSelected()) OptiScalerService.Activate(_display[_selected].item);
-            else if (IsBackupSelected()) SaveBackupService.Sync(_display[_selected].item);
-            else if (IsRecycleBinSelected()) EmptyRecycleBin();
-            else if (IsForegroundSelected()) CloseForegroundApp();
-            else if (IsSystemSelected()) ShowToast("系统小组件：右摇杆←→切换 · A 开关 · LB/RB 调整");
-            else if (IsLosslessSelected()) LaunchLossless(_display[_selected].item);
-            else if (IsProxySelected()) _ = RefreshFastestProxyAsync(_display[_selected].item);
-            else if (IsWallpaperSelected()) LikeSelectedWallpaper();
-            else CloseSelected();
+            if (_selected >= 0 && _selected < _display.Count)
+            {
+                HandleItemY(_display[_selected].item);
+            }
             return true;
         }
         // 普通模式不响应其他键（防误删）：仅 L3 编辑/移动模式内 Y=删除
@@ -1363,6 +1420,7 @@ public sealed partial class MainPage : Page
     /// <summary>自动流式排布：每个磁贴放入第一个能容纳它的空位（按 _display 显示序列）</summary>
     private void LayoutTiles()
     {
+        if (_imagesReleased) return;
         TileHost.Children.Clear();
         _tiles.Clear();
         _musicRefs.Clear();
@@ -1530,8 +1588,15 @@ public sealed partial class MainPage : Page
                 SystemMediaService.Prev, SystemMediaService.TogglePlay, SystemMediaService.Next);
             musicTile.Tag = index;
             _musicRefs[refs] = index;
-            musicTile.Tapped += (_, _) => OnTileTapped(index, null);
-            musicTile.DoubleTapped += (_, _) => HandleDoubleTap(index);
+            musicTile.Tapped += (_, e) =>
+            {
+                if (!IsTileButtonSource(e.OriginalSource, musicTile))
+                    OnTileTapped(index, () => ActivateAt(index));
+            };
+            musicTile.DoubleTapped += (_, e) =>
+            {
+                if (!IsTileButtonSource(e.OriginalSource, musicTile)) HandleDoubleTap(index);
+            };
             AttachEditGestures(musicTile, item, group, index, false);
             return musicTile;
         }
@@ -1703,7 +1768,7 @@ public sealed partial class MainPage : Page
             AttachEditGestures(proxyTile, item, group, index, false);
             ProxyService.Poll(item);              // 建好即显示当前连接状态（同步，不阻塞）
             TileStyle.FillProxyTile(proxyRefs, item);
-            _ = ProxyService.RefreshAsync(item).ContinueWith(_ => DispatcherQueue.TryEnqueue(RefreshProxyTiles));
+            _ = ProxyService.RefreshAsync(item).ContinueWith(_ => QueuePageRefresh(RefreshProxyTiles));
             return proxyTile;
         }
 
@@ -1784,6 +1849,8 @@ public sealed partial class MainPage : Page
     /// 无抽屉组件、或抽屉被删空时折叠隐藏并清引用，不占高度。</summary>
     private void RenderDrawerPanel()
     {
+        CancelLongPress();
+        CancelPendingTap();
         // 总开关（设置 → 抽屉）：关闭时与"无抽屉组件"同样折叠隐藏（抽屉内容保留，重开即恢复）
         var owner = SettingsService.Current.DrawerEnabled ? DrawerService.FindDrawer(_items.ToList()) : null;
         if (owner?.Drawers is not { Count: > 0 })
@@ -2143,6 +2210,8 @@ public sealed partial class MainPage : Page
         tile.AddHandler(UIElement.PointerPressedEvent, new PointerEventHandler((_, e) =>
         {
             if (_dragItem is not null) return; // 已有拖拽进行中
+            _suppressTap = false;
+            if (!_moving) StartLongPress(tile, sub, e);
             _dragItem = sub;
             _dragTile = tile;
             _dragStart = e.GetCurrentPoint(TileHost).Position;
@@ -2156,6 +2225,7 @@ public sealed partial class MainPage : Page
             if (_dragTile is null || !ReferenceEquals(_dragTile, tile) || e.Pointer.PointerId != _dragPointerId) return;
             var p = e.GetCurrentPoint(TileHost).Position;
             if (!_dragMoved && Dist(p, _dragStart) < 10) return; // 未超过阈值仍是轻点
+            CancelLongPress();
             _dragMoved = true;
             tile.RenderTransform = new TranslateTransform { X = p.X - _dragStart.X, Y = p.Y - _dragStart.Y };
             Canvas.SetZIndex(tile, 10);
@@ -2170,6 +2240,7 @@ public sealed partial class MainPage : Page
         {
             if (_dragTile is null || !ReferenceEquals(_dragTile, tile) || e.Pointer.PointerId != _dragPointerId) return;
             var p = e.GetCurrentPoint(TileHost).Position;
+            CancelLongPress();
             var overTrash = _dragOverTrash;
             var moved = _dragMoved;
             _dragItem = null;
@@ -2188,6 +2259,7 @@ public sealed partial class MainPage : Page
 
         tile.AddHandler(UIElement.PointerCaptureLostEvent, new PointerEventHandler((_, _) =>
         {
+            if (ReferenceEquals(_lpTile, tile)) CancelLongPress();
             if (_dragTile is null || !ReferenceEquals(_dragTile, tile)) return;
             var moved = _dragMoved;
             _dragItem = null;
@@ -2471,6 +2543,7 @@ public sealed partial class MainPage : Page
     private void FocusDrawerItem(int pos)
     {
         if (pos < 0 || pos >= _drawerInnerTiles.Count) return;
+        _inDrawer = true;
         _drawerFocusPos = pos;
         UpdateDrawerSelection();
     }
@@ -2687,6 +2760,37 @@ public sealed partial class MainPage : Page
 
     private DateTime _lastDoubleAt = DateTime.MinValue;
 
+    private static bool IsTileButtonSource(object source, Border tile)
+    {
+        var current = source as DependencyObject;
+        while (current is not null && !ReferenceEquals(current, tile))
+        {
+            if (current is Microsoft.UI.Xaml.Controls.Primitives.ButtonBase) return true;
+            current = VisualTreeHelper.GetParent(current);
+        }
+        return false;
+    }
+
+    private void CancelLongPress()
+    {
+        _lpTimer?.Stop();
+        _lpTile = null;
+        _lpItem = null;
+    }
+
+    private void StartLongPress(Border tile, LaunchItem item, PointerRoutedEventArgs e)
+    {
+        CancelLongPress();
+        _lpTimer ??= new Microsoft.UI.Xaml.DispatcherTimer { Interval = TimeSpan.FromMilliseconds(600) };
+        _lpTimer.Tick -= OnLongPressTick;
+        _lpTimer.Tick += OnLongPressTick;
+        _lpTile = tile;
+        _lpItem = item;
+        _lpStart = e.GetCurrentPoint(TileHost).Position;
+        _lpPointerId = e.Pointer.PointerId;
+        _lpTimer.Start();
+    }
+
     private void OnTileTapped(int index, Action? singleAction)
     {
         if (_suppressTap) { _suppressTap = false; return; }
@@ -2754,11 +2858,7 @@ public sealed partial class MainPage : Page
         CancelPendingTap();
         // 双击的第二次"按下"已启动 600ms 长按计时并 CapturePointer；切页后磁贴脱离可视树，
         // 第二次 PointerReleased 不再送达 → 计时器不会被取消，会在后台误触发关闭/进入编辑。导航前先取消。
-        _lpTimer?.Stop();
-        _lpTile = null;
-        _lpCloseItem = null;
-        _lpSyncItem = null;
-        _lpOptiItem = null;
+        CancelLongPress();
         OpenEditorAt(index);
     }
 
@@ -2779,6 +2879,7 @@ public sealed partial class MainPage : Page
         if ((DateTime.Now - _lastDoubleAt).TotalMilliseconds < 100) return;
         _lastDoubleAt = DateTime.Now;
         CancelPendingTap();
+        CancelLongPress();
         App.Main?.NavigateEditItem(sub);
     }
 
@@ -2793,30 +2894,11 @@ public sealed partial class MainPage : Page
             if (_choiceOpen) return;
             var p = e.GetCurrentPoint(TileHost).Position;
 
-            // 普通模式长按：设置磁贴=进入编辑模式；程序/网站/文件夹磁贴=关闭其前台窗口（等同 Y 键）；
-            // 修改器小组件磁贴=关闭正在运行的修改器（等同 Y 键）；游戏存档小组件磁贴=同步存档（等同 Y 键）；
-            // 手柄映射小组件磁贴=关闭映射（等同长按关闭）；OptiScaler 小组件磁贴=注入（等同 Y 键）；
-            // 前台应用磁贴=强制结束当前前台应用（等同 Y 键）；电源常驻磁贴不支持编辑，长按不响应
-            if (!_moving && group is null &&
-                (isSettings || item.Kind is LaunchKind.App or LaunchKind.Url or LaunchKind.Folder
-                 || (item.Kind == LaunchKind.Widget && item.WidgetKind is WidgetKind.Trainer or WidgetKind.Backup or WidgetKind.GamepadMap or WidgetKind.OptiScaler or WidgetKind.Foreground)))
+            // 常规模式长按与 Y 共用动作；组成员仅限制编辑/拖拽，不限制组件动作。
+            if (!_moving && !IsTileButtonSource(e.OriginalSource, tile))
             {
-                _lpTimer ??= new Microsoft.UI.Xaml.DispatcherTimer { Interval = TimeSpan.FromMilliseconds(600) };
-                _lpTimer.Stop();
-                _lpTimer.Tick -= OnLongPressTick;
-                _lpTimer.Tick += OnLongPressTick;
-                _lpTile = tile;
-                var isBackup = item.Kind == LaunchKind.Widget && item.WidgetKind == WidgetKind.Backup;
-                var isRemap = item.Kind == LaunchKind.Widget && item.WidgetKind == WidgetKind.GamepadMap;
-                var isOpti = item.Kind == LaunchKind.Widget && item.WidgetKind == WidgetKind.OptiScaler;
-                _lpCloseItem = isSettings || isBackup || isRemap || isOpti ? null : item;
-                _lpSyncItem = isBackup ? item : null;
-                _lpRemapItem = isRemap ? item : null;
-                _lpOptiItem = isOpti ? item : null;
-                _lpStart = p;
-                _lpPointerId = e.Pointer.PointerId;
+                StartLongPress(tile, item, e);
                 tile.CapturePointer(e.Pointer);
-                _lpTimer.Start();
                 return;
             }
 
@@ -2844,11 +2926,12 @@ public sealed partial class MainPage : Page
             var p = e.GetCurrentPoint(TileHost).Position;
             if (_lpTile is not null && e.Pointer.PointerId == _lpPointerId)
             {
-                if (Dist(p, _lpStart) > 12) { _lpTimer?.Stop(); _lpTile = null; _lpCloseItem = null; _lpSyncItem = null; _lpRemapItem = null; _lpOptiItem = null; } // 移走了=取消长按
+                if (Dist(p, _lpStart) > 12) CancelLongPress(); // 移走了=取消长按
                 return;
             }
             if (_dragTile is null || !ReferenceEquals(_dragTile, tile) || e.Pointer.PointerId != _dragPointerId) return;
             if (!_dragMoved && Dist(p, _dragStart) < 10) return; // 未超过阈值仍是轻点
+            CancelLongPress();
             _dragMoved = true;
             tile.RenderTransform = new TranslateTransform { X = p.X - _dragStart.X, Y = p.Y - _dragStart.Y };
             Canvas.SetZIndex(tile, 10);
@@ -2881,12 +2964,7 @@ public sealed partial class MainPage : Page
         {
             if (_lpTile is not null && ReferenceEquals(_lpTile, tile) && e.Pointer.PointerId == _lpPointerId)
             {
-                _lpTimer?.Stop();
-                _lpTile = null;
-                _lpCloseItem = null;
-                _lpSyncItem = null;
-                _lpRemapItem = null;
-                _lpOptiItem = null;
+                CancelLongPress();
                 return;
             }
             if (_dragTile is null || !ReferenceEquals(_dragTile, tile) || e.Pointer.PointerId != _dragPointerId) return;
@@ -2928,12 +3006,7 @@ public sealed partial class MainPage : Page
             }
             if (_lpTile is not null && ReferenceEquals(_lpTile, tile))
             {
-                _lpTimer?.Stop();
-                _lpTile = null;
-                _lpCloseItem = null;
-                _lpSyncItem = null;
-                _lpRemapItem = null;
-                _lpOptiItem = null;
+                CancelLongPress();
             }
         }), true);
     }
@@ -2941,24 +3014,17 @@ public sealed partial class MainPage : Page
     private void OnLongPressTick(object sender, object args)
     {
         ((Microsoft.UI.Xaml.DispatcherTimer)sender).Stop();
-        _lpTile = null;
-        var closeItem = _lpCloseItem;
-        var syncItem = _lpSyncItem;
-        var remapItem = _lpRemapItem;
-        var optiItem = _lpOptiItem;
-        _lpCloseItem = null;
-        _lpSyncItem = null;
-        _lpRemapItem = null;
-        _lpOptiItem = null;
+        var item = _lpItem;
+        CancelLongPress();
         // 兜底守卫：若已切走（双击进编辑页等），绝不在后台执行关闭程序/进入编辑模式
         if (App.Main?.IsCurrentPage(this) != true) return;
         _suppressTap = true;
-        if (syncItem is not null) SaveBackupService.Sync(syncItem);              // 长按游戏存档磁贴=同步存档
-        else if (remapItem is not null) { GamepadRemapService.Disable(remapItem); ShowToast("已关闭映射", ToastKind.Warning); } // 长按手柄映射磁贴=关闭映射
-        else if (optiItem is not null) OptiScalerService.Activate(optiItem);      // 长按 OptiScaler 磁贴=注入（等同 Y 键）
-        else if (closeItem is { Kind: LaunchKind.Widget, WidgetKind: WidgetKind.Foreground }) CloseForegroundApp(); // 长按前台应用磁贴=结束进程（等同 Y 键）
-        else if (closeItem is not null) CloseItem(closeItem);                      // 长按可关闭磁贴=关程序/网站/文件夹
-        else EnterEditMode();                                                     // 长按设置磁贴=进入编辑模式
+        CancelPendingTap();
+        // 抽屉长按已触发 Y，后续移动/松手不能再把同一磁贴当作拖拽处理。
+        _dragItem = null;
+        _dragTile = null;
+        _dragMoved = false;
+        HandleItemY(item);
     }
 
     private static double Dist(Windows.Foundation.Point a, Windows.Foundation.Point b) =>
@@ -3170,7 +3236,7 @@ public sealed partial class MainPage : Page
     {
         if (index < 0 || index >= _display.Count) return;
         var (item, group) = _display[index];
-        if (item.Kind == LaunchKind.Widget && group is null)
+        if (item.Kind == LaunchKind.Widget)
         {
             ActivateWidgetItem(item);
             return;
@@ -3586,7 +3652,11 @@ public sealed partial class MainPage : Page
         if (item.Kind == LaunchKind.Widget && item.WidgetKind == WidgetKind.Backup) { SaveBackupService.Sync(item); return; }
         if (item.Kind == LaunchKind.Widget && item.WidgetKind == WidgetKind.RecycleBin) { EmptyRecycleBin(); return; }
         if (item.Kind == LaunchKind.Widget && item.WidgetKind == WidgetKind.Foreground) { CloseForegroundApp(); return; }
-        if (item.Kind == LaunchKind.Widget && item.WidgetKind == WidgetKind.System) return; // 系统小组件没有"可关闭"的对象
+        if (item.Kind == LaunchKind.Widget && item.WidgetKind == WidgetKind.System) { ShowToast("系统小组件：右摇杆←→切换 · A 开关 · LB/RB 调整"); return; }
+        if (item.Kind == LaunchKind.Widget && item.WidgetKind == WidgetKind.Clash) { _ = RefreshFastestProxyAsync(item); return; }
+        if (item.Kind == LaunchKind.Widget && item.WidgetKind == WidgetKind.Wallpaper) { LikeWallpaper(item); return; }
+        if (item.Kind == LaunchKind.Widget && item.WidgetKind == WidgetKind.GamepadMap) { GamepadRemapService.Disable(item); ShowToast("已关闭映射", ToastKind.Warning); return; }
+        if (item.Kind == LaunchKind.Widget && item.WidgetKind == WidgetKind.Settings) { EnterEditMode(); return; }
         if (item.Kind == LaunchKind.Widget && item.WidgetKind == WidgetKind.Power) return;  // 电源磁贴没有"可关闭"的对象
         if (item.Kind == LaunchKind.Widget && item.WidgetKind == WidgetKind.FileTransfer) return; // 文件传输：Y 已用于浮层内刷新列表
         if (item.Kind == LaunchKind.Widget && item.WidgetKind == WidgetKind.LosslessScaling) { LaunchLossless(item); return; } // 小黄鸭：Y=启动/唤醒
@@ -3601,7 +3671,9 @@ public sealed partial class MainPage : Page
             }
             return;
         }
-        CloseItem(item);
+        if (item.Kind is LaunchKind.App or LaunchKind.Url or LaunchKind.Folder
+            || item is { Kind: LaunchKind.Widget, WidgetKind: WidgetKind.Trainer })
+            CloseItem(item);
     }
 
     /// <summary>当前选中的是否为顶层图片组磁贴（决定 LB/RB 是切图还是翻页）</summary>
@@ -4375,7 +4447,7 @@ public sealed partial class MainPage : Page
     }
 
     /// <summary>壁纸轮播/下载状态变化（在 UI 线程触发）：刷新壁纸磁贴</summary>
-    private void OnWallpaperChanged() => DispatcherQueue.TryEnqueue(RefreshWallpaperTiles);
+    private void OnWallpaperChanged() => QueuePageRefresh(RefreshWallpaperTiles);
 
     /// <summary>刷新所有壁纸小组件磁贴的当前壁纸（换图时只换 Source，不重建磁贴）</summary>
     private void RefreshWallpaperTiles()
@@ -4418,7 +4490,7 @@ public sealed partial class MainPage : Page
     }
 
     /// <summary>前台应用/冻结状态变化（可能来自后台轮询线程）：marshal 回 UI 线程后刷新磁贴内容</summary>
-    private void OnForegroundChanged() => DispatcherQueue.TryEnqueue(RefreshForegroundTiles);
+    private void OnForegroundChanged() => QueuePageRefresh(RefreshForegroundTiles);
 
     /// <summary>刷新所有系统小组件磁贴的读数（右摇杆切换面板项、音量/亮度/射频变化后调用）</summary>
     private void RefreshSystemTiles()
@@ -4677,7 +4749,11 @@ public sealed partial class MainPage : Page
     private void LikeSelectedWallpaper()
     {
         if (!IsWallpaperSelected()) return;
-        var item = _display[_selected].item;
+        LikeWallpaper(_display[_selected].item);
+    }
+
+    private void LikeWallpaper(LaunchItem item)
+    {
         var file = WallpaperService.CurrentFile(item);
         if (file is null)
         {
@@ -4719,7 +4795,7 @@ public sealed partial class MainPage : Page
         else if (IsTrainerSelected())
             HintBar.SetHints("DPAD:切换选择|A:打开修改器|Y:关闭修改器|R3:编辑|L3:排列|B:隐藏");
         else if (IsBackupSelected())
-            HintBar.SetHints("DPAD:切换选择|A:备份存档|Y:同步存档|R3:编辑|L3:排列|B:隐藏");
+            HintBar.SetHints("DPAD:切换选择|A:备份存档|Y:恢复存档|R3:编辑|L3:排列|B:隐藏");
         else if (IsRecycleBinSelected())
             HintBar.SetHints("DPAD:切换选择|A:打开回收站|Y:清空回收站|R3:编辑|L3:排列|B:隐藏");
         else if (IsForegroundSelected())

@@ -67,7 +67,6 @@ public static class MonitorService
     /// 后台时降低采样/重绘频率以省资源，但 ETW 帧率会话保持全速（后台玩游戏仍要显示真实帧数据）</summary>
     private static int _appIsForeground = 1;
     private static int _backgroundTick;
-    private static int _gcDoneThisBackground;
 
     /// <summary>主窗口切换前台/后台；由 MainWindow 在 Activated/Deactivated 时调用</summary>
     public static void SetAppForeground(bool foreground)
@@ -77,7 +76,6 @@ public static class MonitorService
         if (foreground)
         {
             _backgroundTick = 0;
-            _gcDoneThisBackground = 0;
             // 重新切到前台立刻全功率采样一次，避免回来后看到的还是后台低频的旧数据
             _timer?.Change(200, 1000);
         }
@@ -315,9 +313,6 @@ public static class MonitorService
         if (Interlocked.Exchange(ref _ticking, 1) == 1) return;
         try
         {
-            var snapshot = Sample();
-            lock (Gate) _snapshot = snapshot;
-
             // 悬浮条显示策略：主窗口前台时永远显示；主窗口后台时只有全屏游戏才显示（避免白白消耗 GPU）；
             // 用户勾选"常开"时后台也一直显示并保持 1 秒刷新
             var appFg = Volatile.Read(ref _appIsForeground) == 1;
@@ -327,23 +322,17 @@ public static class MonitorService
 
             if (!appFg && !fullscreen && !alwaysOn)
             {
-                // 后台累计 10 秒后主动 GC 一次（不频繁触发）
+                // 后台每 5 秒采样并重绘一次（Tick 每 1s 到，所以隔 5 轮真正采样一次）
                 var bg = Interlocked.Increment(ref _backgroundTick);
-                if (bg == 10 && Interlocked.CompareExchange(ref _gcDoneThisBackground, 1, 0) == 0)
-                {
-                    _ = Task.Run(() =>
-                    {
-                        try { GC.Collect(2, GCCollectionMode.Optimized, true, true); } catch { }
-                    });
-                }
-                // 后台每 3 秒重绘一次（Tick 每 1s 到，所以隔 3 轮真正 Update 一次）
-                if (bg % 3 != 0) return;
+                if (bg % 5 != 0) return;
             }
             else
             {
                 _backgroundTick = 0;
-                _gcDoneThisBackground = 0;
             }
+
+            var snapshot = Sample();
+            lock (Gate) _snapshot = snapshot;
 
             _overlay?.Update(snapshot);
             if (fullscreen || (alwaysOn && !appFg)) _overlay?.ReassertTopmost();

@@ -87,6 +87,9 @@ public static class WallpaperService
         _timer = null;
     }
 
+    /// <summary>释放已解码图片缓存（需在 UI 线程调用）</summary>
+    public static void ReleaseImageCache() => _imageCache.Clear();
+
     /// <summary>注册一个壁纸小组件（主页每次排布 / 编辑保存后调用）：同步来源与速度，必要时补下载</summary>
     public static void Register(LaunchItem item)
     {
@@ -398,7 +401,12 @@ public static class WallpaperService
             var excess = files.OrderBy(File.GetLastWriteTime).Take(files.Length - MaxCache);
             foreach (var f in excess)
                 if (!st.Liked.Contains(Path.GetFileName(f)))
-                    try { File.Delete(f); } catch { }
+                    try
+                    {
+                        File.Delete(f);
+                        _imageCache.Remove(f);
+                    }
+                    catch { }
         }
         catch { }
     }
@@ -418,9 +426,10 @@ public static class WallpaperService
         try
         {
             if (new FileInfo(file).Length > 0)
-                img = new BitmapImage(new Uri(file)) { DecodePixelWidth = 480 };
+                img = new BitmapImage { DecodePixelWidth = 480, UriSource = new Uri(file) };
         }
         catch { img = null; }
+        if (_imageCache.Count >= 32) _imageCache.Remove(_imageCache.Keys.First());
         _imageCache[file] = img;
         return img;
     }

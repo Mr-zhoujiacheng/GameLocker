@@ -1045,7 +1045,7 @@
                     </StackPanel>
                 </StackPanel>
 
-                <!-- 游戏存档小组件：备份方式（本地目录 / 云端 WebDAV 上传）/ 目标文件夹 / 保留份数（仅游戏存档编辑时显示） -->
+                <!-- 游戏存档小组件：备份方式（本地目录 / 天翼云上传）/ 目标文件夹 / 保留份数（仅游戏存档编辑时显示） -->
                 <StackPanel x:Name="BackupRow" Spacing="14" Visibility="Collapsed">
                     <StackPanel Spacing="4">
                         <TextBlock Text="备份方式" FontSize="15" Opacity="0.9"/>
@@ -1086,7 +1086,7 @@
                         </Button>
                     </StackPanel>
 
-                    <!-- 云端：WebDAV 上传到网盘（默认坚果云），账号在「设置 → 云端备份」里配置（默认折叠，选「云端」时展开） -->
+                    <!-- 云端：按「设置 → 云端备份」里选定的网盘上传（默认折叠，选「云端」时展开） -->
                     <StackPanel x:Name="BackupCloudPanel" Spacing="8" Visibility="Collapsed">
                         <TextBlock Text="云端存档" FontSize="15" Opacity="0.9"/>
                         <TextBlock x:Name="CloudStateText" FontSize="14" Opacity="0.8" Text="未配置"/>
@@ -1097,7 +1097,7 @@
                             </StackPanel>
                         </Button>
                         <TextBlock x:Name="CloudHintText" FontSize="12" Opacity="0.55" TextWrapping="Wrap"
-                                   Text="备份会通过 WebDAV 上传到你的网盘；请先在「设置 → 云端备份」填写地址、账号与应用密码。"/>
+                                   Text="备份会上传到云端网盘；请先打开上方「云端备份设置」扫码登录。"/>
                     </StackPanel>
 
                     <StackPanel Spacing="4">

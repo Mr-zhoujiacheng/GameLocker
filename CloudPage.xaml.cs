@@ -1,206 +1,253 @@
+using System.Text.Json;
+using GameLocker.Models;
 using GameLocker.Services;
 using Microsoft.UI.Xaml;
 using Microsoft.UI.Xaml.Controls;
+using Microsoft.UI.Xaml.Media.Imaging;
 using Microsoft.UI.Xaml.Navigation;
+using Windows.Storage.Streams;
 
 namespace GameLocker;
 
-/// <summary>
-/// 云端备份设置：WebDAV（默认坚果云）的服务器地址、账号、应用密码、云端根目录名，含保存与测试连接。
-/// 手柄：方向=移动焦点，A=聚焦输入框/按下按钮，View(Select)/B=返回设置主页。
-/// </summary>
 public sealed partial class CloudPage : Page, ISettingsGamepad
 {
-    /// <summary>坚果云官方教程：第三方应用授权 WebDAV 开启方法（含添加应用密码的截图）</summary>
-    private const string NutstoreHelpUrl = "https://help.jianguoyun.com/?p=2064";
-
-    /// <summary>地址留空时的兜底值</summary>
-    private const string DefaultUrl = "https://dav.jianguoyun.com/dav/";
-
-    private const string DefaultRoot = "GameLocker";
-
     private readonly Control[] _controls;
     private int _index;
     private bool _ready;
     private bool _busy;
+    private CancellationTokenSource? _loginCancellation;
 
     public CloudPage()
     {
         InitializeComponent();
-
-        _controls = [UrlBox, UserBox, PasswordInput, RootBox, SaveButton, TestButton, OpenNutstoreButton];
-
-        UrlBox.Text = SettingsService.Current.WebDavUrl;
-        UserBox.Text = SettingsService.Current.WebDavUser;
-        RootBox.Text = SettingsService.Current.WebDavRootFolder;
+        _controls = [TianyiProviderRadio, BaiduProviderRadio, LoginButton, LogoutButton, RootBox, SaveButton, TestButton];
+        if (SettingsService.Current.CloudProvider == CloudProvider.Baidu) BaiduProviderRadio.IsChecked = true;
+        else TianyiProviderRadio.IsChecked = true;
+        RootBox.Text = CurrentRootFolder;
         RefreshUi();
     }
+
+    private CloudProvider Provider => BaiduProviderRadio.IsChecked == true ? CloudProvider.Baidu : CloudProvider.Tianyi;
+
+    private string CurrentRootFolder => Provider == CloudProvider.Baidu
+        ? SettingsService.Current.BaiduRootFolder
+        : SettingsService.Current.TianyiRootFolder;
 
     protected override void OnNavigatedTo(NavigationEventArgs e)
     {
         base.OnNavigatedTo(e);
         _ready = true;
         _index = 0;
-        FocusIndex(0);
+        FocusIndex();
     }
 
     protected override void OnNavigatedFrom(NavigationEventArgs e)
     {
-        base.OnNavigatedFrom(e);
         _ready = false;
+        _loginCancellation?.Cancel();
+        base.OnNavigatedFrom(e);
     }
 
     public void HandleGamepad(GamepadButtons buttons)
     {
         if (!_ready) return;
-
-        if (buttons.HasFlag(GamepadButtons.DPadUp) || buttons.HasFlag(GamepadButtons.DPadLeft)) Move(-1);
-        else if (buttons.HasFlag(GamepadButtons.DPadDown) || buttons.HasFlag(GamepadButtons.DPadRight)) Move(1);
-        else if (buttons.HasFlag(GamepadButtons.A)) ActivateCurrent();
-    }
-
-    private void Move(int delta)
-    {
-        var next = Math.Clamp(_index + delta, 0, _controls.Length - 1);
-        if (next == _index) return;
-        _index = next;
-        FocusIndex(next);
-    }
-
-    private void FocusIndex(int i)
-    {
-        var c = _controls[i];
-        FocusRing.FocusWithRing(c);
-        EnsureVisible(c);
-    }
-
-    private void ActivateCurrent()
-    {
-        switch (_controls[_index])
+        var delta = buttons.HasFlag(GamepadButtons.DPadUp) || buttons.HasFlag(GamepadButtons.DPadLeft) ? -1 :
+            buttons.HasFlag(GamepadButtons.DPadDown) || buttons.HasFlag(GamepadButtons.DPadRight) ? 1 : 0;
+        if (delta != 0)
         {
-            case TextBox tb:
-                FocusRing.FocusWithRing(tb); // 唤出系统输入法后可键盘输入
-                break;
-            case PasswordBox pb:
-                FocusRing.FocusWithRing(pb);
-                break;
-            case Button btn when ReferenceEquals(btn, SaveButton):
-                SaveConfig();
-                break;
-            case Button btn when ReferenceEquals(btn, TestButton):
-                _ = TestAsync();
-                break;
-            case Button btn when ReferenceEquals(btn, OpenNutstoreButton):
-                OpenNutstoreHelp();
-                break;
+            var next = _index + delta;
+            while (next >= 0 && next < _controls.Length && !_controls[next].IsEnabled) next += delta;
+            if (next >= 0 && next < _controls.Length) { _index = next; FocusIndex(); }
+        }
+        else if (buttons.HasFlag(GamepadButtons.A) && _controls[_index].IsEnabled)
+        {
+            if (_index == 0) TianyiProviderRadio.IsChecked = true;
+            else if (_index == 1) BaiduProviderRadio.IsChecked = true;
+            else if (_index == 2) _ = LoginAsync();
+            else if (_index == 3) Logout();
+            else if (_index == 4) FocusIndex();
+            else if (_index == 5) SaveConfig();
+            else if (_index == 6) _ = TestAsync();
         }
     }
 
-    /// <summary>窄窗口下焦点控件自动滚入可视区（同 AppearancePage 的手动 ChangeView 实现）</summary>
-    private void EnsureVisible(Control c)
+    private void FocusIndex()
     {
+        var control = _controls[_index];
+        FocusRing.FocusWithRing(control);
         try
         {
-            if (ReferenceEquals(c, _controls[0]))
-            {
-                ContentScroll.ChangeView(null, 0, null);
-                return;
-            }
-            if (ReferenceEquals(c, _controls[^1]))
-            {
-                ContentScroll.ChangeView(null, ContentScroll.ScrollableHeight, null);
-                return;
-            }
-
-            var p = c.TransformToVisual(ContentScroll).TransformPoint(new Windows.Foundation.Point(0, 0));
-            var vh = ContentScroll.ViewportHeight;
-            if (p.Y < 44)
-                ContentScroll.ChangeView(null, Math.Max(0, ContentScroll.VerticalOffset + p.Y - 44), null);
-            else if (p.Y + c.ActualHeight > vh)
-                ContentScroll.ChangeView(null, ContentScroll.VerticalOffset + p.Y + c.ActualHeight - vh + 8, null);
+            var point = control.TransformToVisual(ContentScroll).TransformPoint(new Windows.Foundation.Point());
+            if (point.Y < 0) ContentScroll.ChangeView(null, Math.Max(0, ContentScroll.VerticalOffset + point.Y), null);
+            else if (point.Y + control.ActualHeight > ContentScroll.ViewportHeight)
+                ContentScroll.ChangeView(null, ContentScroll.VerticalOffset + point.Y + control.ActualHeight - ContentScroll.ViewportHeight + 8, null);
         }
-        catch { /* 未连接视觉树时忽略 */ }
+        catch { }
     }
 
     private void OnBackClick(object sender, RoutedEventArgs e) => App.Main?.ShowSettingsHub();
-
     private void OnSaveClick(object sender, RoutedEventArgs e) => SaveConfig();
     private void OnTestClick(object sender, RoutedEventArgs e) => _ = TestAsync();
-    private void OnOpenNutstoreClick(object sender, RoutedEventArgs e) => OpenNutstoreHelp();
+    private void OnLoginClick(object sender, RoutedEventArgs e) => _ = LoginAsync();
+    private void OnLogoutClick(object sender, RoutedEventArgs e) => Logout();
 
-    /// <summary>把四个输入框写回设置；应用密码留空则保留本机已保存的那份</summary>
-    private void SaveConfig()
+    private void OnProviderChanged(object sender, RoutedEventArgs e)
     {
-        var url = UrlBox.Text.Trim();
-        if (url.Length == 0) url = DefaultUrl;
-        if (!url.EndsWith('/')) url += "/";
-
-        var user = UserBox.Text.Trim();
-        var root = RootBox.Text.Trim();
-        if (root.Length == 0) root = DefaultRoot;
-
-        SettingsService.Update(s =>
-        {
-            s.WebDavUrl = url;
-            s.WebDavUser = user;
-            s.WebDavRootFolder = root;
-        });
-
-        var pwd = PasswordInput.Password;
-        if (pwd.Length > 0)
-        {
-            SecretProtector.Save(pwd);
-            PasswordInput.Password = "";
-        }
-
-        UrlBox.Text = url;
-        RootBox.Text = root;
+        if (!_ready) return;
+        SettingsService.Update(s => s.CloudProvider = Provider);
+        _loginCancellation?.Cancel();
+        QrImage.Source = null;
+        QrImage.Visibility = Visibility.Collapsed;
+        RootBox.Text = CurrentRootFolder;
+        StatusText.Text = "已切换到" + CloudBackupProvider.DisplayName;
         RefreshUi();
-        StatusText.Text = string.IsNullOrEmpty(SecretProtector.Load())
-            ? "已保存，但还缺应用密码（无法上传）" : "已保存配置";
     }
 
-    /// <summary>用当前输入框的值（密码留空则用本机已保存的）测试连接</summary>
+    private void SaveConfig()
+    {
+        var root = RootBox.Text.Trim();
+        if (root.Length == 0) root = "GameLocker";
+        if (root.IndexOfAny(Path.GetInvalidFileNameChars()) >= 0 || root is "." or "..")
+        {
+            StatusText.Text = "请输入单个有效的云端目录名";
+            return;
+        }
+        var baidu = Provider == CloudProvider.Baidu;
+        SettingsService.Update(s =>
+        {
+            if (baidu) s.BaiduRootFolder = root;
+            else s.TianyiRootFolder = root;
+        });
+        RootBox.Text = root;
+        StatusText.Text = "云端目录已保存";
+    }
+
+    private async Task LoginAsync()
+    {
+        _loginCancellation?.Cancel();
+        using var cancellation = new CancellationTokenSource();
+        _loginCancellation = cancellation;
+        var ct = cancellation.Token;
+        var baidu = Provider == CloudProvider.Baidu;
+        var name = baidu ? "百度网盘" : "天翼云";
+        StatusText.Text = "正在获取" + name + "二维码…";
+        QrImage.Visibility = Visibility.Collapsed;
+        try
+        {
+            if (baidu) await LoginBaiduAsync(ct);
+            else await LoginTianyiAsync(ct);
+            QrImage.Visibility = Visibility.Collapsed;
+            RefreshUi();
+            StatusText.Text = name + "登录成功，可以备份存档了";
+        }
+        catch (OperationCanceledException) { }
+        catch (Exception ex)
+        {
+            if (!ct.IsCancellationRequested)
+            {
+                DebugLog.Write($"云端登录（{name}）失败：{ex.GetType().Name}: {ex.Message}");
+                QrImage.Source = null;
+                QrImage.Visibility = Visibility.Collapsed;
+                StatusText.Text = "登录失败：" + ex.Message;
+            }
+        }
+        finally { if (ReferenceEquals(_loginCancellation, cancellation)) _loginCancellation = null; }
+    }
+
+    private async Task LoginTianyiAsync(CancellationToken ct)
+    {
+        using var login = new TianyiLoginSession();
+        var bytes = await login.CreateQrAsync(ct);
+        await ShowQrAsync(bytes, ct);
+        StatusText.Text = "请使用天翼云盘 App 扫码登录";
+        var account = await login.WaitForLoginAsync(
+            text => { if (!ct.IsCancellationRequested) StatusText.Text = text; }, ct);
+        ct.ThrowIfCancellationRequested();
+        var error = await TianyiCloudService.TestAsync(account);
+        ct.ThrowIfCancellationRequested();
+        if (error is not null) throw new IOException(error);
+        SecretProtector.Save(JsonSerializer.Serialize(account));
+    }
+
+    private async Task LoginBaiduAsync(CancellationToken ct)
+    {
+        using var login = new BaiduLoginSession();
+        var bytes = await login.CreateQrAsync(ct);
+        await ShowQrAsync(bytes, ct);
+        StatusText.Text = "请使用百度网盘 App 扫码登录";
+        var account = await login.WaitForLoginAsync(
+            text => { if (!ct.IsCancellationRequested) StatusText.Text = text; }, ct);
+        ct.ThrowIfCancellationRequested();
+        var error = await BaiduCloudService.TestAsync(account);
+        ct.ThrowIfCancellationRequested();
+        if (error is not null) throw new IOException(error);
+        SecretProtector.Save(JsonSerializer.Serialize(account), "baidu");
+    }
+
+    private async Task ShowQrAsync(byte[] bytes, CancellationToken ct)
+    {
+        using var stream = new InMemoryRandomAccessStream();
+        using (var writer = new DataWriter(stream.GetOutputStreamAt(0)))
+        {
+            writer.WriteBytes(bytes);
+            await writer.StoreAsync();
+        }
+        var image = new BitmapImage();
+        await image.SetSourceAsync(stream);
+        ct.ThrowIfCancellationRequested();
+        QrImage.Source = image;
+        QrImage.Visibility = Visibility.Visible;
+    }
+
+    private void Logout()
+    {
+        _loginCancellation?.Cancel();
+        try
+        {
+            var baidu = Provider == CloudProvider.Baidu;
+            SecretProtector.Clear(baidu ? "baidu" : "tianyi");
+            QrImage.Source = null;
+            QrImage.Visibility = Visibility.Collapsed;
+            RefreshUi();
+            StatusText.Text = "已退出" + (baidu ? "百度网盘" : "天翼云") + "登录，云端已有备份保留";
+        }
+        catch (Exception ex) { StatusText.Text = "退出登录失败：" + ex.Message; }
+    }
+
     private async Task TestAsync()
     {
         if (_busy) return;
-
-        var pwd = PasswordInput.Password;
-        if (pwd.Length == 0) pwd = SecretProtector.Load() ?? "";
-
-        var acct = WebDavService.BuildAccount(UrlBox.Text, UserBox.Text, pwd);
-        if (acct is null)
-        {
-            StatusText.Text = "请先填写服务器地址、账号与应用密码";
-            return;
-        }
-
+        var baidu = Provider == CloudProvider.Baidu;
+        var name = baidu ? "百度网盘" : "天翼云";
+        var tianyi = baidu ? null : TianyiCloudService.CurrentAccount();
+        var baiduAccount = baidu ? BaiduCloudService.CurrentAccount() : null;
+        if (tianyi is null && baiduAccount is null) { StatusText.Text = "请先扫码登录" + name; return; }
         _busy = true;
         RefreshUi();
-        StatusText.Text = "正在测试连接…";
-
-        string? err;
-        try { err = await WebDavService.TestAsync(acct.Value); }
-        catch (Exception ex) { err = "连接失败：" + ex.Message; }
-        finally { _busy = false; }
-
-        RefreshUi();
-        StatusText.Text = err ?? "连接成功，可以上传存档了";
-    }
-
-    /// <summary>交给系统默认浏览器打开坚果云教程；失败静默</summary>
-    private static async void OpenNutstoreHelp()
-    {
-        try { await Windows.System.Launcher.LaunchUriAsync(new Uri(NutstoreHelpUrl)); }
-        catch { }
+        StatusText.Text = "正在测试" + name + "连接…";
+        try
+        {
+            var error = baidu
+                ? await BaiduCloudService.TestAsync(baiduAccount!)
+                : await TianyiCloudService.TestAsync(tianyi!);
+            StatusText.Text = error ?? "连接成功，可以上传存档了";
+        }
+        catch (Exception ex) { StatusText.Text = "连接失败：" + ex.Message; }
+        finally { _busy = false; RefreshUi(); }
     }
 
     private void RefreshUi()
     {
-        PasswordStateText.Text = string.IsNullOrEmpty(SecretProtector.Load())
-            ? "未设置（无法上传）" : "已保存（本机加密存储）";
-        SaveButton.IsEnabled = !_busy;
-        TestButton.IsEnabled = !_busy;
+        var baidu = Provider == CloudProvider.Baidu;
+        var name = baidu ? "百度网盘" : "天翼云";
+        IntroText.Text = $"使用{(baidu ? "百度网盘" : "天翼云盘")} App 扫码登录，存档按游戏分目录上传。登录会话加密保存在本机。";
+        AccountTitle.Text = name + "账号";
+        RootHint.Text = $"存档会保存到{(baidu ? "百度网盘" : "天翼云盘")} /该目录/游戏名/ 下。";
+
+        var user = baidu ? BaiduCloudService.CurrentAccount()?.User : TianyiCloudService.CurrentAccount()?.User;
+        AccountText.Text = user is null ? "未登录" : "已登录：" + user;
+        LogoutButton.IsEnabled = user is not null;
+        TestButton.IsEnabled = !_busy && user is not null;
     }
 
     public bool IsCapturing => false;

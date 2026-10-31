@@ -51,11 +51,17 @@ namespace GameLocker.Services;
     /// <summary>启动轮询（重复调用无副作用；由主页进入时调用）</summary>
     public static void Start() => _timer ??= new System.Threading.Timer(_ => Poll(), null, 0, _pollMs);
 
-    /// <summary>停止轮询并清除当前状态（离开主页时调用）</summary>
-    public static void Stop()
+    /// <summary>暂停轮询，保留冻结记录，恢复后仍可解冻原来的应用。</summary>
+    public static void Pause()
     {
         _timer?.Dispose();
         _timer = null;
+    }
+
+    /// <summary>停止轮询并清除当前状态（退出时调用）</summary>
+    public static void Stop()
+    {
+        Pause();
         Current = null;
         lock (_frozen) _frozen.Clear();
     }

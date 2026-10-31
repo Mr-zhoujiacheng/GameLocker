@@ -58,6 +58,9 @@ public static class SlideshowService
         _timer = null;
     }
 
+    /// <summary>释放已解码图片缓存（需在 UI 线程调用）</summary>
+    public static void ReleaseImageCache() => _imageCache.Clear();
+
     /// <summary>注册一个轮播文件夹（首次注册时后台扫描；已注册则只更新速度档位，主页每次排布调用）</summary>
     public static void Register(string folder, int intervalSeconds)
     {
@@ -162,10 +165,11 @@ public static class SlideshowService
         {
             if (new FileInfo(file).Length > 0)
             {
-                img = new BitmapImage(new Uri(file)) { DecodePixelWidth = 320 };
+                img = new BitmapImage { DecodePixelWidth = 320, UriSource = new Uri(file) };
             }
         }
         catch { img = null; }
+        if (_imageCache.Count >= 32) _imageCache.Remove(_imageCache.Keys.First());
         _imageCache[file] = img;
         return img;
     }

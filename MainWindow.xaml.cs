@@ -302,6 +302,8 @@ public sealed partial class MainWindow : Window
 
         // 修改器无精确匹配时，弹窗让用户从相似结果里挑一个
         TrainerService.CandidatesReady += OnTrainerCandidates;
+        SaveBackupService.ChooseRestoreAsync = ChooseSaveRestoreAsync;
+        SaveBackupService.ConfirmRestartAsync = ConfirmSaveRestartAsync;
 
         // OptiScaler 点击磁贴后，弹窗显示适配性并询问是否注入
         OptiScalerService.InspectionReady += OnOptiInspection;
@@ -309,6 +311,7 @@ public sealed partial class MainWindow : Window
         // 触屏：点弹窗底部放大的提示图标 = 执行对应手柄指令（与物理手柄共用同一处理入口）
         TrainerChoiceHintBar.HintTapped += key => HandleTrainerChoice(GamepadHintBar.ToGamepadButtons(key));
         OptiHintBar.HintTapped += key => HandleOpti(GamepadHintBar.ToGamepadButtons(key));
+        SaveRestoreHintBar.HintTapped += key => _saveRestoreInput?.Invoke(GamepadHintBar.ToGamepadButtons(key));
 
         Root.Navigate(typeof(MainPage));
 
@@ -369,6 +372,173 @@ public sealed partial class MainWindow : Window
             // 滑入结束再抢一次前台：Activate 是在窗口还在屏外时调的，系统有时因此不给键盘焦点
             AnimateMove(_summonStart, _summonTarget, 260, easeOut: true, OnSummonDone);
         };
+    }
+
+    private bool _saveRestoreOpen;
+    private Storyboard? _saveRestoreIn;
+    private Action<GamepadButtons>? _saveRestoreInput;
+
+    private Task<bool> ConfirmSaveRestartAsync(string message)
+    {
+        var completion = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
+        if (!DispatcherQueue.TryEnqueue(() =>
+        {
+            try
+            {
+                if (_trainerChoiceOpen || _optiOpen || _saveRestoreOpen)
+                    throw new IOException("请先关闭当前弹窗后重试恢复");
+                SaveRestoreTitle.Text = "退出恢复重启？";
+                SaveRestoreSubtitle.Text = "恢复方式确认";
+                SaveRestoreDescription.Text = message;
+                SaveRestoreWarning.Text = "将退出游戏、恢复所选存档，再重新打开游戏。不会强制结束游戏。";
+                SaveRestoreList.Children.Clear();
+                SaveRestoreHintBar.Hints = "A:确认重启恢复|B:取消";
+                _saveRestoreInput = buttons =>
+                {
+                    if (buttons.HasFlag(GamepadButtons.B) || buttons.HasFlag(GamepadButtons.View))
+                    {
+                        CloseSaveRestore();
+                        completion.TrySetResult(false);
+                    }
+                    else if (buttons.HasFlag(GamepadButtons.A))
+                    {
+                        CloseSaveRestore();
+                        completion.TrySetResult(true);
+                    }
+                };
+                OpenSaveRestore();
+            }
+            catch (Exception ex) { completion.TrySetException(ex); }
+        })) completion.TrySetException(new IOException("无法打开退出恢复确认窗口"));
+        return completion.Task;
+    }
+
+    private Task<SaveRestoreChoice?> ChooseSaveRestoreAsync(SaveRestoreRequest request)
+    {
+        var completion = new TaskCompletionSource<SaveRestoreChoice?>(TaskCreationOptions.RunContinuationsAsynchronously);
+        if (!DispatcherQueue.TryEnqueue(async () =>
+        {
+            try { completion.TrySetResult(await ShowSaveRestoreAsync(request)); }
+            catch (Exception ex) { completion.TrySetException(ex); }
+        })) completion.TrySetException(new IOException("无法打开备份选择窗口"));
+        return completion.Task;
+    }
+
+    private Task<SaveRestoreChoice?> ShowSaveRestoreAsync(SaveRestoreRequest request)
+    {
+        if (_trainerChoiceOpen || _optiOpen || _saveRestoreOpen)
+            throw new IOException("请先关闭当前弹窗，再选择存档备份");
+
+        var completion = new TaskCompletionSource<SaveRestoreChoice?>(TaskCreationOptions.RunContinuationsAsynchronously);
+        SaveRestoreTitle.Text = "恢复存档";
+        SaveRestoreSubtitle.Text = $"{request.GameName} · {(request.Cloud ? CloudBackupProvider.DisplayName : "本地备份")} · 共 {request.Versions.Count} 个版本";
+        SaveRestoreDescription.Text = "选择要恢复的版本，当前存档会自动备份。";
+        SaveRestoreWarning.Text = "A 恢复：请先返回游戏主菜单。\nX 同步：A 键恢复无效时使用，会先退出游戏，再覆盖存档并重启游戏。";
+        SaveRestoreHintBar.Hints = "DPAD:选择|A:恢复|X:同步|B:取消";
+        SaveRestoreList.Children.Clear();
+        var cards = new List<Border>();
+        var selectedIndex = 0;
+        void SelectVersion(int index)
+        {
+            selectedIndex = index;
+            for (var j = 0; j < cards.Count; j++)
+            {
+                var selected = j == index;
+                cards[j].BorderBrush = new SolidColorBrush(selected ? Windows.UI.Color.FromArgb(255, 76, 194, 255) : Windows.UI.Color.FromArgb(31, 255, 255, 255));
+                cards[j].BorderThickness = new Thickness(selected ? 2 : 1.5);
+                cards[j].Background = new SolidColorBrush(selected ? Windows.UI.Color.FromArgb(38, 76, 194, 255) : Windows.UI.Color.FromArgb(20, 255, 255, 255));
+            }
+            if (index >= 0 && index < cards.Count) cards[index].StartBringIntoView();
+        }
+        for (var i = 0; i < request.Versions.Count; i++)
+        {
+            var version = request.Versions[i];
+            var size = version.Size < 1024 ? $"{version.Size} B" : version.Size < 1024 * 1024
+                ? $"{version.Size / 1024d:0.##} KB" : $"{version.Size / 1024d / 1024d:0.##} MB";
+            var row = new StackPanel { Spacing = 5, Margin = new Thickness(0, 8, 0, 8) };
+            row.Children.Add(new TextBlock
+            {
+                Text = (i == 0 ? "[最新] " : "") + version.FileName,
+                FontWeight = FontWeights.SemiBold, TextWrapping = TextWrapping.Wrap
+            });
+            row.Children.Add(new TextBlock
+            {
+                Text = $"创建时间：{version.Created:yyyy-MM-dd HH:mm:ss}    大小：{size}",
+                FontSize = 13, TextWrapping = TextWrapping.Wrap
+            });
+            row.Children.Add(new TextBlock
+            {
+                Text = $"修改时间：{version.Modified:yyyy-MM-dd HH:mm:ss}", FontSize = 12, Opacity = 0.7
+            });
+            var card = new Border { Child = row, CornerRadius = new CornerRadius(12), Padding = new Thickness(14, 2, 14, 2) };
+            var index = i;
+            card.Tapped += (_, e) => { SelectVersion(index); e.Handled = true; };
+            ToolTipService.SetToolTip(card, version.Location);
+            cards.Add(card);
+            SaveRestoreList.Children.Add(card);
+        }
+        SelectVersion(0);
+        _saveRestoreInput = buttons =>
+        {
+            if (buttons.HasFlag(GamepadButtons.B) || buttons.HasFlag(GamepadButtons.View))
+            {
+                CloseSaveRestore();
+                completion.TrySetResult(null);
+                return;
+            }
+            if (cards.Count == 0) return;
+            if (buttons.HasFlag(GamepadButtons.DPadUp)) SelectVersion((selectedIndex - 1 + cards.Count) % cards.Count);
+            else if (buttons.HasFlag(GamepadButtons.DPadDown)) SelectVersion((selectedIndex + 1) % cards.Count);
+            else if (buttons.HasFlag(GamepadButtons.A) || buttons.HasFlag(GamepadButtons.X))
+            {
+                var choice = new SaveRestoreChoice(request.Versions[selectedIndex], buttons.HasFlag(GamepadButtons.X));
+                CloseSaveRestore();
+                completion.TrySetResult(choice);
+            }
+        };
+        OpenSaveRestore();
+        return completion.Task;
+    }
+
+    private void OnSaveRestoreMaskTapped(object sender, TappedRoutedEventArgs e) =>
+        _saveRestoreInput?.Invoke(GamepadButtons.B);
+
+    private void OpenSaveRestore()
+    {
+        _saveRestoreOpen = true;
+        if (!_shown) ShowFromTray();
+        else BringToForeground();
+        SaveRestorePanel.MaxWidth = Math.Max(0, ((FrameworkElement)Content).ActualWidth - 24);
+        SaveRestorePanel.MaxHeight = Math.Max(0, ((FrameworkElement)Content).ActualHeight - 24);
+        SaveRestoreOverlay.Visibility = Visibility.Visible;
+        var sb = new Storyboard();
+        void Animate(DependencyObject target, string property, double from, double to, int duration, bool ease = false)
+        {
+            var animation = new DoubleAnimation
+            {
+                From = from, To = to, Duration = TimeSpan.FromMilliseconds(duration),
+                EasingFunction = ease ? new CubicEase { EasingMode = EasingMode.EaseOut } : null
+            };
+            Storyboard.SetTarget(animation, target);
+            Storyboard.SetTargetProperty(animation, property);
+            sb.Children.Add(animation);
+        }
+        Animate(SaveRestoreMask, "Opacity", 0, 1, 150);
+        Animate(SaveRestorePanel, "Opacity", 0, 1, 180);
+        Animate(SaveRestorePanelTransform, "ScaleX", 0.94, 1, 220, true);
+        Animate(SaveRestorePanelTransform, "ScaleY", 0.94, 1, 220, true);
+        Animate(SaveRestorePanelTransform, "TranslateY", 24, 0, 250, true);
+        _saveRestoreIn?.Stop();
+        _saveRestoreIn = sb;
+        sb.Begin();
+    }
+
+    private void CloseSaveRestore()
+    {
+        _saveRestoreIn?.Stop();
+        SaveRestoreOverlay.Visibility = Visibility.Collapsed;
+        _saveRestoreOpen = false;
+        _saveRestoreInput = null;
     }
 
     // ---- 修改器候选选择遮罩：精确匹配失败时弹出，用户从相似结果里挑一个（手柄可操作）----
@@ -839,6 +1009,7 @@ public sealed partial class MainWindow : Window
     public void ShowFromTray()
     {
         _shown = true;
+        (Root.Content as MainPage)?.SetBackground(false);
         _edgeGesture?.SetStripVisible(false);
         PrepareSummon();
         Activate();
@@ -997,6 +1168,7 @@ public sealed partial class MainWindow : Window
         // 立刻停手柄路由：一旦决定隐藏，滑出动画期间就不该再响应手柄
         // （否则刚启动游戏后晃动/误触按键会把启动器上的操作（如 Y 关闭程序）打到已经看不见的界面上）
         _shown = false;
+        (Root.Content as MainPage)?.SetBackground(true);
         SetGamepadRouting(false);
         if (!SettingsService.Current.SummonAnimation || _animating)
         {
@@ -1313,6 +1485,12 @@ public sealed partial class MainWindow : Window
         // 双保险：入队后窗口可能已经隐藏/失去前台，此时一律不处理手柄
         // （否则"在游戏里按 Y"会命中启动器上一次选中的磁贴，把游戏关掉）
         if (!_routing) return;
+
+        if (_saveRestoreInput is not null)
+        {
+            _saveRestoreInput(buttons);
+            return;
+        }
 
         // 系统焦点框由各页面在切换光标时自行清理（FocusRing）：页面真正把焦点交给某个控件时
         // 焦点框就是它的光标，不能在这里统一关掉，否则到边界不移动时光标会消失。

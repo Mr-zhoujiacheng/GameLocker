@@ -29,10 +29,13 @@ public sealed partial class AppearancePage : Page, ISettingsGamepad
     private static readonly TileThemeOption[] ThemeOptions =
     [
         new(TileTheme.Colorful, "彩色磁贴", "按颜色 / 随机配色"),
-        new(TileTheme.Win10, "简约磁贴", "无颜色 · 深灰"),
-        new(TileTheme.Gradient, "渐变磁贴", "斜向亮暗渐变"),
-        new(TileTheme.Glass, "玻璃磁贴", "磨砂色底 · 无底部色条"),
-        new(TileTheme.Transparent, "透明磁贴", "无底色 · 不选颜色"),
+        new(TileTheme.OledBlack, "纯黑磁贴", "OLED 省电 · 极简"),
+        new(TileTheme.Holographic, "全息磁贴", "幻彩渐变 · 动感"),
+        new(TileTheme.Acrylic, "亚克力磁贴", "磨砂通透 · 云母质感"),
+        new(TileTheme.Aurora, "极光磁贴", "青绿→蓝→紫 · 夜空流动"),
+        new(TileTheme.Vaporwave, "蒸汽波磁贴", "橙→粉→紫 · 复古日落"),
+        new(TileTheme.Outline, "线框磁贴", "无底色 · 彩色描边"),
+        new(TileTheme.Bevel, "拟物磁贴", "实体按键 · 立体质感"),
     ];
 
     /// <summary>主题预览用的示例颜色（固定，避免预览随磁贴随机配色变化）</summary>
@@ -632,9 +635,9 @@ public sealed partial class AppearancePage : Page, ISettingsGamepad
 
     private Border BuildThemeRow(TileThemeOption opt)
     {
-        // 大预览块：与磁贴一致（玻璃用磨砂色底本身，不再叠加底部色条；渐变加顶部高光）
+        // 大预览块：与磁贴一致（全息/亚克力加顶部高光；线框用强调色粗描边）
         var overlay = new Grid();
-        if (opt.Theme == TileTheme.Gradient)
+        if (opt.Theme == TileTheme.Holographic)
             overlay.Children.Add(new Border
             {
                 Height = 14,
@@ -657,8 +660,14 @@ public sealed partial class AppearancePage : Page, ISettingsGamepad
             Height = 52,
             CornerRadius = new CornerRadius(8),
             Background = TileStyle.FillFor(opt.Theme, PreviewAccent),
-            BorderBrush = new SolidColorBrush(Windows.UI.Color.FromArgb(0x40, 0xFF, 0xFF, 0xFF)),
-            BorderThickness = new Thickness(1),
+            BorderBrush = new SolidColorBrush(opt.Theme == TileTheme.Outline
+                ? PreviewAccent
+                : opt.Theme == TileTheme.OledBlack
+                    ? Windows.UI.Color.FromArgb(0x1A, 0xFF, 0xFF, 0xFF)
+                    : opt.Theme == TileTheme.Bevel
+                        ? Windows.UI.Color.FromArgb(0x66, 0xFF, 0xFF, 0xFF)
+                        : Windows.UI.Color.FromArgb(0x40, 0xFF, 0xFF, 0xFF)),
+            BorderThickness = new Thickness(opt.Theme == TileTheme.Outline ? 2 : 1),
             VerticalAlignment = VerticalAlignment.Center,
             Child = overlay
         };

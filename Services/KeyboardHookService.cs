@@ -50,8 +50,12 @@ public sealed class KeyboardHookService : IDisposable
     public event Action? StartMenuToggle;
 
     /// <summary>开始菜单模式：系统开始菜单被打开（开始按钮触屏点击等钩子抓不到的路径）。
-    /// 触发前已把该窗口隐藏，调用方只需切换本启动器显隐（在钩子线程上，需自行 marshal）</summary>
+    /// 触发前已阻断系统开始/搜索界面，调用方显示并激活启动器（在钩子线程上，需自行 marshal）</summary>
     public event Action? StartMenuOpened;
+
+    private readonly object _blockTimerLock = new();
+    private Timer? _blockTimer;
+    private long _blockUntil;
 
     private volatile bool _suspended;
     private volatile bool _running;
@@ -82,17 +86,12 @@ public sealed class KeyboardHookService : IDisposable
     private WndProc? _coverProc;      // 防 GC 回收
     private bool _coverDown;          // 覆盖窗上左键已按下（抬起时触发切换）
 
-    // ---- 呼出瞬间的"开始菜单封锁"（防止原版菜单先画出来）----
-    private Timer? _blockTimer;   // 50ms 轮询，封锁期内结束开始/搜索宿主进程
-    private long _blockUntil;     // 封锁截止 TickCount64
-    private long _diagUntil;      // 诊断日志截止 TickCount64（呼出后记录大窗口事件）
-
     /// <summary>暂停/恢复判定（捕获键位期间暂停，避免钩子把用户正在按的键吞掉）</summary>
     public void SetSuspended(bool value) => _suspended = value;
 
     public void Start()
     {
-        if (_running) return;
+        if (_thread?.IsAlive == true) return;
         _running = true;
         _thread = new Thread(ThreadProc) { IsBackground = true, Name = "GameLocker.KeyHook" };
         _thread.Start();
@@ -100,17 +99,37 @@ public sealed class KeyboardHookService : IDisposable
 
     public void Dispose()
     {
-        if (!_running) return;
+        _startMenuMode = false;
         _running = false;
-        _blockTimer?.Dispose();
-        _blockTimer = null;
-        // 投递 WM_QUIT 唤醒消息循环，让钩子线程退出并卸载钩子
+        // 等清理完成再允许主窗口退出，避免后台线程尚未卸载就结束进程。
         if (_threadId != 0) PostThreadMessage(_threadId, WM_QUIT, IntPtr.Zero, IntPtr.Zero);
+        var thread = _thread;
+        if (thread != null && thread != Thread.CurrentThread && !thread.Join(3000))
+            DebugLog.Write("输入接管释放等待超时");
     }
 
     private void ThreadProc()
     {
-        _threadId = GetCurrentThreadId();
+        try
+        {
+            // 先创建消息队列，再公布线程 ID，确保退出消息不会因队列尚不存在而丢失。
+            PeekMessage(out _, IntPtr.Zero, 0, 0, 0);
+            _threadId = GetCurrentThreadId();
+            RunHookLoop();
+        }
+        catch (Exception ex)
+        {
+            DebugLog.Write($"输入接管线程异常: {ex}");
+        }
+        finally
+        {
+            _running = false;
+            CleanupHooks();
+        }
+    }
+
+    private void RunHookLoop()
+    {
         _proc = HookCallback; // 保持委托存活，避免被 GC 回收导致回调跳飞
         // 开机自启时本进程可能早于资源管理器/任务栏就绪，钩子偶尔装不上。
         // 失败不要直接退出（否则开机后 Win 键、开始按钮、边缘手势的接管全部失效），改为持续重试。
@@ -119,17 +138,12 @@ public sealed class KeyboardHookService : IDisposable
             DebugLog.Write("键盘钩子安装失败，2 秒后重试");
             Thread.Sleep(2000);
         }
-        if (!_running)
-        {
-            _threadId = 0;
-            return;
-        }
+        if (!_running) return;
         // 鼠标钩子（开始按钮拦截）失败不影响键盘功能
         _mouseProc = MouseCallback;
         _mouseHook = SetWindowsHookEx(WH_MOUSE_LL, _mouseProc, GetModuleHandle(null), 0);
         // 前台变化监听 + 窗口显示监听：触屏点开始按钮不会产生鼠标钩子消息（explorer 自己处理触摸），
-        // 改为监听"系统开始/搜索窗口出现"这一信号，命中即刻结束其宿主进程。
-        // 显示事件比前台事件更早，能赶在菜单画出第一帧之前把它按掉。
+        // 监听系统开始/搜索窗口，创建及显示时主动阻断，避免原生菜单闪现。
         _winEventProc = WinEventCallback;
         _winEvent = SetWinEventHook(EVENT_SYSTEM_FOREGROUND, EVENT_SYSTEM_FOREGROUND, IntPtr.Zero,
             _winEventProc, 0, 0, WINEVENT_OUTOFCONTEXT | WINEVENT_SKIPOWNPROCESS);
@@ -154,6 +168,27 @@ public sealed class KeyboardHookService : IDisposable
         {
             TranslateMessage(ref msg);
             DispatchMessage(ref msg);
+        }
+    }
+
+    private void CleanupHooks()
+    {
+        Timer? blockTimer;
+        lock (_blockTimerLock)
+        {
+            blockTimer = _blockTimer;
+            _blockTimer = null;
+            Interlocked.Exchange(ref _blockUntil, 0);
+        }
+        blockTimer?.DisposeAsync().AsTask().GetAwaiter().GetResult();
+        _winHeld = false;
+        _winCombo = false;
+        _suppressUp = false;
+        _suppressStartClick = false;
+        if (_coverDown)
+        {
+            _coverDown = false;
+            ReleaseCapture();
         }
         if (_cover != IntPtr.Zero)
         {
@@ -180,9 +215,13 @@ public sealed class KeyboardHookService : IDisposable
             UnhookWindowsHookEx(_mouseHook);
             _mouseHook = IntPtr.Zero;
         }
-        UnhookWindowsHookEx(_hook);
-        _hook = IntPtr.Zero;
+        if (_hook != IntPtr.Zero)
+        {
+            UnhookWindowsHookEx(_hook);
+            _hook = IntPtr.Zero;
+        }
         _threadId = 0;
+        DebugLog.Write("输入接管已释放：覆盖窗已销毁，键鼠钩子和窗口监听已卸载");
     }
 
     private IntPtr HookCallback(int nCode, IntPtr wParam, IntPtr lParam)
@@ -271,8 +310,11 @@ public sealed class KeyboardHookService : IDisposable
     private void ApplyCover()
     {
         if (_cover == IntPtr.Zero) return;
-        if (!_startMenuMode)
+        if (!_running || !_startMenuMode)
         {
+            _winHeld = false;
+            _winCombo = false;
+            _suppressStartClick = false;
             KillTimer(_cover, (uint)CoverTimerId);
             if (_coverDown)
             {
@@ -361,11 +403,7 @@ public sealed class KeyboardHookService : IDisposable
         return DefWindowProc(hwnd, msg, wParam, lParam);
     }
 
-    /// <summary>
-    /// 前台/窗口显示回调：开始菜单模式下一旦出现系统开始/搜索界面，立刻结束其宿主进程。
-    /// 宿主不是已知进程时（某些系统版本把它挂在别的进程里）退化为隐藏 + ESC。
-    /// 同时呼出后的 8 秒内记录所有大窗口事件，用于定位掌机上究竟是哪个进程画出了开始菜单。
-    /// </summary>
+    /// <summary>开始/搜索界面出现时结束已知宿主，未知宿主退回 ESC + 隐藏。</summary>
     private void WinEventCallback(IntPtr hook, uint eventId, IntPtr hwnd, int idObject, int idChild,
         uint eventThread, uint eventTime)
     {
@@ -373,40 +411,29 @@ public sealed class KeyboardHookService : IDisposable
         if (eventId == EVENT_SYSTEM_FOREGROUND) ReassertCoverTop();
         if (!_startMenuMode) return;
         if (idObject != OBJID_WINDOW || idChild != 0 || hwnd == IntPtr.Zero) return;
-        if (Environment.TickCount64 < Interlocked.Read(ref _diagUntil))
-            LogDiagEvent(eventId, hwnd);
         if (!IsStartUiWindow(hwnd)) return;
-        // 创建事件的窗口此时还没显示，不做可见性要求；显示/前台事件要求真的可见
+        // 创建事件只做拦截，不要求可见，也不呼出启动器。
         if (eventId != EVENT_OBJECT_CREATE && !IsWindowVisible(hwnd)) return;
         GetWindowThreadProcessId(hwnd, out var pid);
         var exe = ProcessImageName(pid);
         DebugLog.Write($"开始菜单: 拦截系统开始/搜索界面 event={eventId} hwnd={hwnd} pid={pid} exe={exe}");
         if (exe.Equals("StartMenuExperienceHost.exe", StringComparison.OrdinalIgnoreCase)
             || exe.Equals("SearchHost.exe", StringComparison.OrdinalIgnoreCase))
-        {
             KillStartUiProcesses(hwnd);
-        }
         else
-        {
-            // 未知宿主（例如被 explorer 自己承载）：不能杀 explorer，退回 ESC + 隐藏
             HideForeignStartWindow(hwnd);
-        }
-        // 创建事件只做拦截：此时系统还没打算"打开"菜单，不能顺手把启动器拉出来
         if (eventId != EVENT_OBJECT_CREATE) StartMenuOpened?.Invoke();
     }
 
-    /// <summary>开始界面窗口识别：已知宿主进程，或任何进程的 CoreWindow 且标题是开始/搜索</summary>
     private static bool IsStartUiWindow(IntPtr hwnd)
     {
         if (IsStartMenuProcessWindow(hwnd)) return true;
         var cls = GetClassNameString(hwnd);
         if (!string.Equals(cls, "Windows.UI.Core.CoreWindow", StringComparison.OrdinalIgnoreCase))
             return false;
-        var title = WindowText(hwnd);
-        return title is "开始" or "搜索" or "Start" or "Search";
+        return WindowText(hwnd) is "开始" or "搜索" or "Start" or "Search";
     }
 
-    /// <summary>非开始/搜索宿主进程的窗口：ESC 让它自行收起，再隐藏，避免杀系统进程</summary>
     private static void HideForeignStartWindow(IntPtr hwnd)
     {
         try
@@ -422,53 +449,33 @@ public sealed class KeyboardHookService : IDisposable
         DebugLog.Write($"开始菜单: 未知宿主窗口已隐藏 hwnd={hwnd}");
     }
 
-    /// <summary>诊断：记录呼出后出现的大窗口（>=200x200），便于判断开始菜单到底由谁绘制</summary>
-    private static void LogDiagEvent(uint eventId, IntPtr hwnd)
-    {
-        try
-        {
-            GetWindowRect(hwnd, out var r);
-            if (r.Right - r.Left < 200 || r.Bottom - r.Top < 200) return;
-            GetWindowThreadProcessId(hwnd, out var pid);
-            if (pid == Environment.ProcessId) return;
-            DebugLog.Write($"诊断窗口: event={eventId} pid={pid} exe={ProcessImageName(pid)} " +
-                           $"cls={GetClassNameString(hwnd)} title={WindowText(hwnd)} " +
-                           $"rect={r.Left},{r.Top},{r.Right},{r.Bottom} visible={IsWindowVisible(hwnd)}");
-        }
-        catch { /* 诊断日志失败不影响拦截 */ }
-    }
-
-    /// <summary>
-    /// 呼出/切换启动器时开启约 2.5 秒封锁期：每 50ms 结束一次开始/搜索宿主进程。
-    /// 触屏上滑时 explorer 会同时拉起开始菜单，窗口 100ms 内就会画出来，
-    /// 靠"出现后再隐藏/结束"必然闪一帧；提前把这个进程按死，菜单就没有机会显示。
-    /// </summary>
+    /// <summary>呼出/切换时开启约 2.5 秒封锁期，每 50ms 阻断系统开始/搜索界面。</summary>
     public void BeginStartUiBlockWatch(int durationMs = 2500)
     {
-        if (!_startMenuMode) return;
-        Interlocked.Exchange(ref _blockUntil, Environment.TickCount64 + durationMs);
-        Interlocked.Exchange(ref _diagUntil, Environment.TickCount64 + 8000);
-        _blockTimer ??= new Timer(_ => BlockWatchTick(), null, 0, 50);
-        _blockTimer.Change(0, 50);
+        lock (_blockTimerLock)
+        {
+            if (!_running || !_startMenuMode) return;
+            Interlocked.Exchange(ref _blockUntil, Environment.TickCount64 + durationMs);
+            _blockTimer ??= new Timer(_ => BlockWatchTick(), null, Timeout.Infinite, Timeout.Infinite);
+            _blockTimer.Change(0, 50);
+        }
     }
 
     private void BlockWatchTick()
     {
-        if (!_startMenuMode || Environment.TickCount64 > Interlocked.Read(ref _blockUntil))
+        lock (_blockTimerLock)
         {
-            _blockTimer?.Change(Timeout.Infinite, Timeout.Infinite);
-            return;
+            if (!_running || !_startMenuMode || Environment.TickCount64 > Interlocked.Read(ref _blockUntil))
+            {
+                _blockTimer?.Change(Timeout.Infinite, Timeout.Infinite);
+                return;
+            }
+            KillNamedProcesses("StartMenuExperienceHost");
+            KillNamedProcesses("SearchHost");
+            SweepStartUiWindows();
         }
-        KillNamedProcesses("StartMenuExperienceHost");
-        KillNamedProcesses("SearchHost");
-        SweepStartUiWindows();
     }
 
-    /// <summary>
-    /// 兜底扫描：某些系统版本把开始界面挂在别的进程（例如 explorer）里，
-    /// 按窗口类 CoreWindow + 标题开始/搜索 识别，宿主是已知进程就结束，否则 ESC + 隐藏。
-    /// 只查窗口类名和标题，开销很小，可在封锁期内 50ms 跑一次。
-    /// </summary>
     private static void SweepStartUiWindows()
     {
         EnumWindows((h, _) =>
@@ -489,7 +496,6 @@ public sealed class KeyboardHookService : IDisposable
         }, IntPtr.Zero);
     }
 
-    /// <summary>结束系统开始/搜索界面宿主进程（触发窗口的进程 + 当前所有宿主实例）</summary>
     private static void KillStartUiProcesses(IntPtr hwnd)
     {
         GetWindowThreadProcessId(hwnd, out var pid);
@@ -503,7 +509,9 @@ public sealed class KeyboardHookService : IDisposable
         try
         {
             foreach (var p in System.Diagnostics.Process.GetProcessesByName(name))
-                KillProcess((uint)p.Id);
+            {
+                using (p) KillProcess((uint)p.Id);
+            }
         }
         catch { /* 进程枚举失败：忽略本次 */ }
     }
@@ -532,8 +540,6 @@ public sealed class KeyboardHookService : IDisposable
         GetWindowThreadProcessId(hwnd, out var pid);
         if (pid == 0) return false;
         var exe = ProcessImageName(pid);
-        // Win11 24H2 起开始菜单界面由 SearchHost 承载（窗口标题「搜索」），
-        // 旧 build 仍是 StartMenuExperienceHost（标题「开始」），两者都要认。
         return exe.Equals("StartMenuExperienceHost.exe", StringComparison.OrdinalIgnoreCase)
             || exe.Equals("SearchHost.exe", StringComparison.OrdinalIgnoreCase);
     }
@@ -566,21 +572,17 @@ public sealed class KeyboardHookService : IDisposable
                 var data = Marshal.PtrToStructure<MSLLHOOKSTRUCT>(lParam);
                 if (data.dwExtraInfo != InjectMarker)
                 {
-                    if (IsStartButtonClick(data.pt))
+                    if (msg == WM_LBUTTONUP && _suppressStartClick)
                     {
-                        if (msg == WM_LBUTTONDOWN)
-                        {
-                            _suppressStartClick = true;
-                            return (IntPtr)1;
-                        }
-                        if (_suppressStartClick)
-                        {
-                            _suppressStartClick = false;
-                            StartMenuToggle?.Invoke();
-                            return (IntPtr)1;
-                        }
+                        _suppressStartClick = false;
+                        StartMenuToggle?.Invoke();
+                        return (IntPtr)1;
                     }
-                    else if (msg == WM_LBUTTONDOWN) _suppressStartClick = false;
+                    if (msg == WM_LBUTTONDOWN)
+                    {
+                        _suppressStartClick = IsStartButtonClick(data.pt);
+                        if (_suppressStartClick) return (IntPtr)1;
+                    }
                 }
             }
         }
@@ -598,7 +600,8 @@ public sealed class KeyboardHookService : IDisposable
     private bool IsStartButtonClick(POINT pt)
     {
         if (IsStartButtonClass(WindowFromPoint(pt))) return true;
-        var r = StartButtonRect();
+        // 搜索面板切换可能让 Shell 重新布局按钮，点击时不使用定时刷新留下的旧矩形。
+        var r = ResolveStartButtonRect(force: true);
         return r.Right > r.Left && pt.x >= r.Left && pt.x < r.Right
                                && pt.y >= r.Top && pt.y < r.Bottom;
     }
@@ -606,42 +609,61 @@ public sealed class KeyboardHookService : IDisposable
     /// <summary>任务栏上开始按钮窗口的屏幕矩形（5 秒内缓存，避免每次点击都枚举任务栏子窗口）</summary>
     private RECT StartButtonRect() => ResolveStartButtonRect(force: false);
 
+    private IntPtr _resolvedTaskbar;
+    private RECT _resolvedTaskbarRect;
+
     private RECT ResolveStartButtonRect(bool force)
     {
         var now = (uint)Environment.TickCount;
         if (!force && _startBtnResolvedAt != 0 && now - _startBtnResolvedAt < 5000) return _startBtnRect;
         _startBtnResolvedAt = now == 0 ? 1 : now;
+        var tray = FindWindow("Shell_TrayWnd", null);
+        // Shell 面板打开期间查找可能暂时失败，只接受仍是任务栏的已知句柄。
+        if (tray == IntPtr.Zero && GetClassNameString(_resolvedTaskbar) == "Shell_TrayWnd")
+            tray = _resolvedTaskbar;
+        if (tray == IntPtr.Zero || !IsWindowVisible(tray) || !GetWindowRect(tray, out var trayRect))
+        {
+            _resolvedTaskbar = IntPtr.Zero;
+            _startBtnRect = default;
+            return _startBtnRect;
+        }
+        var sameTaskbar = tray == _resolvedTaskbar &&
+            trayRect.Left == _resolvedTaskbarRect.Left && trayRect.Top == _resolvedTaskbarRect.Top &&
+            trayRect.Right == _resolvedTaskbarRect.Right && trayRect.Bottom == _resolvedTaskbarRect.Bottom;
         var b = StartButtonBounds();
-        _startBtnRect = new RECT { Left = b.x, Top = b.y, Right = b.x + b.w, Bottom = b.y + b.h };
+        if (b.w > 0 && b.h > 0)
+            _startBtnRect = new RECT { Left = b.x, Top = b.y, Right = b.x + b.w, Bottom = b.y + b.h };
+        else if (!sameTaskbar)
+            _startBtnRect = default;
+        // 搜索打开时 Start 子窗口可能暂时不可查询，任务栏未变则保留已确认的按钮区域。
+        _resolvedTaskbar = tray;
+        _resolvedTaskbarRect = trayRect;
         return _startBtnRect;
     }
 
     /// <summary>
     /// 任务栏开始按钮的屏幕矩形（取不到时宽高为 0）。
     /// 供主窗口按开始按钮位置决定面板的水平对齐（按钮居中→面板居中，按钮靠左→面板贴左）。
-    /// 任务栏重建的瞬间枚举可能失败或拿到空矩形，这时返回上次的有效值，
-    /// 避免面板在"居中/靠边"之间来回跳。
+    /// 任务栏重建或自动隐藏时返回空矩形，避免旧坐标覆盖搜索等其他控件。
     /// </summary>
     public static (int x, int y, int w, int h) StartButtonBounds()
     {
         var tray = FindWindow("Shell_TrayWnd", null);
-        if (tray == IntPtr.Zero) return _lastStartBtn;
+        if (tray == IntPtr.Zero || !IsWindowVisible(tray) || !GetWindowRect(tray, out var trayRect))
+            return default;
         IntPtr found = IntPtr.Zero;
         EnumChildWindows(tray, (h, _) =>
         {
             if (found == IntPtr.Zero && GetClassNameString(h) == "Start") found = h;
             return true;
         }, IntPtr.Zero);
-        if (found == IntPtr.Zero || !GetWindowRect(found, out var r)) return _lastStartBtn;
+        if (found == IntPtr.Zero || !GetWindowRect(found, out var r)) return default;
         var w = r.Right - r.Left;
         var h = r.Bottom - r.Top;
-        if (w <= 0 || h <= 0) return _lastStartBtn;
-        _lastStartBtn = (r.Left, r.Top, w, h);
-        return _lastStartBtn;
+        if (w <= 0 || h <= 0 || r.Left < trayRect.Left || r.Top < trayRect.Top
+            || r.Right > trayRect.Right || r.Bottom > trayRect.Bottom) return default;
+        return (r.Left, r.Top, w, h);
     }
-
-    /// <summary>上次解析到的有效开始按钮矩形（任务栏重建期间回落用）</summary>
-    private static (int x, int y, int w, int h) _lastStartBtn;
 
     /// <summary>窗口本身或往上数层的父窗口是否为开始按钮（类名 "Start"）</summary>
     private static bool IsStartButtonClass(IntPtr hwnd)
@@ -822,6 +844,10 @@ public sealed class KeyboardHookService : IDisposable
 
     [DllImport("kernel32.dll", CharSet = CharSet.Unicode)]
     private static extern IntPtr GetModuleHandle(string? lpModuleName);
+
+    [DllImport("user32.dll")]
+    private static extern bool PeekMessage(out MSG lpMsg, IntPtr hWnd, uint wMsgFilterMin,
+        uint wMsgFilterMax, uint wRemoveMsg);
 
     [DllImport("user32.dll")]
     private static extern int GetMessage(out MSG lpMsg, IntPtr hWnd, uint wMsgFilterMin, uint wMsgFilterMax);

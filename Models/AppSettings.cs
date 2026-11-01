@@ -12,23 +12,18 @@ public enum DockSide
     Center
 }
 
-/// <summary>磁贴主题：彩色（强调色纯色块）/ 纯黑（OLED 省电极简）/ 全息（幻彩渐变）/
-/// 亚克力（磨砂云母质感）/ 极光（青绿→蓝→紫渐变）/ 蒸汽波（橙→粉→紫日落渐变）/
-/// 线框（无底色彩色描边）/ 拟物（实体按键立体质感）</summary>
+/// <summary>磁贴主题：彩色（强调色纯色块，圆角）/ 液态玻璃（通透玻璃卡片 + accent 描边，圆角）/
+/// 金属拉丝（横向拉丝纹理 + 工业风，微直角）/ 像素街机（硬色块 + 内阴影凸起，直角）</summary>
 public enum TileTheme
 {
     Colorful,
-    OledBlack,
-    Holographic,
-    Acrylic,
-    Aurora,
-    Vaporwave,
-    Outline,
-    Bevel
+    NeonCyber,
+    MetalBrushed,
+    PixelArcade
 }
 
-/// <summary>磁贴主题兼容读取：旧配置里已删除的主题值（简约/渐变/玻璃/透明）自动回退为彩色，
-/// 避免整份设置 JSON 因未知枚举值反序列化失败而被重置。</summary>
+/// <summary>磁贴主题兼容读取：旧配置里已删除的主题值（纯黑/全息/亚克力/极光/蒸汽波/线框/拟物）
+/// 自动回退为彩色，避免整份设置 JSON 因未知枚举值反序列化失败而被重置。</summary>
 public sealed class TileThemeCompatConverter : JsonConverter<TileTheme>
 {
     public override TileTheme Read(ref Utf8JsonReader reader, Type typeToConvert, JsonSerializerOptions options) =>
@@ -91,11 +86,11 @@ public class AppSettings
     /// <summary>主页总页数（含主主页；副页块在添加方式（X 键）里新增，主页用 LT/RT 循环切换）</summary>
     public int HomePageCount { get; set; } = 1;
 
-    /// <summary>磁贴主题（彩色 / 纯黑 / 全息 / 亚克力 / 极光 / 蒸汽波 / 线框 / 拟物磁贴）；旧主题值读取时自动回退彩色</summary>
+    /// <summary>磁贴主题（彩色 / 液态玻璃 / 金属拉丝 / 像素街机）；旧主题值读取时自动回退彩色</summary>
     [JsonConverter(typeof(TileThemeCompatConverter))]
     public TileTheme TileTheme { get; set; } = TileTheme.Colorful;
 
-    /// <summary>磁贴圆角样式：未设置时按主题默认（彩色/亚克力/极光/蒸汽波/拟物=圆角，纯黑/全息/线框=方形）</summary>
+    /// <summary>磁贴圆角样式：未设置时按主题默认（彩色/液态玻璃=圆角，金属拉丝=微直角，像素街机=直角）</summary>
     public TileCorner? TileCornerShape { get; set; }
 
     /// <summary>磁贴透明度（0.3~1.0，1 为完全不透明）</summary>

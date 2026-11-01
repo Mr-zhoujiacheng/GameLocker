@@ -60,9 +60,124 @@ public sealed partial class MainWindow : Window
     /// 那样门控会永久卡在关闭状态（表现为"呼出后手柄完全失效"）。</summary>
     private bool _shown;
 
+    private IntPtr _revealedTaskbar;
+    private NativeRect _taskbarRestoreRect;
+    private bool _taskbarWasTopmost;
+    private bool _taskbarWasVisible;
+    private IntPtr _taskbarPreviousWindow;
+    private readonly DispatcherTimer _taskbarRevealWatch =
+        new() { Interval = TimeSpan.FromMilliseconds(250) };
+
+    private void RevealTaskbar()
+    {
+        if (_revealedTaskbar == IntPtr.Zero)
+        {
+            var bar = FindWindow("Shell_TrayWnd", null);
+            if (bar == IntPtr.Zero || !GetWindowRect(bar, out _taskbarRestoreRect))
+            {
+                DebugLog.Write($"任务栏联动: 未找到任务栏或无法读取矩形 hwnd={bar}");
+                return;
+            }
+            _taskbarWasTopmost = (GetWindowLongPtr(bar, GWL_EXSTYLE).ToInt64() & 0x8) != 0;
+            _taskbarWasVisible = IsWindowVisibleForLaunch(bar);
+            _taskbarPreviousWindow = GetWindow(bar, 3);
+            _revealedTaskbar = bar;
+            DebugLog.Write($"任务栏联动: 开始 hwnd={bar} visible={_taskbarWasVisible} topmost={_taskbarWasTopmost} rect={_taskbarRestoreRect.Left},{_taskbarRestoreRect.Top},{_taskbarRestoreRect.Right},{_taskbarRestoreRect.Bottom}");
+        }
+        RefreshRevealedTaskbar(raise: true);
+        _taskbarRevealWatch.Start();
+    }
+
+    private void RefreshRevealedTaskbar(bool raise = false)
+    {
+        var bar = _revealedTaskbar;
+        if (bar == IntPtr.Zero) return;
+        if (FindWindow("Shell_TrayWnd", null) != bar)
+        {
+            // Explorer 重建了任务栏，不再把旧窗口的状态写到新窗口。
+            ReleaseTaskbar();
+            return;
+        }
+        if (!GetWindowRect(bar, out var rect)) return;
+        var bounds = DisplayArea.Primary.OuterBounds;
+        var width = rect.Right - rect.Left;
+        var height = rect.Bottom - rect.Top;
+        var edge = TaskbarEdge();
+        var x = edge == SummonEdge.Right ? bounds.X + bounds.Width - width : bounds.X;
+        var y = edge == SummonEdge.Bottom ? bounds.Y + bounds.Height - height : bounds.Y;
+        // 自动隐藏时任务栏可能已经移出屏幕，临时移回，但不改 Shell 的自动隐藏配置。
+        // Explorer 可在不移动窗口的情况下隐藏任务栏或撤销置顶，不能只检查坐标。
+        var visible = IsWindowVisibleForLaunch(bar);
+        var topmost = (GetWindowLongPtr(bar, GWL_EXSTYLE).ToInt64() & 0x8) != 0;
+        // TOPMOST 只表示所在层级，不保证排在游戏或其他置顶窗口前面。
+        var coveringWindow = TaskbarCoveringWindow(bar, x, y, width, height);
+        if (raise || !visible || !topmost || coveringWindow != IntPtr.Zero || rect.Left != x || rect.Top != y)
+        {
+            var raiseBar = raise || !visible || !topmost || coveringWindow != IntPtr.Zero;
+            // Shell 对移动并显示的请求可能重新计算层级；先处理位置，再独立置顶。
+            var ok = true;
+            var error = 0;
+            if (!visible || rect.Left != x || rect.Top != y)
+            {
+                ok = SetWindowPos(bar, IntPtr.Zero, x, y, 0, 0,
+                    SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE | SWP_SHOWWINDOW | SWP_NOSENDCHANGING);
+                if (!ok) error = Marshal.GetLastWin32Error();
+            }
+            if (raiseBar)
+            {
+                var raised = SetWindowPos(bar, HWND_TOPMOST, 0, 0, 0, 0,
+                    SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE | SWP_NOSENDCHANGING);
+                if (!raised) error = Marshal.GetLastWin32Error();
+                ok &= raised;
+            }
+            if (raise || !ok || coveringWindow != IntPtr.Zero || !topmost)
+            {
+                GetWindowRect(bar, out var actual);
+                var actualTopmost = (GetWindowLongPtr(bar, GWL_EXSTYLE).ToInt64() & 0x8) != 0;
+                DebugLog.Write($"任务栏联动: 显示 result={ok} error={error} visible={IsWindowVisibleForLaunch(bar)} topmost={actualTopmost} coverBefore={coveringWindow} coverAfter={TaskbarCoveringWindow(bar, x, y, width, height)} target={x},{y} actual={actual.Left},{actual.Top},{actual.Right},{actual.Bottom} foreground={GetForegroundWindow()}");
+            }
+        }
+    }
+
+    private static IntPtr TaskbarCoveringWindow(IntPtr bar, int x, int y, int width, int height)
+    {
+        for (var above = GetWindow(bar, 3); above != IntPtr.Zero; above = GetWindow(above, 3))
+        {
+            if (!IsWindowVisibleForLaunch(above) || !GetWindowRect(above, out var rect)) continue;
+            // 忽略已被 DWM 隐去的窗口和只覆盖开始按钮的透明输入覆盖窗。
+            if (DwmGetWindowAttribute(above, 14, out var cloaked, sizeof(int)) == 0 && cloaked != 0) continue;
+            if ((GetWindowLongPtr(above, GWL_EXSTYLE).ToInt64() & WS_EX_LAYERED) != 0
+                && GetLayeredWindowAttributes(above, out _, out var alpha, out var flags)
+                && (flags & LWA_ALPHA) != 0 && alpha <= 1) continue;
+            if (rect.Left < x + width && rect.Right > x && rect.Top < y + height && rect.Bottom > y)
+                return above;
+        }
+        return IntPtr.Zero;
+    }
+
+    private void ReleaseTaskbar()
+    {
+        _taskbarRevealWatch.Stop();
+        var bar = _revealedTaskbar;
+        _revealedTaskbar = IntPtr.Zero;
+        if (bar == IntPtr.Zero || FindWindow("Shell_TrayWnd", null) != bar) return;
+        DebugLog.Write($"任务栏联动: 释放 hwnd={bar}");
+        var topmost = (GetWindowLongPtr(bar, GWL_EXSTYLE).ToInt64() & 0x8) != 0;
+        // 原本就是置顶时不要再调用 HWND_TOPMOST 将它提到游戏前面。
+        var zFlags = topmost == _taskbarWasTopmost ? SWP_NOZORDER : 0u;
+        SetWindowPos(bar, _taskbarWasTopmost ? HWND_TOPMOST : new IntPtr(-2),
+            _taskbarRestoreRect.Left, _taskbarRestoreRect.Top, 0, 0,
+            SWP_NOSIZE | SWP_NOACTIVATE | zFlags | (_taskbarWasVisible ? 0u : SWP_HIDEWINDOW));
+        var previous = _taskbarPreviousWindow;
+        _taskbarPreviousWindow = IntPtr.Zero;
+        if (previous != IntPtr.Zero && previous != _hwnd && IsWindow(previous)
+            && ((GetWindowLongPtr(previous, GWL_EXSTYLE).ToInt64() & 0x8) != 0) == _taskbarWasTopmost)
+            SetWindowPos(bar, previous, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE);
+    }
+
     /// <summary>
     /// 按当前设置同步边缘手势监听：开关开启则启动并把窄条定位到对应边缘
-    /// （全屏=顶边，左/右停靠=左/右边缘），关闭则停止并恢复系统边缘手势。
+    /// （全屏=顶边，左/右停靠=左/右边缘），关闭则仅停止本应用监听。
     /// 停靠侧/全屏状态变化后也需调用以重新定位窄条。
     /// </summary>
     public void SyncEdgeGesture()
@@ -214,8 +329,10 @@ public sealed partial class MainWindow : Window
         // 触摸收起手势（方向与呼出手势相反）：子页=返回上一级，主页=收起启动器
         HookSwipeBack();
 
+        _taskbarRevealWatch.Tick += (_, _) => RefreshRevealedTaskbar();
         Closed += (_, _) =>
         {
+            ReleaseTaskbar();
             MonitorService.Stop();     // 销毁置顶悬浮条并停止 ETW 会话
             KeyboardHook.Dispose();
             if (_exiting)
@@ -280,14 +397,15 @@ public sealed partial class MainWindow : Window
 
         // 平板边缘手势呼出
         _edgeGesture = new EdgeGestureService();
-        // 手指落在呼出边缘带即开始封锁系统开始菜单（上滑动作完成前先把它按掉，避免原版菜单闪出来）
         _edgeGesture.EdgeTouched += () => DispatcherQueue.TryEnqueue(() => KeyboardHook.BeginStartUiBlockWatch());
         _edgeGesture.SummonTriggered += () => DispatcherQueue.TryEnqueue(() =>
         {
-            // 触屏上滑时 explorer 会同时拉起系统开始菜单，先封锁它的宿主进程，避免原版菜单闪一下
             KeyboardHook.BeginStartUiBlockWatch();
-            if (!Visible || GetForegroundWindow() != _hwnd)
+            if (!_shown || GetForegroundWindow() != _hwnd)
+            {
+                DebugLog.Write("任务栏联动: 边缘手势呼出");
                 ShowFromTray();
+            }
         });
         // 收起手势（呼出的反方向）：走原始输入触摸通道，与页面内容无关，任何页面都生效（现为"直接最小化"）
         _edgeGesture.DismissTriggered += () => DispatcherQueue.TryEnqueue(OnDismissGesture);
@@ -1008,11 +1126,14 @@ public sealed partial class MainWindow : Window
     /// <summary>托盘/热键唤起</summary>
     public void ShowFromTray()
     {
+        (Root.Content as MainPage)?.CancelPendingLaunch();
         _shown = true;
         (Root.Content as MainPage)?.SetBackground(false);
         _edgeGesture?.SetStripVisible(false);
         PrepareSummon();
         Activate();
+        // 所有呼出入口共用，避免系统开始菜单回调先显示启动器后，边缘事件被显隐门控跳过。
+        RevealTaskbar();
         // 开始菜单模式的滑入要保持在任务栏后方：先把置顶/前台抢回推迟到动画结束（OnSummonDone），
         // 否则 BringToForeground 会立刻把窗口提到任务栏之上，失去"从任务栏后方升起"的观感
         if (!SettingsService.Current.StartMenuMode) BringToForeground();
@@ -1033,6 +1154,7 @@ public sealed partial class MainWindow : Window
     /// <summary>滑入动画结束：开始菜单模式恢复置顶（动画期间临时取消），再抢一次前台焦点</summary>
     private void OnSummonDone()
     {
+        if (!_shown) return;
         if (SettingsService.Current.StartMenuMode) SetAlwaysOnTop(true);
         BringToForeground();
     }
@@ -1051,10 +1173,10 @@ public sealed partial class MainWindow : Window
     /// </summary>
     private void ToggleStartMenu()
     {
+        if (_exiting || !KeyboardHook.StartMenuMode) return;
         var now = Environment.TickCount64;
         if (now - _lastStartMenuToggle < 400) return;
         _lastStartMenuToggle = now;
-        // Win 键/点击开始按钮后系统也可能补开开始菜单，短暂封锁它的宿主进程
         KeyboardHook.BeginStartUiBlockWatch();
         if (_shown) HideToTray();
         else ShowFromTray();
@@ -1066,7 +1188,7 @@ public sealed partial class MainWindow : Window
     /// </summary>
     private void EnsureStartMenuShown()
     {
-        if (!SettingsService.Current.StartMenuMode) return;
+        if (_exiting || !KeyboardHook.StartMenuMode) return;
         _startMenuAutoHide.Stop();
         if (!_shown) ShowFromTray();
         else BringToForeground();
@@ -1078,11 +1200,11 @@ public sealed partial class MainWindow : Window
         try
         {
             await Task.Delay(150);
-            if (SettingsService.Current.StartMenuMode && _shown &&
+            if (!_exiting && KeyboardHook.StartMenuMode && _shown &&
                 KeyboardHookService.IsStartMenuProcessWindow(GetForegroundWindow()))
                 BringToForeground();
             await Task.Delay(250);
-            if (SettingsService.Current.StartMenuMode && _shown &&
+            if (!_exiting && KeyboardHook.StartMenuMode && _shown &&
                 KeyboardHookService.IsStartMenuProcessWindow(GetForegroundWindow()))
                 BringToForeground();
         }
@@ -1140,7 +1262,11 @@ public sealed partial class MainWindow : Window
         if (_hwnd == IntPtr.Zero) return;
         SetWindowPos(_hwnd, HWND_TOPMOST, 0, 0, 0, 0,
             SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE);
-        if (GetForegroundWindow() == _hwnd) return;
+        if (GetForegroundWindow() == _hwnd)
+        {
+            RefreshRevealedTaskbar(raise: true);
+            return;
+        }
 
         var cur = GetCurrentThreadId();
         var fgOwner = GetForegroundWindow();
@@ -1151,16 +1277,36 @@ public sealed partial class MainWindow : Window
         SetActiveWindow(_hwnd);
         BringWindowToTop(_hwnd);
         if (attached) AttachThreadInput(fgThread, cur, false);
+        RefreshRevealedTaskbar(raise: true);
     }
 
     /// <summary>托盘菜单退出</summary>
     public void ExitApp()
     {
+        if (_exiting) return;
         _exiting = true;
+        _startMenuAutoHide.Stop();
+        _taskbarWatch.Stop();
+        KeyboardHook.Dispose();
         Gamepad.Dispose();
         _edgeGesture?.Dispose();
         Close();
     }
+
+    public async Task HideForLaunchAsync(CancellationToken token)
+    {
+        HideToTray();
+        while (IsWindowVisibleForLaunch(_hwnd))
+        {
+            token.ThrowIfCancellationRequested();
+            if (_shown) throw new OperationCanceledException("启动器已重新呼出", token);
+            await Task.Delay(16, token);
+        }
+        if (_shown) throw new OperationCanceledException("启动器已重新呼出", token);
+    }
+
+    [System.Runtime.InteropServices.DllImport("user32.dll", EntryPoint = "IsWindowVisible")]
+    private static extern bool IsWindowVisibleForLaunch(IntPtr hwnd);
 
     /// <summary>隐藏到托盘：动画开启时先播放反向滑出（真实窗口移出屏外）再隐藏；关闭时直接隐藏</summary>
     public void HideToTray()
@@ -1168,11 +1314,15 @@ public sealed partial class MainWindow : Window
         // 立刻停手柄路由：一旦决定隐藏，滑出动画期间就不该再响应手柄
         // （否则刚启动游戏后晃动/误触按键会把启动器上的操作（如 Y 关闭程序）打到已经看不见的界面上）
         _shown = false;
+        _summonPending = false;
+        var wasAnimating = _animating;
+        StopMoveAnimation();
         (Root.Content as MainPage)?.SetBackground(true);
         SetGamepadRouting(false);
-        if (!SettingsService.Current.SummonAnimation || _animating)
+        if (!SettingsService.Current.SummonAnimation || wasAnimating)
         {
             AppWindow.Hide();
+            ReleaseTaskbar();
             _edgeGesture?.SetStripVisible(true); // 窗口隐藏后恢复边缘条，任意前台都能触摸呼出
             return;
         }
@@ -1183,7 +1333,9 @@ public sealed partial class MainWindow : Window
         if (SettingsService.Current.StartMenuMode) SetAlwaysOnTop(false);
         AnimateMove(target, off, 260, easeOut: false, () =>
         {
+            if (_shown) return;
             AppWindow.Hide();
+            ReleaseTaskbar();
             _edgeGesture?.SetStripVisible(true);
         });
     }
@@ -1871,6 +2023,21 @@ public sealed partial class MainWindow : Window
     private const uint SWP_NOZORDER = 0x0004;
     private const uint SWP_NOACTIVATE = 0x0010;
     private const uint SWP_FRAMECHANGED = 0x0020;
+    private const uint SWP_SHOWWINDOW = 0x0040;
+    private const uint SWP_HIDEWINDOW = 0x0080;
+    private const uint SWP_NOSENDCHANGING = 0x0400;
+
+    [DllImport("user32.dll", CharSet = CharSet.Unicode)]
+    private static extern IntPtr FindWindow(string className, string? windowName);
+
+    [DllImport("user32.dll")]
+    private static extern bool GetWindowRect(IntPtr hwnd, out NativeRect rect);
+
+    [DllImport("user32.dll")]
+    private static extern IntPtr GetWindow(IntPtr hwnd, uint command);
+
+    [DllImport("user32.dll")]
+    private static extern bool IsWindow(IntPtr hwnd);
 
     private static readonly IntPtr HWND_TOPMOST = new IntPtr(-1);
 
@@ -1901,7 +2068,7 @@ public sealed partial class MainWindow : Window
     [DllImport("user32.dll", EntryPoint = "SetWindowLongPtrW")]
     private static extern IntPtr SetWindowLongPtr(IntPtr hWnd, int nIndex, IntPtr dwNewLong);
 
-    [DllImport("user32.dll")]
+    [DllImport("user32.dll", SetLastError = true)]
     private static extern bool SetWindowPos(IntPtr hWnd, IntPtr hWndInsertAfter,
         int x, int y, int cx, int cy, uint uFlags);
 
@@ -1912,6 +2079,12 @@ public sealed partial class MainWindow : Window
     private const int DWMWA_WINDOW_CORNER_PREFERENCE = 33;
     private const int DWMWCP_DONOTROUND = 1;
     private const int DWMWCP_ROUND = 2;
+
+    [DllImport("user32.dll")]
+    private static extern bool GetLayeredWindowAttributes(IntPtr hwnd, out uint colorKey, out byte alpha, out uint flags);
+
+    [DllImport("dwmapi.dll")]
+    private static extern int DwmGetWindowAttribute(IntPtr hwnd, int attr, out int attrValue, int attrSize);
 
     [DllImport("dwmapi.dll")]
     private static extern int DwmSetWindowAttribute(IntPtr hwnd, int attr, ref int attrValue, int attrSize);

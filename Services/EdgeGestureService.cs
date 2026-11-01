@@ -1,5 +1,4 @@
 using System.Runtime.InteropServices;
-using Microsoft.Win32;
 
 namespace GameLocker.Services;
 
@@ -15,7 +14,7 @@ public enum SummonEdge { Left, Right, Top, Bottom }
 ///    此前透明边缘条方案失败原因：shell 边缘预留地窗压在 TOPMOST 带上吞掉命中测试，WM_POINTER 永不投递。
 /// 接收窗口为屏外 1x1 不可交互 sink，不再遮挡/吞掉任何边缘点击。两通道共用 600ms 冷却去重。
 /// 钩子+sink 运行在独立 MTA 线程消息循环上；事件在该线程触发，订阅方需 marshal 回 UI 线程。
-/// 开启时写注册表禁用 Windows 原生边缘手势，关闭时恢复。
+/// 只监听本应用呼出手势，不修改 Windows 原生边缘手势及任务栏设置。
 /// 诊断：边缘附近事件与 HID 触摸帧写入 %APPDATA%\GameLocker\edge.log。
 /// </summary>
 public sealed class EdgeGestureService : IDisposable
@@ -94,14 +93,13 @@ public sealed class EdgeGestureService : IDisposable
     /// <summary>当前是否已启用（钩子运行中）</summary>
     public bool IsRunning => _running;
 
-    /// <summary>启动监听 + 禁用系统边缘手势（幂等）。
+    /// <summary>启动本应用手势监听（幂等）。
     /// 关键：每次新建 Thread——已退出的 Thread 再 Start() 会抛 ThreadStateException，
     /// 在 XAML 事件回调里变成 stowed 异常 0xc000027b 崩 CoreMessagingXP（开关关→开即闪退的根因）。</summary>
     public void Start()
     {
         if (_disposed || _running) return;
         _running = true;
-        DisableSystemEdgeGestures(true);
         var t = new Thread(Run) { IsBackground = true, Name = "EdgeGesture" };
         // 钩子线程必须 MTA：STA 与 WinUI3 CoreMessaging/COM 公寓冲突（WH_MOUSE_LL 只需消息泵，不需要 STA）
         t.SetApartmentState(ApartmentState.MTA);
@@ -109,12 +107,11 @@ public sealed class EdgeGestureService : IDisposable
         t.Start();
     }
 
-    /// <summary>停止监听 + 恢复系统边缘手势（幂等）</summary>
+    /// <summary>停止本应用手势监听（幂等）</summary>
     public void Stop()
     {
         if (!_running) return;
         _running = false;
-        DisableSystemEdgeGestures(false);
         // 唤醒阻塞在 GetMessage 的线程立即退出并卸载钩子（否则再 Start 时旧钩子残留双触发）
         var id = _threadId;
         if (id != 0) PostThreadMessage(id, WM_QUIT, IntPtr.Zero, IntPtr.Zero);
@@ -294,8 +291,8 @@ public sealed class EdgeGestureService : IDisposable
                 _tStartX = x; _tStartY = y;
                 _tDownAt = Environment.TickCount64;
                 var near = NearEdge(x, y);
+                if (near) NotifyEdgeTouched();
                 Log($"touch down ({x},{y}) nearEdge={near}");
-                if (near) NotifyEdgeTouched(); // 起手即封锁系统开始菜单，别等滑完
             }
             _tLastX = x; _tLastY = y;
         }
@@ -460,8 +457,8 @@ public sealed class EdgeGestureService : IDisposable
                 _tracking = true;
                 if (_downNearEdge)
                 {
+                    NotifyEdgeTouched();
                     Log($"down near edge {_edge} at ({info.ptX},{info.ptY})");
-                    NotifyEdgeTouched(); // 起手即封锁系统开始菜单，别等滑完
                 }
             }
             else if (msgId == WM_LBUTTONUP && _tracking)
@@ -536,41 +533,6 @@ public sealed class EdgeGestureService : IDisposable
         SummonEdge.Bottom => _downY - upY, // 向上（向中心）
         _ => upY - _downY                  // 向下（向中心）
     };
-
-    /// <summary>
-    /// 禁用/恢复 Windows 原生边缘手势（开关开启时写入）：
-    /// - Policies\EdgeUI AllowEdgeSwipe=0：官方策略，禁用左右屏幕边缘滑出（小组件/通知中心）。
-    /// - Explorer\Advanced TaskbarDa=0：关闭小组件
-    /// - Feeds ShellFeedsTaskbarViewMode=2：隐藏小组件按钮（双保险）
-    /// 策略生效需重启资源管理器/系统——应用内绝不 Kill explorer（会拖崩本程序），
-    /// 写入后随下次注销/重启自然生效。
-    /// </summary>
-    private static void DisableSystemEdgeGestures(bool disable)
-    {
-        SetDword(@"Software\Policies\Microsoft\Windows\EdgeUI", "AllowEdgeSwipe", disable ? 0 : null);
-        // 小组件：0=关闭 1=开启（恢复默认显示）
-        SetDword(@"Software\Microsoft\Windows\CurrentVersion\Explorer\Advanced", "TaskbarDa", disable ? 0 : 1);
-        // 小组件按钮：2=隐藏 0=显示
-        SetDword(@"Software\Microsoft\Windows\CurrentVersion\Feeds", "ShellFeedsTaskbarViewMode", disable ? 2 : 0);
-    }
-
-    private static void SetDword(string subKey, string name, int? value)
-    {
-        try
-        {
-            if (value == null)
-            {
-                using var rk = Registry.CurrentUser.OpenSubKey(subKey, writable: true);
-                rk?.DeleteValue(name, false);
-            }
-            else
-            {
-                using var rk = Registry.CurrentUser.CreateSubKey(subKey);
-                rk?.SetValue(name, value.Value, RegistryValueKind.DWord);
-            }
-        }
-        catch { }
-    }
 
     /// <summary>诊断日志（便于真机排查触摸是否到达）</summary>
     private static void Log(string text)

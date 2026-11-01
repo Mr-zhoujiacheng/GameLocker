@@ -5056,13 +5056,43 @@ public sealed partial class MainPage : Page
     private static bool AutoHideAfterLaunch =>
         SettingsService.Current.HideAfterLaunch && !SettingsService.Current.StartMenuMode;
 
-    private void LaunchItem(LaunchItem item)
+    private bool _launchInProgress;
+    private CancellationTokenSource? _pendingLaunch;
+    public void CancelPendingLaunch() => _pendingLaunch?.Cancel();
+
+    private async void LaunchItem(LaunchItem item)
     {
-        // 先收起启动器，窗口查找/激活放到后台线程：
-        // 查找要枚举全部顶层窗口并读取窗口标题（GetWindowText 是跨进程同步消息，
-        // 目标应用忙时不响应，会一直阻塞），放在 UI 线程就会表现为"整个启动器卡死"。
-        App.Main?.HideToTray();
-        _ = Task.Run(() => LaunchService.LaunchOrActivate(item));
+        // 同一时间只允许一次前台交接，防止连按或不同磁贴争抢焦点。
+        if (_launchInProgress) return;
+        _launchInProgress = true;
+        using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(25));
+        _pendingLaunch = timeout;
+        var token = timeout.Token;
+        try
+        {
+            if (App.Main is { } main) await main.HideForLaunchAsync(timeout.Token);
+            var work = Task.Run(() => LaunchService.LaunchOrActivateAsync(item, token));
+            var result = await work.WaitAsync(timeout.Token);
+            if (!result.Success)
+            {
+                App.Main?.ShowFromTray();
+                ShowToast($"{item.Name}：{result.Message}", ToastKind.Warning);
+            }
+        }
+        catch (OperationCanceledException)
+        {
+            timeout.Cancel();
+            App.Main?.ShowFromTray();
+            ShowToast("切换已取消或超时；不会重复启动程序", ToastKind.Warning);
+        }
+        catch (Exception ex)
+        {
+            timeout.Cancel();
+            LaunchService.Diag($"界面启动失败: {ex.GetType().Name} {ex.Message}");
+            App.Main?.ShowFromTray();
+            ShowToast($"打开失败：{ex.Message}", ToastKind.Warning);
+        }
+        finally { _pendingLaunch = null; _launchInProgress = false; }
     }
 
     /// <summary>Y=收起：把选中磁贴对应的窗口最小化（不结束进程）；未运行则提示（小组件/组磁贴不响应；修改器小组件=关闭修改器）</summary>

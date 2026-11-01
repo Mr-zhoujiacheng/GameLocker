@@ -60,6 +60,10 @@
                  （Wi-Fi/蓝牙 绿=开启，电池 绿/黄/红，手柄 绿=已连接 / 红=未连接） -->
             <Border x:Name="StatusTray" HorizontalAlignment="Right" VerticalAlignment="Center"
                     CornerRadius="24" Padding="6" BorderThickness="1">
+                <!-- 与时钟+日期两行的视觉中线对齐：文字字形重心整体偏下，图标框按几何居中会显得偏上，下移 3px -->
+                <Border.RenderTransform>
+                    <TranslateTransform Y="3"/>
+                </Border.RenderTransform>
                 <Border.Background>
                     <LinearGradientBrush StartPoint="0,0" EndPoint="0,1">
                         <GradientStop Color="#2AFFFFFF" Offset="0"/>

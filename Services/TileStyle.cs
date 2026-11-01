@@ -14,39 +14,26 @@ public static class TileStyle
     /// <summary>磁贴基本单位（1×1 格边长，像素）</summary>
     public const double Unit = 84;
 
-    /// <summary>磁贴圆角（按用户设置；未设置时彩色/亚克力/极光/蒸汽波/拟物圆角，纯黑/全息/线框直角）</summary>
-    public static double Radius => IsSquareRadius ? 0 : 6;
+    /// <summary>磁贴圆角（按用户设置；未设置时彩色/液态玻璃圆角，金属拉丝微直角，像素街机直角）</summary>
+    public static double Radius => IsSquareRadius ? 0 : (IsMetalBrushedTheme ? 3 : 6);
 
-    /// <summary>是否为纯黑磁贴主题（OLED 省电极简）</summary>
-    public static bool IsOledTheme => SettingsService.Current.TileTheme == TileTheme.OledBlack;
+    /// <summary>是否为液态玻璃主题（通透玻璃卡片 + accent 色描边 + 内部高光，圆角）</summary>
+    public static bool IsLiquidGlassTheme => SettingsService.Current.TileTheme == TileTheme.NeonCyber;
 
-    /// <summary>是否为全息磁贴主题（幻彩渐变）</summary>
-    public static bool IsHoloTheme => SettingsService.Current.TileTheme == TileTheme.Holographic;
+    /// <summary>是否为金属拉丝主题（横向拉丝纹理 + 工业风 + 上下内阴影，微直角）</summary>
+    public static bool IsMetalBrushedTheme => SettingsService.Current.TileTheme == TileTheme.MetalBrushed;
 
-    /// <summary>是否为亚克力磁贴主题（磨砂云母质感）</summary>
-    public static bool IsAcrylicTheme => SettingsService.Current.TileTheme == TileTheme.Acrylic;
+    /// <summary>是否为像素街机主题（硬色块 + 内阴影，直角）</summary>
+    public static bool IsPixelArcadeTheme => SettingsService.Current.TileTheme == TileTheme.PixelArcade;
 
-    /// <summary>是否为极光磁贴主题（青绿→蓝→紫极光渐变）</summary>
-    public static bool IsAuroraTheme => SettingsService.Current.TileTheme == TileTheme.Aurora;
-
-    /// <summary>是否为蒸汽波磁贴主题（橙→粉→紫复古日落渐变）</summary>
-    public static bool IsVaporTheme => SettingsService.Current.TileTheme == TileTheme.Vaporwave;
-
-    /// <summary>是否为线框磁贴主题（无底色 + 彩色描边）</summary>
-    public static bool IsOutlineTheme => SettingsService.Current.TileTheme == TileTheme.Outline;
-
-    /// <summary>是否为拟物磁贴主题（实体按键立体质感）</summary>
-    public static bool IsBevelTheme => SettingsService.Current.TileTheme == TileTheme.Bevel;
-
-    /// <summary>是否直角（方形）：显式设置优先，未设置时按主题默认</summary>
+    /// <summary>是否直角（方形）：显式设置优先，未设置时按主题默认
+    /// 像素街机=直角，金属拉丝=微直角（仍允许覆盖完全直角），其余=圆角</summary>
     public static bool IsSquareRadius =>
         (SettingsService.Current.TileCornerShape
-         ?? (IsOledTheme || IsHoloTheme || IsOutlineTheme
-             ? TileCorner.Square
-             : TileCorner.Rounded)) == TileCorner.Square;
+         ?? (IsPixelArcadeTheme ? TileCorner.Square : TileCorner.Rounded)) == TileCorner.Square;
 
-    /// <summary>是否隐藏磁贴颜色设置（纯黑/全息/极光/蒸汽波/拟物的底色与磁贴颜色无关）</summary>
-    public static bool HidesTileColor => IsOledTheme || IsHoloTheme || IsAuroraTheme || IsVaporTheme || IsBevelTheme;
+    /// <summary>是否隐藏磁贴颜色设置（像素街机硬色块底色依赖 accent 但颜色不自由）</summary>
+    public static bool HidesTileColor => false;
 
     /// <summary>磁贴间距（像素，可在外观设置调节）</summary>
     public static double Gap => Math.Clamp(SettingsService.Current.TileSpacing, 0, 30);
@@ -78,9 +65,9 @@ public static class TileStyle
     public static readonly Windows.UI.Color PowerAccent = Windows.UI.Color.FromArgb(0xFF, 0xC4, 0x2B, 0x1C);
 
     /// <summary>无颜色磁贴：显式选"none"，或未指定颜色且随机配色开关关闭（只显示图标或图片）；
-    /// 常驻磁贴始终有色；纯黑/全息/极光/蒸汽波/拟物底色不依赖磁贴颜色，统一按有色处理（保留名称）</summary>
+    /// 常驻磁贴始终有色；像素街机硬色块统一按有色处理（保留名称）</summary>
     public static bool IsNoColor(LaunchItem item) =>
-        !IsOledTheme && !IsHoloTheme && !IsAuroraTheme && !IsVaporTheme && !IsBevelTheme
+        !IsPixelArcadeTheme
         && !IsFixedTile(item)
         && (string.Equals(item.TileColor, "none", StringComparison.OrdinalIgnoreCase)
             || (string.IsNullOrEmpty(item.TileColor) && !SettingsService.Current.RandomTileColor));
@@ -124,84 +111,67 @@ public static class TileStyle
         return c;
     }
 
-    /// <summary>磁贴填充：彩色=强调色纯色块；纯黑=OLED 黑；全息=幻彩渐变；亚克力=磨砂云母；
-    /// 极光=青绿蓝紫渐变；蒸汽波=橙粉紫渐变；线框=透明（靠描边）；拟物=上亮下暗灰调</summary>
+    /// <summary>磁贴填充：彩色=强调色纯色块；液态玻璃=通透多层半透明（依赖 accent）；金属拉丝=accent 色调暗上下渐变模拟金属板（依赖 accent）；
+    /// 像素街机=硬色块上亮下暗（依赖 accent）</summary>
     public static Brush TileFill(Windows.UI.Color accent) =>
         FillFor(SettingsService.Current.TileTheme, accent);
 
     /// <summary>按指定主题生成填充（主题预览等需要渲染非当前主题时使用）</summary>
     public static Brush FillFor(TileTheme theme, Windows.UI.Color accent)
     {
-        if (theme == TileTheme.OledBlack)
-            return new SolidColorBrush(Windows.UI.Color.FromArgb(0xFF, 0x00, 0x00, 0x00)); // 纯黑：OLED 像素不发光
-        if (theme == TileTheme.Aurora)
-            return new LinearGradientBrush // 极光：青绿 → 蓝 → 紫（比全息更深邃，夜空氛围）
-            {
-                StartPoint = new Windows.Foundation.Point(0, 0),
-                EndPoint = new Windows.Foundation.Point(1, 1),
-                GradientStops =
-                {
-                    new GradientStop { Color = Windows.UI.Color.FromArgb(0xFF, 0x00, 0xC9, 0xA7), Offset = 0 },
-                    new GradientStop { Color = Windows.UI.Color.FromArgb(0xFF, 0x1E, 0x62, 0xD0), Offset = 0.5 },
-                    new GradientStop { Color = Windows.UI.Color.FromArgb(0xFF, 0x6B, 0x3F, 0xD4), Offset = 1 }
-                }
-            };
-        if (theme == TileTheme.Vaporwave)
-            return new LinearGradientBrush // 蒸汽波：橙 → 粉 → 紫 复古日落
-            {
-                StartPoint = new Windows.Foundation.Point(0, 0),
-                EndPoint = new Windows.Foundation.Point(1, 1),
-                GradientStops =
-                {
-                    new GradientStop { Color = Windows.UI.Color.FromArgb(0xFF, 0xFF, 0x9A, 0x3D), Offset = 0 },
-                    new GradientStop { Color = Windows.UI.Color.FromArgb(0xFF, 0xFF, 0x4F, 0xA0), Offset = 0.5 },
-                    new GradientStop { Color = Windows.UI.Color.FromArgb(0xFF, 0x8A, 0x4F, 0xFF), Offset = 1 }
-                }
-            };
-        if (theme == TileTheme.Outline)
-            return new SolidColorBrush(Windows.UI.Color.FromArgb(0, 0, 0, 0)); // 线框：无底色，视觉全靠彩色描边
-        if (theme == TileTheme.Bevel)
-            return new LinearGradientBrush // 拟物：上亮下暗固定灰调，实体按键的受光/背光面
-            {
-                StartPoint = new Windows.Foundation.Point(0, 0),
-                EndPoint = new Windows.Foundation.Point(0, 1),
-                GradientStops =
-                {
-                    new GradientStop { Color = Windows.UI.Color.FromArgb(0xFF, 0x56, 0x5D, 0x66), Offset = 0 },
-                    new GradientStop { Color = Windows.UI.Color.FromArgb(0xFF, 0x34, 0x38, 0x3F), Offset = 0.5 },
-                    new GradientStop { Color = Windows.UI.Color.FromArgb(0xFF, 0x22, 0x25, 0x2A), Offset = 1 }
-                }
-            };
-        if (theme == TileTheme.Holographic)
-            return new LinearGradientBrush // 全息：粉 → 紫 → 青 斜向渐变（与磁贴颜色无关）
-            {
-                StartPoint = new Windows.Foundation.Point(0, 0),
-                EndPoint = new Windows.Foundation.Point(1, 1),
-                GradientStops =
-                {
-                    new GradientStop { Color = Windows.UI.Color.FromArgb(0xFF, 0xFF, 0x6E, 0xC7), Offset = 0 },
-                    new GradientStop { Color = Windows.UI.Color.FromArgb(0xFF, 0x8A, 0x5C, 0xFF), Offset = 0.5 },
-                    new GradientStop { Color = Windows.UI.Color.FromArgb(0xFF, 0x00, 0xE5, 0xFF), Offset = 1 }
-                }
-            };
-        if (theme == TileTheme.Acrylic)
+        if (theme == TileTheme.NeonCyber)
         {
-            // 云母磨砂：亚克力采样只能取到窗口内的纯色背景（磨不出东西），
-            // 改用视觉磨砂——顶部受光白 → 中段白雾 → 底部淡自身色，玻璃卡片质感
-            var mid = Shade(accent, 0.45);
+            // 液态玻璃：多层半透明叠加，顶部亮白过渡 → 中段淡 accent → 底部微沉，accent 色做边框
+            var mid = Shade(accent, 0.5);
+            var dark = Shade(accent, 0.65);
+            return new LinearGradientBrush
+            {
+                StartPoint = new Windows.Foundation.Point(0, 0),
+                EndPoint = new Windows.Foundation.Point(0.3, 1),
+                GradientStops =
+                {
+                    new GradientStop { Color = Windows.UI.Color.FromArgb(0x30, 0xFF, 0xFF, 0xFF), Offset = 0 },
+                    new GradientStop { Color = Windows.UI.Color.FromArgb(0x18, mid.R, mid.G, mid.B), Offset = 0.5 },
+                    new GradientStop { Color = Windows.UI.Color.FromArgb(0x20, dark.R, dark.G, dark.B), Offset = 1 }
+                }
+            };
+        }
+        if (theme == TileTheme.MetalBrushed)
+        {
+            // 金属拉丝：accent 色调暗后做上下渐变模拟金属板（上受光→中平→下背光）
+            var light = Shade(accent, 0.15);
+            var mid = Shade(accent, 0.35);
+            var dark = Shade(accent, -0.35);
             return new LinearGradientBrush
             {
                 StartPoint = new Windows.Foundation.Point(0, 0),
                 EndPoint = new Windows.Foundation.Point(0, 1),
                 GradientStops =
                 {
-                    new GradientStop { Color = Windows.UI.Color.FromArgb(0x80, 0xFF, 0xFF, 0xFF), Offset = 0 },
-                    new GradientStop { Color = Windows.UI.Color.FromArgb(0x33, 0xFF, 0xFF, 0xFF), Offset = 0.45 },
-                    new GradientStop { Color = Windows.UI.Color.FromArgb(0x30, mid.R, mid.G, mid.B), Offset = 0.75 },
-                    new GradientStop { Color = Windows.UI.Color.FromArgb(0x48, mid.R, mid.G, mid.B), Offset = 1 }
+                    new GradientStop { Color = light, Offset = 0 },
+                    new GradientStop { Color = mid, Offset = 0.5 },
+                    new GradientStop { Color = dark, Offset = 1 }
                 }
             };
         }
+        if (theme == TileTheme.PixelArcade)
+        {
+            // 像素街机：硬色块 + 上亮下暗渐变模拟凸起按键
+            var light = Shade(accent, 0.25);
+            var dark = Shade(accent, -0.35);
+            return new LinearGradientBrush
+            {
+                StartPoint = new Windows.Foundation.Point(0, 0),
+                EndPoint = new Windows.Foundation.Point(0, 1),
+                GradientStops =
+                {
+                    new GradientStop { Color = light, Offset = 0 },
+                    new GradientStop { Color = accent, Offset = 0.5 },
+                    new GradientStop { Color = dark, Offset = 1 }
+                }
+            };
+        }
+        // 彩色：纯色块
         return new SolidColorBrush(accent);
     }
 
@@ -212,17 +182,21 @@ public static class TileStyle
         return Windows.UI.Color.FromArgb(c.A, Ch(c.R, 255), Ch(c.G, 255), Ch(c.B, 255));
     }
 
-    /// <summary>主题对应的磁贴外框颜色：线框=磁贴强调色（视觉主体），纯黑=极淡白，
-    /// 全息=亮白，其余 1px 淡白</summary>
-    public static Windows.UI.Color TileBorderColorFor(Windows.UI.Color accent) =>
-        IsOutlineTheme ? accent
-        : IsOledTheme ? Windows.UI.Color.FromArgb(0x1A, 0xFF, 0xFF, 0xFF)
-        : IsHoloTheme ? Windows.UI.Color.FromArgb(0x60, 0xFF, 0xFF, 0xFF)
-        : Windows.UI.Color.FromArgb(0x40, 0xFF, 0xFF, 0xFF);
+    /// <summary>主题对应的磁贴外框颜色：液态玻璃=强调色（彩色描边），像素街机=accent 压暗（硬边框），
+    /// 金属拉丝 / 彩色=淡白</summary>
+    public static Windows.UI.Color TileBorderColorFor(Windows.UI.Color accent)
+    {
+        if (IsLiquidGlassTheme) return accent;
+        if (IsPixelArcadeTheme) return Shade(accent, -0.55);
+        return Windows.UI.Color.FromArgb(0x40, 0xFF, 0xFF, 0xFF);
+    }
 
-    /// <summary>主题对应的磁贴边框粗细（线框描边最粗，全息次之，其余 1px）</summary>
+    /// <summary>主题对应的磁贴边框粗细（液态玻璃 1.5，像素街机 2，其余 1）</summary>
     public static double TileBorderThickness =>
-        IsOutlineTheme ? 2 : IsHoloTheme ? 1.5 : 1;
+        IsPixelArcadeTheme ? 2 : IsLiquidGlassTheme ? 1.5 : 1;
+
+    /// <summary>磁贴默认强调色（用于没有 accent 参数的图片类磁贴）</summary>
+    private static readonly Windows.UI.Color _defaultAccent = Accents[0];
 
     /// <summary>
     /// 构建标准磁贴（主页 / 小组件页预览共用）：背景图片铺满 或 强调色底+图标+名称，
@@ -247,8 +221,8 @@ public static class TileStyle
                     ImageSource = item.CoverImage,
                     Stretch = Microsoft.UI.Xaml.Media.Stretch.UniformToFill
                 },
-                BorderBrush = new SolidColorBrush(Windows.UI.Color.FromArgb(0x40, 0xFF, 0xFF, 0xFF)),
-                BorderThickness = new Thickness(1)
+                BorderBrush = new SolidColorBrush(TileBorderColorFor(accent)),
+                BorderThickness = new Thickness(TileBorderThickness)
             };
             coverTile.Opacity = Opacity;
             return coverTile;
@@ -257,12 +231,33 @@ public static class TileStyle
         var grid = new Grid();
 
         // 主题装饰层：先加入（位于图标/名称之下），且不接管输入
-        if (!noColor && (IsHoloTheme || IsAcrylicTheme))
+        if (!noColor && IsLiquidGlassTheme)
         {
-            // 全息/亚克力：顶部白色高光带，强化渐变的通透立体感
+            // 液态玻璃：顶部亮白高光带 + 左下角落光斑（强化玻璃通透感）
             grid.Children.Add(new Border
             {
-                Height = Math.Max(16, height * 0.32),
+                Height = Math.Max(18, height * 0.35),
+                VerticalAlignment = VerticalAlignment.Top,
+                Background = new LinearGradientBrush
+                {
+                    StartPoint = new Windows.Foundation.Point(0, 0),
+                    EndPoint = new Windows.Foundation.Point(0, 1),
+                    GradientStops =
+                    {
+                        new GradientStop { Color = Windows.UI.Color.FromArgb(0x28, 0xFF, 0xFF, 0xFF), Offset = 0 },
+                        new GradientStop { Color = Windows.UI.Color.FromArgb(0x00, 0xFF, 0xFF, 0xFF), Offset = 1 }
+                    }
+                },
+                IsHitTestVisible = false
+            });
+        }
+        else if (!noColor && IsMetalBrushedTheme)
+        {
+            // 金属拉丝：顶部受光高光 + 上下内阴影模拟金属板凸起 + 横向拉丝纹理
+            // 顶部高光带
+            grid.Children.Add(new Border
+            {
+                Height = Math.Max(14, height * 0.3),
                 VerticalAlignment = VerticalAlignment.Top,
                 Background = new LinearGradientBrush
                 {
@@ -277,23 +272,23 @@ public static class TileStyle
                 IsHitTestVisible = false
             });
         }
-        else if (!noColor && IsBevelTheme)
+        else if (!noColor && IsPixelArcadeTheme)
         {
-            // 拟物：顶部受光高光带，强化按键凸起的立体感
+            // 像素街机：底部暗色条 + 右下角黄色指示灯
             grid.Children.Add(new Border
             {
-                Height = Math.Max(12, height * 0.24),
+                Height = Math.Max(6, height * 0.08),
+                VerticalAlignment = VerticalAlignment.Bottom,
+                Background = new SolidColorBrush(Windows.UI.Color.FromArgb(0x40, 0, 0, 0)),
+                IsHitTestVisible = false
+            });
+            grid.Children.Add(new Border
+            {
+                Width = 8, Height = 8,
+                HorizontalAlignment = HorizontalAlignment.Right,
                 VerticalAlignment = VerticalAlignment.Top,
-                Background = new LinearGradientBrush
-                {
-                    StartPoint = new Windows.Foundation.Point(0, 0),
-                    EndPoint = new Windows.Foundation.Point(0, 1),
-                    GradientStops =
-                    {
-                        new GradientStop { Color = Windows.UI.Color.FromArgb(0x28, 0xFF, 0xFF, 0xFF), Offset = 0 },
-                        new GradientStop { Color = Windows.UI.Color.FromArgb(0x00, 0xFF, 0xFF, 0xFF), Offset = 1 }
-                    }
-                },
+                Margin = new Thickness(0, 8, 8, 0),
+                Background = new SolidColorBrush(Windows.UI.Color.FromArgb(0xFF, 0xFF, 0xD6, 0x00)),
                 IsHitTestVisible = false
             });
         }
@@ -379,18 +374,7 @@ public static class TileStyle
             Height = height,
             CornerRadius = new CornerRadius(Radius),
             Background = noColor ? new SolidColorBrush(Windows.UI.Color.FromArgb(0, 0, 0, 0)) : TileFill(accent),
-            BorderBrush = IsBevelTheme
-                ? new LinearGradientBrush // 拟物：上亮下暗描边，模拟凸起按钮的受光边与背光边
-                  {
-                      StartPoint = new Windows.Foundation.Point(0, 0),
-                      EndPoint = new Windows.Foundation.Point(0, 1),
-                      GradientStops =
-                      {
-                          new GradientStop { Color = Windows.UI.Color.FromArgb(0x66, 0xFF, 0xFF, 0xFF), Offset = 0 },
-                          new GradientStop { Color = Windows.UI.Color.FromArgb(0x66, 0x00, 0x00, 0x00), Offset = 1 }
-                      }
-                  }
-                : new SolidColorBrush(TileBorderColorFor(accent)),
+            BorderBrush = new SolidColorBrush(TileBorderColorFor(accent)),
             BorderThickness = new Thickness(TileBorderThickness),
             Child = grid,
             RenderTransformOrigin = new Windows.Foundation.Point(0.5, 0.5)
@@ -446,8 +430,8 @@ public static class TileStyle
             Height = height,
             CornerRadius = new CornerRadius(Radius),
             Background = new SolidColorBrush(Windows.UI.Color.FromArgb(0x18, 0xFF, 0xFF, 0xFF)),
-            BorderBrush = new SolidColorBrush(Windows.UI.Color.FromArgb(0x40, 0xFF, 0xFF, 0xFF)),
-            BorderThickness = new Thickness(1),
+            BorderBrush = new SolidColorBrush(TileBorderColorFor(_defaultAccent)),
+            BorderThickness = new Thickness(TileBorderThickness),
             Child = grid
         };
         tile.Opacity = Opacity;
@@ -551,8 +535,8 @@ public static class TileStyle
             Height = height,
             CornerRadius = new CornerRadius(Radius),
             Background = new SolidColorBrush(Windows.UI.Color.FromArgb(0x18, 0xFF, 0xFF, 0xFF)),
-            BorderBrush = new SolidColorBrush(Windows.UI.Color.FromArgb(0x40, 0xFF, 0xFF, 0xFF)),
-            BorderThickness = new Thickness(1),
+            BorderBrush = new SolidColorBrush(TileBorderColorFor(_defaultAccent)),
+            BorderThickness = new Thickness(TileBorderThickness),
             Child = grid
         };
         tile.Opacity = Opacity;
@@ -663,8 +647,8 @@ public static class TileStyle
             Height = height,
             CornerRadius = new CornerRadius(Radius),
             Background = noColor ? new SolidColorBrush(Windows.UI.Color.FromArgb(0, 0, 0, 0)) : TileFill(accent),
-            BorderBrush = new SolidColorBrush(Windows.UI.Color.FromArgb(0x40, 0xFF, 0xFF, 0xFF)),
-            BorderThickness = new Thickness(1),
+            BorderBrush = new SolidColorBrush(TileBorderColorFor(accent)),
+            BorderThickness = new Thickness(TileBorderThickness),
             Child = grid
         };
         tile.Opacity = Opacity;
@@ -812,8 +796,8 @@ public static class TileStyle
             Height = height,
             CornerRadius = new CornerRadius(Radius),
             Background = noColor ? new SolidColorBrush(Windows.UI.Color.FromArgb(0, 0, 0, 0)) : TileFill(accent),
-            BorderBrush = new SolidColorBrush(Windows.UI.Color.FromArgb(0x40, 0xFF, 0xFF, 0xFF)),
-            BorderThickness = new Thickness(1),
+            BorderBrush = new SolidColorBrush(TileBorderColorFor(accent)),
+            BorderThickness = new Thickness(TileBorderThickness),
             Child = grid
         };
         tile.Opacity = Opacity;
@@ -962,8 +946,8 @@ public static class TileStyle
             Height = height,
             CornerRadius = new CornerRadius(Radius),
             Background = noColor ? new SolidColorBrush(Windows.UI.Color.FromArgb(0, 0, 0, 0)) : TileFill(accent),
-            BorderBrush = new SolidColorBrush(Windows.UI.Color.FromArgb(0x40, 0xFF, 0xFF, 0xFF)),
-            BorderThickness = new Thickness(1),
+            BorderBrush = new SolidColorBrush(TileBorderColorFor(accent)),
+            BorderThickness = new Thickness(TileBorderThickness),
             Child = grid
         };
         tile.Opacity = Opacity;
@@ -1090,8 +1074,8 @@ public static class TileStyle
             Height = height,
             CornerRadius = new CornerRadius(Radius),
             Background = noColor ? new SolidColorBrush(Windows.UI.Color.FromArgb(0, 0, 0, 0)) : TileFill(accent),
-            BorderBrush = new SolidColorBrush(Windows.UI.Color.FromArgb(0x40, 0xFF, 0xFF, 0xFF)),
-            BorderThickness = new Thickness(1),
+            BorderBrush = new SolidColorBrush(TileBorderColorFor(accent)),
+            BorderThickness = new Thickness(TileBorderThickness),
             Child = grid
         };
         tile.Opacity = Opacity;
@@ -1215,8 +1199,8 @@ public static class TileStyle
             Height = height,
             CornerRadius = new CornerRadius(Radius),
             Background = noColor ? new SolidColorBrush(Windows.UI.Color.FromArgb(0, 0, 0, 0)) : TileFill(accent),
-            BorderBrush = new SolidColorBrush(Windows.UI.Color.FromArgb(0x40, 0xFF, 0xFF, 0xFF)),
-            BorderThickness = new Thickness(1),
+            BorderBrush = new SolidColorBrush(TileBorderColorFor(accent)),
+            BorderThickness = new Thickness(TileBorderThickness),
             Child = grid
         };
         tile.Opacity = Opacity;
@@ -1343,8 +1327,8 @@ public static class TileStyle
             Height = height,
             CornerRadius = new CornerRadius(Radius),
             Background = noColor ? new SolidColorBrush(Windows.UI.Color.FromArgb(0, 0, 0, 0)) : TileFill(accent),
-            BorderBrush = new SolidColorBrush(Windows.UI.Color.FromArgb(0x40, 0xFF, 0xFF, 0xFF)),
-            BorderThickness = new Thickness(1),
+            BorderBrush = new SolidColorBrush(TileBorderColorFor(accent)),
+            BorderThickness = new Thickness(TileBorderThickness),
             Child = grid
         };
         tile.Opacity = Opacity;
@@ -1503,8 +1487,8 @@ public static class TileStyle
             Height = height,
             CornerRadius = new CornerRadius(Radius),
             Background = noColor ? new SolidColorBrush(Windows.UI.Color.FromArgb(0, 0, 0, 0)) : TileFill(accent),
-            BorderBrush = new SolidColorBrush(Windows.UI.Color.FromArgb(0x40, 0xFF, 0xFF, 0xFF)),
-            BorderThickness = new Thickness(1),
+            BorderBrush = new SolidColorBrush(TileBorderColorFor(accent)),
+            BorderThickness = new Thickness(TileBorderThickness),
             Child = grid
         };
         tile.Opacity = Opacity;
@@ -1681,8 +1665,8 @@ public static class TileStyle
             Height = height,
             CornerRadius = new CornerRadius(Radius),
             Background = noColor ? new SolidColorBrush(Windows.UI.Color.FromArgb(0, 0, 0, 0)) : TileFill(accent),
-            BorderBrush = new SolidColorBrush(Windows.UI.Color.FromArgb(0x40, 0xFF, 0xFF, 0xFF)),
-            BorderThickness = new Thickness(1),
+            BorderBrush = new SolidColorBrush(TileBorderColorFor(accent)),
+            BorderThickness = new Thickness(TileBorderThickness),
             Child = grid
         };
         tile.Opacity = Opacity;
@@ -1877,8 +1861,8 @@ public static class TileStyle
             Height = height,
             CornerRadius = new CornerRadius(Radius),
             Background = noColor ? new SolidColorBrush(Windows.UI.Color.FromArgb(0, 0, 0, 0)) : TileFill(accent),
-            BorderBrush = new SolidColorBrush(Windows.UI.Color.FromArgb(0x40, 0xFF, 0xFF, 0xFF)),
-            BorderThickness = new Thickness(1),
+            BorderBrush = new SolidColorBrush(TileBorderColorFor(accent)),
+            BorderThickness = new Thickness(TileBorderThickness),
             Child = grid
         };
         tile.Opacity = Opacity;
@@ -2051,8 +2035,8 @@ public static class TileStyle
             Height = height,
             CornerRadius = new CornerRadius(Radius),
             Background = noColor ? new SolidColorBrush(Windows.UI.Color.FromArgb(0, 0, 0, 0)) : TileFill(accent),
-            BorderBrush = new SolidColorBrush(Windows.UI.Color.FromArgb(0x40, 0xFF, 0xFF, 0xFF)),
-            BorderThickness = new Thickness(1),
+            BorderBrush = new SolidColorBrush(TileBorderColorFor(accent)),
+            BorderThickness = new Thickness(TileBorderThickness),
             Child = grid
         };
         tile.Opacity = Opacity;
@@ -2182,8 +2166,8 @@ public static class TileStyle
             Height = height,
             CornerRadius = new CornerRadius(Radius),
             Background = noColor ? new SolidColorBrush(Windows.UI.Color.FromArgb(0, 0, 0, 0)) : TileFill(accent),
-            BorderBrush = new SolidColorBrush(Windows.UI.Color.FromArgb(0x40, 0xFF, 0xFF, 0xFF)),
-            BorderThickness = new Thickness(1),
+            BorderBrush = new SolidColorBrush(TileBorderColorFor(accent)),
+            BorderThickness = new Thickness(TileBorderThickness),
             Child = grid
         };
         tile.Opacity = Opacity;
@@ -2386,8 +2370,8 @@ public static class TileStyle
             Height = height,
             CornerRadius = new CornerRadius(Radius),
             Background = noColor ? new SolidColorBrush(Windows.UI.Color.FromArgb(0, 0, 0, 0)) : TileFill(accent),
-            BorderBrush = new SolidColorBrush(Windows.UI.Color.FromArgb(0x40, 0xFF, 0xFF, 0xFF)),
-            BorderThickness = new Thickness(1),
+            BorderBrush = new SolidColorBrush(TileBorderColorFor(accent)),
+            BorderThickness = new Thickness(TileBorderThickness),
             Child = grid
         };
         tile.Opacity = Opacity;

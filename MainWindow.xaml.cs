@@ -63,6 +63,8 @@ public sealed partial class MainWindow : Window
     private IntPtr _revealedTaskbar;
     /// <summary>呼出期间被临时排到任务栏之后的窗口，收起时恢复其置顶状态</summary>
     private readonly List<(IntPtr Hwnd, bool WasTopmost)> _sunkWindows = new();
+    /// <summary>呼出瞬间的前台窗口（通常是刚切换过去的游戏），作为背景主画面</summary>
+    private IntPtr _summonSource;
     private NativeRect _taskbarRestoreRect;
     private bool _taskbarWasTopmost;
     private bool _taskbarWasVisible;
@@ -113,6 +115,10 @@ public sealed partial class MainWindow : Window
         // Explorer 可在不移动窗口的情况下隐藏任务栏或撤销置顶，不能只检查坐标。
         var visible = IsWindowVisibleForLaunch(bar);
         var topmost = (GetWindowLongPtr(bar, GWL_EXSTYLE).ToInt64() & 0x8) != 0;
+        // 呼出瞬间的前台窗口（通常是刚切换过去的游戏）作为背景主画面：
+        // 先把压在它上面的整屏外部窗口（Steam 页面等）排到任务栏之后，再把它自己排到任务栏之后。
+        // 只在呼出时做一次，避免轮询反复改 z 序造成闪烁。
+        if (raise) BackgroundFront(bar, bounds);
         // TOPMOST 只表示所在层级，不保证排在游戏或其他置顶窗口前面。
         // 目标层级：启动器与任务栏在最上 → 呼出前的游戏（可聚焦页面）→ 其他窗口。
         // 任何压住任务栏的外部窗口一律排到任务栏之后；只改一次，避免 250ms 轮询反复改 z 序造成闪烁。
@@ -192,6 +198,42 @@ public sealed partial class MainWindow : Window
         _sunkWindows.Add((hwnd, (GetWindowLongPtr(hwnd, GWL_EXSTYLE).ToInt64() & 0x8) != 0));
     }
 
+    /// <summary>
+    /// 呼出时把背景整理成：任务栏/启动器 → 游戏 → 其他窗口。
+    /// 先清理压在游戏上方的整屏外部窗口（如 Steam 页面），再把游戏排到任务栏之后。
+    /// </summary>
+    private void BackgroundFront(IntPtr bar, Windows.Graphics.RectInt32 bounds)
+    {
+        var source = _summonSource;
+        if (source == IntPtr.Zero || source == _hwnd || source == bar || !IsWindowVisibleForLaunch(source)) return;
+        if (!GetWindowRect(source, out var sr)) return;
+        // 只把接近整屏的窗口当背景主画面；小窗口保持原状，避免无谓调整。
+        if (sr.Right - sr.Left < bounds.Width * 0.5 || sr.Bottom - sr.Top < bounds.Height * 0.5) return;
+
+        // 先收集压在它上方、且面积不小于游戏的外部窗口（如 Steam 页面）；遍历中改层级会打乱枚举。
+        var above = new List<IntPtr>();
+        var shell = GetShellWindow();
+        var sourceArea = (long)(sr.Right - sr.Left) * (sr.Bottom - sr.Top);
+        for (var h = GetWindow(source, 3); h != IntPtr.Zero; h = GetWindow(h, 3))
+        {
+            if (h == _hwnd || h == bar || h == shell) continue;
+            if (!IsWindowVisibleForLaunch(h) || !GetWindowRect(h, out var r)) continue;
+            GetWindowThreadProcessId(h, out var pid);
+            if (pid == OwnProcessId) continue;
+            if (DwmGetWindowAttribute(h, 14, out var cloaked, sizeof(int)) == 0 && cloaked != 0) continue;
+            if ((long)(r.Right - r.Left) * (r.Bottom - r.Top) < sourceArea) continue;
+            above.Add(h);
+        }
+        foreach (var h in above)
+        {
+            RememberSunkWindow(h);
+            SetWindowPos(h, bar, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE);
+        }
+        // 游戏排到任务栏之后：成为普通窗口里最高的一层，其他页面都在它下面。
+        RememberSunkWindow(source);
+        SetWindowPos(source, bar, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE);
+    }
+
     private static IntPtr TaskbarCoveringWindow(IntPtr bar, int x, int y, int width, int height)
     {
         for (var above = GetWindow(bar, 3); above != IntPtr.Zero; above = GetWindow(above, 3))
@@ -213,6 +255,7 @@ public sealed partial class MainWindow : Window
         _taskbarRevealWatch.Stop();
         var bar = _revealedTaskbar;
         _revealedTaskbar = IntPtr.Zero;
+        _summonSource = IntPtr.Zero;
         // 把呼出期间临时压到任务栏之后的窗口恢复原置顶状态，避免改变用户的窗口层级设置。
         foreach (var sunk in _sunkWindows)
         {
@@ -1188,6 +1231,7 @@ public sealed partial class MainWindow : Window
     public void ShowFromTray()
     {
         (Root.Content as MainPage)?.CancelPendingLaunch();
+        _summonSource = GetForegroundWindow();
         _shown = true;
         (Root.Content as MainPage)?.SetBackground(false);
         _edgeGesture?.SetStripVisible(false);
@@ -2102,6 +2146,9 @@ public sealed partial class MainWindow : Window
 
     private static readonly IntPtr HWND_TOPMOST = new IntPtr(-1);
     private static readonly int OwnProcessId = Environment.ProcessId;
+
+    [DllImport("user32.dll")]
+    private static extern IntPtr GetShellWindow();
 
     [DllImport("user32.dll")]
     private static extern bool SetForegroundWindow(IntPtr hWnd);

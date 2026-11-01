@@ -48,6 +48,8 @@ public sealed class GamepadService : IDisposable
     private const long StickReversalGuardMs = 150;
     private const byte TriggerThreshold = 30;
     private const int ERROR_SUCCESS = 0;
+    /// <summary>未连接槽位的重探测间隔：无手柄时不再每 16ms 空查四个槽位，连接后仍能在 1 秒内发现</summary>
+    private const long DisconnectedRescanMs = 1000;
 
     /// <summary>呼出组合键需持续按住的时长</summary>
     public const int SummonHoldMs = 1000;
@@ -56,6 +58,8 @@ public sealed class GamepadService : IDisposable
     private GamepadButtons _last;
     private GamepadButtons _current;
     private bool _hasGamepad;
+    private readonly bool[] _slotConnected = new bool[MaxUsers];
+    private readonly long[] _slotLastProbeMs = new long[MaxUsers];
     private long _comboStartMs;
     private bool _comboFired;
     private long _fsStartMs;
@@ -156,10 +160,19 @@ public sealed class GamepadService : IDisposable
     {
         GamepadButtons current = GamepadButtons.None;
         var any = false;
+        var nowProbeMs = Environment.TickCount64;
 
         for (uint i = 0; i < MaxUsers; i++)
         {
-            if (GetState(i, out var state) != ERROR_SUCCESS) continue;
+            // 已连接槽位每帧轮询；空槽位每秒才探测一次，手柄接入后仍能及时识别
+            if (!_slotConnected[i] && nowProbeMs - _slotLastProbeMs[i] < DisconnectedRescanMs) continue;
+            _slotLastProbeMs[i] = nowProbeMs;
+            if (GetState(i, out var state) != ERROR_SUCCESS)
+            {
+                _slotConnected[i] = false;
+                continue;
+            }
+            _slotConnected[i] = true;
             any = true;
 
             var buttons = (GamepadButtons)state.Gamepad.Buttons;

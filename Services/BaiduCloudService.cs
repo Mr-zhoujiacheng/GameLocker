@@ -120,7 +120,7 @@ public static class BaiduCloudService
             {
                 var length = (int)Math.Min(SliceSize, input.Length - input.Position);
                 await input.ReadExactlyAsync(buffer.AsMemory(0, length));
-                await UploadPartAsync(account, token, remote, uploadId, buffer, length, part, fileName);
+                await UploadPartAsync(account, token, remote, uploadId, buffer, length, part, fileName, blocks[part]);
             }
         }
 
@@ -138,7 +138,7 @@ public static class BaiduCloudService
     }
 
     private static async Task UploadPartAsync(BaiduAccount account, string token, string remote, string uploadId,
-        byte[] buffer, int length, int part, string fileName)
+        byte[] buffer, int length, int part, string fileName, string expectedMd5)
     {
         if (uploadId.Length == 0) throw new IOException("百度预上传未返回上传任务编号。");
         using var content = new MultipartFormDataContent();
@@ -152,8 +152,7 @@ public static class BaiduCloudService
         Prepare(request, account);
         var payload = await SendJsonAsync(request, "上传百度网盘分片");
         EnsureOk(payload, "上传百度网盘分片");
-        if (!First(payload, "md5").Equals(Convert.ToHexString(MD5.HashData(buffer.AsSpan(0, length))),
-            StringComparison.OrdinalIgnoreCase))
+        if (!First(payload, "md5").Equals(expectedMd5, StringComparison.OrdinalIgnoreCase))
             throw new IOException("百度网盘分片上传未返回匹配的校验值。");
     }
 

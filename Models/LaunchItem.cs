@@ -501,6 +501,28 @@ public class LaunchItem
     [JsonIgnore]
     public string CoverFilePath => Path.Combine(IconsDir, CoverFile ?? "");
 
+    /// <summary>解码后的图片源缓存（key=路径+解码宽度；弱引用，磁贴移除后可被回收）</summary>
+    private static readonly Dictionary<string, WeakReference<BitmapImage>> ImageCache =
+        new(StringComparer.OrdinalIgnoreCase);
+    private const int ImageCacheLimit = 128;
+
+    /// <summary>按路径复用 BitmapImage，并按磁贴显示尺寸限制解码宽，避免重建磁贴时反复解码大图</summary>
+    private static ImageSource? CachedImage(string path, int decodeWidth)
+    {
+        var key = path + "#" + decodeWidth;
+        if (ImageCache.TryGetValue(key, out var weak) && weak.TryGetTarget(out var cached)) return cached;
+        try
+        {
+            var bmp = new BitmapImage();
+            if (decodeWidth > 0) bmp.DecodePixelWidth = decodeWidth;
+            bmp.UriSource = new Uri(path);
+            if (ImageCache.Count >= ImageCacheLimit) ImageCache.Clear();
+            ImageCache[key] = new WeakReference<BitmapImage>(bmp);
+            return bmp;
+        }
+        catch { return null; }
+    }
+
     /// <summary>ImageBrush.ImageSource 绑定（UI 线程求值，无图片为 null）</summary>
     [JsonIgnore]
     public ImageSource? CoverImage
@@ -508,8 +530,7 @@ public class LaunchItem
         get
         {
             if (!HasCover) return null;
-            try { return new BitmapImage(new Uri(CoverFilePath)); }
-            catch { return null; }
+            return CachedImage(CoverFilePath, 640);
         }
     }
 
@@ -530,8 +551,7 @@ public class LaunchItem
         get
         {
             if (!HasIcon) return null;
-            try { return new BitmapImage(new Uri(IconFilePath)); }
-            catch { return null; }
+            return CachedImage(IconFilePath, 256);
         }
     }
 

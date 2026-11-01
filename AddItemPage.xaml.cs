@@ -724,11 +724,14 @@ public sealed partial class AddItemPage : Page, ISettingsGamepad
             var isTrainer = item.WidgetKind == WidgetKind.Trainer;
             TrainerRow.Visibility = isTrainer ? Microsoft.UI.Xaml.Visibility.Visible : w;
             if (isTrainer) TrainerFolderText.Text = TrainerService.TrainersDir;
-            // 游戏存档：名称、大小、颜色 + 备份方式 / 备份文件夹 / 保留份数 / 打开目录
+            // 游戏存档：大小、颜色 + 备份方式 / 备份文件夹 / 保留份数 / 打开目录（名称固定，不可编辑）
             var isBackup = item.WidgetKind == WidgetKind.Backup;
             BackupRow.Visibility = isBackup ? Microsoft.UI.Xaml.Visibility.Visible : w;
             if (isBackup)
             {
+                // 游戏存档磁贴固定显示"游戏存档"，名称不参与编辑 → 隐藏顶部"显示名称"输入框
+                if (string.IsNullOrWhiteSpace(NameBox.Text)) NameBox.Text = "游戏存档";
+                NameBox.Visibility = w;
                 BackupCloudRadio.IsChecked = item.BackupMode == BackupMode.Cloud;
                 BackupLocalRadio.IsChecked = item.BackupMode != BackupMode.Cloud;
                 BackupFolderText.Text = string.IsNullOrEmpty(item.BackupFolder) ? "默认目录" : item.BackupFolder!;
@@ -764,12 +767,13 @@ public sealed partial class AddItemPage : Page, ISettingsGamepad
                 KbOrderAbc.IsChecked = !item.KeyboardQwerty;
                 KbOrderQwerty.IsChecked = item.KeyboardQwerty;
             }
-            // 文件传输：名称、大小、颜色 + 可发送目录 / 接收目录（留空=系统下载文件夹）
+            // 文件传输：大小、颜色 + 可发送目录 / 接收目录（留空=系统下载文件夹；名称固定，不可编辑）
             var isFileTransfer = item.WidgetKind == WidgetKind.FileTransfer;
             FileTransferRow.Visibility = isFileTransfer ? Microsoft.UI.Xaml.Visibility.Visible : w;
             if (isFileTransfer)
             {
                 if (string.IsNullOrWhiteSpace(NameBox.Text)) NameBox.Text = "文件传输";
+                NameBox.Visibility = w;
                 FtSendFolderText.Text = string.IsNullOrWhiteSpace(item.FileTransferSendFolder)
                     ? "未设置（默认：下载文件夹）" : item.FileTransferSendFolder!;
                 FtRecvFolderText.Text = string.IsNullOrWhiteSpace(item.FileTransferRecvFolder)

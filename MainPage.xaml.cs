@@ -129,6 +129,10 @@ public sealed partial class MainPage : Page
     /// <summary>磁贴间距（像素，可在外观设置调节）；磁贴基本单位固定</summary>
     private static double Gap => TileStyle.Gap;
     private const double Unit = TileStyle.Unit;
+    /// <summary>最近一次布局的列数与磁贴位置（窗口缩放时据此判断能否只挪位置而不重建）</summary>
+    private int _layoutCols = -1;
+    private bool _resizeQueued;
+    private readonly List<(Border tile, int col, int row)> _placedTiles = new();
 
     public MainPage()
     {
@@ -174,13 +178,11 @@ public sealed partial class MainPage : Page
         // 玻璃拟态浮层：ThemeShadow 需要元素有 Z 方向位移才会投影（Z 只影响投影，不影响 X/Y 布局与命中测试）
         DrawerHost.Translation = new System.Numerics.Vector3(0, 0, 32);
 
-        // 页面尺寸变化（窗口/全屏切换）时重算列数重排；先取消订阅再重排，避免 Height/MinHeight 修改引发自激重排循环
+        // 页面尺寸变化（窗口/全屏切换）时重算列数重排；连续拖动窗口只合并成一次布局
         SizeChanged += (_, _) =>
         {
             ApplyDrawerWidth();
-            TileHost.SizeChanged -= TileHost_SizeChanged;
-            LayoutTiles();
-            TileHost.SizeChanged += TileHost_SizeChanged;
+            QueueResizeLayout();
         };
 
         // 添加方式遮罩：鼠标点击选项/面板外空白（遮罩层）
@@ -397,7 +399,39 @@ public sealed partial class MainPage : Page
         // 组展开/收起动画进行中：LayoutTiles 改 Height 会触发本事件，
         // 若此时重排会 Children.Clear 重建、把正在播放动画的磁贴摘除（展开动画"没效果"的根因）
         if (_groupAnimating) return;
-        LayoutTiles();
+        // 只有高度变化（LayoutTiles 自己撑高）时无需重建；列数只在宽度变化时才会变
+        if (e.PreviousSize.Width == e.NewSize.Width) return;
+        QueueResizeLayout();
+    }
+
+    /// <summary>合并连续 SizeChanged：拖窗时只跑一次布局；列数不变时仅重算位置，不销毁重建磁贴</summary>
+    private void QueueResizeLayout()
+    {
+        if (_resizeQueued) return;
+        _resizeQueued = true;
+        DispatcherQueue.TryEnqueue(Microsoft.UI.Dispatching.DispatcherQueuePriority.Low, () =>
+        {
+            _resizeQueued = false;
+            if (_imagesReleased) return;
+            var availW = TileScroll.ViewportWidth > 0 ? TileScroll.ViewportWidth : TileHost.ActualWidth;
+            if (availW <= 0) return;
+            var cols = Math.Max(2, (int)((availW + Gap) / (Unit + Gap)));
+            if (cols != _layoutCols || _placedTiles.Count == 0)
+            {
+                LayoutTiles();
+                return;
+            }
+            // 列数没变：磁贴尺寸/位置都不变，只需随可视宽度重新水平居中
+            var maxCol = 0;
+            foreach (var p in _placedTiles) maxCol = Math.Max(maxCol, p.col);
+            var usedW = (maxCol + 1) * (Unit + Gap) - Gap;
+            var offsetX = Math.Max(0, (availW - usedW) / 2);
+            foreach (var (tile, c, r) in _placedTiles)
+            {
+                Canvas.SetLeft(tile, offsetX + c * (Unit + Gap));
+                Canvas.SetTop(tile, r * (Unit + Gap));
+            }
+        });
     }
 
     public LaunchItem? SelectedItem
@@ -627,11 +661,31 @@ public sealed partial class MainPage : Page
         try
         {
             await Task.Delay(250, cts.Token);
-            var shell = await Task.Run(() => AppSearchService.SearchShellApps(query, 9), cts.Token);
+
+            // 快捷方式索引只在后台建一次；等它的同时先查系统应用，避免首次搜索卡 UI
+            var indexTask = AppSearchService.GetIndexAsync();
+            var shellTask = Task.Run(() => AppSearchService.SearchShellApps(query, 9), cts.Token);
+
+            var index = await indexTask.WaitAsync(cts.Token);
+            if (cts.IsCancellationRequested || cts != _searchCts || !_searchOpen) return;
+
+            // 快捷方式结果补进"启动器/磁贴"一组（索引就绪前这一组只有磁贴命中）
+            var names = _appHits.Select(a => a.Name).ToHashSet(StringComparer.OrdinalIgnoreCase);
+            var indexed = AppSearchService.SearchIn(index, query, Math.Max(0, 9 - _appHits.Count))
+                .Where(e => !names.Contains(e.Name))
+                .ToList();
+            if (indexed.Count > 0)
+            {
+                names.UnionWith(indexed.Select(s => s.Name));
+                _appHits = _appHits.Concat(indexed).ToList();
+                _searchHits = _appHits;
+                RenderSearchHits();
+            }
+
+            var shell = await shellTask;
             if (cts.IsCancellationRequested || cts != _searchCts || !_searchOpen) return;
 
             // 同名已经在前面出现的不重复列出（先出系统应用，文件索引慢，别一起等）
-            var names = _appHits.Select(a => a.Name).ToHashSet(StringComparer.OrdinalIgnoreCase);
             _shellHits = shell.Where(s => !names.Contains(s.Name)).ToList();
             names.UnionWith(_shellHits.Select(s => s.Name));
             _searchHits = _appHits.Concat(_shellHits).ToList();
@@ -1660,6 +1714,7 @@ public sealed partial class MainPage : Page
     {
         if (_imagesReleased) return;
         TileHost.Children.Clear();
+        _placedTiles.Clear();
         _tiles.Clear();
         _musicRefs.Clear();
         _photoRefs.Clear();
@@ -1681,13 +1736,17 @@ public sealed partial class MainPage : Page
 
         // 列数以可视区宽度为准（ViewportWidth 已扣除 Padding，保证最右列不被裁切）
         var availW = TileScroll.ViewportWidth > 0 ? TileScroll.ViewportWidth : TileHost.ActualWidth;
-        if (availW <= 0) return;
+        if (availW <= 0)
+        {
+            _layoutCols = -1; // 首帧未测量：下次尺寸变化必须完整重排
+            return;
+        }
 
         var cols = Math.Max(2, (int)((availW + Gap) / (Unit + Gap)));
+        _layoutCols = cols;
         var occupied = new HashSet<(int, int)>();
         int maxRow = -1;
         int maxCol = -1;
-        var placed = new List<(Border tile, int col, int row)>();
 
         for (var i = 0; i < _display.Count; i++)
         {
@@ -1723,7 +1782,7 @@ public sealed partial class MainPage : Page
             maxCol = Math.Max(maxCol, spot.c + w - 1);
 
             var tile = CreateTile(item, group, i, w, h);
-            placed.Add((tile, spot.c, spot.r));
+            _placedTiles.Add((tile, spot.c, spot.r));
             TileHost.Children.Add(tile);
             _tiles.Add(tile);
         }
@@ -1744,7 +1803,7 @@ public sealed partial class MainPage : Page
 
                 _addTile = CreateAddTile();
                 _addTile.Tapped += (_, _) => OpenAddFromEdit();
-                placed.Add((_addTile, add.c, add.r));
+                _placedTiles.Add((_addTile, add.c, add.r));
                 TileHost.Children.Add(_addTile);
                 _tiles.Add(_addTile);
             }
@@ -1753,7 +1812,7 @@ public sealed partial class MainPage : Page
         // 水平居中：整块磁贴按实际占用宽度在可视区内居中（窗口大小改变时随 SizeChanged 重算）；垂直保持靠左上
         var usedW = maxCol < 0 ? 0 : (maxCol + 1) * (Unit + Gap) - Gap;
         var offsetX = Math.Max(0, (availW - usedW) / 2);
-        foreach (var (tile, c, r) in placed)
+        foreach (var (tile, c, r) in _placedTiles)
         {
             Canvas.SetLeft(tile, offsetX + c * (Unit + Gap));
             Canvas.SetTop(tile, r * (Unit + Gap));
@@ -1761,6 +1820,9 @@ public sealed partial class MainPage : Page
 
         // 撑满视口靠 XAML 的 MinWidth/MinHeight 绑定实现（垂直靠左上，暂不居中）；这里只设内容实际高度供超出时滚动
         TileHost.Height = Math.Max(200, (maxRow + 1) * (Unit + Gap));
+
+        // 回收已移除小组件的轮播状态，避免后台继续扫描目录/补下载
+        SyncWidgetServices();
 
         // 主页下方固定抽屉区域：按面板实际宽度重排（内容随宽度换行、高度随内容增长）
         RenderDrawerPanel();
@@ -1770,6 +1832,45 @@ public sealed partial class MainPage : Page
         // SizeChanged→LayoutTiles 重建磁贴，若不在此重绘选中框，手柄选中框就会丢失。
         UpdateSelection();
         RefreshSettingsBadge();
+    }
+
+    /// <summary>按当前所有磁贴（含未展开的组和其他页）回收轮播服务里已失效的状态，
+    /// 删除小组件后不再扫描/下载/轮播；仍在配置里的不回收，避免组展开或翻页时重新扫描</summary>
+    private void SyncWidgetServices()
+    {
+        var folders = new List<string>();
+        var wallpapers = new List<LaunchItem>();
+        Collect(_items);
+
+        void Collect(IEnumerable<LaunchItem> list)
+        {
+            foreach (var item in list)
+            {
+                if (DrawerService.IsDrawer(item))
+                {
+                    if (item.Drawers is { } pages)
+                        foreach (var page in pages) Collect(page.Items);
+                    continue;
+                }
+                if (item.Kind == LaunchKind.Group)
+                {
+                    Collect(item.Members);
+                    continue;
+                }
+                if (item.Kind != LaunchKind.Widget) continue;
+                if (item.WidgetKind == WidgetKind.Photos)
+                {
+                    if (!string.IsNullOrWhiteSpace(item.WidgetFolder)) folders.Add(item.WidgetFolder);
+                }
+                else if (item.WidgetKind == WidgetKind.Wallpaper)
+                {
+                    wallpapers.Add(item);
+                }
+            }
+        }
+
+        SlideshowService.Retain(folders);
+        WallpaperService.Retain(wallpapers);
     }
 
     /// <summary>按当前状态刷新设置磁贴徽章：拖拽悬停=垃圾桶；选中≥2=加号（点击组合）；否则恢复原图标</summary>

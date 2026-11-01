@@ -96,6 +96,26 @@ public static class SlideshowService
         _ = ScanAsync(folder);
     }
 
+    /// <summary>只保留仍在使用的小组件文件夹：删除已移除磁贴的扫描结果与解码缓存，停止无用的轮播</summary>
+    public static void Retain(IEnumerable<string> activeFolders)
+    {
+        var keep = new HashSet<string>(activeFolders, StringComparer.OrdinalIgnoreCase);
+        var stale = new List<string>();
+        foreach (var folder in _states.Keys)
+            if (!keep.Contains(folder)) stale.Add(folder);
+        if (stale.Count == 0) return;
+        foreach (var folder in stale) _states.Remove(folder);
+
+        // 解码缓存同样收缩：只保留仍被活跃轮播序列引用的文件
+        var used = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        foreach (var st in _states.Values)
+            foreach (var f in st.Files) used.Add(f);
+        stale.Clear();
+        foreach (var key in _imageCache.Keys)
+            if (!used.Contains(key)) stale.Add(key);
+        foreach (var key in stale) _imageCache.Remove(key);
+    }
+
     /// <summary>手动切换当前选中磁贴的图片（主页 A/LB/RB）：dir=1 下一张，-1 上一张</summary>
     public static void Skip(string folder, int dir)
     {

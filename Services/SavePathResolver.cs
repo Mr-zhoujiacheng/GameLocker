@@ -390,7 +390,21 @@ public static class SavePathResolver
             seen.Add(full);
             result.Add(full);
         }
-        return result;
+        // 父子目录同时入选会重复读取、压缩、上传同一批文件：只保留父目录
+        var kept = new List<string>(result.Count);
+        foreach (var p in result)
+        {
+            var covered = false;
+            foreach (var q in result)
+            {
+                if (q.Length <= p.Length || !p.StartsWith(q, StringComparison.OrdinalIgnoreCase)) continue;
+                if (p[q.Length] is not ('\\' or '/')) continue;
+                covered = true;
+                break;
+            }
+            if (!covered) kept.Add(p);
+        }
+        return kept;
     }
 
     /// <summary>目录内是否有条目（防空目录）</summary>

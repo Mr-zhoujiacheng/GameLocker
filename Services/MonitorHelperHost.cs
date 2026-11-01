@@ -36,7 +36,7 @@ internal static class MonitorHelperHost
         Log($"stopEvent={(stop is null ? "缺失" : "ok")}");
 
         // CPU 封装温度：PawnIO/MSR（首次会静默安装随包附带的驱动，失败则保持不可用）
-        // GPU 温度：厂商 MSI ACPI WMI（Get_Thermal[3]），由下面的定时器每 200ms 取一次（内部缓存 2 秒）
+        // GPU 温度：厂商 MSI ACPI WMI（Get_Thermal[3]），由下面的定时器每 500ms 取一次（内部缓存 2 秒）
         // 放到后台任务里做，避免驱动安装耗时拖住 ETW 启动与采样
         _ = Task.Run(() =>
         {
@@ -79,13 +79,17 @@ internal static class MonitorHelperHost
         };
         watchdog.Start();
 
-        SetTimer(IntPtr.Zero, new UIntPtr(TimerId), 200, IntPtr.Zero);
+        SetTimer(IntPtr.Zero, new UIntPtr(TimerId), 500, IntPtr.Zero);
+        // 主进程每秒消费一次，助手 500ms 发布一次已足够；温度再降一半频率并缓存上次读数
+        var cpuTemp = double.NaN;
+        var tick = 0;
         try
         {
             while (GetMessage(out var msg, IntPtr.Zero, 0, 0) > 0)
             {
                 if (msg.message == WM_QUIT) break;
                 if (msg.message != WM_TIMER) continue;
+                tick++;
                 double fps = 0, frameMs = 0;
                 double[] history = [];
                 if (etw is not null)
@@ -93,7 +97,8 @@ internal static class MonitorHelperHost
                     etw.TargetPid = shared.ReadTargetPid();
                     (fps, frameMs, history) = etw.GetStats();
                 }
-                var cpuTemp = PawnIoMsr.Available ? PawnIoMsr.ReadTemperature() : double.NaN;
+                // 温度约每秒读一次；两次之间沿用上次结果，避免把 NaN 覆盖到主进程
+                if (tick % 2 == 1 && PawnIoMsr.Available) cpuTemp = PawnIoMsr.ReadTemperature();
                 // 厂商 WMI 的 GPU 温度（内部缓存 2 秒，不会每次 200ms 都调固件）
                 var gpuTemp = MsiWmiProbe.ReadGpuTemperature();
                 shared.Publish(fps, frameMs, history, cpuTemp, gpuTemp);

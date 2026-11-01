@@ -205,8 +205,10 @@ public sealed partial class MainWindow : Window
     private void MinimizeOthersOnGameForeground()
     {
         var fg = GetForegroundWindow();
-        if (fg != _minimizedForGame) _minimizedForGame = IntPtr.Zero;
         if (fg == IntPtr.Zero || fg == _hwnd) return;
+        // 同一游戏窗口已经整理过：持续前台期间不再每 800ms 枚举一遍其他窗口
+        if (fg == _minimizedForGame) return;
+        _minimizedForGame = IntPtr.Zero;
         GetWindowThreadProcessId(fg, out var pid);
         if ((int)pid == OwnProcessId || !IsFullscreenGameWindow(fg, pid)) return;
         _minimizedForGame = fg;

@@ -302,35 +302,70 @@ public static class TileStyle
         var iconMargin = smallWithName ? new Thickness(0, 10, 0, 0) : new Thickness(0);
         var iconAlign = smallWithName ? VerticalAlignment.Top : VerticalAlignment.Center;
         var isClash = item.Kind == LaunchKind.Widget && item.WidgetKind == WidgetKind.Clash;
-        UIElement icon;
-        if (item.HasIcon)
-            icon = new Image
-            {
-                Source = item.IconImage,
-                Width = iconSize,
-                Height = iconSize,
-                HorizontalAlignment = HorizontalAlignment.Center,
-                VerticalAlignment = iconAlign,
-                Margin = iconMargin
-            };
-        else if (isClash)
+        // 文件传输：图标在左、名称在右的横排布局
+        var rowLayout = item.Kind == LaunchKind.Widget
+            && item.WidgetKind == WidgetKind.FileTransfer
+            && showName;
+        if (rowLayout)
         {
-            // 小猫咪用白色猫头剪影（矢量，与磁贴图标同色）
-            var cat = MakeCatIcon(small ? 30 : 40, new SolidColorBrush(Microsoft.UI.Colors.White));
-            cat.VerticalAlignment = iconAlign;
-            cat.Margin = iconMargin;
-            icon = cat;
+            FrameworkElement rowIcon = item.HasIcon
+                ? new Image { Source = item.IconImage, Width = small ? 26 : 32, Height = small ? 26 : 32 }
+                : new FontIcon { Glyph = item.Glyph, FontSize = small ? 24 : 30 };
+            rowIcon.VerticalAlignment = VerticalAlignment.Center;
+            var rowText = new TextBlock
+            {
+                Text = item.Name,
+                FontSize = small ? 12 : 15,
+                Foreground = new SolidColorBrush(Microsoft.UI.Colors.White),
+                VerticalAlignment = VerticalAlignment.Center,
+                TextTrimming = TextTrimming.CharacterEllipsis,
+                MaxWidth = width - (small ? 58 : 78)
+            };
+            var row = new StackPanel
+            {
+                Orientation = Orientation.Horizontal,
+                Spacing = small ? 8 : 12,
+                Margin = new Thickness(small ? 10 : 16, 0, 10, 0),
+                HorizontalAlignment = HorizontalAlignment.Center,
+                VerticalAlignment = VerticalAlignment.Center,
+                IsHitTestVisible = false
+            };
+            row.Children.Add(rowIcon);
+            row.Children.Add(rowText);
+            grid.Children.Add(row);
         }
         else
-            icon = new FontIcon
+        {
+            UIElement icon;
+            if (item.HasIcon)
+                icon = new Image
+                {
+                    Source = item.IconImage,
+                    Width = iconSize,
+                    Height = iconSize,
+                    HorizontalAlignment = HorizontalAlignment.Center,
+                    VerticalAlignment = iconAlign,
+                    Margin = iconMargin
+                };
+            else if (isClash)
             {
-                Glyph = item.Glyph,
-                FontSize = small ? 30 : 40,
-                HorizontalAlignment = HorizontalAlignment.Center,
-                VerticalAlignment = iconAlign,
-                Margin = iconMargin
-            };
-        grid.Children.Add(icon);
+                // 小猫咪用白色猫头剪影（矢量，与磁贴图标同色）
+                var cat = MakeCatIcon(small ? 30 : 40, new SolidColorBrush(Microsoft.UI.Colors.White));
+                cat.VerticalAlignment = iconAlign;
+                cat.Margin = iconMargin;
+                icon = cat;
+            }
+            else
+                icon = new FontIcon
+                {
+                    Glyph = item.Glyph,
+                    FontSize = small ? 30 : 40,
+                    HorizontalAlignment = HorizontalAlignment.Center,
+                    VerticalAlignment = iconAlign,
+                    Margin = iconMargin
+                };
+            grid.Children.Add(icon);
+        }
 
         // 组磁贴：右上角成员数量角标
         if (item.Kind == LaunchKind.Group && group is null)
@@ -354,7 +389,8 @@ public static class TileStyle
             });
 
         // 名称：小磁贴底部居中（字号略小），其余磁贴左下角；组成员同样显示
-        if (showName)
+        // 文件传输已在上面用"图标左 + 名称右"渲染，这里不再叠加底部名称
+        if (showName && !rowLayout)
             grid.Children.Add(new TextBlock
             {
                 Text = item.Name,

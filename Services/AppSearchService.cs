@@ -22,19 +22,43 @@ public sealed class SearchEntry
 public static class AppSearchService
 {
     private static List<SearchEntry>? _cache;
+    private static Task<List<SearchEntry>>? _indexTask;
+    private static readonly object IndexLock = new();
 
-    /// <summary>按名称做不区分大小写的包含匹配：前缀命中的排前面，同等条件下名字短的靠前</summary>
+    /// <summary>按名称做不区分大小写的包含匹配：前缀命中的排前面，同等条件下名字短的靠前。
+    /// 索引还没建好时返回空——目录扫描只在后台任务里做，绝不在 UI 线程同步执行。</summary>
     public static List<SearchEntry> Search(string query, int limit = 9)
     {
-        if (string.IsNullOrWhiteSpace(query)) return [];
+        var all = _cache;
+        return all is null ? [] : SearchIn(all, query, limit);
+    }
+
+    /// <summary>在已构建好的索引里匹配（不会触发目录扫描）</summary>
+    public static List<SearchEntry> SearchIn(List<SearchEntry> all, string query, int limit)
+    {
+        if (string.IsNullOrWhiteSpace(query) || limit <= 0 || all.Count == 0) return [];
         var q = query.Trim();
-        var all = _cache ??= BuildIndex();
         return all
             .Where(e => e.Name.Contains(q, StringComparison.OrdinalIgnoreCase))
             .OrderByDescending(e => e.Name.StartsWith(q, StringComparison.OrdinalIgnoreCase))
             .ThenBy(e => e.Name.Length)
             .Take(limit)
             .ToList();
+    }
+
+    /// <summary>后台构建（或复用）快捷方式索引：首次搜索最多扫一次目录，且不占用 UI 线程</summary>
+    public static Task<List<SearchEntry>> GetIndexAsync()
+    {
+        if (_cache is not null) return Task.FromResult(_cache);
+        lock (IndexLock)
+        {
+            return _indexTask ??= Task.Run(() =>
+            {
+                var built = BuildIndex();
+                lock (IndexLock) _cache = built;
+                return built;
+            });
+        }
     }
 
     /// <summary>用 shell 打开结果：应用走 shell:AppsFolder 解析名，其余交给默认关联，失败返回 false</summary>
@@ -61,19 +85,27 @@ public static class AppSearchService
 
     private static List<SearchEntry>? _shellApps;
     private static readonly object ShellAppsLock = new();
+    /// <summary>系统应用/文件查询各自只允许一个在跑，避免连续输入时堆积慢查询</summary>
+    private static readonly SemaphoreSlim ShellSearchGate = new(1, 1);
+    private static readonly SemaphoreSlim FileSearchGate = new(1, 1);
 
     /// <summary>按名称匹配系统应用/商店应用/控制面板项；首次调用在 STA 线程上枚举一次，之后复用缓存</summary>
     public static List<SearchEntry> SearchShellApps(string query, int limit = 9)
     {
         if (string.IsNullOrWhiteSpace(query)) return [];
-        var q = query.Trim();
-        var all = ShellApps();
-        return all
-            .Where(e => e.Name.Contains(q, StringComparison.OrdinalIgnoreCase))
-            .OrderByDescending(e => e.Name.StartsWith(q, StringComparison.OrdinalIgnoreCase))
-            .ThenBy(e => e.Name.Length)
-            .Take(limit)
-            .ToList();
+        if (!ShellSearchGate.Wait(0)) return [];
+        try
+        {
+            var q = query.Trim();
+            var all = ShellApps();
+            return all
+                .Where(e => e.Name.Contains(q, StringComparison.OrdinalIgnoreCase))
+                .OrderByDescending(e => e.Name.StartsWith(q, StringComparison.OrdinalIgnoreCase))
+                .ThenBy(e => e.Name.Length)
+                .Take(limit)
+                .ToList();
+        }
+        finally { ShellSearchGate.Release(); }
     }
 
     private static List<SearchEntry> ShellApps()
@@ -181,6 +213,8 @@ public static class AppSearchService
             $"SELECT TOP {limit} System.ItemNameDisplay, System.ItemUrl, System.ItemTypeText " +
             $"FROM SYSTEMINDEX WHERE System.ItemNameDisplay LIKE '%{like}%' " +
             "ORDER BY System.ItemNameDisplay";
+        // 旧查询（已被新输入取代）还没结束时直接让位，避免多个 OleDb 查询并发堆积
+        if (!FileSearchGate.Wait(0)) return [];
         try
         {
             return await Task.Run(() =>
@@ -216,6 +250,7 @@ public static class AppSearchService
             DebugLog.Write($"文件搜索失败（Windows 搜索索引不可用？）: {ex.Message}");
             return [];
         }
+        finally { FileSearchGate.Release(); }
     }
 
     /// <summary>把索引里的 file: URL 转成可启动的磁盘路径；非文件条目（应用 URI 等）返回空</summary>

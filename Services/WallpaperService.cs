@@ -113,6 +113,28 @@ public static class WallpaperService
         else if (!st.Busy && st.Files.Count - st.Index <= 1) _ = FillAsync(st);
     }
 
+    /// <summary>只保留仍在显示的壁纸小组件：删除已移除磁贴的状态与解码缓存，停止无用的轮播/补下载</summary>
+    public static void Retain(IEnumerable<LaunchItem> activeItems)
+    {
+        var keep = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        foreach (var item in activeItems)
+            if (item.Kind == LaunchKind.Widget && item.WidgetKind == WidgetKind.Wallpaper)
+                keep.Add(KeyOf(item));
+        var stale = new List<string>();
+        foreach (var key in _states.Keys)
+            if (!keep.Contains(key)) stale.Add(key);
+        if (stale.Count == 0) return;
+        foreach (var key in stale) _states.Remove(key);
+
+        var used = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        foreach (var st in _states.Values)
+            foreach (var f in st.Files) used.Add(f);
+        stale.Clear();
+        foreach (var key in _imageCache.Keys)
+            if (!used.Contains(key)) stale.Add(key);
+        foreach (var key in stale) _imageCache.Remove(key);
+    }
+
     /// <summary>当前轮播到的壁纸文件（没有缓存返回 null）</summary>
     public static string? CurrentFile(LaunchItem item)
     {

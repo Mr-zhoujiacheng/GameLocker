@@ -144,11 +144,52 @@ public static class MonitorService
         _helperCpuTemp = double.NaN;
         _helperGpuTemp = double.NaN;
 
-        // 帧率：已提权 → 本地 ETW；未提权 → 拉起提权助手（UAC 取消则降级为无帧率）
+        var item = FindMonitorItem();
+        _metrics = NormalizeMetrics(item?.MonitorMetrics);
+        // 只显示 CPU/内存/时钟等指标时不开帧率会话，避免白跑 ETW / 提权助手
+        if (NeedsFrameStats()) StartFrameSource();
+
+        try
+        {
+            _overlay = new MonitorOverlayWindow(
+                item?.MonitorPos ?? MonitorPosition.TopCenter,
+                item?.MonitorScale ?? 1.0,
+                _metrics,
+                item?.MonitorColor ?? MonitorColorTheme.Default,
+                item?.MonitorAlwaysOn ?? false);
+            if (!_overlay.Create())
+            {
+                _overlay.Dispose();
+                _overlay = null;
+            }
+        }
+        catch { _overlay = null; }
+
+        _timer = new Timer(Tick, null, 250, 1000);
+        _ = Task.Run(WriteGpuDiagnostics);
+        StateChanged?.Invoke();
+    }
+
+    /// <summary>当前勾选显示的指标（由监控磁贴设置驱动，用于跳过未显示的采集）</summary>
+    private static MonitorMetric _metrics = MonitorMetric.All;
+
+    private static bool Want(MonitorMetric m) => (_metrics & m) != 0;
+
+    private static MonitorMetric NormalizeMetrics(MonitorMetric? m)
+    {
+        var v = m ?? MonitorMetric.All;
+        return v == MonitorMetric.None ? MonitorMetric.All : v;
+    }
+
+    private static bool NeedsFrameStats() =>
+        Want(MonitorMetric.Fps | MonitorMetric.FrameTime | MonitorMetric.FrameGraph);
+
+    /// <summary>按需启动帧率来源：已提权 → 本地 ETW；未提权 → 提权助手（UAC 取消则降级为无帧率）</summary>
+    private static void StartFrameSource()
+    {
+        if (_etw is not null || _shared is not null || _helper is not null) return;
         if (IsElevated())
         {
-            _shared?.Dispose();
-            _shared = null;
             // 已提权：直接在本进程读 MSR（驱动缺失时静默安装），放到后台避免卡住开启流程
             _ = Task.Run(() => PawnIoMsr.EnsureReady(installIfMissing: true));
             try
@@ -171,27 +212,6 @@ public static class MonitorService
         {
             StartHelper();
         }
-
-        try
-        {
-            var m = FindMonitorItem();
-            _overlay = new MonitorOverlayWindow(
-                m?.MonitorPos ?? MonitorPosition.TopCenter,
-                m?.MonitorScale ?? 1.0,
-                m?.MonitorMetrics ?? MonitorMetric.All,
-                m?.MonitorColor ?? MonitorColorTheme.Default,
-                m?.MonitorAlwaysOn ?? false);
-            if (!_overlay.Create())
-            {
-                _overlay.Dispose();
-                _overlay = null;
-            }
-        }
-        catch { _overlay = null; }
-
-        _timer = new Timer(Tick, null, 250, 1000);
-        _ = Task.Run(WriteGpuDiagnostics);
-        StateChanged?.Invoke();
     }
 
     /// <summary>关闭监控：停止助手 + 销毁悬浮条 + 停止 ETW 会话（必须在 UI 线程调用）</summary>
@@ -235,13 +255,21 @@ public static class MonitorService
     public static void ApplySettings()
     {
         if (!IsRunning) return;
-        var m = FindMonitorItem();
+        var item = FindMonitorItem();
+        _metrics = NormalizeMetrics(item?.MonitorMetrics);
+        // 运行中才勾上帧率指标：按需补开 ETW；全部取消则关掉本地 ETW（助手仍保留温度采集）
+        if (NeedsFrameStats()) StartFrameSource();
+        else
+        {
+            _etw?.Dispose();
+            _etw = null;
+        }
         _overlay?.ApplySettings(
-            m?.MonitorPos ?? MonitorPosition.TopCenter,
-            m?.MonitorScale ?? 1.0,
-            m?.MonitorMetrics ?? MonitorMetric.All,
-            m?.MonitorColor ?? MonitorColorTheme.Default,
-            m?.MonitorAlwaysOn ?? false);
+            item?.MonitorPos ?? MonitorPosition.TopCenter,
+            item?.MonitorScale ?? 1.0,
+            _metrics,
+            item?.MonitorColor ?? MonitorColorTheme.Default,
+            item?.MonitorAlwaysOn ?? false);
     }
 
     /// <summary>从配置里找性能监控磁贴（可能被放进抽屉，故连同抽屉一起找）</summary>
@@ -347,40 +375,46 @@ public static class MonitorService
     private static MonitorSnapshot Sample()
     {
         var n = ++_tickCount;
+        // 只采集勾选显示的指标：没显示的温度/功耗/显存等不再周期性查询硬件
+        var wantCpuUsage = Want(MonitorMetric.CpuUsage) || Want(MonitorMetric.CpuTemp);
         var s = new MonitorSnapshot
         {
-            CpuUsage = ReadCpuUsage(),
-            CpuMhz = ReadCpuMhz(),
-            MemPercent = ReadMemoryPercent(),
-            GpuMhz = ReadGpuClock(),
-            GpuPower = ReadGpuPower(),
-            GpuTemp = ReadGpuTemp()
+            CpuUsage = wantCpuUsage ? ReadCpuUsage() : 0,
+            CpuMhz = Want(MonitorMetric.CpuFreq) ? ReadCpuMhz() : 0,
+            MemPercent = Want(MonitorMetric.Memory) ? ReadMemoryPercent() : 0,
+            GpuMhz = Want(MonitorMetric.GpuFreq) ? ReadGpuClock() : double.NaN,
+            GpuPower = Want(MonitorMetric.GpuPower) ? ReadGpuPower() : double.NaN,
+            GpuTemp = Want(MonitorMetric.GpuTemp) ? ReadGpuTemp() : double.NaN
         };
 
-        // GPU 占用 / 电池功率走 WMI（较慢）、温度走 WMI，错开周期在后台采样并缓存
+        // GPU 占用 / 电池功率走 WMI（较慢），错开周期在后台采样并缓存
         if (n % 2 == 0)
         {
-            _gpuUsage = ReadGpuUsage();
-            _gpuVram = ReadGpuVram();
-            _batteryRate = ReadBatteryRate();
+            if (Want(MonitorMetric.GpuUsage)) _gpuUsage = ReadGpuUsage();
+            if (Want(MonitorMetric.GpuVram)) _gpuVram = ReadGpuVram();
+            if (Want(MonitorMetric.Battery)) _batteryRate = ReadBatteryRate();
         }
         if (n % 5 == 0)
         {
-            // 优先用 PawnIO/MSR 的真实封装温度：本进程已提权直接读，否则用提权助手回传的值
-            var msrTemp = IsElevated() ? PawnIoMsr.ReadTemperature() : _helperCpuTemp;
-            if (msrTemp is > 0 and < 130)
+            if (Want(MonitorMetric.CpuTemp))
             {
-                _cpuTempIsFake = false;
-                _cpuTempSameCount = 0;
-                _cpuTempLoadPeak = 0;
-                _cpuTemp = Math.Round(msrTemp * 10) / 10;
+                // 优先用 PawnIO/MSR 的真实封装温度：本进程已提权直接读，否则用提权助手回传的值
+                var msrTemp = IsElevated() ? PawnIoMsr.ReadTemperature() : _helperCpuTemp;
+                if (msrTemp is > 0 and < 130)
+                {
+                    _cpuTempIsFake = false;
+                    _cpuTempSameCount = 0;
+                    _cpuTempLoadPeak = 0;
+                    _cpuTemp = Math.Round(msrTemp * 10) / 10;
+                }
+                else
+                {
+                    UpdateCpuTemp(ReadCpuTemp(), s.CpuUsage);
+                }
             }
-            else
-            {
-                UpdateCpuTemp(ReadCpuTemp(), s.CpuUsage);
-            }
-            _cpuPower = ReadCpuPower();
-            if (_cpuMhzFallback <= 0) _cpuMhzFallback = ReadCpuMhzWmi();
+            // GPU 功耗的近似值依赖 RAPL 缓存，所以显示 GPU 功耗时也要刷新
+            if (Want(MonitorMetric.CpuPower) || Want(MonitorMetric.GpuPower)) _cpuPower = ReadCpuPower();
+            if (Want(MonitorMetric.CpuFreq) && _cpuMhzFallback <= 0) _cpuMhzFallback = ReadCpuMhzWmi();
         }
         s.GpuUsage = _gpuUsage;
         s.GpuVram = _gpuVram;
@@ -388,7 +422,7 @@ public static class MonitorService
         s.CpuPower = _cpuPower;
         if (s.CpuMhz <= 0) s.CpuMhz = _cpuMhzFallback;
 
-        ReadBattery(s);
+        if (Want(MonitorMetric.Battery) || Want(MonitorMetric.BatteryPercent)) ReadBattery(s);
 
         // 帧率：本地 ETW 优先，否则读提权助手发布的共享内存
         if (_etw is { Available: true })

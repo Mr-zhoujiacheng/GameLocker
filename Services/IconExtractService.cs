@@ -17,8 +17,11 @@ namespace GameLocker.Services;
 /// </summary>
 public static class IconExtractService
 {
-    /// <summary>为 target 生成/更新图标文件，返回 icons 目录内的文件名；失败返回 null</summary>
-    public static async Task<string?> ExtractAsync(string target)
+    /// <summary>为 target 生成/更新图标文件，返回 icons 目录内的文件名；失败返回 null。
+    /// 整个提取（Shell 取图 + 编码 PNG）放到后台线程，批量导入时不再阻塞 UI</summary>
+    public static Task<string?> ExtractAsync(string target) => Task.Run(() => ExtractCoreAsync(target));
+
+    private static async Task<string?> ExtractCoreAsync(string target)
     {
         try
         {

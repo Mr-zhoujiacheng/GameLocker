@@ -61,6 +61,8 @@ public sealed partial class MainWindow : Window
     private bool _shown;
 
     private IntPtr _revealedTaskbar;
+    /// <summary>呼出期间被临时排到任务栏之后的窗口，收起时恢复其置顶状态</summary>
+    private readonly List<(IntPtr Hwnd, bool WasTopmost)> _sunkWindows = new();
     private NativeRect _taskbarRestoreRect;
     private bool _taskbarWasTopmost;
     private bool _taskbarWasVisible;
@@ -90,6 +92,8 @@ public sealed partial class MainWindow : Window
 
     private void RefreshRevealedTaskbar(bool raise = false)
     {
+        // 键盘优先：不要与键盘的置顶维护反复交换层级，关闭键盘后由下一次 Tick 恢复。
+        if (OnScreenKeyboard.IsVisible) return;
         var bar = _revealedTaskbar;
         if (bar == IntPtr.Zero) return;
         if (FindWindow("Shell_TrayWnd", null) != bar)
@@ -110,10 +114,25 @@ public sealed partial class MainWindow : Window
         var visible = IsWindowVisibleForLaunch(bar);
         var topmost = (GetWindowLongPtr(bar, GWL_EXSTYLE).ToInt64() & 0x8) != 0;
         // TOPMOST 只表示所在层级，不保证排在游戏或其他置顶窗口前面。
+        // 目标层级：启动器与任务栏在最上 → 呼出前的游戏（可聚焦页面）→ 其他窗口。
+        // 任何压住任务栏的外部窗口一律排到任务栏之后；只改一次，避免 250ms 轮询反复改 z 序造成闪烁。
         var coveringWindow = TaskbarCoveringWindow(bar, x, y, width, height);
-        if (raise || !visible || !topmost || coveringWindow != IntPtr.Zero || rect.Left != x || rect.Top != y)
+        if (coveringWindow != IntPtr.Zero)
         {
-            var raiseBar = raise || !visible || !topmost || coveringWindow != IntPtr.Zero;
+            GetWindowThreadProcessId(coveringWindow, out var coveringPid);
+            if (coveringPid != OwnProcessId)
+            {
+                RememberSunkWindow(coveringWindow);
+                SetWindowPos(coveringWindow, bar, 0, 0, 0, 0,
+                    SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE);
+                coveringWindow = TaskbarCoveringWindow(bar, x, y, width, height);
+            }
+        }
+        if (raise || !visible || coveringWindow != IntPtr.Zero || rect.Left != x || rect.Top != y)
+        {
+            // topmost 位被 Explorer 撤销时不要每轮都重设：任务栏已可见且无遮挡就保持现状，
+            // 反复 SetWindowPos 会让任务栏和窗口持续重合成。
+            var raiseBar = raise || !visible || coveringWindow != IntPtr.Zero;
             // Shell 对移动并显示的请求可能重新计算层级；先处理位置，再独立置顶。
             var ok = true;
             var error = 0;
@@ -129,14 +148,48 @@ public sealed partial class MainWindow : Window
                     SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE | SWP_NOSENDCHANGING);
                 if (!raised) error = Marshal.GetLastWin32Error();
                 ok &= raised;
+                // 全屏游戏存在时 Explorer 会撤掉任务栏的 TOPMOST：SetWindowPos 返回成功但样式位没变。
+                // 这时直接补上样式位并重算窗口框架，否则 250ms 轮询会一直做无效调用。
+                if ((GetWindowLongPtr(bar, GWL_EXSTYLE).ToInt64() & 0x8) == 0)
+                {
+                    SetWindowLongPtr(bar, GWL_EXSTYLE,
+                        (IntPtr)(GetWindowLongPtr(bar, GWL_EXSTYLE).ToInt64() | 0x8));
+                    SetWindowPos(bar, HWND_TOPMOST, 0, 0, 0, 0,
+                        SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE | SWP_FRAMECHANGED);
+                }
             }
             if (raise || !ok || coveringWindow != IntPtr.Zero || !topmost)
             {
                 GetWindowRect(bar, out var actual);
                 var actualTopmost = (GetWindowLongPtr(bar, GWL_EXSTYLE).ToInt64() & 0x8) != 0;
-                DebugLog.Write($"任务栏联动: 显示 result={ok} error={error} visible={IsWindowVisibleForLaunch(bar)} topmost={actualTopmost} coverBefore={coveringWindow} coverAfter={TaskbarCoveringWindow(bar, x, y, width, height)} target={x},{y} actual={actual.Left},{actual.Top},{actual.Right},{actual.Bottom} foreground={GetForegroundWindow()}");
+                DebugLog.Write($"任务栏联动: 显示 result={ok} error={error} visible={IsWindowVisibleForLaunch(bar)} topmost={actualTopmost} " +
+                               $"coverBefore={WindowBrief(coveringWindow)} coverAfter={WindowBrief(TaskbarCoveringWindow(bar, x, y, width, height))} " +
+                               $"target={x},{y} actual={actual.Left},{actual.Top},{actual.Right},{actual.Bottom} " +
+                               $"barEx=0x{GetWindowLongPtr(bar, GWL_EXSTYLE).ToInt64():X} fg={WindowBrief(GetForegroundWindow())}");
             }
         }
+    }
+
+    /// <summary>诊断用：窗口句柄 + 所属进程 + 扩展样式 + 是否被 DWM 隐去 + 屏幕矩形</summary>
+    private static string WindowBrief(IntPtr h)
+    {
+        if (h == IntPtr.Zero) return "0";
+        GetWindowThreadProcessId(h, out var pid);
+        GetWindowRect(h, out var r);
+        var cloaked = 0;
+        DwmGetWindowAttribute(h, 14, out cloaked, sizeof(int));
+        return $"{h}(pid={pid},{KeyboardHookService.ProcessImageName(pid)},ex=0x{GetWindowLongPtr(h, GWL_EXSTYLE).ToInt64():X}," +
+               $"cloaked={cloaked},rect={r.Left},{r.Top},{r.Right},{r.Bottom})";
+    }
+
+    /// <summary>记住被临时排到任务栏之后的窗口及其原置顶状态（只记一次）。</summary>
+    private void RememberSunkWindow(IntPtr hwnd)
+    {
+        foreach (var sunk in _sunkWindows)
+        {
+            if (sunk.Hwnd == hwnd) return;
+        }
+        _sunkWindows.Add((hwnd, (GetWindowLongPtr(hwnd, GWL_EXSTYLE).ToInt64() & 0x8) != 0));
     }
 
     private static IntPtr TaskbarCoveringWindow(IntPtr bar, int x, int y, int width, int height)
@@ -160,6 +213,14 @@ public sealed partial class MainWindow : Window
         _taskbarRevealWatch.Stop();
         var bar = _revealedTaskbar;
         _revealedTaskbar = IntPtr.Zero;
+        // 把呼出期间临时压到任务栏之后的窗口恢复原置顶状态，避免改变用户的窗口层级设置。
+        foreach (var sunk in _sunkWindows)
+        {
+            if (sunk.WasTopmost && IsWindow(sunk.Hwnd))
+                SetWindowPos(sunk.Hwnd, HWND_TOPMOST, 0, 0, 0, 0,
+                    SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE);
+        }
+        _sunkWindows.Clear();
         if (bar == IntPtr.Zero || FindWindow("Shell_TrayWnd", null) != bar) return;
         DebugLog.Write($"任务栏联动: 释放 hwnd={bar}");
         var topmost = (GetWindowLongPtr(bar, GWL_EXSTYLE).ToInt64() & 0x8) != 0;
@@ -2040,6 +2101,7 @@ public sealed partial class MainWindow : Window
     private static extern bool IsWindow(IntPtr hwnd);
 
     private static readonly IntPtr HWND_TOPMOST = new IntPtr(-1);
+    private static readonly int OwnProcessId = Environment.ProcessId;
 
     [DllImport("user32.dll")]
     private static extern bool SetForegroundWindow(IntPtr hWnd);

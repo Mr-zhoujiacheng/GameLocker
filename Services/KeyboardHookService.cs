@@ -545,7 +545,7 @@ public sealed class KeyboardHookService : IDisposable
     }
 
     /// <summary>进程可执行文件名（取不到返回空串）</summary>
-    private static string ProcessImageName(uint pid)
+    internal static string ProcessImageName(uint pid)
     {
         var h = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, false, pid);
         if (h == IntPtr.Zero) return "";

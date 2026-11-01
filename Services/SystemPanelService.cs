@@ -605,6 +605,9 @@ public static class SystemPanelService
     private static bool _nightLightOn;
     private static ushort[]? _gammaBackup;
 
+    /// <summary>夜间模式（暖色滤镜）当前是否开启，供顶栏图标显示状态</summary>
+    public static bool NightLightOn => _nightLightOn;
+
     private static string ToggleNightLight()
     {
         if (!_nightLightOn)

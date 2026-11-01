@@ -63,8 +63,11 @@ public sealed partial class MainWindow : Window
     private IntPtr _revealedTaskbar;
     /// <summary>呼出期间被临时排到任务栏之后的窗口，收起时恢复其置顶状态</summary>
     private readonly List<(IntPtr Hwnd, bool WasTopmost)> _sunkWindows = new();
-    /// <summary>呼出瞬间的前台窗口（通常是刚切换过去的游戏），作为背景主画面</summary>
-    private IntPtr _summonSource;
+    /// <summary>进入游戏窗口时最小化其他窗口：避免 Steam 等页面叠在游戏上方，呼出启动器时遮挡画面</summary>
+    private readonly DispatcherTimer _gameEnterWatch =
+        new() { Interval = TimeSpan.FromMilliseconds(800) };
+    /// <summary>已整理过的游戏窗口：同一次进入只做一次，避免每 800ms 反复最小化</summary>
+    private IntPtr _minimizedForGame;
     private NativeRect _taskbarRestoreRect;
     private bool _taskbarWasTopmost;
     private bool _taskbarWasVisible;
@@ -115,10 +118,6 @@ public sealed partial class MainWindow : Window
         // Explorer 可在不移动窗口的情况下隐藏任务栏或撤销置顶，不能只检查坐标。
         var visible = IsWindowVisibleForLaunch(bar);
         var topmost = (GetWindowLongPtr(bar, GWL_EXSTYLE).ToInt64() & 0x8) != 0;
-        // 呼出瞬间的前台窗口（通常是刚切换过去的游戏）作为背景主画面：
-        // 先把压在它上面的整屏外部窗口（Steam 页面等）排到任务栏之后，再把它自己排到任务栏之后。
-        // 只在呼出时做一次，避免轮询反复改 z 序造成闪烁。
-        if (raise) BackgroundFront(bar, bounds);
         // TOPMOST 只表示所在层级，不保证排在游戏或其他置顶窗口前面。
         // 目标层级：启动器与任务栏在最上 → 呼出前的游戏（可聚焦页面）→ 其他窗口。
         // 任何压住任务栏的外部窗口一律排到任务栏之后；只改一次，避免 250ms 轮询反复改 z 序造成闪烁。
@@ -199,39 +198,60 @@ public sealed partial class MainWindow : Window
     }
 
     /// <summary>
-    /// 呼出时把背景整理成：任务栏/启动器 → 游戏 → 其他窗口。
-    /// 先清理压在游戏上方的整屏外部窗口（如 Steam 页面），再把游戏排到任务栏之后。
+    /// 前台切到游戏窗口时，把其他所有程序的窗口最小化（含 Steam 等启动器页面）：
+    /// 游戏上方不再残留页面，呼出启动器时游戏画面不会被遮挡。
+    /// 同一个游戏窗口只整理一次，离开再切回来时重新整理。
     /// </summary>
-    private void BackgroundFront(IntPtr bar, Windows.Graphics.RectInt32 bounds)
+    private void MinimizeOthersOnGameForeground()
     {
-        var source = _summonSource;
-        if (source == IntPtr.Zero || source == _hwnd || source == bar || !IsWindowVisibleForLaunch(source)) return;
-        if (!GetWindowRect(source, out var sr)) return;
-        // 只把接近整屏的窗口当背景主画面；小窗口保持原状，避免无谓调整。
-        if (sr.Right - sr.Left < bounds.Width * 0.5 || sr.Bottom - sr.Top < bounds.Height * 0.5) return;
+        var fg = GetForegroundWindow();
+        if (fg != _minimizedForGame) _minimizedForGame = IntPtr.Zero;
+        if (fg == IntPtr.Zero || fg == _hwnd) return;
+        GetWindowThreadProcessId(fg, out var pid);
+        if ((int)pid == OwnProcessId || !IsFullscreenGameWindow(fg, pid)) return;
+        _minimizedForGame = fg;
+        MinimizeOtherWindows(fg);
+    }
 
-        // 先收集压在它上方、且面积不小于游戏的外部窗口（如 Steam 页面）；遍历中改层级会打乱枚举。
-        var above = new List<IntPtr>();
+    /// <summary>是否"像游戏"且接近整屏的前台窗口（排除浏览器、商店、桌面软件等）。</summary>
+    private static bool IsFullscreenGameWindow(IntPtr hwnd, uint pid)
+    {
+        var exe = KeyboardHookService.ProcessImageName(pid);
+        if (exe.Length == 0) return false;
+        if (!TrainerService.IsGameLikeProcess(hwnd, Path.GetFileNameWithoutExtension(exe))) return false;
+        var bounds = DisplayArea.Primary.OuterBounds;
+        return GetWindowRect(hwnd, out var r)
+            && r.Right - r.Left >= bounds.Width / 2 && r.Bottom - r.Top >= bounds.Height / 2;
+    }
+
+    /// <summary>最小化除游戏窗口与系统外壳之外的所有可见顶层窗口。</summary>
+    private static void MinimizeOtherWindows(IntPtr game)
+    {
         var shell = GetShellWindow();
-        var sourceArea = (long)(sr.Right - sr.Left) * (sr.Bottom - sr.Top);
-        for (var h = GetWindow(source, 3); h != IntPtr.Zero; h = GetWindow(h, 3))
+        var tray = FindWindow("Shell_TrayWnd", null);
+        var tray2 = FindWindow("Shell_SecondaryTrayWnd", null);
+        EnumWindows((h, _) =>
         {
-            if (h == _hwnd || h == bar || h == shell) continue;
-            if (!IsWindowVisibleForLaunch(h) || !GetWindowRect(h, out var r)) continue;
+            if (h == game || h == shell || h == tray || h == tray2) return true;
+            if (!IsWindowVisibleForLaunch(h)) return true;
+            var cls = WindowClass(h);
+            if (cls is "Progman" or "WorkerW" or "Shell_TrayWnd" or "Shell_SecondaryTrayWnd"
+                or "Windows.UI.Core.CoreWindow" or "Shell_CompatTrayWnd")
+                return true;
             GetWindowThreadProcessId(h, out var pid);
-            if (pid == OwnProcessId) continue;
-            if (DwmGetWindowAttribute(h, 14, out var cloaked, sizeof(int)) == 0 && cloaked != 0) continue;
-            if ((long)(r.Right - r.Left) * (r.Bottom - r.Top) < sourceArea) continue;
-            above.Add(h);
-        }
-        foreach (var h in above)
-        {
-            RememberSunkWindow(h);
-            SetWindowPos(h, bar, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE);
-        }
-        // 游戏排到任务栏之后：成为普通窗口里最高的一层，其他页面都在它下面。
-        RememberSunkWindow(source);
-        SetWindowPos(source, bar, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE);
+            if ((int)pid == OwnProcessId) return true;
+            if (DwmGetWindowAttribute(h, 14, out var cloaked, sizeof(int)) == 0 && cloaked != 0) return true;
+            // 工具窗（不占任务栏的托盘/覆盖层）不动，避免误伤系统交互组件。
+            if ((GetWindowLongPtr(h, GWL_EXSTYLE).ToInt64() & WS_EX_TOOLWINDOW) != 0) return true;
+            ShowWindowAsync(h, SW_MINIMIZE);
+            return true;
+        }, IntPtr.Zero);
+    }
+
+    private static string WindowClass(IntPtr hwnd)
+    {
+        var sb = new System.Text.StringBuilder(256);
+        return GetClassName(hwnd, sb, sb.Capacity) > 0 ? sb.ToString() : "";
     }
 
     private static IntPtr TaskbarCoveringWindow(IntPtr bar, int x, int y, int width, int height)
@@ -255,7 +275,6 @@ public sealed partial class MainWindow : Window
         _taskbarRevealWatch.Stop();
         var bar = _revealedTaskbar;
         _revealedTaskbar = IntPtr.Zero;
-        _summonSource = IntPtr.Zero;
         // 把呼出期间临时压到任务栏之后的窗口恢复原置顶状态，避免改变用户的窗口层级设置。
         foreach (var sunk in _sunkWindows)
         {
@@ -521,6 +540,10 @@ public sealed partial class MainWindow : Window
         _trainerTracker.Tick += (_, _) => TrainerService.CaptureForeground();
         TrainerService.CaptureForeground();
         _trainerTracker.Start();
+        // 进入游戏窗口后整理后台：把其他程序（含 Steam 等启动器页面）最小化，
+        // 这样游戏上方不再残留页面，之后呼出启动器时游戏画面不会被遮挡。
+        _gameEnterWatch.Tick += (_, _) => MinimizeOthersOnGameForeground();
+        _gameEnterWatch.Start();
 
         // 修改器无精确匹配时，弹窗让用户从相似结果里挑一个
         TrainerService.CandidatesReady += OnTrainerCandidates;
@@ -1231,7 +1254,6 @@ public sealed partial class MainWindow : Window
     public void ShowFromTray()
     {
         (Root.Content as MainPage)?.CancelPendingLaunch();
-        _summonSource = GetForegroundWindow();
         _shown = true;
         (Root.Content as MainPage)?.SetBackground(false);
         _edgeGesture?.SetStripVisible(false);
@@ -1282,6 +1304,7 @@ public sealed partial class MainWindow : Window
         var now = Environment.TickCount64;
         if (now - _lastStartMenuToggle < 400) return;
         _lastStartMenuToggle = now;
+        DebugLog.Write($"开始菜单: 切换 shown={_shown}");
         KeyboardHook.BeginStartUiBlockWatch();
         if (_shown) HideToTray();
         else ShowFromTray();
@@ -1420,6 +1443,7 @@ public sealed partial class MainWindow : Window
         // （否则刚启动游戏后晃动/误触按键会把启动器上的操作（如 Y 关闭程序）打到已经看不见的界面上）
         _shown = false;
         _summonPending = false;
+        (Root.Content as MainPage)?.CloseSearch();
         var wasAnimating = _animating;
         StopMoveAnimation();
         (Root.Content as MainPage)?.SetBackground(true);
@@ -2131,6 +2155,18 @@ public sealed partial class MainWindow : Window
     private const uint SWP_SHOWWINDOW = 0x0040;
     private const uint SWP_HIDEWINDOW = 0x0080;
     private const uint SWP_NOSENDCHANGING = 0x0400;
+    private const int SW_MINIMIZE = 6;
+
+    private delegate bool EnumWindowsProc(IntPtr hwnd, IntPtr lParam);
+
+    [DllImport("user32.dll")]
+    private static extern bool EnumWindows(EnumWindowsProc callback, IntPtr lParam);
+
+    [DllImport("user32.dll", CharSet = CharSet.Unicode)]
+    private static extern int GetClassName(IntPtr hwnd, System.Text.StringBuilder name, int count);
+
+    [DllImport("user32.dll")]
+    private static extern bool ShowWindowAsync(IntPtr hwnd, int cmd);
 
     [DllImport("user32.dll", CharSet = CharSet.Unicode)]
     private static extern IntPtr FindWindow(string className, string? windowName);

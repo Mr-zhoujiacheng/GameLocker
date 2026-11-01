@@ -72,6 +72,12 @@ public sealed partial class AppearancePage : Page, ISettingsGamepad
             ("#2D1B4E", PurpleCard, PurpleCheck),
             ("#1B3A2A", GreenCard, GreenCheck),
             ("#3E2723", BrownCard, BrownCheck),
+            ("#0E1B2A", InkBlueCard, InkBlueCheck),
+            ("#33141C", WineCard, WineCheck),
+            ("#16323A", TealCard, TealCheck),
+            ("#2C3220", OliveCard, OliveCheck),
+            ("#262332", SlateCard, SlateCheck),
+            ("#3A3226", SandCard, SandCheck),
         ];
 
         _switchCards =
@@ -193,7 +199,9 @@ public sealed partial class AppearancePage : Page, ISettingsGamepad
             WidthDownButton, WidthUpButton
         };
         foreach (var (_, card, _) in Palette) controls.Add(card);
-        controls.Add(TileThemeCard);
+        // 展开后只导航卡片内的选项行：标题卡本身变高、中心 Y 会落在选项行之间，
+        // 留在列表里会让光标被判成同一行而"跑回大卡片"上；收起用 B/Select
+        if (!_themeExpanded) controls.Add(TileThemeCard);
         if (_themeExpanded) controls.AddRange(_themeRows);
         controls.AddRange([CornerCard, NameCard, GroupAnimCard, RandomColorCard,
             TileOpacityDownButton, TileOpacityUpButton, SpacingDownButton, SpacingUpButton]);

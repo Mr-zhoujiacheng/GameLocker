@@ -209,6 +209,8 @@ public sealed partial class MainPage : Page
         FileTransferHintBar.HintTapped += key => HandleFileTransfer(GamepadHintBar.ToGamepadButtons(key));
         // 文件传输浮层：点空白处关闭
         FileTransferMask.Tapped += (_, _) => CloseFileTransfer();
+        // 搜索浮层：点遮罩关闭
+        SearchMask.Tapped += (_, _) => CloseSearch();
 
         // 页码圆点：切页时短暂显示，3 秒无操作自动隐藏
         _pageDotsTimer.Tick += (_, _) =>
@@ -319,6 +321,18 @@ public sealed partial class MainPage : Page
         icon.Opacity = on ? 1.0 : 0.35;                          // 关着时降透明度，一眼看出是"关"
     }
 
+    /// <summary>夜间模式图标：开=琥珀色月牙，关=灰白太阳（不亮白，避免比旁边的图标更抢眼）</summary>
+    private void UpdateNightIcon()
+    {
+        var on = SystemPanelService.NightLightOn;
+        SunIcon.Visibility = on ? Visibility.Collapsed : Visibility.Visible;
+        MoonIcon.Visibility = on ? Visibility.Visible : Visibility.Collapsed;
+        var amber = Windows.UI.Color.FromArgb(0xFF, 0xFF, 0xB8, 0x6B);   // 琥珀色=已开启
+        var gray = Windows.UI.Color.FromArgb(0xFF, 0xB9, 0xBE, 0xC6);    // 灰白=已关闭
+        SunIcon.Stroke = new SolidColorBrush(on ? amber : gray);
+        MoonIcon.Fill = new SolidColorBrush(on ? amber : gray);
+    }
+
     /// <summary>最近一次"已读"通知的时间：新通知到达时间晚于它才亮绿点</summary>
     private DateTime _notificationSeen = DateTime.Now;
 
@@ -410,9 +424,9 @@ public sealed partial class MainPage : Page
     }
 
     /// <summary>顶栏状态图标的快捷动作 / 对应系统设置页</summary>
-    private enum StatusBubbleAction { Wifi, Bluetooth, Battery, Gamepad, Notifications }
+    private enum StatusBubbleAction { Wifi, Bluetooth, Battery, Gamepad, Notifications, NightLight, Search }
 
-    /// <summary>给五枚状态气泡挂指针交互：单击=快捷动作，长按 600ms=打开对应 Windows 设置</summary>
+    /// <summary>给状态气泡挂指针交互：单击=快捷动作，长按 600ms=打开对应 Windows 设置</summary>
     private void HookStatusBubbles()
     {
         HookStatusBubble(WifiBubble, StatusBubbleAction.Wifi);
@@ -420,7 +434,10 @@ public sealed partial class MainPage : Page
         HookStatusBubble(BatteryBubble, StatusBubbleAction.Battery);
         HookStatusBubble(GamepadBubble, StatusBubbleAction.Gamepad);
         HookStatusBubble(NotificationBubble, StatusBubbleAction.Notifications);
-        // 五枚图标全被设置关闭时，外面那枚玻璃框也一起收起来（宽度归零即视为没有图标）
+        HookStatusBubble(NightBubble, StatusBubbleAction.NightLight);
+        HookStatusBubble(SearchBubble, StatusBubbleAction.Search);
+        UpdateNightIcon();
+        // 状态图标全被设置关闭时，外面那枚玻璃框也一起收起来（宽度归零即视为没有图标）
         StatusIcons.SizeChanged += (_, e) =>
             StatusTray.Visibility = e.NewSize.Width > 4 ? Visibility.Visible : Visibility.Collapsed;
     }
@@ -450,7 +467,9 @@ public sealed partial class MainPage : Page
         {
             hold.Stop();
             heldFired = true;
-            OpenStatusSetting(action);   // 长按：直接打开对应的 Windows 设置页
+            // 夜间模式/搜索只响应单击，长按不做动作（它们没有对应的系统设置页）
+            if (action is not (StatusBubbleAction.NightLight or StatusBubbleAction.Search))
+                OpenStatusSetting(action);   // 长按：直接打开对应的 Windows 设置页
         };
 
         bubble.PointerReleased += (_, e) =>
@@ -468,9 +487,24 @@ public sealed partial class MainPage : Page
         };
     }
 
-    /// <summary>单击：Wi-Fi/蓝牙 直接开关无线电，通知=打开通知中心，电池/手柄 打开对应系统设置页；点击后启动器先收起</summary>
+    /// <summary>单击：夜间模式=切换暖色滤镜（不收起启动器），搜索=打开自制搜索浮层，
+    /// Wi-Fi/蓝牙 直接开关无线电，通知=打开通知中心，电池/手柄 打开对应系统设置页</summary>
     private async Task ActivateStatusBubbleAsync(StatusBubbleAction action)
     {
+        if (action == StatusBubbleAction.NightLight)
+        {
+            var text = await SystemPanelService.ToggleAsync(SystemPanel.NightLight);
+            UpdateNightIcon();
+            ShowToast(text);
+            return;
+        }
+
+        if (action == StatusBubbleAction.Search)
+        {
+            OpenSearch();   // 系统搜索会被开始菜单接管逻辑拦截，这里用自建浮层代替
+            return;
+        }
+
         App.Main?.HideToTray();   // 先收起启动器，把系统设置/桌面让出来
 
         if (action == StatusBubbleAction.Notifications)
@@ -502,6 +536,208 @@ public sealed partial class MainPage : Page
         await Task.Delay(400);   // 等系统更新连接状态后再刷新图标颜色
         UpdateNetwork();
         SetGamepadStatus(App.Main?.Gamepad.HasGamepad ?? false);
+    }
+
+    /// <summary>搜索浮层是否打开</summary>
+    private bool _searchOpen;
+    /// <summary>当前命中的结果（回车启动第一条）</summary>
+    private List<SearchEntry> _searchHits = [];
+    /// <summary>应用/磁贴命中（同步、立即可得）</summary>
+    private List<SearchEntry> _appHits = [];
+    /// <summary>系统应用命中（shell:AppsFolder：控制面板/设置/商店应用等，异步返回）</summary>
+    private List<SearchEntry> _shellHits = [];
+    /// <summary>文件命中（来自 Windows 搜索索引，异步返回）</summary>
+    private List<SearchEntry> _fileHits = [];
+    /// <summary>文件结果是否还在查询中（决定空状态显示"正在搜索"还是"没有找到"）</summary>
+    private bool _searchPending;
+    /// <summary>文件搜索的取消源：输入变化时取消上一次查询</summary>
+    private CancellationTokenSource? _searchCts;
+
+    /// <summary>打开自制搜索浮层（顶栏搜索图标）：启动器不收起，面板浮在主页上方</summary>
+    private void OpenSearch()
+    {
+        if (_searchOpen)
+        {
+            CloseSearch();
+            return;
+        }
+        _searchOpen = true;
+        SearchOverlay.Visibility = Visibility.Visible;
+        SearchBox.Text = "";
+        SearchList.ItemsSource = null;
+        SearchList.Visibility = Visibility.Collapsed;
+        SearchHint.Text = "输入名称开始搜索";
+        SearchHint.Visibility = Visibility.Visible;
+        // 打开即聚焦输入框，可直接键入（触屏会带出系统触摸键盘）。
+        // 用低优先级排队，等面板进入可视树后再聚焦，否则同一帧内 Focus 会落空。
+        DispatcherQueue.TryEnqueue(Microsoft.UI.Dispatching.DispatcherQueuePriority.Low,
+            () => SearchBox.Focus(FocusState.Programmatic));
+    }
+
+    /// <summary>搜索面板右上角的关闭图标（X）：与 Esc 等效，触屏/手柄也能关</summary>
+    private void OnSearchCloseTapped(object sender, TappedRoutedEventArgs e) => CloseSearch();
+
+    /// <summary>关闭搜索浮层（Esc / 点遮罩 / 启动结果后）；隐藏启动器时也会被调用</summary>
+    public void CloseSearch()
+    {
+        if (!_searchOpen) return;
+        _searchOpen = false;
+        _searchCts?.Cancel();
+        _searchHits = [];
+        _appHits = [];
+        _shellHits = [];
+        _fileHits = [];
+        _searchPending = false;
+        SearchOverlay.Visibility = Visibility.Collapsed;
+        SearchBox.Text = "";
+        SearchList.ItemsSource = null;
+    }
+
+    private void OnSearchTextChanged(object sender, TextChangedEventArgs e)
+    {
+        _searchCts?.Cancel();
+        var query = SearchBox.Text;
+        if (string.IsNullOrWhiteSpace(query))
+        {
+            _appHits = [];
+            _shellHits = [];
+            _fileHits = [];
+            _searchHits = [];
+            _searchPending = false;
+            RenderSearchHits();
+            return;
+        }
+
+        // 应用/磁贴先同步出结果，系统应用与文件交给后台异步补上
+        _appHits = CollectSearchHits(query);
+        _shellHits = [];
+        _fileHits = [];
+        _searchHits = _appHits;
+        _searchPending = true;
+        RenderSearchHits();
+        SearchIndexAsync(query);
+    }
+
+    /// <summary>后台检索：先查 shell:AppsFolder（控制面板等系统应用），再查 Windows 文件索引；
+    /// 停手 250ms 后才查，并丢弃过期返回，避免每个字符都打一次索引</summary>
+    private async void SearchIndexAsync(string query)
+    {
+        var cts = new CancellationTokenSource();
+        _searchCts = cts;
+        try
+        {
+            await Task.Delay(250, cts.Token);
+            var shell = await Task.Run(() => AppSearchService.SearchShellApps(query, 9), cts.Token);
+            if (cts.IsCancellationRequested || cts != _searchCts || !_searchOpen) return;
+
+            // 同名已经在前面出现的不重复列出（先出系统应用，文件索引慢，别一起等）
+            var names = _appHits.Select(a => a.Name).ToHashSet(StringComparer.OrdinalIgnoreCase);
+            _shellHits = shell.Where(s => !names.Contains(s.Name)).ToList();
+            names.UnionWith(_shellHits.Select(s => s.Name));
+            _searchHits = _appHits.Concat(_shellHits).ToList();
+            RenderSearchHits();
+
+            var files = await AppSearchService.SearchFilesAsync(query, 9, cts.Token);
+            if (cts.IsCancellationRequested || cts != _searchCts || !_searchOpen) return;
+            _fileHits = files
+                .Where(f => !names.Contains(f.Name))
+                .Where(f => !_appHits.Any(a =>
+                    string.Equals(a.Target, f.Target, StringComparison.OrdinalIgnoreCase)))
+                .ToList();
+            _searchHits = _appHits.Concat(_shellHits).Concat(_fileHits).ToList();
+            _searchPending = false;
+            RenderSearchHits();
+            DebugLog.Write($"搜索「{query.Trim()}」: 磁贴/快捷={_appHits.Count} 系统应用={_shellHits.Count} 文件={_fileHits.Count}");
+        }
+        catch (OperationCanceledException)
+        {
+            // 输入变化导致的取消：等新的查询结果
+        }
+    }
+
+    /// <summary>把当前结果刷到列表；没有结果时按"是否还在查文件"给出不同提示</summary>
+    private void RenderSearchHits()
+    {
+        if (_searchHits.Count == 0)
+        {
+            SearchList.ItemsSource = null;
+            SearchList.Visibility = Visibility.Collapsed;
+            SearchHint.Text = string.IsNullOrWhiteSpace(SearchBox.Text)
+                ? "输入名称开始搜索"
+                : _searchPending ? "正在搜索本机…" : $"没有找到与「{SearchBox.Text.Trim()}」匹配的内容";
+            SearchHint.Visibility = Visibility.Visible;
+            return;
+        }
+        SearchList.ItemsSource = _searchHits;
+        SearchList.Visibility = Visibility.Visible;
+        SearchHint.Visibility = Visibility.Collapsed;
+    }
+
+    /// <summary>搜索命中：先取启动器里已有的磁贴（名称与图标都是用户自己配的），再用开始菜单/桌面快捷方式补满</summary>
+    private List<SearchEntry> CollectSearchHits(string query)
+    {
+        var q = query.Trim();
+        var hits = new List<SearchEntry>();
+        foreach (var item in _items)
+        {
+            if (hits.Count >= 9) break;
+            if (item.Kind is not (LaunchKind.App or LaunchKind.Url or LaunchKind.Folder)) continue;
+            if (string.IsNullOrWhiteSpace(item.Name)) continue;
+            if (!item.Name.Contains(q, StringComparison.OrdinalIgnoreCase)) continue;
+            hits.Add(new SearchEntry
+            {
+                Name = item.Name,
+                Detail = item.Kind switch
+                {
+                    LaunchKind.Url => "启动器 · 网站",
+                    LaunchKind.Folder => "启动器 · 文件夹",
+                    _ => "启动器 · 磁贴"
+                },
+                Glyph = item.Glyph,
+                Target = item.Target,
+                Item = item
+            });
+        }
+        var taken = hits.Select(h => h.Name).ToHashSet(StringComparer.OrdinalIgnoreCase);
+        hits.AddRange(AppSearchService.Search(query, 9 - hits.Count)
+            .Where(e => !taken.Contains(e.Name)));
+        return hits;
+    }
+
+    private void OnSearchKeyDown(object sender, KeyRoutedEventArgs e)
+    {
+        if (e.Key == Windows.System.VirtualKey.Escape)
+        {
+            e.Handled = true;
+            CloseSearch();
+        }
+        else if (e.Key == Windows.System.VirtualKey.Enter && _searchHits.Count > 0)
+        {
+            e.Handled = true;
+            ActivateSearchEntry(_searchHits[0]);
+        }
+    }
+
+    private void OnSearchItemClick(object sender, ItemClickEventArgs e)
+    {
+        if (e.ClickedItem is SearchEntry entry) ActivateSearchEntry(entry);
+    }
+
+    /// <summary>启动搜索到的结果：磁贴走原有启动流程，快捷方式交给 shell；按设置决定是否收起启动器</summary>
+    private void ActivateSearchEntry(SearchEntry entry)
+    {
+        CloseSearch();
+        if (entry.Item is { } tile)
+        {
+            LaunchItem(tile);
+            return;
+        }
+        if (!AppSearchService.Launch(entry))
+        {
+            ShowToast($"打开失败：{entry.Name}", ToastKind.Warning);
+            return;
+        }
+        if (AutoHideAfterLaunch) App.Main?.HideToTray();
     }
 
     private void OpenStatusSetting(StatusBubbleAction action)
@@ -623,13 +859,15 @@ public sealed partial class MainPage : Page
     private void OnOptiScalerStatus(OptiScalerMessage m) =>
         DispatcherQueue.TryEnqueue(() => ShowToast(m.Text, m.Error ? ToastKind.Warning : ToastKind.Success, m.Progress));
 
-    /// <summary>按设置显示/隐藏顶栏时钟、网络/电池、手柄与通知图标</summary>
+    /// <summary>按设置显示/隐藏顶栏时钟、网络/电池、手柄、通知、夜间模式与搜索图标</summary>
     public void ApplyTopbarVisibility()
     {
         var s = SettingsService.Current;
         ClockPanel.Visibility = s.ShowClock ? Visibility.Visible : Visibility.Collapsed;
         GamepadBubble.Visibility = s.ShowGamepadIcon ? Visibility.Visible : Visibility.Collapsed;
         NotificationHost.Visibility = s.ShowNotifications ? Visibility.Visible : Visibility.Collapsed;
+        NightBubble.Visibility = s.ShowNightLight ? Visibility.Visible : Visibility.Collapsed;
+        SearchBubble.Visibility = s.ShowSearch ? Visibility.Visible : Visibility.Collapsed;
         UpdateBattery();
         UpdateNetwork();
         UpdateNotificationDot();

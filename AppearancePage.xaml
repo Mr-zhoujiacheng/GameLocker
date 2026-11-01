@@ -35,7 +35,7 @@
             <Setter Property="BorderThickness" Value="2"/>
             <Setter Property="BorderBrush" Value="Transparent"/>
             <Setter Property="Padding" Value="0"/>
-            <Setter Property="MinHeight" Value="64"/>
+            <Setter Property="MinHeight" Value="40"/>
             <Setter Property="Background" Value="Transparent"/>
             <Setter Property="IsTabStop" Value="False"/>
             <Setter Property="HorizontalAlignment" Value="Stretch"/>
@@ -260,81 +260,148 @@
                             <GradientStop Color="#22B9A0FF" Offset="1"/>
                         </LinearGradientBrush>
                     </Border.Background>
-                    <StackPanel Spacing="10">
+                    <Grid RowSpacing="10">
+                        <Grid.RowDefinitions>
+                            <RowDefinition Height="Auto"/>
+                            <RowDefinition Height="*"/>
+                        </Grid.RowDefinitions>
                         <TextBlock Text="窗口背景颜色" FontSize="14" FontWeight="SemiBold"/>
-                        <Grid x:Name="ColorGrid" ColumnSpacing="8" RowSpacing="8">
+                        <!-- 色卡网格撑满卡片剩余高度：跨两行对齐左侧整列，行高按 * 平均分配，底部不留空 -->
+                        <Grid x:Name="ColorGrid" Grid.Row="1" ColumnSpacing="8" RowSpacing="8">
                             <Grid.ColumnDefinitions>
+                                <ColumnDefinition Width="*"/>
                                 <ColumnDefinition Width="*"/>
                                 <ColumnDefinition Width="*"/>
                                 <ColumnDefinition Width="*"/>
                             </Grid.ColumnDefinitions>
                             <Grid.RowDefinitions>
-                                <RowDefinition Height="Auto"/>
-                                <RowDefinition Height="Auto"/>
+                                <RowDefinition Height="*"/>
+                                <RowDefinition Height="*"/>
+                                <RowDefinition Height="*"/>
                             </Grid.RowDefinitions>
 
                             <Button x:Name="DarkGrayCard" Grid.Row="0" Grid.Column="0" Style="{StaticResource ColorCardStyle}"
                                     Click="OnColorCardClick" Tag="#202020">
                                 <Grid>
                                     <Border Background="#202020"/>
-                                    <FontIcon x:Name="DarkGrayCheck" Glyph="&#xE73E;" FontSize="15" Visibility="Collapsed"
-                                              VerticalAlignment="Center" HorizontalAlignment="Right" Margin="0,0,10,0"/>
-                                    <TextBlock Text="深灰" FontSize="12" VerticalAlignment="Bottom" HorizontalAlignment="Left"
-                                               Margin="10,0,0,8"/>
+                                    <FontIcon x:Name="DarkGrayCheck" Glyph="&#xE73E;" FontSize="13" Visibility="Collapsed"
+                                              VerticalAlignment="Center" HorizontalAlignment="Right" Margin="0,0,8,0"/>
+                                    <TextBlock Text="深灰" FontSize="11.5" VerticalAlignment="Bottom" HorizontalAlignment="Left"
+                                               Margin="8,0,0,5"/>
                                 </Grid>
                             </Button>
                             <Button x:Name="BlackCard" Grid.Row="0" Grid.Column="1" Style="{StaticResource ColorCardStyle}"
                                     Click="OnColorCardClick" Tag="#000000">
                                 <Grid>
                                     <Border Background="#000000"/>
-                                    <FontIcon x:Name="BlackCheck" Glyph="&#xE73E;" FontSize="15" Visibility="Collapsed"
-                                              VerticalAlignment="Center" HorizontalAlignment="Right" Margin="0,0,10,0"/>
-                                    <TextBlock Text="黑色" FontSize="12" VerticalAlignment="Bottom" HorizontalAlignment="Left"
-                                               Margin="10,0,0,8"/>
+                                    <FontIcon x:Name="BlackCheck" Glyph="&#xE73E;" FontSize="13" Visibility="Collapsed"
+                                              VerticalAlignment="Center" HorizontalAlignment="Right" Margin="0,0,8,0"/>
+                                    <TextBlock Text="黑色" FontSize="11.5" VerticalAlignment="Bottom" HorizontalAlignment="Left"
+                                               Margin="8,0,0,5"/>
                                 </Grid>
                             </Button>
                             <Button x:Name="BlueCard" Grid.Row="0" Grid.Column="2" Style="{StaticResource ColorCardStyle}"
                                     Click="OnColorCardClick" Tag="#102A43">
                                 <Grid>
                                     <Border Background="#102A43"/>
-                                    <FontIcon x:Name="BlueCheck" Glyph="&#xE73E;" FontSize="15" Visibility="Collapsed"
-                                              VerticalAlignment="Center" HorizontalAlignment="Right" Margin="0,0,10,0"/>
-                                    <TextBlock Text="深蓝" FontSize="12" VerticalAlignment="Bottom" HorizontalAlignment="Left"
-                                               Margin="10,0,0,8"/>
+                                    <FontIcon x:Name="BlueCheck" Glyph="&#xE73E;" FontSize="13" Visibility="Collapsed"
+                                              VerticalAlignment="Center" HorizontalAlignment="Right" Margin="0,0,8,0"/>
+                                    <TextBlock Text="深蓝" FontSize="11.5" VerticalAlignment="Bottom" HorizontalAlignment="Left"
+                                               Margin="8,0,0,5"/>
                                 </Grid>
                             </Button>
-                            <Button x:Name="PurpleCard" Grid.Row="1" Grid.Column="0" Style="{StaticResource ColorCardStyle}"
+                            <Button x:Name="PurpleCard" Grid.Row="0" Grid.Column="3" Style="{StaticResource ColorCardStyle}"
                                     Click="OnColorCardClick" Tag="#2D1B4E">
                                 <Grid>
                                     <Border Background="#2D1B4E"/>
-                                    <FontIcon x:Name="PurpleCheck" Glyph="&#xE73E;" FontSize="15" Visibility="Collapsed"
-                                              VerticalAlignment="Center" HorizontalAlignment="Right" Margin="0,0,10,0"/>
-                                    <TextBlock Text="深紫" FontSize="12" VerticalAlignment="Bottom" HorizontalAlignment="Left"
-                                               Margin="10,0,0,8"/>
+                                    <FontIcon x:Name="PurpleCheck" Glyph="&#xE73E;" FontSize="13" Visibility="Collapsed"
+                                              VerticalAlignment="Center" HorizontalAlignment="Right" Margin="0,0,8,0"/>
+                                    <TextBlock Text="深紫" FontSize="11.5" VerticalAlignment="Bottom" HorizontalAlignment="Left"
+                                               Margin="8,0,0,5"/>
                                 </Grid>
                             </Button>
-                            <Button x:Name="GreenCard" Grid.Row="1" Grid.Column="1" Style="{StaticResource ColorCardStyle}"
+                            <Button x:Name="GreenCard" Grid.Row="1" Grid.Column="0" Style="{StaticResource ColorCardStyle}"
                                     Click="OnColorCardClick" Tag="#1B3A2A">
                                 <Grid>
                                     <Border Background="#1B3A2A"/>
-                                    <FontIcon x:Name="GreenCheck" Glyph="&#xE73E;" FontSize="15" Visibility="Collapsed"
-                                              VerticalAlignment="Center" HorizontalAlignment="Right" Margin="0,0,10,0"/>
-                                    <TextBlock Text="墨绿" FontSize="12" VerticalAlignment="Bottom" HorizontalAlignment="Left"
-                                               Margin="10,0,0,8"/>
+                                    <FontIcon x:Name="GreenCheck" Glyph="&#xE73E;" FontSize="13" Visibility="Collapsed"
+                                              VerticalAlignment="Center" HorizontalAlignment="Right" Margin="0,0,8,0"/>
+                                    <TextBlock Text="墨绿" FontSize="11.5" VerticalAlignment="Bottom" HorizontalAlignment="Left"
+                                               Margin="8,0,0,5"/>
                                 </Grid>
                             </Button>
-                            <Button x:Name="BrownCard" Grid.Row="1" Grid.Column="2" Style="{StaticResource ColorCardStyle}"
+                            <Button x:Name="BrownCard" Grid.Row="1" Grid.Column="1" Style="{StaticResource ColorCardStyle}"
                                     Click="OnColorCardClick" Tag="#3E2723">
                                 <Grid>
                                     <Border Background="#3E2723"/>
-                                    <FontIcon x:Name="BrownCheck" Glyph="&#xE73E;" FontSize="15" Visibility="Collapsed"
-                                              VerticalAlignment="Center" HorizontalAlignment="Right" Margin="0,0,10,0"/>
-                                    <TextBlock Text="棕褐" FontSize="12" VerticalAlignment="Bottom" HorizontalAlignment="Left"
-                                               Margin="10,0,0,8"/>
+                                    <FontIcon x:Name="BrownCheck" Glyph="&#xE73E;" FontSize="13" Visibility="Collapsed"
+                                              VerticalAlignment="Center" HorizontalAlignment="Right" Margin="0,0,8,0"/>
+                                    <TextBlock Text="棕褐" FontSize="11.5" VerticalAlignment="Bottom" HorizontalAlignment="Left"
+                                               Margin="8,0,0,5"/>
+                                </Grid>
+                            </Button>
+                            <Button x:Name="InkBlueCard" Grid.Row="1" Grid.Column="2" Style="{StaticResource ColorCardStyle}"
+                                    Click="OnColorCardClick" Tag="#0E1B2A">
+                                <Grid>
+                                    <Border Background="#0E1B2A"/>
+                                    <FontIcon x:Name="InkBlueCheck" Glyph="&#xE73E;" FontSize="13" Visibility="Collapsed"
+                                              VerticalAlignment="Center" HorizontalAlignment="Right" Margin="0,0,8,0"/>
+                                    <TextBlock Text="墨蓝" FontSize="11.5" VerticalAlignment="Bottom" HorizontalAlignment="Left"
+                                               Margin="8,0,0,5"/>
+                                </Grid>
+                            </Button>
+                            <Button x:Name="WineCard" Grid.Row="1" Grid.Column="3" Style="{StaticResource ColorCardStyle}"
+                                    Click="OnColorCardClick" Tag="#33141C">
+                                <Grid>
+                                    <Border Background="#33141C"/>
+                                    <FontIcon x:Name="WineCheck" Glyph="&#xE73E;" FontSize="13" Visibility="Collapsed"
+                                              VerticalAlignment="Center" HorizontalAlignment="Right" Margin="0,0,8,0"/>
+                                    <TextBlock Text="酒红" FontSize="11.5" VerticalAlignment="Bottom" HorizontalAlignment="Left"
+                                               Margin="8,0,0,5"/>
+                                </Grid>
+                            </Button>
+                            <Button x:Name="TealCard" Grid.Row="2" Grid.Column="0" Style="{StaticResource ColorCardStyle}"
+                                    Click="OnColorCardClick" Tag="#16323A">
+                                <Grid>
+                                    <Border Background="#16323A"/>
+                                    <FontIcon x:Name="TealCheck" Glyph="&#xE73E;" FontSize="13" Visibility="Collapsed"
+                                              VerticalAlignment="Center" HorizontalAlignment="Right" Margin="0,0,8,0"/>
+                                    <TextBlock Text="青黛" FontSize="11.5" VerticalAlignment="Bottom" HorizontalAlignment="Left"
+                                               Margin="8,0,0,5"/>
+                                </Grid>
+                            </Button>
+                            <Button x:Name="OliveCard" Grid.Row="2" Grid.Column="1" Style="{StaticResource ColorCardStyle}"
+                                    Click="OnColorCardClick" Tag="#2C3220">
+                                <Grid>
+                                    <Border Background="#2C3220"/>
+                                    <FontIcon x:Name="OliveCheck" Glyph="&#xE73E;" FontSize="13" Visibility="Collapsed"
+                                              VerticalAlignment="Center" HorizontalAlignment="Right" Margin="0,0,8,0"/>
+                                    <TextBlock Text="橄榄" FontSize="11.5" VerticalAlignment="Bottom" HorizontalAlignment="Left"
+                                               Margin="8,0,0,5"/>
+                                </Grid>
+                            </Button>
+                            <Button x:Name="SlateCard" Grid.Row="2" Grid.Column="2" Style="{StaticResource ColorCardStyle}"
+                                    Click="OnColorCardClick" Tag="#262332">
+                                <Grid>
+                                    <Border Background="#262332"/>
+                                    <FontIcon x:Name="SlateCheck" Glyph="&#xE73E;" FontSize="13" Visibility="Collapsed"
+                                              VerticalAlignment="Center" HorizontalAlignment="Right" Margin="0,0,8,0"/>
+                                    <TextBlock Text="紫灰" FontSize="11.5" VerticalAlignment="Bottom" HorizontalAlignment="Left"
+                                               Margin="8,0,0,5"/>
+                                </Grid>
+                            </Button>
+                            <Button x:Name="SandCard" Grid.Row="2" Grid.Column="3" Style="{StaticResource ColorCardStyle}"
+                                    Click="OnColorCardClick" Tag="#3A3226">
+                                <Grid>
+                                    <Border Background="#3A3226"/>
+                                    <FontIcon x:Name="SandCheck" Glyph="&#xE73E;" FontSize="13" Visibility="Collapsed"
+                                              VerticalAlignment="Center" HorizontalAlignment="Right" Margin="0,0,8,0"/>
+                                    <TextBlock Text="暖沙" FontSize="11.5" VerticalAlignment="Bottom" HorizontalAlignment="Left"
+                                               Margin="8,0,0,5"/>
                                 </Grid>
                             </Button>
                         </Grid>
-                    </StackPanel>
+                    </Grid>
                 </Border>
 
                 <!-- ========== 磁贴 ========== -->

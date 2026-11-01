@@ -146,6 +146,12 @@ public class AppSettings
     /// <summary>顶栏显示通知图标（点击打开 Windows 通知中心）</summary>
     public bool ShowNotifications { get; set; } = true;
 
+    /// <summary>顶栏显示夜间模式图标（点击切换暖色滤镜）</summary>
+    public bool ShowNightLight { get; set; } = true;
+
+    /// <summary>顶栏显示搜索图标（固定在图标组最左侧，点击打开自制搜索浮层）</summary>
+    public bool ShowSearch { get; set; } = true;
+
     /// <summary>上次打开通知中心的时间（UTC ISO 8601）：比它晚的通知才亮绿点；持久化，重启后仍能提示未读</summary>
     public string NotificationSeenTime { get; set; } = "";
 

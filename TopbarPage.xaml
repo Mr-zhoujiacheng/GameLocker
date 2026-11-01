@@ -147,6 +147,16 @@
                             <Border x:Name="PreviewTray" Grid.Column="1" CornerRadius="24" Padding="6" BorderThickness="1"
                                     Background="#12FFFFFF" BorderBrush="#33FFFFFF" VerticalAlignment="Center">
                                 <StackPanel Orientation="Horizontal" Spacing="6">
+                                    <!-- 搜索固定在最左，与主页顶栏一致 -->
+                                    <Border x:Name="PreviewSearchBubble" Style="{StaticResource StatusBubbleStyle}">
+                                        <Grid Width="24" Height="24">
+                                            <Path Stroke="#FFFFFFFF" StrokeThickness="2.8"
+                                                  Data="M10.4,5.2 A5.2,5.2 0 1,1 10.4,15.6 A5.2,5.2 0 1,1 10.4,5.2 Z"/>
+                                            <Path Stroke="#FFFFFFFF" StrokeThickness="2.8"
+                                                  StrokeStartLineCap="Round" StrokeEndLineCap="Round"
+                                                  Data="M14.6,14.6 L19.4,19.4"/>
+                                        </Grid>
+                                    </Border>
                                     <Border x:Name="PreviewWifiBubble" Style="{StaticResource StatusBubbleStyle}">
                                         <FontIcon x:Name="PreviewWifiIcon" Glyph="&#xE701;" FontSize="26"/>
                                     </Border>
@@ -159,6 +169,21 @@
                                     <Border x:Name="PreviewGamepadBubble" Style="{StaticResource StatusBubbleStyle}">
                                         <FontIcon x:Name="PreviewGamepadIcon" Glyph="&#xE7FC;" FontSize="26"/>
                                     </Border>
+                                    <!-- 夜间模式：太阳/月亮随当前开关状态切换 -->
+                                    <Border x:Name="PreviewNightBubble" Style="{StaticResource StatusBubbleStyle}">
+                                        <Grid Width="24" Height="24">
+                                            <Path x:Name="PreviewSunIcon" Stroke="#FFB9BEC6" StrokeThickness="2.6"
+                                                  StrokeLineJoin="Round" StrokeStartLineCap="Round"
+                                                  StrokeEndLineCap="Round"
+                                                  Data="M12,8.1 A3.9,3.9 0 1,1 12,15.9 A3.9,3.9 0 1,1 12,8.1 Z
+                                                        M12,3.2 V4.9 M12,19.1 V20.8 M3.2,12 H4.9 M19.1,12 H20.8
+                                                        M5.8,5.8 L7,7 M17,17 L18.2,18.2
+                                                        M18.2,5.8 L17,7 M7,17 L5.8,18.2"/>
+                                            <Path x:Name="PreviewMoonIcon" Fill="#FFFFB86B" Visibility="Collapsed"
+                                                  Data="M14.9,3.5 A8.9,8.9 0 1,0 20.5,14.4 A7.2,7.2 0 0,1 14.9,3.5 Z"/>
+                                        </Grid>
+                                    </Border>
+                                    <!-- 通知固定在最右 -->
                                     <Border x:Name="PreviewNotificationBubble" Style="{StaticResource StatusBubbleStyle}">
                                         <FontIcon x:Name="PreviewNotificationIcon" Glyph="&#xEA8F;" FontSize="26"/>
                                     </Border>
@@ -174,6 +199,8 @@
                     <ColumnDefinition Width="0"/>
                 </Grid.ColumnDefinitions>
                 <Grid.RowDefinitions>
+                    <RowDefinition Height="Auto"/>
+                    <RowDefinition Height="Auto"/>
                     <RowDefinition Height="Auto"/>
                     <RowDefinition Height="Auto"/>
                     <RowDefinition Height="Auto"/>
@@ -368,6 +395,70 @@
                                        Opacity="0.55" TextTrimming="CharacterEllipsis"/>
                         </StackPanel>
                         <ToggleSwitch x:Name="NotificationToggle" Grid.Column="3" Style="{StaticResource CleanToggleStyle}"
+                                      IsHitTestVisible="False" IsTabStop="False" VerticalAlignment="Center"
+                                      OnContent="" OffContent=""
+                                      Toggled="OnToggleChanged"/>
+                    </Grid>
+                </Button>
+
+                <!-- 夜间模式 -->
+                <Button x:Name="NightLightRow" Style="{StaticResource SettingRowStyle}" Click="OnRowClick">
+                    <Button.Background>
+                        <LinearGradientBrush StartPoint="0,0" EndPoint="0,1">
+                            <GradientStop Color="#22FFFFFF" Offset="0"/>
+                            <GradientStop Color="#4A4CC2FF" Offset="1"/>
+                        </LinearGradientBrush>
+                    </Button.Background>
+                    <Grid ColumnSpacing="12">
+                        <Grid.ColumnDefinitions>
+                            <ColumnDefinition Width="Auto"/>
+                            <ColumnDefinition Width="Auto"/>
+                            <ColumnDefinition Width="*"/>
+                            <ColumnDefinition Width="Auto"/>
+                        </Grid.ColumnDefinitions>
+                        <Border Width="3" Height="40" Background="#B34CC2FF" VerticalAlignment="Center"/>
+                        <Border Grid.Column="1" Width="34" Height="34" Background="#3D4CC2FF"
+                                BorderThickness="1" BorderBrush="#6B4CC2FF" VerticalAlignment="Center">
+                            <FontIcon Glyph="&#xE708;" FontSize="16"/>
+                        </Border>
+                        <StackPanel Grid.Column="2" Spacing="2" VerticalAlignment="Center">
+                            <TextBlock Text="夜间模式" FontSize="15" FontWeight="SemiBold"/>
+                            <TextBlock Text="顶栏显示夜间模式图标，点击切换暖色滤镜" FontSize="11.5"
+                                       Opacity="0.55" TextTrimming="CharacterEllipsis"/>
+                        </StackPanel>
+                        <ToggleSwitch x:Name="NightLightToggle" Grid.Column="3" Style="{StaticResource CleanToggleStyle}"
+                                      IsHitTestVisible="False" IsTabStop="False" VerticalAlignment="Center"
+                                      OnContent="" OffContent=""
+                                      Toggled="OnToggleChanged"/>
+                    </Grid>
+                </Button>
+
+                <!-- 搜索 -->
+                <Button x:Name="SearchRow" Style="{StaticResource SettingRowStyle}" Click="OnRowClick">
+                    <Button.Background>
+                        <LinearGradientBrush StartPoint="0,0" EndPoint="0,1">
+                            <GradientStop Color="#22FFFFFF" Offset="0"/>
+                            <GradientStop Color="#4A4CC2FF" Offset="1"/>
+                        </LinearGradientBrush>
+                    </Button.Background>
+                    <Grid ColumnSpacing="12">
+                        <Grid.ColumnDefinitions>
+                            <ColumnDefinition Width="Auto"/>
+                            <ColumnDefinition Width="Auto"/>
+                            <ColumnDefinition Width="*"/>
+                            <ColumnDefinition Width="Auto"/>
+                        </Grid.ColumnDefinitions>
+                        <Border Width="3" Height="40" Background="#B34CC2FF" VerticalAlignment="Center"/>
+                        <Border Grid.Column="1" Width="34" Height="34" Background="#3D4CC2FF"
+                                BorderThickness="1" BorderBrush="#6B4CC2FF" VerticalAlignment="Center">
+                            <FontIcon Glyph="&#xE721;" FontSize="16"/>
+                        </Border>
+                        <StackPanel Grid.Column="2" Spacing="2" VerticalAlignment="Center">
+                            <TextBlock Text="搜索" FontSize="15" FontWeight="SemiBold"/>
+                            <TextBlock Text="顶栏最左侧的搜索图标，点击打开搜索浮层" FontSize="11.5"
+                                       Opacity="0.55" TextTrimming="CharacterEllipsis"/>
+                        </StackPanel>
+                        <ToggleSwitch x:Name="SearchToggle" Grid.Column="3" Style="{StaticResource CleanToggleStyle}"
                                       IsHitTestVisible="False" IsTabStop="False" VerticalAlignment="Center"
                                       OnContent="" OffContent=""
                                       Toggled="OnToggleChanged"/>

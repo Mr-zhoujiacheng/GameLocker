@@ -7,7 +7,7 @@ using Microsoft.UI.Xaml.Navigation;
 namespace GameLocker;
 
 /// <summary>
-/// 顶栏设置：时钟 / 电池 / 无线网络 / 蓝牙 / 手柄连接图标显示开关。
+/// 顶栏设置：时钟 / 电池 / 无线网络 / 蓝牙 / 手柄 / 通知 / 夜间模式 / 搜索 图标显示开关。
 /// 手柄：方向=移动焦点，A=切换开关，View(Select)/B=返回设置主页。
 /// </summary>
 public sealed partial class TopbarPage : Page, ISettingsGamepad
@@ -18,6 +18,10 @@ public sealed partial class TopbarPage : Page, ISettingsGamepad
     private (Button row, ToggleSwitch toggle)[] _switchRows = [];
     private int _index;
     private bool _ready;
+
+    /// <summary>夜间图标颜色：开=琥珀，关=灰白（与主页顶栏同一套）</summary>
+    private static readonly Windows.UI.Color NightOnColor = Windows.UI.Color.FromArgb(0xFF, 0xFF, 0xB8, 0x6B);
+    private static readonly Windows.UI.Color NightOffColor = Windows.UI.Color.FromArgb(0xFF, 0xB9, 0xBE, 0xC6);
 
     public TopbarPage()
     {
@@ -30,6 +34,8 @@ public sealed partial class TopbarPage : Page, ISettingsGamepad
         BluetoothToggle.IsOn = s.ShowBluetooth;
         GamepadIconToggle.IsOn = s.ShowGamepadIcon;
         NotificationToggle.IsOn = s.ShowNotifications;
+        NightLightToggle.IsOn = s.ShowNightLight;
+        SearchToggle.IsOn = s.ShowSearch;
 
         _switchRows =
         [
@@ -38,9 +44,15 @@ public sealed partial class TopbarPage : Page, ISettingsGamepad
             (WifiRow, WifiToggle),
             (BluetoothRow, BluetoothToggle),
             (GamepadRow, GamepadIconToggle),
-            (NotificationRow, NotificationToggle)
+            (NotificationRow, NotificationToggle),
+            (NightLightRow, NightLightToggle),
+            (SearchRow, SearchToggle)
         ];
-        _controls = [ClockRow, BatteryRow, WifiRow, BluetoothRow, GamepadRow, NotificationRow];
+        _controls =
+        [
+            ClockRow, BatteryRow, WifiRow, BluetoothRow,
+            GamepadRow, NotificationRow, NightLightRow, SearchRow
+        ];
 
         // 卡片网格：宽窗口两列并整块居中，侧边栏窄窗口回成一列靠上
         ContentScroll.SizeChanged += (_, _) => LayoutCards();
@@ -91,13 +103,25 @@ public sealed partial class TopbarPage : Page, ISettingsGamepad
 
         PreviewNotificationBubble.Visibility = s.ShowNotifications ? Visibility.Visible : Visibility.Collapsed;
 
-        // 五枚状态图标全关时，外面的玻璃框一起隐藏
-        var anyStatus = s.ShowWifi || s.ShowBluetooth || showBattery || s.ShowGamepadIcon || s.ShowNotifications;
+        // 夜间模式：按真实开关状态显示太阳或月亮，颜色与主页顶栏一致（开=琥珀，关=灰白）
+        var nightOn = SystemPanelService.NightLightOn;
+        PreviewNightBubble.Visibility = s.ShowNightLight ? Visibility.Visible : Visibility.Collapsed;
+        PreviewSunIcon.Visibility = nightOn ? Visibility.Collapsed : Visibility.Visible;
+        PreviewMoonIcon.Visibility = nightOn ? Visibility.Visible : Visibility.Collapsed;
+        PreviewSunIcon.Stroke = new SolidColorBrush(nightOn ? NightOnColor : NightOffColor);
+        PreviewMoonIcon.Fill = new SolidColorBrush(nightOn ? NightOnColor : NightOffColor);
+
+        // 搜索固定在图标组最左
+        PreviewSearchBubble.Visibility = s.ShowSearch ? Visibility.Visible : Visibility.Collapsed;
+
+        // 状态图标全关时，外面的玻璃框一起隐藏
+        var anyStatus = s.ShowWifi || s.ShowBluetooth || showBattery || s.ShowGamepadIcon
+                        || s.ShowNotifications || s.ShowNightLight || s.ShowSearch;
         PreviewTray.Visibility = anyStatus ? Visibility.Visible : Visibility.Collapsed;
 
         // 顶栏各项全关时给个说明，避免预览条只剩一条空底
         var anyShown = s.ShowClock || s.ShowWifi || s.ShowBluetooth || showBattery
-                       || s.ShowGamepadIcon || s.ShowNotifications;
+                       || s.ShowGamepadIcon || s.ShowNotifications || s.ShowNightLight || s.ShowSearch;
         PreviewEmpty.Visibility = anyShown ? Visibility.Collapsed : Visibility.Visible;
     }
 
@@ -266,6 +290,8 @@ public sealed partial class TopbarPage : Page, ISettingsGamepad
             s.ShowBluetooth = BluetoothToggle.IsOn;
             s.ShowGamepadIcon = GamepadIconToggle.IsOn;
             s.ShowNotifications = NotificationToggle.IsOn;
+            s.ShowNightLight = NightLightToggle.IsOn;
+            s.ShowSearch = SearchToggle.IsOn;
         });
         // 即时应用到主页顶栏（若已创建），并刷新本页预览
         App.Main?.ApplyTopbarVisibility();

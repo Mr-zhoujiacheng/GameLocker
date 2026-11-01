@@ -78,6 +78,16 @@
                     </LinearGradientBrush>
                 </Border.BorderBrush>
                 <StackPanel x:Name="StatusIcons" Orientation="Horizontal" Spacing="6">
+                    <!-- 搜索：固定在这一组的第一位（最左），点击打开自制搜索浮层 -->
+                    <Border x:Name="SearchBubble" Style="{StaticResource StatusBubbleStyle}">
+                        <Grid Width="24" Height="24">
+                            <Path x:Name="SearchRing" Stroke="#FFFFFFFF" StrokeThickness="2.8"
+                                  Data="M10.4,5.2 A5.2,5.2 0 1,1 10.4,15.6 A5.2,5.2 0 1,1 10.4,5.2 Z"/>
+                            <Path x:Name="SearchHandle" Stroke="#FFFFFFFF" StrokeThickness="2.8"
+                                  StrokeStartLineCap="Round" StrokeEndLineCap="Round"
+                                  Data="M14.6,14.6 L19.4,19.4"/>
+                        </Grid>
+                    </Border>
                     <Border x:Name="WifiBubble" Style="{StaticResource StatusBubbleStyle}">
                         <FontIcon x:Name="WifiIcon" Glyph="&#xE701;" FontSize="26"/>
                     </Border>
@@ -90,7 +100,23 @@
                     <Border x:Name="GamepadBubble" Style="{StaticResource StatusBubbleStyle}">
                         <FontIcon x:Name="GamepadIcon" Glyph="&#xE7FC;" FontSize="26"/>
                     </Border>
-                    <!-- 通知：点击打开 Windows 通知中心；有新通知时右上角亮小绿点 -->
+                    <!-- 夜间模式：点击切换暖色滤镜；图标随开关在太阳/月亮之间切换（粗线圆头风格） -->
+                    <Border x:Name="NightBubble" Style="{StaticResource StatusBubbleStyle}">
+                        <Grid Width="24" Height="24">
+                            <!-- 白天：圆环 + 八条光芒，统一 2.6px 圆头描边 -->
+                            <Path x:Name="SunIcon" Stroke="#FFB9BEC6" StrokeThickness="2.6"
+                                  StrokeLineJoin="Round"
+                                  StrokeStartLineCap="Round" StrokeEndLineCap="Round"
+                                  Data="M12,8.1 A3.9,3.9 0 1,1 12,15.9 A3.9,3.9 0 1,1 12,8.1 Z
+                                        M12,3.2 V4.9 M12,19.1 V20.8 M3.2,12 H4.9 M19.1,12 H20.8
+                                        M5.8,5.8 L7,7 M17,17 L18.2,18.2
+                                        M18.2,5.8 L17,7 M7,17 L5.8,18.2"/>
+                            <!-- 夜间：实心月牙（单一路径，避免拼两个圆的接缝） -->
+                            <Path x:Name="MoonIcon" Fill="#FFFFB86B" Visibility="Collapsed"
+                                  Data="M14.9,3.5 A8.9,8.9 0 1,0 20.5,14.4 A7.2,7.2 0 0,1 14.9,3.5 Z"/>
+                        </Grid>
+                    </Border>
+                    <!-- 通知：固定在图标组末尾（最右）；有新通知时右上角亮小绿点 -->
                     <Grid x:Name="NotificationHost" Width="46" Height="46" VerticalAlignment="Center">
                         <Border x:Name="NotificationBubble" Style="{StaticResource StatusBubbleStyle}">
                             <FontIcon x:Name="NotificationIcon" Glyph="&#xEA8F;" FontSize="26"/>
@@ -522,6 +548,75 @@
                     <ctl:GamepadHintBar x:Name="FileTransferHintBar" TouchMode="True"
                                         HorizontalAlignment="Center" Margin="0,8,0,0"
                                         Hints="DPAD:选择|A:连接|X:发送|Y:清空|B:关闭"/>
+                </StackPanel>
+            </Border>
+        </Grid>
+
+        <!-- 自制搜索浮层：顶栏搜索图标打开（系统 Win+S 搜索被开始菜单接管逻辑屏蔽，这里自建一个面板）。
+             输入即搜开始菜单/桌面的应用快捷方式，点结果或按回车直接启动；Esc 或点遮罩关闭 -->
+        <Grid x:Name="SearchOverlay" Grid.Row="0" Grid.RowSpan="3" Visibility="Collapsed">
+            <Border x:Name="SearchMask" Background="#C00A0C10"/>
+
+            <Border x:Name="SearchPanel" Width="600" HorizontalAlignment="Center" VerticalAlignment="Top"
+                    Margin="0,84,0,0" CornerRadius="18" Padding="16,14,16,10"
+                    BorderBrush="#2EFFFFFF" BorderThickness="1.2">
+                <Border.Background>
+                    <LinearGradientBrush StartPoint="0,0" EndPoint="0.3,1">
+                        <GradientStop Color="#F22A2E36" Offset="0"/>
+                        <GradientStop Color="#F21A1D23" Offset="1"/>
+                    </LinearGradientBrush>
+                </Border.Background>
+
+                <StackPanel Spacing="8">
+                    <!-- 搜索行：放大镜 + 输入框 + 关闭按钮（等效 Esc，也给触屏/手柄用） -->
+                    <Grid ColumnSpacing="10">
+                        <Grid.ColumnDefinitions>
+                            <ColumnDefinition Width="Auto"/>
+                            <ColumnDefinition Width="*"/>
+                            <ColumnDefinition Width="Auto"/>
+                        </Grid.ColumnDefinitions>
+                        <FontIcon Glyph="&#xE721;" FontSize="17" Foreground="#4CC2FF" VerticalAlignment="Center"/>
+                        <TextBox x:Name="SearchBox" Grid.Column="1" BorderThickness="0" Background="Transparent"
+                                 FontSize="18" VerticalAlignment="Center"
+                                 PlaceholderText="搜索应用、文件或文件夹"
+                                 TextChanged="OnSearchTextChanged" KeyDown="OnSearchKeyDown"/>
+                        <Border Grid.Column="2" Width="30" Height="30" CornerRadius="9" Background="#1AFFFFFF"
+                                VerticalAlignment="Center" Tapped="OnSearchCloseTapped"
+                                ToolTipService.ToolTip="关闭搜索（Esc）">
+                            <FontIcon Glyph="&#xE711;" FontSize="12" Opacity="0.72"/>
+                        </Border>
+                    </Grid>
+
+                    <Border Height="1" Background="#1AFFFFFF" Margin="0,2"/>
+
+                    <!-- 空状态/无结果提示 -->
+                    <TextBlock x:Name="SearchHint" Text="输入名称开始搜索" FontSize="12.5"
+                               Opacity="0.5" Margin="6,10,0,10"/>
+
+                    <!-- 结果列表：图标 + 名称 + 来源说明 -->
+                    <ListView x:Name="SearchList" MaxHeight="366" SelectionMode="None"
+                              IsItemClickEnabled="True" ItemClick="OnSearchItemClick"
+                              Visibility="Collapsed">
+                        <ListView.ItemTemplate>
+                            <DataTemplate>
+                                <Grid ColumnSpacing="12" Padding="0,6">
+                                    <Grid.ColumnDefinitions>
+                                        <ColumnDefinition Width="Auto"/>
+                                        <ColumnDefinition Width="*"/>
+                                    </Grid.ColumnDefinitions>
+                                    <Border Width="34" Height="34" CornerRadius="9" Background="#22FFFFFF">
+                                        <FontIcon Glyph="{Binding Glyph}" FontSize="16"/>
+                                    </Border>
+                                    <StackPanel Grid.Column="1" VerticalAlignment="Center" Spacing="1">
+                                        <TextBlock Text="{Binding Name}" FontSize="14.5"
+                                                   TextTrimming="CharacterEllipsis"/>
+                                        <TextBlock Text="{Binding Detail}" FontSize="11" Opacity="0.45"
+                                                   TextTrimming="CharacterEllipsis" MaxLines="1"/>
+                                    </StackPanel>
+                                </Grid>
+                            </DataTemplate>
+                        </ListView.ItemTemplate>
+                    </ListView>
                 </StackPanel>
             </Border>
         </Grid>

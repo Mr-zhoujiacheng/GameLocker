@@ -63,8 +63,8 @@ public static class DrawerService
     }
 
     /// <summary>
-    /// 顶层与所有抽屉内查找，返回命中的磁贴实例（找不到为 null）。
-    /// 抽屉内层磁贴不在顶层列表里，编辑回写必须拿到配置对象图里的同一个实例，否则改不动。
+    /// 顶层、所有抽屉内、所有磁贴组成员里查找，返回命中的磁贴实例（找不到为 null）。
+    /// 抽屉内层磁贴与组成员不在顶层列表里，编辑回写必须拿到配置对象图里的同一个实例，否则改不动。
     /// </summary>
     public static LaunchItem? FindAnywhere(List<LaunchItem> items, Func<LaunchItem, bool> pred)
     {
@@ -73,6 +73,10 @@ public static class DrawerService
             if (IsDrawer(d) && d.Drawers is { } pages)
                 foreach (var p in pages)
                     if (p.Items.FirstOrDefault(pred) is { } inner) return inner;
+        // 磁贴组成员（成员里也可能再套组/抽屉，递归查）
+        foreach (var g in items)
+            if (g.Members is { Count: > 0 } members && FindAnywhere(members, pred) is { } member)
+                return member;
         return null;
     }
 

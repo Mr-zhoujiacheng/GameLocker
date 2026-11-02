@@ -349,6 +349,22 @@
                         <TextBlock Text="壁纸" FontSize="14" HorizontalAlignment="Center"/>
                     </StackPanel>
                 </Button>
+                <!-- 屏幕翻译：青绿 -->
+                <Button x:Name="ScreenTranslateWidgetCard" Tag="screentranslate" Style="{StaticResource WidgetCardStyle}" Click="OnAddClick"
+                        ToolTipService.ToolTip="实时翻译聚焦窗口：A 开关，识别窗口文字并在窗口下方显示译文字幕条">
+                    <Button.Background>
+                        <LinearGradientBrush StartPoint="0,0" EndPoint="0,1">
+                            <GradientStop Color="#12FFFFFF" Offset="0"/>
+                            <GradientStop Color="#3841D1A8" Offset="1"/>
+                        </LinearGradientBrush>
+                    </Button.Background>
+                    <StackPanel Spacing="10">
+                        <Viewbox MaxHeight="126" Stretch="Uniform" HorizontalAlignment="Center">
+                            <ContentPresenter x:Name="ScreenTranslatePreviewHost"/>
+                        </Viewbox>
+                        <TextBlock Text="屏幕翻译" FontSize="14" HorizontalAlignment="Center"/>
+                    </StackPanel>
+                </Button>
             </Canvas>
         </ScrollViewer>
 

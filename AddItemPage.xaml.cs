@@ -484,6 +484,18 @@ public sealed partial class AddItemPage : Page, ISettingsGamepad
             list.Add(ProxyNodeCombo);
             list.Add(ProxyNodeRefreshButton);
         }
+        // 屏幕翻译：翻译引擎 / Azure 密钥与区域 / 源语言 / 目标语言
+        if (ScreenTranslateRow.Visibility == vis)
+        {
+            list.Add(TranslateEngineCombo);
+            if (TranslateAzurePanel.Visibility == vis)
+            {
+                list.Add(TranslateKeyBox);
+                list.Add(TranslateRegionBox);
+            }
+            list.Add(TranslateSourceCombo);
+            list.Add(TranslateTargetCombo);
+        }
         // 映射小组件：按键捕获按钮 + 旁边的"显示键盘"
         if (MappingRow.Visibility == vis)
         {
@@ -708,7 +720,7 @@ public sealed partial class AddItemPage : Page, ISettingsGamepad
             CoverRow.Visibility = w;
             // 音乐固定 2×2、系统固定"长"不可改大小；其余小组件（图片组/设置/电源/天气/映射/修改器/游戏存档/手柄映射）可编辑大小。
             // 颜色：图片组不需要（整块铺图）
-            SizeColumn.Visibility = isPhoto || item.WidgetKind is WidgetKind.Settings or WidgetKind.Power or WidgetKind.Weather or WidgetKind.Mapping or WidgetKind.Trainer or WidgetKind.Backup or WidgetKind.GamepadMap or WidgetKind.OptiScaler or WidgetKind.RecycleBin or WidgetKind.Foreground or WidgetKind.Monitor or WidgetKind.LosslessScaling or WidgetKind.Keyboard or WidgetKind.Clash
+            SizeColumn.Visibility = isPhoto || item.WidgetKind is WidgetKind.Settings or WidgetKind.Power or WidgetKind.Weather or WidgetKind.Mapping or WidgetKind.Trainer or WidgetKind.Backup or WidgetKind.GamepadMap or WidgetKind.OptiScaler or WidgetKind.RecycleBin or WidgetKind.Foreground or WidgetKind.Monitor or WidgetKind.LosslessScaling or WidgetKind.Keyboard or WidgetKind.Clash or WidgetKind.ScreenTranslate
                 ? Microsoft.UI.Xaml.Visibility.Visible : w;
             ColorColumn.Visibility = isPhoto || isWallpaper || TileStyle.HidesTileColor
                 ? w : Microsoft.UI.Xaml.Visibility.Visible;
@@ -813,6 +825,20 @@ public sealed partial class AddItemPage : Page, ISettingsGamepad
                         ? "global" : "rule", item.ProxySelected ?? "");
                 _syncingProxyForm = false;
                 _ = LoadProxyCoreVersionAsync();
+            }
+            // 屏幕翻译：大小、颜色 + 翻译引擎 / Azure 密钥与区域 / 源语言 / 目标语言（磁贴固定显示"屏幕翻译"，无需自定义名称）
+            var isTranslate = item.WidgetKind == WidgetKind.ScreenTranslate;
+            ScreenTranslateRow.Visibility = isTranslate ? Microsoft.UI.Xaml.Visibility.Visible : w;
+            if (isTranslate)
+            {
+                if (string.IsNullOrWhiteSpace(NameBox.Text)) NameBox.Text = "屏幕翻译";
+                NameBox.Visibility = w;
+                SelectTranslateCombo(TranslateEngineCombo, item.TranslateEngine);
+                TranslateKeyBox.Text = item.TranslateApiKey ?? "";
+                TranslateRegionBox.Text = item.TranslateRegion ?? "";
+                SelectTranslateCombo(TranslateSourceCombo, item.TranslateSource);
+                SelectTranslateCombo(TranslateTargetCombo, item.TranslateTarget);
+                UpdateTranslateAzureRow();
             }
             // 壁纸：固定大磁贴、名称固定「壁纸」；来源 / 轮番速度 / 个性喜好 / 下载到本地
             WallpaperRow.Visibility = isWallpaper ? Microsoft.UI.Xaml.Visibility.Visible : w;
@@ -950,6 +976,7 @@ public sealed partial class AddItemPage : Page, ISettingsGamepad
             LosslessRow.Visibility = Microsoft.UI.Xaml.Visibility.Collapsed;
             ProxyRow.Visibility = Microsoft.UI.Xaml.Visibility.Collapsed;
             WallpaperRow.Visibility = Microsoft.UI.Xaml.Visibility.Collapsed;
+            ScreenTranslateRow.Visibility = Microsoft.UI.Xaml.Visibility.Collapsed;
         }
     }
 
@@ -980,6 +1007,7 @@ public sealed partial class AddItemPage : Page, ISettingsGamepad
                     : item.WidgetKind == WidgetKind.LosslessScaling ? "编辑小黄鸭小组件"
                     : item.WidgetKind == WidgetKind.Keyboard ? "编辑屏幕键盘小组件"
                     : item.WidgetKind == WidgetKind.Clash ? "编辑 Clash 小组件"
+                    : item.WidgetKind == WidgetKind.ScreenTranslate ? "编辑屏幕翻译小组件"
                     : item.WidgetKind == WidgetKind.Wallpaper ? "编辑壁纸小组件"
                     : item.WidgetKind == WidgetKind.Drawer ? "编辑磁贴抽屉" : "编辑音乐小组件")
                 : _isGroup ? "编辑磁贴组" : "编辑快捷项";
@@ -1008,6 +1036,12 @@ public sealed partial class AddItemPage : Page, ISettingsGamepad
             LosslessRow.Visibility = Microsoft.UI.Xaml.Visibility.Collapsed;
             ProxyRow.Visibility = Microsoft.UI.Xaml.Visibility.Collapsed;
             WallpaperRow.Visibility = Microsoft.UI.Xaml.Visibility.Collapsed;
+            ScreenTranslateRow.Visibility = Microsoft.UI.Xaml.Visibility.Collapsed;
+            TranslateEngineCombo.SelectedIndex = 0;
+            TranslateKeyBox.Text = "";
+            TranslateRegionBox.Text = "";
+            TranslateSourceCombo.SelectedIndex = 0;
+            TranslateTargetCombo.SelectedIndex = 0;
             _pendingLosslessPath = null;
             _pickingLosslessPath = false;
             LosslessPathText.Text = "自动检测（Steam 库）";
@@ -1266,6 +1300,41 @@ public sealed partial class AddItemPage : Page, ISettingsGamepad
         if (Keep3Radio.IsChecked == true) return 3;
         if (Keep10Radio.IsChecked == true) return 10;
         return 5;
+    }
+
+    /// <summary>屏幕翻译：按 Tag 读取当前下拉选项对应的配置值</summary>
+    private static string TranslateComboValue(ComboBox cb, string fallback) =>
+        (cb.SelectedItem as ComboBoxItem)?.Tag as string ?? fallback;
+
+    private string SelectedTranslateEngine() => TranslateComboValue(TranslateEngineCombo, "free");
+    private string SelectedTranslateSource() => TranslateComboValue(TranslateSourceCombo, "auto");
+    private string SelectedTranslateTarget() => TranslateComboValue(TranslateTargetCombo, "zh");
+
+    /// <summary>屏幕翻译：按配置值反查下拉选项并选中（找不到=第一项）</summary>
+    private static void SelectTranslateCombo(ComboBox cb, string? value)
+    {
+        var want = value ?? "";
+        for (var i = 0; i < cb.Items.Count; i++)
+        {
+            if (cb.Items[i] is ComboBoxItem it
+                && string.Equals(it.Tag as string ?? "", want, StringComparison.OrdinalIgnoreCase))
+            {
+                cb.SelectedIndex = i;
+                return;
+            }
+        }
+        cb.SelectedIndex = 0;
+    }
+
+    /// <summary>翻译引擎切到 Azure 时展开密钥/区域输入框；收起时从导航序列中移除</summary>
+    private void OnTranslateEngineChanged(object sender, SelectionChangedEventArgs e) => UpdateTranslateAzureRow();
+
+    private void UpdateTranslateAzureRow()
+    {
+        TranslateAzurePanel.Visibility = SelectedTranslateEngine() == "azure"
+            ? Microsoft.UI.Xaml.Visibility.Visible
+            : Microsoft.UI.Xaml.Visibility.Collapsed;
+        RebuildFormControls();
     }
 
     /// <summary>OptiScaler：A 键展开下拉框（记下当前索引，供 B 取消时回滚）</summary>
@@ -1838,6 +1907,21 @@ public sealed partial class AddItemPage : Page, ISettingsGamepad
                     it.ProxySelected = (ProxyNodeCombo.SelectedItem as ProxyNodeOption)?.Value ?? "";
                     // 内核可能正在跑：立即把新的模式与选中节点生效（没跑则等下次连接时重建配置）
                     _ = ProxyService.ApplyAsync(it);
+                }
+                else if (it.WidgetKind == WidgetKind.ScreenTranslate)
+                {
+                    // 屏幕翻译：改大小、颜色与翻译引擎 / Azure 密钥与区域 / 源语言 / 目标语言
+                    it.Size = SelectedSize();
+                    it.TileColor = SelectedColor();
+                    it.TranslateEngine = SelectedTranslateEngine();
+                    var key = TranslateKeyBox.Text.Trim();
+                    it.TranslateApiKey = key.Length > 0 ? key : null;
+                    var region = TranslateRegionBox.Text.Trim();
+                    it.TranslateRegion = region.Length > 0 ? region : null;
+                    it.TranslateSource = SelectedTranslateSource();
+                    it.TranslateTarget = SelectedTranslateTarget();
+                    // 正在翻译时用新设置对已锁定窗口重译，改语言/引擎立即生效
+                    if (ScreenTranslateService.IsRunning) ScreenTranslateService.Start(it);
                 }
                 else if (it.WidgetKind == WidgetKind.Wallpaper)
                 {

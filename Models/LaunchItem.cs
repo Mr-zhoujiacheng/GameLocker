@@ -66,7 +66,9 @@ public enum WidgetKind
     /// <summary>小猫咪（订阅式代理：A/点击=开关连接，Y=更新订阅并选最快节点）</summary>
     Clash,
     /// <summary>壁纸（轮番展示在线壁纸，固定大磁贴；A/点击=询问设为桌面或锁屏壁纸）</summary>
-    Wallpaper
+    Wallpaper,
+    /// <summary>屏幕翻译（A/点击=开关实时翻译；识别聚焦窗口文字并在窗口下方显示译文悬浮字幕条）</summary>
+    ScreenTranslate
 }
 
 /// <summary>手柄映射的目标类型（仅 GamepadMapping 使用）</summary>
@@ -386,6 +388,21 @@ public class LaunchItem
     /// <summary>排除的壁纸文件名（仅 WidgetKind.Wallpaper 使用；排除的壁纸不再参与轮播）</summary>
     public List<string> WallpaperBlocked { get; set; } = [];
 
+    /// <summary>屏幕翻译引擎（仅 WidgetKind.ScreenTranslate 使用）："free"=免费公共接口，"azure"=Azure 翻译</summary>
+    public string TranslateEngine { get; set; } = "free";
+
+    /// <summary>Azure 翻译的订阅 Key（仅 WidgetKind.ScreenTranslate 且引擎为 azure 时使用）</summary>
+    public string? TranslateApiKey { get; set; }
+
+    /// <summary>Azure 翻译的资源区域（如 eastasia；仅 WidgetKind.ScreenTranslate 且引擎为 azure 时使用）</summary>
+    public string? TranslateRegion { get; set; }
+
+    /// <summary>识别/翻译的源语言（仅 WidgetKind.ScreenTranslate 使用）："auto"/"zh"/"en"/"ja"</summary>
+    public string TranslateSource { get; set; } = "auto";
+
+    /// <summary>译文目标语言（仅 WidgetKind.ScreenTranslate 使用）："zh"/"en"/"ja"</summary>
+    public string TranslateTarget { get; set; } = "zh";
+
     /// <summary>深拷贝一个快捷项（含组成员），用于复制/迁移时与源数据隔离</summary>
     public LaunchItem Clone() => new()
     {
@@ -437,6 +454,11 @@ public class LaunchItem
         WallpaperSource = WallpaperSource,
         WallpaperLiked = [.. WallpaperLiked],
         WallpaperBlocked = [.. WallpaperBlocked],
+        TranslateEngine = TranslateEngine,
+        TranslateApiKey = TranslateApiKey,
+        TranslateRegion = TranslateRegion,
+        TranslateSource = TranslateSource,
+        TranslateTarget = TranslateTarget,
         GamepadMappings = [.. GamepadMappings.Select(m => m.Clone())],
         Members = [.. Members.Select(m => m.Clone())],
         Drawers = Drawers is null ? null : [.. Drawers.Select(d => d.Clone())]
@@ -505,6 +527,9 @@ public class LaunchItem
     private static readonly Dictionary<string, WeakReference<BitmapImage>> ImageCache =
         new(StringComparer.OrdinalIgnoreCase);
     private const int ImageCacheLimit = 128;
+
+    /// <summary>清空解码缓存（图标文件被重新生成后调用，避免继续使用旧图）</summary>
+    public static void ClearImageCache() => ImageCache.Clear();
 
     /// <summary>按路径复用 BitmapImage，并按磁贴显示尺寸限制解码宽，避免重建磁贴时反复解码大图</summary>
     private static ImageSource? CachedImage(string path, int decodeWidth)

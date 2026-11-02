@@ -212,6 +212,23 @@ public static class LaunchService
         }
     }
 
+    /// <summary>
+    /// 该进程是否是本启动器启动过的目标程序（含由其派生的子进程）。
+    /// 用进程号 + 启动时间校验，避免 PID 复用后把无关进程当成游戏。
+    /// </summary>
+    public static bool IsTrackedProcess(int pid)
+    {
+        foreach (var record in Records.Values)
+        {
+            lock (record)
+            {
+                if (!record.Processes.TryGetValue(pid, out var known)) continue;
+                if (ReadIdentity(known.Pid) == known) return true;
+            }
+        }
+        return false;
+    }
+
     private static ProcessIdentity? ReadIdentity(int pid)
     {
         var handle = OpenProcess(0x1000, false, pid);

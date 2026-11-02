@@ -547,16 +547,22 @@ public sealed class KeyboardHookService : IDisposable
     /// <summary>进程可执行文件名（取不到返回空串）</summary>
     internal static string ProcessImageName(uint pid)
     {
+        var full = ProcessImagePath(pid);
+        var slash = full.LastIndexOf('\\');
+        return slash >= 0 ? full[(slash + 1)..] : full;
+    }
+
+    /// <summary>进程可执行文件完整路径（取不到返回空串），用于识别游戏库安装目录。</summary>
+    internal static string ProcessImagePath(uint pid)
+    {
         var h = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, false, pid);
         if (h == IntPtr.Zero) return "";
         try
         {
-            var buf = new StringBuilder(512);
+            var buf = new StringBuilder(1024);
             uint n = (uint)buf.Capacity;
             if (!QueryFullProcessImageName(h, 0, buf, ref n)) return "";
-            var full = buf.ToString(0, (int)n);
-            var slash = full.LastIndexOf('\\');
-            return slash >= 0 ? full[(slash + 1)..] : full;
+            return buf.ToString(0, (int)n);
         }
         finally { CloseHandle(h); }
     }

@@ -60,6 +60,9 @@ public sealed partial class MainWindow : Window
     /// 那样门控会永久卡在关闭状态（表现为"呼出后手柄完全失效"）。</summary>
     private bool _shown;
 
+    /// <summary>启动器当前是否处于呼出显示状态（供屏幕翻译的覆盖层避让）</summary>
+    public bool IsShown => _shown;
+
     private IntPtr _revealedTaskbar;
     /// <summary>呼出期间被临时排到任务栏之后的窗口，收起时恢复其置顶状态</summary>
     private readonly List<(IntPtr Hwnd, bool WasTopmost)> _sunkWindows = new();
@@ -215,16 +218,11 @@ public sealed partial class MainWindow : Window
         MinimizeOtherWindows(fg);
     }
 
-    /// <summary>是否"像游戏"且接近整屏的前台窗口（排除浏览器、商店、桌面软件等）。</summary>
-    private static bool IsFullscreenGameWindow(IntPtr hwnd, uint pid)
-    {
-        var exe = KeyboardHookService.ProcessImageName(pid);
-        if (exe.Length == 0) return false;
-        if (!TrainerService.IsGameLikeProcess(hwnd, Path.GetFileNameWithoutExtension(exe))) return false;
-        var bounds = DisplayArea.Primary.OuterBounds;
-        return GetWindowRect(hwnd, out var r)
-            && r.Right - r.Left >= bounds.Width / 2 && r.Bottom - r.Top >= bounds.Height / 2;
-    }
+    /// <summary>是否"正在全屏运行的游戏"：窗口必须盖满所在显示器，且出现游戏强证据
+    /// （D3D 独占全屏 / 游戏库路径 / 游戏引擎窗口类 / 本启动器启动过的进程），
+    /// 兜底还要求进程不是桌面软件，避免浏览器、播放器、资源管理器被误判。</summary>
+    private static bool IsFullscreenGameWindow(IntPtr hwnd, uint pid) =>
+        GameWindowDetector.IsFullscreenGame(hwnd, pid);
 
     /// <summary>最小化除游戏窗口与系统外壳之外的所有可见顶层窗口。</summary>
     private static void MinimizeOtherWindows(IntPtr game)
@@ -1255,6 +1253,8 @@ public sealed partial class MainWindow : Window
     /// <summary>托盘/热键唤起</summary>
     public void ShowFromTray()
     {
+        // 回前台：先退出效率模式，避免滑入动画与手柄响应被系统降频
+        PowerModeService.SetEfficiencyMode(false);
         (Root.Content as MainPage)?.CancelPendingLaunch();
         _shown = true;
         (Root.Content as MainPage)?.SetBackground(false);
@@ -1453,6 +1453,7 @@ public sealed partial class MainWindow : Window
         if (!SettingsService.Current.SummonAnimation || wasAnimating)
         {
             AppWindow.Hide();
+            PowerModeService.SetEfficiencyMode(true); // 完全隐藏后进入效率模式，降低常驻功耗
             ReleaseTaskbar();
             _edgeGesture?.SetStripVisible(true); // 窗口隐藏后恢复边缘条，任意前台都能触摸呼出
             return;
@@ -1466,6 +1467,7 @@ public sealed partial class MainWindow : Window
         {
             if (_shown) return;
             AppWindow.Hide();
+            PowerModeService.SetEfficiencyMode(true); // 完全隐藏后进入效率模式，降低常驻功耗
             ReleaseTaskbar();
             _edgeGesture?.SetStripVisible(true);
         });

@@ -175,8 +175,9 @@ public class AppSettings
     public GamepadButtons SummonCombo { get; set; } =
         GamepadButtons.LeftTrigger | GamepadButtons.RightTrigger;
 
-    /// <summary>全屏组合键（长按 1 秒切换全屏模式），默认菜单键</summary>
-    public GamepadButtons FullscreenCombo { get; set; } = GamepadButtons.Menu;
+    /// <summary>全屏组合键（长按 1 秒切换全屏模式），默认 Start+Select</summary>
+    public GamepadButtons FullscreenCombo { get; set; } =
+        GamepadButtons.Menu | GamepadButtons.View;
 
     /// <summary>键盘呼出键（虚拟键码，0=未设置）；默认 F7，按下即刻呼出（无需长按），仅键盘</summary>
     public int KeyboardSummonKey { get; set; } = 0x76;

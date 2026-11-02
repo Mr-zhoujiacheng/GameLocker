@@ -305,7 +305,7 @@ public sealed partial class KeybindPage : Page, ISettingsGamepad
     /// <summary>鼠标点击"恢复默认键位"</summary>
     private void OnResetClick(object sender, RoutedEventArgs e) => ResetDefaults();
 
-    /// <summary>还原全部键位到初始值（呼出=LT+RT，键盘=F7，全屏=菜单键），保存并立即生效</summary>
+    /// <summary>还原全部键位到初始值（呼出=LT+RT，键盘=F7，全屏=Start+Select），保存并立即生效</summary>
     private void ResetDefaults()
     {
         if (IsCapturing) return;

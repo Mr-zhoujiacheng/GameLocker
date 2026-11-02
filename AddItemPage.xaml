@@ -1045,6 +1045,50 @@
                     </StackPanel>
                 </StackPanel>
 
+                <!-- 屏幕翻译小组件：翻译引擎 / Azure 密钥与区域 / 源语言 / 目标语言（仅屏幕翻译编辑时显示） -->
+                <StackPanel x:Name="ScreenTranslateRow" Spacing="14" Visibility="Collapsed">
+                    <StackPanel Spacing="4">
+                        <TextBlock Text="翻译引擎" FontSize="15" Opacity="0.9"/>
+                        <ComboBox x:Name="TranslateEngineCombo" HorizontalAlignment="Stretch" FontSize="14"
+                                  SelectionChanged="OnTranslateEngineChanged">
+                            <ComboBoxItem Content="免费接口（必应 / MyMemory，无需配置）" Tag="free"/>
+                            <ComboBoxItem Content="Azure 翻译（需填写密钥与区域）" Tag="azure"/>
+                        </ComboBox>
+                        <TextBlock Text="免费接口无需配置，但可能限流；Azure 更稳定，需要 Azure 翻译资源的密钥与区域。"
+                                   FontSize="12" Opacity="0.55" TextWrapping="Wrap"/>
+                    </StackPanel>
+
+                    <StackPanel x:Name="TranslateAzurePanel" Spacing="10" Visibility="Collapsed">
+                        <TextBox x:Name="TranslateKeyBox" Header="Azure 订阅密钥" FontSize="14"
+                                 PlaceholderText="在 Azure 门户的翻译资源里复制 Key"/>
+                        <TextBox x:Name="TranslateRegionBox" Header="区域" FontSize="14"
+                                 PlaceholderText="例如 eastasia / global"/>
+                    </StackPanel>
+
+                    <StackPanel Spacing="4">
+                        <TextBlock Text="识别语言（源）" FontSize="15" Opacity="0.9"/>
+                        <ComboBox x:Name="TranslateSourceCombo" HorizontalAlignment="Stretch" FontSize="14">
+                            <ComboBoxItem Content="自动" Tag="auto"/>
+                            <ComboBoxItem Content="中文" Tag="zh"/>
+                            <ComboBoxItem Content="英文" Tag="en"/>
+                            <ComboBoxItem Content="日文" Tag="ja"/>
+                        </ComboBox>
+                        <TextBlock Text="按源语言使用系统 OCR 语言包识别窗口文字（中文 / 英文一般系统自带）。"
+                                   FontSize="12" Opacity="0.55" TextWrapping="Wrap"/>
+                    </StackPanel>
+
+                    <StackPanel Spacing="4">
+                        <TextBlock Text="目标语言" FontSize="15" Opacity="0.9"/>
+                        <ComboBox x:Name="TranslateTargetCombo" HorizontalAlignment="Stretch" FontSize="14">
+                            <ComboBoxItem Content="中文" Tag="zh"/>
+                            <ComboBoxItem Content="英文" Tag="en"/>
+                            <ComboBoxItem Content="日文" Tag="ja"/>
+                        </ComboBox>
+                        <TextBlock Text="A 键开始实时翻译后，识别聚焦窗口的文字并在窗口下方显示译文；再次按 A 关闭。"
+                                   FontSize="12" Opacity="0.55" TextWrapping="Wrap"/>
+                    </StackPanel>
+                </StackPanel>
+
                 <!-- 游戏存档小组件：备份方式（本地目录 / 天翼云上传）/ 目标文件夹 / 保留份数（仅游戏存档编辑时显示） -->
                 <StackPanel x:Name="BackupRow" Spacing="14" Visibility="Collapsed">
                     <StackPanel Spacing="4">

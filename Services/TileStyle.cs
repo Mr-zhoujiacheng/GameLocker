@@ -2,6 +2,7 @@ using GameLocker.Models;
 using Microsoft.UI.Xaml;
 using Microsoft.UI.Xaml.Controls;
 using Microsoft.UI.Xaml.Media;
+using Microsoft.UI.Xaml.Shapes;
 
 namespace GameLocker.Services;
 
@@ -1927,6 +1928,241 @@ public static class TileStyle
         refs.Summary.Text = !installed ? "R3:编辑 · 指定程序"
             : scaling ? "A:关闭插帧"
             : "A:开启插帧";
+    }
+
+    /// <summary>屏幕翻译磁贴的可刷新元素引用（开关状态变化时只改文字/状态点，不重建磁贴）</summary>
+    public sealed class TranslateTileRefs
+    {
+        public Border Tile = null!;
+        public Microsoft.UI.Xaml.Shapes.Ellipse Dot = null!;
+        public TextBlock Status = null!;
+        public TextBlock Summary = null!;
+    }
+
+    /// <summary>
+    /// 屏幕翻译自绘图标：一个显示器外框 + 底部两行字幕条（白色描边/填充，按传入尺寸等比缩放）。
+    /// 比字体图标更贴合"屏幕 + 译文"，小尺寸下也更清晰。
+    /// </summary>
+    private static FrameworkElement ScreenTranslateIcon(double size)
+    {
+        var white = new SolidColorBrush(Microsoft.UI.Colors.White);
+        var stroke = Math.Max(1.2, size / 22);
+        var canvas = new Canvas
+        {
+            Width = size,
+            Height = size,
+            IsHitTestVisible = false,
+            HorizontalAlignment = HorizontalAlignment.Center,
+            VerticalAlignment = VerticalAlignment.Center
+        };
+
+        var screen = new Border
+        {
+            Width = size,
+            Height = size * 0.66,
+            CornerRadius = new CornerRadius(size * 0.12),
+            BorderBrush = white,
+            BorderThickness = new Thickness(stroke),
+            Background = new SolidColorBrush(Windows.UI.Color.FromArgb(0x1A, 0xFF, 0xFF, 0xFF))
+        };
+        Canvas.SetLeft(screen, 0);
+        Canvas.SetTop(screen, 0);
+        canvas.Children.Add(screen);
+
+        // 字幕条：两条白色圆角横线，居中排在"屏幕"下半部分
+        double barHeight = Math.Max(2, size / 16);
+        Rectangle Bar(double widthRatio) => new()
+        {
+            Width = size * widthRatio,
+            Height = barHeight,
+            RadiusX = barHeight / 2,
+            RadiusY = barHeight / 2,
+            Fill = white,
+            Opacity = 0.95
+        };
+
+        var line1 = Bar(0.56);
+        Canvas.SetLeft(line1, size * 0.22);
+        Canvas.SetTop(line1, size * 0.38);
+        canvas.Children.Add(line1);
+
+        var line2 = Bar(0.36);
+        Canvas.SetLeft(line2, size * 0.32);
+        Canvas.SetTop(line2, size * 0.52);
+        canvas.Children.Add(line2);
+
+        // 底座：细支架 + 底座横线
+        var stand = new Rectangle
+        {
+            Width = size * 0.26,
+            Height = Math.Max(1.2, size / 30),
+            Fill = white,
+            Opacity = 0.9
+        };
+        Canvas.SetLeft(stand, size * 0.37);
+        Canvas.SetTop(stand, size * 0.71);
+        canvas.Children.Add(stand);
+
+        var foot = new Rectangle
+        {
+            Width = size * 0.52,
+            Height = Math.Max(1.2, size / 30),
+            RadiusX = size / 60,
+            RadiusY = size / 60,
+            Fill = white,
+            Opacity = 0.9
+        };
+        Canvas.SetLeft(foot, size * 0.24);
+        Canvas.SetTop(foot, size * 0.85);
+        canvas.Children.Add(foot);
+
+        return canvas;
+    }
+
+    /// <summary>构建屏幕翻译小组件磁贴：小=图标+状态，长=图标+名称+状态，大=再加操作摘要</summary>
+    public static (Border Tile, TranslateTileRefs Refs) BuildScreenTranslateTile(
+        LaunchItem item, double width, double height, Windows.UI.Color accent, bool noColor)
+    {
+        var white = new SolidColorBrush(Microsoft.UI.Colors.White);
+        var label = string.IsNullOrWhiteSpace(item.Name) ? "屏幕翻译" : item.Name;
+        var refs = new TranslateTileRefs();
+
+        Grid StatusRow(double fontSize)
+        {
+            var stack = new StackPanel
+            {
+                Orientation = Orientation.Horizontal,
+                Spacing = 6,
+                HorizontalAlignment = HorizontalAlignment.Center,
+                VerticalAlignment = VerticalAlignment.Center
+            };
+            refs.Dot = new Microsoft.UI.Xaml.Shapes.Ellipse
+            {
+                Width = 8,
+                Height = 8,
+                Fill = new SolidColorBrush(Windows.UI.Color.FromArgb(0x66, 0xFF, 0xFF, 0xFF)),
+                VerticalAlignment = VerticalAlignment.Center,
+                IsHitTestVisible = false
+            };
+            refs.Status = new TextBlock
+            {
+                Text = "已关闭",
+                FontSize = fontSize,
+                Opacity = 0.85,
+                Foreground = white,
+                IsHitTestVisible = false
+            };
+            stack.Children.Add(refs.Dot);
+            stack.Children.Add(refs.Status);
+            var host = new Grid { HorizontalAlignment = HorizontalAlignment.Center };
+            host.Children.Add(stack);
+            return host;
+        }
+
+        var grid = new Grid();
+        if (item.Size == TileSize.Small)
+        {
+            var stack = new StackPanel
+            {
+                Spacing = 4,
+                HorizontalAlignment = HorizontalAlignment.Center,
+                VerticalAlignment = VerticalAlignment.Center
+            };
+            stack.Children.Add(ScreenTranslateIcon(24));
+            stack.Children.Add(StatusRow(10));
+            grid.Children.Add(stack);
+            refs.Summary = new TextBlock { Visibility = Visibility.Collapsed };
+        }
+        else if (item.Size == TileSize.Wide)
+        {
+            var row = new StackPanel
+            {
+                Orientation = Orientation.Horizontal,
+                Spacing = 10,
+                HorizontalAlignment = HorizontalAlignment.Center,
+                VerticalAlignment = VerticalAlignment.Center
+            };
+            row.Children.Add(ScreenTranslateIcon(30));
+            var col = new StackPanel { Spacing = 4, VerticalAlignment = VerticalAlignment.Center };
+            col.Children.Add(new TextBlock
+            {
+                Text = label,
+                FontSize = 16,
+                FontWeight = Microsoft.UI.Text.FontWeights.SemiBold,
+                Foreground = white,
+                TextTrimming = TextTrimming.CharacterEllipsis,
+                MaxWidth = width - 96,
+                IsHitTestVisible = false
+            });
+            col.Children.Add(StatusRow(12));
+            row.Children.Add(col);
+            grid.Children.Add(row);
+            refs.Summary = new TextBlock { Visibility = Visibility.Collapsed };
+        }
+        else
+        {
+            var stack = new StackPanel
+            {
+                Spacing = 6,
+                Margin = new Thickness(12, 10, 12, 10),
+                HorizontalAlignment = HorizontalAlignment.Center,
+                VerticalAlignment = VerticalAlignment.Center
+            };
+            stack.Children.Add(ScreenTranslateIcon(38));
+            stack.Children.Add(new TextBlock
+            {
+                Text = label,
+                FontSize = 20,
+                FontWeight = Microsoft.UI.Text.FontWeights.SemiBold,
+                Foreground = white,
+                HorizontalAlignment = HorizontalAlignment.Center,
+                TextTrimming = TextTrimming.CharacterEllipsis,
+                MaxWidth = width - 28,
+                IsHitTestVisible = false
+            });
+            stack.Children.Add(StatusRow(13));
+            refs.Summary = new TextBlock
+            {
+                Text = "A:开启翻译",
+                FontSize = 12,
+                Opacity = 0.75,
+                Foreground = white,
+                HorizontalAlignment = HorizontalAlignment.Center,
+                TextTrimming = TextTrimming.CharacterEllipsis,
+                MaxWidth = width - 28,
+                IsHitTestVisible = false
+            };
+            stack.Children.Add(refs.Summary);
+            grid.Children.Add(stack);
+        }
+
+        var tile = new Border
+        {
+            Width = width,
+            Height = height,
+            CornerRadius = new CornerRadius(Radius),
+            Background = noColor ? new SolidColorBrush(Windows.UI.Color.FromArgb(0, 0, 0, 0)) : TileFill(accent),
+            BorderBrush = new SolidColorBrush(TileBorderColorFor(accent)),
+            BorderThickness = new Thickness(TileBorderThickness),
+            Child = grid
+        };
+        tile.Opacity = Opacity;
+        refs.Tile = tile;
+        return (tile, refs);
+    }
+
+    /// <summary>把"翻译中/已关闭"与目标语言写入屏幕翻译磁贴</summary>
+    public static void FillScreenTranslateState(TranslateTileRefs refs, LaunchItem item)
+    {
+        var on = ScreenTranslateService.IsRunning;
+        refs.Dot.Fill = new SolidColorBrush(on
+            ? Windows.UI.Color.FromArgb(0xFF, 0x66, 0xE0, 0x8A)   // 绿：翻译中
+            : Windows.UI.Color.FromArgb(0x66, 0xFF, 0xFF, 0xFF)); // 灰白：已关闭
+        refs.Status.Text = on ? "翻译中" : "已关闭";
+
+        if (refs.Summary.Visibility == Visibility.Collapsed) return;
+        var target = item.TranslateTarget switch { "en" => "英文", "ja" => "日文", _ => "中文" };
+        refs.Summary.Text = on ? $"A:关闭翻译 · 译为{target}" : $"A:开启翻译 · 译为{target}";
     }
 
     /// <summary>前台应用监测磁贴的可刷新元素引用（前台应用或冻结状态变化时只改内容，不重建磁贴）</summary>

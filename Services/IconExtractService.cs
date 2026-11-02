@@ -54,6 +54,40 @@ public static class IconExtractService
         catch { return null; }
     }
 
+    /// <summary>图标缓存版本标记：旧版本生成的 256 图是 Shell 低质量放大，首次启动重渲染一次</summary>
+    private const string CacheVersionMarker = ".extract-v2";
+
+    /// <summary>是否已完成新版图标重渲染</summary>
+    public static bool CacheUpgraded => File.Exists(Path.Combine(LaunchItem.IconsDir, CacheVersionMarker));
+
+    /// <summary>一次性把已有磁贴的图标按新算法重渲染（哈希文件名不变，IconFile 无需改写）</summary>
+    public static async Task<bool> UpgradeCachedIconsAsync(IEnumerable<LaunchItem> roots)
+    {
+        if (CacheUpgraded) return false;
+        try
+        {
+            var targets = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+            foreach (var root in roots) CollectTargets(root, targets);
+            foreach (var target in targets) await ExtractAsync(target);
+
+            Directory.CreateDirectory(LaunchItem.IconsDir);
+            await File.WriteAllTextAsync(Path.Combine(LaunchItem.IconsDir, CacheVersionMarker), "v2");
+            return true;
+        }
+        catch { return false; }
+    }
+
+    private static void CollectTargets(LaunchItem item, HashSet<string> targets)
+    {
+        if ((item.Kind == LaunchKind.App || item.Kind == LaunchKind.Folder) && !string.IsNullOrWhiteSpace(item.Target))
+            targets.Add(item.Target);
+        foreach (var m in item.Members) CollectTargets(m, targets);
+        if (item.Drawers is { } drawers)
+            foreach (var page in drawers)
+                foreach (var it in page.Items)
+                    CollectTargets(it, targets);
+    }
+
     /// <summary>把任意位图文件解码后用 PNG 重新编码（保证扩展名与实际格式一致）</summary>
     private static async Task<bool> TranscodeImageToPngAsync(string srcPath, string outPath)
     {
@@ -96,26 +130,70 @@ public static class IconExtractService
         const int size = 256;
         var buf = new byte[size * size * 4];
 
-        // 路径 1：Shell 缩略图接口（exe/ico/lnk 通用，可拿到高分辨率帧）
+        // 路径 1：直接从 exe/dll/ico 取内嵌图标（原生 256 时 1:1 绘制，最清晰）。
+        // 不走 Shell GetImage：它对低分辨率图标会做低质量放大，256 缓存图明显发糊
+        if (CanExtractEmbeddedIcon(path) && TryGetEmbeddedIcon(path, size, out var hicon, out var hsmall))
+        {
+            try
+            {
+                if (hsmall != IntPtr.Zero) DestroyIcon(hsmall);
+                if (TryDrawIconPixels(hicon, size, buf))
+                {
+                    await EncodePngAsync(size, buf, outPath);
+                    return true;
+                }
+            }
+            finally { if (hicon != IntPtr.Zero) DestroyIcon(hicon); }
+        }
+
+        // 路径 2：Shell 缩略图接口（.lnk / 文件夹 / 无内嵌图标的文件）
         if (TryGetShellImagePixels(path, size, buf))
         {
             await EncodePngAsync(size, buf, outPath);
             return true;
         }
 
-        // 路径 2：ExtractIconEx 取 HICON，DrawIconEx 绘制到 32bpp DIB
-        ExtractIconExW(path, 0, out var hicon, out var small, 1);
+        // 路径 3：ExtractIconEx 取 HICON，DrawIconEx 绘制到 32bpp DIB
+        ExtractIconExW(path, 0, out var fallbackIcon, out var fallbackSmall, 1);
         try
         {
-            if (hicon == IntPtr.Zero) return false;
-            if (small != IntPtr.Zero) DestroyIcon(small);
-            if (!TryDrawIconPixels(hicon, size, buf)) return false;
+            if (fallbackIcon == IntPtr.Zero) return false;
+            if (fallbackSmall != IntPtr.Zero) DestroyIcon(fallbackSmall);
+            if (!TryDrawIconPixels(fallbackIcon, size, buf)) return false;
             await EncodePngAsync(size, buf, outPath);
             return true;
         }
         finally
         {
-            if (hicon != IntPtr.Zero) DestroyIcon(hicon);
+            if (fallbackIcon != IntPtr.Zero) DestroyIcon(fallbackIcon);
+        }
+    }
+
+    /// <summary>exe/dll/ico 才有内嵌图标可直接取；.lnk/文件夹仍走 Shell</summary>
+    private static bool CanExtractEmbeddedIcon(string path)
+    {
+        var ext = Path.GetExtension(path).ToLowerInvariant();
+        return ext is ".exe" or ".dll" or ".ico";
+    }
+
+    /// <summary>PrivateExtractIcons 取指定尺寸的 HICON（按 exe 内嵌图标资源原样返回，不做 Shell 缩放）</summary>
+    private static bool TryGetEmbeddedIcon(string path, int size, out IntPtr hicon, out IntPtr hsmall)
+    {
+        hicon = IntPtr.Zero;
+        hsmall = IntPtr.Zero;
+        var icons = new IntPtr[1];
+        var ids = new int[1];
+        try
+        {
+            if (PrivateExtractIconsW(path, 0, size, size, icons, ids, 1, 0) <= 0 || icons[0] == IntPtr.Zero)
+                return false;
+            hicon = icons[0];
+            return true;
+        }
+        catch
+        {
+            if (icons[0] != IntPtr.Zero) DestroyIcon(icons[0]);
+            return false;
         }
     }
 
@@ -243,6 +321,10 @@ public static class IconExtractService
         public int biXPelsPerMeter, biYPelsPerMeter;
         public uint biClrUsed, biClrImportant;
     }
+
+    [DllImport("user32.dll", CharSet = CharSet.Unicode)]
+    private static extern int PrivateExtractIconsW(string lpszFile, int nIconIndex,
+        int cxIcon, int cyIcon, IntPtr[] phicon, int[] piconid, int nIcons, int flags);
 
     [DllImport("shell32.dll", CharSet = CharSet.Unicode)]
     private static extern uint ExtractIconExW(string lpszFile, int nIconIndex,

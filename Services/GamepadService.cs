@@ -138,8 +138,9 @@ public sealed class GamepadService : IDisposable
         _comboFired = false;
     }
 
-    /// <summary>全屏组合键（默认菜单键长按 1 秒切换全屏；实际值由设置页捕获后覆盖）</summary>
-    public GamepadButtons FullscreenCombo { get; set; } = GamepadButtons.Menu;
+    /// <summary>全屏组合键（默认 Start+Select 长按 1 秒切换全屏；实际值由设置页捕获后覆盖）</summary>
+    public GamepadButtons FullscreenCombo { get; set; } =
+        GamepadButtons.Menu | GamepadButtons.View;
 
     /// <summary>设置全屏组合键并复位长按计时</summary>
     public void SetFullscreenCombo(GamepadButtons combo)

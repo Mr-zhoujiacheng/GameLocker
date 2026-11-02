@@ -29,6 +29,9 @@ public static class SettingsService
             if (File.Exists(FilePath))
             {
                 var loaded = JsonSerializer.Deserialize<AppSettings>(File.ReadAllText(FilePath), Options) ?? new AppSettings();
+                // 旧默认（单 Start）升级为 Start+Select，避免老配置继续用旧快捷键
+                if (loaded.FullscreenCombo == GamepadButtons.Menu)
+                    loaded.FullscreenCombo = GamepadButtons.Menu | GamepadButtons.View;
                 DebugLog.Enabled = loaded.DiagnosticLog;
                 return loaded;
             }

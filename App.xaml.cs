@@ -61,6 +61,13 @@ public partial class App : Application
             LogCrash("UnobservedTask", e.Exception);
             e.SetObserved();
         };
+        // 原生回调（窗口过程 / WinEvent）里抛出的互操作异常不会走到上面三个处理器就直接崩进程，
+        // 这里只记录入口点/依赖库两类（0x80131523 / DllNotFound），作为闪退定位的最后依据
+        AppDomain.CurrentDomain.FirstChanceException += (_, e) =>
+        {
+            if (e.Exception is EntryPointNotFoundException or DllNotFoundException)
+                LogCrash("FirstChance", e.Exception);
+        };
     }
 
     private static void LogCrash(string source, Exception? ex)

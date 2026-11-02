@@ -177,6 +177,16 @@ public sealed partial class WidgetPage : Page
         Size = TileSize.Wide
     };
 
+    /// <summary>预览用固定屏幕翻译项（翻译图标 + 开关状态；实际添加时为默认"长"尺寸）</summary>
+    private static readonly LaunchItem ScreenTranslatePreviewItem = new()
+    {
+        Name = "屏幕翻译",
+        Target = "widget:screentranslate",
+        Kind = LaunchKind.Widget,
+        WidgetKind = WidgetKind.ScreenTranslate,
+        Size = TileSize.Wide
+    };
+
     /// <summary>预览磁贴框架（订阅天气变化时刷新文字）</summary>
     private TileStyle.WeatherTileRefs? _weatherPreviewRefs;
 
@@ -186,7 +196,7 @@ public sealed partial class WidgetPage : Page
     public WidgetPage()
     {
         InitializeComponent();
-        _formControls = [MusicWidgetCard, PhotoWidgetCard, WeatherWidgetCard, MappingWidgetCard, TrainerWidgetCard, BackupWidgetCard, GamepadMapWidgetCard, OptiScalerWidgetCard, RecycleBinWidgetCard, ForegroundWidgetCard, SystemWidgetCard, MonitorWidgetCard, FileTransferWidgetCard, LosslessScalWidgetCard, KeyboardWidgetCard, ClashWidgetCard, WallpaperWidgetCard];
+        _formControls = [MusicWidgetCard, PhotoWidgetCard, WeatherWidgetCard, MappingWidgetCard, TrainerWidgetCard, BackupWidgetCard, GamepadMapWidgetCard, OptiScalerWidgetCard, RecycleBinWidgetCard, ForegroundWidgetCard, SystemWidgetCard, MonitorWidgetCard, FileTransferWidgetCard, LosslessScalWidgetCard, KeyboardWidgetCard, ClashWidgetCard, WallpaperWidgetCard, ScreenTranslateWidgetCard];
 
         // 说明条：有文案才显示（"已在主页"之类的提示也走这里），没文案时不留空条
         SelDescText.RegisterPropertyChangedCallback(TextBlock.TextProperty, (_, _) =>
@@ -420,6 +430,12 @@ public sealed partial class WidgetPage : Page
         // 壁纸预览：与主页同一构建（固定大磁贴，占位提示）；实际添加后由主页轮播本地壁纸
         var (wallpaperTile, _) = TileStyle.BuildWallpaperTile(w, h, null, "壁纸\n轮番展示");
         WallpaperPreviewHost.Content = wallpaperTile;
+        // 屏幕翻译预览：与主页同一构建（翻译图标 + 开关状态，预览显示"已关闭"）
+        var (trTile, trRefs) = TileStyle.BuildScreenTranslateTile(
+            ScreenTranslatePreviewItem, w, h, TileStyle.AccentFor(ScreenTranslatePreviewItem),
+            TileStyle.IsNoColor(ScreenTranslatePreviewItem));
+        TileStyle.FillScreenTranslateState(trRefs, ScreenTranslatePreviewItem);
+        ScreenTranslatePreviewHost.Content = trTile;
         WeatherService.StateChanged += OnWeatherChanged;
         WeatherService.EnsureFresh();
 
@@ -473,6 +489,7 @@ public sealed partial class WidgetPage : Page
         else if (ReferenceEquals(c, KeyboardWidgetCard)) AddKeyboardWidget();
         else if (ReferenceEquals(c, ClashWidgetCard)) AddClashWidget();
         else if (ReferenceEquals(c, WallpaperWidgetCard)) AddWallpaperWidget();
+        else if (ReferenceEquals(c, ScreenTranslateWidgetCard)) AddScreenTranslateWidget();
         else AddMusicWidget();
     }
 
@@ -951,6 +968,22 @@ public sealed partial class WidgetPage : Page
         });
     }
 
+    /// <summary>屏幕翻译组件：默认"长"尺寸，只允许一个；翻译引擎/语言在编辑页设置</summary>
+    private void AddScreenTranslateWidget()
+    {
+        var items = ConfigService.Load();
+        if (ExistsWidget(items, WidgetKind.ScreenTranslate)) { SelDescText.Text = "屏幕翻译已在主页"; return; }
+        CommitWidget(items, new LaunchItem
+        {
+            Name = "屏幕翻译",
+            Target = "widget:screentranslate",
+            Kind = LaunchKind.Widget,
+            WidgetKind = WidgetKind.ScreenTranslate,
+            PageIndex = App.Main?.CurrentHomePage ?? 0,   // 新磁贴归到主页当前所在页
+            Size = TileSize.Wide
+        });
+    }
+
     // ---- 鼠标 ----
     private void OnAddClick(object sender, RoutedEventArgs e)
     {
@@ -982,6 +1015,7 @@ public sealed partial class WidgetPage : Page
         else if (sender is Button { Tag: "keyboard" }) AddKeyboardWidget();
         else if (sender is Button { Tag: "clash" }) AddClashWidget();
         else if (sender is Button { Tag: "wallpaper" }) AddWallpaperWidget();
+        else if (sender is Button { Tag: "screentranslate" }) AddScreenTranslateWidget();
         else AddMusicWidget();
     }
 }

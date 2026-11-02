@@ -123,6 +123,9 @@ public sealed partial class MainPage : Page
     /// <summary>当前显示的小猫咪磁贴引用（重排时重建；连接状态/服务器变化时只改文字与圆点）</summary>
     private readonly Dictionary<TileStyle.ProxyTileRefs, LaunchItem> _proxyRefs = [];
 
+    /// <summary>当前显示的屏幕翻译磁贴引用（开关状态变化时只改文字与圆点）</summary>
+    private readonly Dictionary<TileStyle.TranslateTileRefs, LaunchItem> _translateRefs = [];
+
     /// <summary>当前显示的壁纸小组件磁贴引用（重排时重建；value=显示序列索引）</summary>
     private readonly Dictionary<TileStyle.WallpaperTileRefs, int> _wallpaperRefs = [];
 
@@ -144,11 +147,12 @@ public sealed partial class MainPage : Page
         _notificationSeen = ParseSeenTime(SettingsService.Current.NotificationSeenTime)
                             ?? DateTime.Now.AddDays(-1);
 
-        Loaded += (_, _) =>
+        Loaded += async (_, _) =>
         {
             ApplyDrawerWidth(); // 全屏/居中模式下抽屉按窗口宽度比例收窄并居中（须在首次重排之前生效）
             LayoutTiles();
             UpdateSelection();
+            await UpgradeIconCacheAsync();
         };
 
         // 顶栏时钟：每秒刷新（页面离开时停止，避免后台空转）
@@ -441,10 +445,9 @@ public sealed partial class MainPage : Page
             // 焦点在抽屉区域：抽屉层 R3 打开抽屉组件编辑页（命名/增删抽屉）；内层 R3 编辑当前聚焦的内层磁贴
             if (_inDrawer) return FocusedDrawerItem() ?? _drawerOwner;
             if (_selected < 0 || _selected >= _display.Count) return null;
-            var (item, group) = _display[_selected];
-            // 组成员不支持编辑页编辑（展开的组按 R3 编辑组本体：名称/大小/颜色/图标/图片）；
-            // 音乐/图片/天气等小组件支持 R3 编辑（表单按 _isWidget 裁剪）
-            if (group is not null) return null;
+            var (item, _) = _display[_selected];
+            // 展开组内的成员同样可进编辑页（只改名称/大小/颜色或组件配置，不影响组本身）；
+            // 展开的组磁贴本身仍按 R3 编辑组本体
             return item;
         }
     }
@@ -1147,6 +1150,17 @@ public sealed partial class MainPage : Page
         _sysTimer.Stop();
     }
 
+    /// <summary>旧版图标缓存经 Shell 放大发糊：首次启动按新算法重渲染一次，完成后刷新磁贴</summary>
+    private async Task UpgradeIconCacheAsync()
+    {
+        if (IconExtractService.CacheUpgraded) return;
+        if (!await IconExtractService.UpgradeCachedIconsAsync(_items)) return;
+        GameLocker.Models.LaunchItem.ClearImageCache();
+        BuildDisplay();
+        LayoutTiles();
+        UpdateSelection();
+    }
+
     public void Reload()
     {
         // 去别的页面再返回（OnNavigatedTo/添加流程）时保留抽屉焦点：记下当前层级与内层序号，
@@ -1725,6 +1739,7 @@ public sealed partial class MainPage : Page
         _monRefs.Clear();
         _lossRefs.Clear();
         _proxyRefs.Clear();
+        _translateRefs.Clear();
         _wallpaperRefs.Clear();
         // 磁贴重建：旧的徽章引用失效
         _settingsTile = null;
@@ -1840,6 +1855,7 @@ public sealed partial class MainPage : Page
     {
         var folders = new List<string>();
         var wallpapers = new List<LaunchItem>();
+        var hasTranslate = false;
         Collect(_items);
 
         void Collect(IEnumerable<LaunchItem> list)
@@ -1866,11 +1882,17 @@ public sealed partial class MainPage : Page
                 {
                     wallpapers.Add(item);
                 }
+                else if (item.WidgetKind == WidgetKind.ScreenTranslate)
+                {
+                    hasTranslate = true;
+                }
             }
         }
 
         SlideshowService.Retain(folders);
         WallpaperService.Retain(wallpapers);
+        // 屏幕翻译挂件被删掉后停止实时翻译与悬浮字幕，避免后台继续截屏/OCR
+        if (!hasTranslate && ScreenTranslateService.IsRunning) ScreenTranslateService.Stop();
     }
 
     /// <summary>按当前状态刷新设置磁贴徽章：拖拽悬停=垃圾桶；选中≥2=加号（点击组合）；否则恢复原图标</summary>
@@ -2109,6 +2131,19 @@ public sealed partial class MainPage : Page
             TileStyle.FillProxyTile(proxyRefs, item);
             _ = ProxyService.RefreshAsync(item).ContinueWith(_ => QueuePageRefresh(RefreshProxyTiles));
             return proxyTile;
+        }
+
+        // 屏幕翻译小组件磁贴：A/点击 = 开启/关闭实时翻译
+        if (item.Kind == LaunchKind.Widget && item.WidgetKind == WidgetKind.ScreenTranslate)
+        {
+            var (trTile, trRefs) = TileStyle.BuildScreenTranslateTile(item, width, height, accent, noColor);
+            trTile.Tag = index;
+            _translateRefs[trRefs] = item;
+            trTile.Tapped += (_, _) => OnTileTapped(index, () => ActivateAt(index));
+            trTile.DoubleTapped += (_, _) => HandleDoubleTap(index);
+            AttachEditGestures(trTile, item, group, index, false);
+            TileStyle.FillScreenTranslateState(trRefs, item);
+            return trTile;
         }
 
         // 标准磁贴（背景图片铺满 / 强调色底+图标+名称）：与小组件页预览共用同一构建
@@ -3201,12 +3236,11 @@ public sealed partial class MainPage : Page
         OpenEditorAt(index);
     }
 
-    /// <summary>双击磁贴：进入编辑快捷项页（等同 R3）；组成员不支持直接编辑（与 R3 一致）</summary>
+    /// <summary>双击磁贴：进入编辑快捷项页（等同 R3）；展开组内的成员同样可编辑</summary>
     private void OpenEditorAt(int index)
     {
         if (index < 0 || index >= _display.Count) return;
-        var (item, group) = _display[index];
-        if (group is not null) return;
+        var (item, _) = _display[index];
         if (TileStyle.IsFixedTile(item)) return; // 设置/电源常驻磁贴不可编辑
         App.Main?.NavigateEditItem(item);
     }
@@ -3700,6 +3734,14 @@ public sealed partial class MainPage : Page
         {
             // 壁纸小组件：A/点击 = 弹窗询问设为桌面还是锁屏壁纸
             OpenWallpaperMenu(item);
+        }
+        else if (item.WidgetKind == WidgetKind.ScreenTranslate)
+        {
+            // 屏幕翻译：A/点击 = 隐藏启动器并进入选窗翻译，再按一次停止
+            var on = ScreenTranslateService.Toggle(item);
+            RefreshTranslateTiles();
+            if (on) ShowToast("点击要翻译的窗口");
+            else ShowToast("翻译已停止");
         }
         else
         {
@@ -4853,6 +4895,12 @@ public sealed partial class MainPage : Page
     private void RefreshProxyTiles()
     {
         foreach (var (refs, item) in _proxyRefs) TileStyle.FillProxyTile(refs, item);
+    }
+
+    /// <summary>刷新屏幕翻译磁贴的开关状态</summary>
+    private void RefreshTranslateTiles()
+    {
+        foreach (var (refs, item) in _translateRefs) TileStyle.FillScreenTranslateState(refs, item);
     }
 
     /// <summary>小猫咪 A 键：开关连接，并按结果显示提示</summary>

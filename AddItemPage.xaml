@@ -697,7 +697,7 @@
 
                     <StackPanel Spacing="4">
                         <TextBlock Text="显示项目" FontSize="15" Opacity="0.9"/>
-                        <TextBlock Text="至少保留一项" FontSize="12" Opacity="0.55"/>
+                        <TextBlock Text="至少保留一项；检测到插帧时，帧率显示输出 / 原始 FPS，数据不完整时隐藏整组" FontSize="12" Opacity="0.55" TextWrapping="Wrap"/>
                         <Grid Margin="0,2,0,0" ColumnSpacing="8" RowSpacing="8">
                             <Grid.ColumnDefinitions>
                                 <ColumnDefinition Width="*"/>
@@ -721,7 +721,7 @@
                             </ToggleButton>
                             <ToggleButton x:Name="MonOptFrameTime" Grid.Row="0" Grid.Column="1" Style="{StaticResource SysOptionChipStyle}">
                                 <Grid>
-                                    <TextBlock Text="帧延迟" FontSize="14" Margin="0,0,22,0"/>
+                                    <TextBlock Text="帧时间" FontSize="14" Margin="0,0,22,0"/>
                                     <FontIcon x:Name="MonOptFrameTimeMark" Glyph="&#xE711;" FontSize="14"
                                               HorizontalAlignment="Right" VerticalAlignment="Center"/>
                                 </Grid>
@@ -827,6 +827,9 @@
                                               HorizontalAlignment="Right" VerticalAlignment="Center"/>
                                 </Grid>
                             </ToggleButton>
+
+
+
                         </Grid>
                     </StackPanel>
                 </StackPanel>

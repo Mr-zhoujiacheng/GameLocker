@@ -6,7 +6,7 @@ namespace GameLocker.Services;
 /// <summary>
 /// 性能监控悬浮条：独立 Win32 窗口（置顶 / 点击穿透 / 不抢焦点 / 圆角 / 背景全透明），
 /// 按用户在监控磁贴编辑页选的位置（六选一）、大小、配色、常开与"显示项目"摆放，
-/// 一排按勾选结果显示 FPS、帧延迟、帧波动线、CPU、GPU（含温度）、电池功耗、电量、内存。
+/// 一排按勾选结果显示 FPS、帧时间、帧波动线、CPU、GPU（含温度）、电池功耗、电量、内存。
 /// 用 GDI 双缓冲绘制，数据由 MonitorService 每秒推送。
 /// </summary>
 internal sealed class MonitorOverlayWindow : IDisposable
@@ -122,8 +122,9 @@ internal sealed class MonitorOverlayWindow : IDisposable
             if (_hwnd == IntPtr.Zero) return false;
 
             // 逐像素透明（背景全透明，文字/折线始终不透明）由 UpdateLayeredWindow 完成
-            ApplyRoundedRegion();
             CreateFonts();
+            lock (_renderGate) { AdjustDynamicWidths(); FitToWorkArea(); }
+            ApplyRoundedRegion();
             PlaceWindow();
             ShowWindow(_hwnd, SW_SHOWNOACTIVATE);
             return true;
@@ -169,12 +170,12 @@ internal sealed class MonitorOverlayWindow : IDisposable
     /// <summary>推送新数据并重绘（可从任意线程调用）</summary>
     public void Update(MonitorSnapshot snapshot)
     {
-        _snapshot = snapshot;
-        if (_hwnd == IntPtr.Zero || !_visible) return;
         try
         {
             lock (_renderGate)
             {
+                _snapshot = snapshot;
+                if (_hwnd == IntPtr.Zero || !_visible) return;
                 if (AdjustDynamicWidths())
                 {
                     FitToWorkArea();
@@ -205,7 +206,13 @@ internal sealed class MonitorOverlayWindow : IDisposable
             ShowWindow(_hwnd, shouldShow ? SW_SHOWNOACTIVATE : SW_HIDE);
             if (shouldShow)
             {
-                PlaceWindow(); // 重新定位（主窗口可能被拖过）
+                lock (_renderGate)
+                {
+                    AdjustDynamicWidths();
+                    FitToWorkArea();
+                    ApplyRoundedRegion();
+                    PlaceWindow(); // 重新定位（主窗口可能被拖过）
+                }
                 ReassertTopmost();
             }
         }
@@ -257,7 +264,7 @@ internal sealed class MonitorOverlayWindow : IDisposable
     /// <summary>FPS 块按实际帧率文字宽度收紧；未勾选时宽度为 0（整块不占位）</summary>
     private int MeasureFpsWidth()
     {
-        if (!Has(MonitorMetric.Fps | MonitorMetric.FrameTime)) return 0;
+        if (!ShowFpsBlock()) return 0;
         if (_fontFps == IntPtr.Zero || _fontLabel == IntPtr.Zero) return Scaled(ChipFps);
         var snap = _snapshot ?? new MonitorSnapshot();
         var hdc = GetDC(IntPtr.Zero);
@@ -266,16 +273,17 @@ internal sealed class MonitorOverlayWindow : IDisposable
         {
             if (!Has(MonitorMetric.Fps))
             {
-                // 只勾了"帧延迟"：按普通指标块（标题 + 数值）测宽
-                if (MeasureText(hdc, _fontLabel, "帧延迟", out var labelW) != 0) return Scaled(ChipFps);
+                // 只勾了"帧时间"：按普通指标块（标题 + 数值）测宽
+                if (MeasureText(hdc, _fontLabel, "帧时间", out var labelW) != 0) return Scaled(ChipFps);
                 var onlyDelay = FormatFrameDelay(snap);
                 if (MeasureText(hdc, _fontValue, onlyDelay, out var valueW) != 0) return Scaled(ChipFps);
                 return Math.Clamp(Scaled(15) + Math.Max(labelW, valueW) + Scaled(10), Scaled(52), Scaled(ChipFps));
             }
 
             if (MeasureText(hdc, _fontFps, FormatFps(snap), out var fpsW) != 0) return Scaled(ChipFps);
+            if (MeasureText(hdc, _fontValue, FormatOriginalFps(snap), out var originalW) != 0) return Scaled(ChipFps);
             if (MeasureText(hdc, _fontLabel, "FPS", out var unitW) != 0) return Scaled(ChipFps);
-            var content = fpsW + Scaled(3) + unitW;
+            var content = fpsW + originalW + Scaled(3) + unitW;
             if (Has(MonitorMetric.FrameTime))
             {
                 if (MeasureText(hdc, _fontLabel, FormatFrameDelay(snap), out var delayW) != 0) return Scaled(ChipFps);
@@ -367,7 +375,7 @@ internal sealed class MonitorOverlayWindow : IDisposable
     {
         var parts = new List<string>();
         if (Has(MonitorMetric.Memory)) parts.Add(double.IsNaN(s.MemPercent) ? "—" : $"{s.MemPercent:0}%");
-        if (Has(MonitorMetric.GpuVram)) parts.Add(double.IsNaN(s.GpuVram) ? "—" : $"{s.GpuVram:0.#}G");
+        if (Has(MonitorMetric.GpuVram)) parts.Add(double.IsNaN(s.GpuVram) ? "—" : $"{s.GpuVram:0.##}GiB");
         return string.Join(" · ", parts);
     }
 
@@ -420,7 +428,7 @@ internal sealed class MonitorOverlayWindow : IDisposable
         _scale = Math.Max(0.45, _scale * factor);
         CreateFonts();
         _batteryWidth = Has(MonitorMetric.Battery) ? Scaled(ChipBattery) : 0;
-        _fpsWidth = Has(MonitorMetric.Fps | MonitorMetric.FrameTime) ? Scaled(ChipFps) : 0;
+        _fpsWidth = ShowFpsBlock() ? Scaled(ChipFps) : 0;
         _cpuWidth = Has(MonitorMetric.CpuAny) ? Scaled(ChipCpu) : 0;
         _gpuWidth = Has(MonitorMetric.GpuAny) ? Scaled(ChipGpu) : 0;
         _socWidth = Has(MonitorMetric.BatteryPercent) ? Scaled(ChipSoc) : 0;
@@ -442,25 +450,31 @@ internal sealed class MonitorOverlayWindow : IDisposable
     /// <summary>按用户选择的位置摆放在屏幕工作区内：左/中/右 × 上/下</summary>
     private void PlaceWindow()
     {
-        if (!SystemParametersInfoW(SPI_GETWORKAREA, 0, out _work, 0))
-            _work = new RECT { Left = 0, Top = 0, Right = GetSystemMetrics(0), Bottom = GetSystemMetrics(1) };
-        var workW = _work.Right - _work.Left;
-        var margin = Math.Max(4, Scaled(10));
-        var vMargin = Math.Max(2, Scaled(2)); // 上下只留一点点缝
-
-        var x = _position switch
+        lock (_renderGate)
         {
-            MonitorPosition.TopLeft or MonitorPosition.BottomLeft => _work.Left + margin,
-            MonitorPosition.TopRight or MonitorPosition.BottomRight => _work.Right - _width - margin,
-            _ => _work.Left + (workW - _width) / 2
-        };
-        var y = _position is MonitorPosition.BottomLeft or MonitorPosition.BottomCenter or MonitorPosition.BottomRight
-            ? _work.Bottom - Scaled(BarHeight) - vMargin
-            : _work.Top + vMargin;
-        _x = x;
-        _y = y;
-        SetWindowPos(_hwnd, new IntPtr(-1), x, y, _width, Scaled(BarHeight), 0x0010 | 0x0040); // NOACTIVATE|SHOWWINDOW
-        RenderLayered();
+            if (!SystemParametersInfoW(SPI_GETWORKAREA, 0, out _work, 0))
+                _work = new RECT { Left = 0, Top = 0, Right = GetSystemMetrics(0), Bottom = GetSystemMetrics(1) };
+            AdjustDynamicWidths();
+            FitToWorkArea();
+            ApplyRoundedRegion();
+            var workW = _work.Right - _work.Left;
+            var margin = Math.Max(4, Scaled(10));
+            var vMargin = Math.Max(2, Scaled(2)); // 上下只留一点点缝
+
+            var x = _position switch
+            {
+                MonitorPosition.TopLeft or MonitorPosition.BottomLeft => _work.Left + margin,
+                MonitorPosition.TopRight or MonitorPosition.BottomRight => _work.Right - _width - margin,
+                _ => _work.Left + (workW - _width) / 2
+            };
+            var y = _position is MonitorPosition.BottomLeft or MonitorPosition.BottomCenter or MonitorPosition.BottomRight
+                ? _work.Bottom - Scaled(BarHeight) - vMargin
+                : _work.Top + vMargin;
+            _x = x;
+            _y = y;
+            SetWindowPos(_hwnd, new IntPtr(-1), x, y, _width, Scaled(BarHeight), 0x0010 | 0x0040); // NOACTIVATE|SHOWWINDOW
+            RenderLayeredCore();
+        }
     }
 
     /// <summary>
@@ -474,7 +488,7 @@ internal sealed class MonitorOverlayWindow : IDisposable
             _work = new RECT { Left = 0, Top = 0, Right = GetSystemMetrics(0), Bottom = GetSystemMetrics(1) };
         _scale = Math.Clamp(_userScale, 0.7, 2.0);
         _batteryWidth = Has(MonitorMetric.Battery) ? Scaled(ChipBattery) : 0;
-        _fpsWidth = Has(MonitorMetric.Fps | MonitorMetric.FrameTime) ? Scaled(ChipFps) : 0;
+        _fpsWidth = ShowFpsBlock() ? Scaled(ChipFps) : 0;
         _cpuWidth = Has(MonitorMetric.CpuAny) ? Scaled(ChipCpu) : 0;
         _gpuWidth = Has(MonitorMetric.GpuAny) ? Scaled(ChipGpu) : 0;
         _socWidth = Has(MonitorMetric.BatteryPercent) ? Scaled(ChipSoc) : 0;
@@ -569,11 +583,15 @@ internal sealed class MonitorOverlayWindow : IDisposable
             var bg = new int[count];
             var buf = new int[count];
 
-            DrawBackground(mem, w, h);
-            Marshal.Copy(bits, bg, 0, count);
+            Marshal.Copy(buf, 0, bits, count);
+            if (TotalWidth() > Scaled(2 * PadH))
+            {
+                DrawBackground(mem, w, h);
+                Marshal.Copy(bits, bg, 0, count);
 
-            DrawForeground(mem, w, h);
-            Marshal.Copy(bits, buf, 0, count);
+                DrawForeground(mem, w, h);
+                Marshal.Copy(bits, buf, 0, count);
+            }
 
             SelectClipRgn(mem, oldClip);
             if (clip != IntPtr.Zero) DeleteObject(clip);
@@ -655,7 +673,7 @@ internal sealed class MonitorOverlayWindow : IDisposable
         var p = Palette;
         var x = Scaled(PadH);
 
-        if (Has(MonitorMetric.Fps | MonitorMetric.FrameTime))
+        if (ShowFpsBlock() && _fpsWidth > 0)
             x = DrawFpsChip(hdc, x, _fpsWidth, p.Fps);
         if (Has(MonitorMetric.FrameGraph))
             x = DrawGraph(hdc, x, Scaled(ChipGraph), snap.FrameHistory, p.Graph);
@@ -709,6 +727,7 @@ internal sealed class MonitorOverlayWindow : IDisposable
     /// <summary>一块指标：左侧彩色竖条 + 彩色小标题 + 彩色数值（同一指标色，标题略暗保留层次）</summary>
     private int DrawChip(IntPtr hdc, int x, int width, string label, string value, uint accent)
     {
+        if (width <= 0) return x;
         DrawAccentBar(hdc, x, accent);
         var left = x + Scaled(15);
         SelectObject(hdc, _fontLabel);
@@ -721,12 +740,13 @@ internal sealed class MonitorOverlayWindow : IDisposable
         return x + width;
     }
 
-    /// <summary>FPS 块：放大的帧率数字 + 脚下小号帧延迟（只勾帧延迟时退化为普通指标块）</summary>
+    /// <summary>FPS 块：放大的帧率数字 + 脚下小号帧时间（只勾帧时间时退化为普通指标块）</summary>
     private int DrawFpsChip(IntPtr hdc, int x, int width, uint accent)
     {
+        if (width <= 0 || !ShowFpsBlock()) return x;
         var snap = _snapshot ?? new MonitorSnapshot();
         if (!Has(MonitorMetric.Fps))
-            return DrawChip(hdc, x, width, "帧延迟", FormatFrameDelay(snap), accent);
+            return DrawChip(hdc, x, width, "帧时间", FormatFrameDelay(snap), accent);
 
         DrawAccentBar(hdc, x, accent);
         var left = x + Scaled(15);
@@ -736,13 +756,23 @@ internal sealed class MonitorOverlayWindow : IDisposable
         var fps = FormatFps(snap);
         TextOutW(hdc, left, Scaled(1), fps, fps.Length);
 
-        // 数字后面带个小号单位 FPS
+        // 原始帧率使用小号字体，与主帧率底部对齐。
         var extent = new SIZE();
         if (GetTextExtentPoint32W(hdc, fps, fps.Length, out extent))
         {
+            var suffixX = left + extent.CX;
+            var original = FormatOriginalFps(snap);
+            if (original.Length > 0)
+            {
+                SelectObject(hdc, _fontValue);
+                SetTextColor(hdc, DimColor(accent, 0.86));
+                TextOutW(hdc, suffixX, Scaled(8), original, original.Length);
+                if (GetTextExtentPoint32W(hdc, original, original.Length, out var originalExtent))
+                    suffixX += originalExtent.CX;
+            }
             SelectObject(hdc, _fontLabel);
             SetTextColor(hdc, DimColor(accent, 0.78));
-            TextOutW(hdc, left + extent.CX + Scaled(3), Scaled(7), "FPS", 3);
+            TextOutW(hdc, suffixX + Scaled(3), Scaled(7), "FPS", 3);
         }
 
         if (Has(MonitorMetric.FrameTime))
@@ -834,10 +864,19 @@ internal sealed class MonitorOverlayWindow : IDisposable
 
     // ---- 数值格式 ----
 
-    private static string FormatFps(MonitorSnapshot s) =>
-        s.Fps > 0 ? s.Fps.ToString("0") : "—";
+    private bool ShowFpsBlock() => Has(MonitorMetric.Fps) || Has(MonitorMetric.FrameTime);
 
-    /// <summary>帧延迟：放在 FPS 数字脚下的小字；FPS 取不到时说明权限原因</summary>
+    private static string FormatFps(MonitorSnapshot s)
+    {
+        var fps = s.FrameGenerationDetected ? s.OutputFps : s.Fps;
+        return double.IsFinite(fps) && fps > 0 ? fps.ToString("0") : "—";
+    }
+
+    private static string FormatOriginalFps(MonitorSnapshot s) =>
+        s.FrameGenerationDetected && double.IsFinite(s.OriginalFps) && s.OriginalFps > 0
+            ? $" / {s.OriginalFps:0.#}" : "";
+
+    /// <summary>帧时间：放在 FPS 数字脚下的小字；FPS 取不到时说明权限原因</summary>
     private static string FormatFrameDelay(MonitorSnapshot s)
     {
         if (s.FrameMs > 0) return $"{s.FrameMs:0.0}ms";
@@ -858,20 +897,20 @@ internal sealed class MonitorOverlayWindow : IDisposable
     private string CpuValue(MonitorSnapshot s)
     {
         var parts = new List<string>();
-        if (Has(MonitorMetric.CpuUsage)) parts.Add($"{s.CpuUsage:0}%");
+        if (Has(MonitorMetric.CpuUsage)) parts.Add(double.IsNaN(s.CpuUsage) ? "—" : $"{s.CpuUsage:0}%");
         if (Has(MonitorMetric.CpuFreq)) parts.Add(s.CpuMhz > 0 ? $"{s.CpuMhz / 1000.0:0.00}GHz" : "—");
         if (Has(MonitorMetric.CpuTemp)) parts.Add(double.IsNaN(s.CpuTemp) ? "—" : $"{s.CpuTemp:0}°C");
         if (Has(MonitorMetric.CpuPower)) parts.Add(double.IsNaN(s.CpuPower) ? "—" : $"{s.CpuPower:0.0}W");
         return string.Join(" · ", parts);
     }
 
-    /// <summary>GPU 块标题：只保留勾选的项（Intel 核显没有瓦特接口时不显示"功耗"）</summary>
+    /// <summary>GPU 块标题与数值保持相同的指标顺序，不可用项仍保留占位</summary>
     private string GpuLabel(MonitorSnapshot s)
     {
         var parts = new List<string>();
         if (Has(MonitorMetric.GpuUsage)) parts.Add("使用");
         if (Has(MonitorMetric.GpuFreq)) parts.Add("频率");
-        if (Has(MonitorMetric.GpuPower) && !double.IsNaN(s.GpuPower)) parts.Add("功耗");
+        if (Has(MonitorMetric.GpuPower)) parts.Add("功耗");
         if (Has(MonitorMetric.GpuTemp)) parts.Add("温度");
         return parts.Count == 0 ? "GPU" : "GPU " + string.Join(" · ", parts);
     }

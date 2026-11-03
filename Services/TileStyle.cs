@@ -1732,11 +1732,11 @@ public static class TileStyle
         if ((metrics & MonitorMetric.Fps) != 0)
             parts.Add(s.Fps > 0 ? $"{s.Fps:0} FPS" : "FPS —");
         if ((metrics & MonitorMetric.CpuUsage) != 0)
-            parts.Add($"CPU {s.CpuUsage:0}%");
+            parts.Add(double.IsNaN(s.CpuUsage) ? "CPU —" : $"CPU {s.CpuUsage:0}%");
         if ((metrics & MonitorMetric.GpuUsage) != 0)
             parts.Add(double.IsNaN(s.GpuUsage) ? "GPU —" : $"GPU {s.GpuUsage:0}%");
         if ((metrics & MonitorMetric.Memory) != 0)
-            parts.Add($"内存 {s.MemPercent:0}%");
+            parts.Add(double.IsNaN(s.MemPercent) ? "内存 —" : $"内存 {s.MemPercent:0}%");
         refs.Summary.Text = parts.Count > 0 ? string.Join(" · ", parts) : "监控中";
     }
 

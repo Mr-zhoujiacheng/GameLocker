@@ -20,6 +20,12 @@ internal static class GameWindowDetector
     private const int DWMWA_CLOAKED = 14;
     private const uint MONITOR_DEFAULTTONEAREST = 2;
 
+    /// <summary>用户自定义排除名单：%APPDATA%\GameLocker\game-exclude.txt，一行一个进程名（可带 .exe，# 开头为注释）</summary>
+    private static readonly string ExcludeFile = Path.Combine(
+        Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData), "GameLocker", "game-exclude.txt");
+    private static HashSet<string> _userExcluded = new(StringComparer.OrdinalIgnoreCase);
+    private static DateTime _userExcludedAt = DateTime.MinValue;
+
     // SHQueryUserNotificationState 的返回值
     private const int QUNS_BUSY = 2;
     private const int QUNS_RUNNING_D3D_FULL_SCREEN = 3;
@@ -32,7 +38,7 @@ internal static class GameWindowDetector
         @"\ubisoft game launcher\games\", @"\ubisoft game launcher\",
         @"\origin games\", @"\ea games\", @"\electronic arts\",
         @"\wegameapps\", @"\xboxgames\",
-        @"\games\", @"\game files\", @"\游戏\", @"\游戏库\"
+        @"\games\", @"\game files\", @"\游戏\", @"\游戏库\", @"\单机游戏\"
     };
 
     /// <summary>主流游戏引擎/框架的窗口类名（精确匹配，不含编辑器）</summary>
@@ -42,18 +48,29 @@ internal static class GameWindowDetector
         "Valve001", "CryENGINE", "GameMaker", "GameMakerWindow", "QuakeWindow"
     };
 
-    /// <summary>兜底判定时视为桌面软件（避免浏览器/播放器 F11 全屏被误判为游戏）</summary>
+    /// <summary>兜底判定时视为桌面软件（避免浏览器/播放器/聊天/工具的全屏界面被误判为游戏）</summary>
     private static readonly string[] DesktopAppTokens =
     {
         "chrome", "msedge", "firefox", "brave", "opera", "vivaldi", "iexplore", "arc", "browser",
-        "potplayer", "mpc-hc", "mpc-be", "kmplayer", "gomplayer", "vlc", "mpv",
-        "bilibili", "iqiyi", "youku", "qqplayer", "tplayer", "wmplayer",
+        "sogou", "360se", "360chrome", "ucbrowser", "maxthon", "chromium",
+        "potplayer", "mpc", "kmplayer", "gomplayer", "vlc", "mpv",
+        "bilibili", "iqiyi", "youku", "qqplayer", "qqmusic", "qqlive", "tplayer", "wmplayer",
         "video.ui", "zunevideo", "zunemusic", "mediaplayer", "media.player",
         "netflix", "disney", "primevideo", "amazonvideo", "comet",
         "photos", "microsoft.photos", "ms-photos",
-        "spotify", "neteasecloudmusic", "qqmusic", "sodamusic",
-        "steam", "epicgameslauncher", "goggalaxy", "uplay", "battlenet", "origin", "itch",
-        "thunder", "idman", "baidunetdisk", "everything", "7zfm", "winrar", "photoshop"
+        "spotify", "neteasecloudmusic", "cloudmusic", "kugou", "kuwo",
+        "snippingtool", "screenclippinghost", "obs", "obs64", "fraps", "rtss",
+        "clash", "v2ray", "xray", "mihomo", "verge",
+        "qq", "tencent", "wechat", "weixin", "wxwork", "wework", "wemeet", "feishu", "lark",
+        "dingtalk", "telegram", "discord", "slack", "teams", "zoom", "skype",
+        "steam", "epicgameslauncher", "goggalaxy", "uplay", "upc", "battlenet", "origin",
+        "eaapp", "eadesktop", "wegame", "xbox", "gamingservices", "riotclient", "riotclientservices",
+        "itch", "bethesda", "rockstar", "galaxyclient",
+        "thunder", "xunlei", "idman", "baidunetdisk", "aliyun", "onedrive", "dropbox",
+        "wps", "winword", "excel", "powerpnt", "outlook", "onenote", "notion",
+        "photoshop", "illustrator", "acrobat", "reader",
+        "everything", "7zfm", "winrar", "todesk", "sunlogin", "anydesk", "rustdesk",
+        "parsec", "moonlight", "steamlink", "gamebar", "xboxgamebar"
     };
 
     /// <summary>前台窗口是否是正在全屏运行的游戏。</summary>
@@ -72,6 +89,9 @@ internal static class GameWindowDetector
         if (!CoversOwnMonitor(hwnd)) return false;
 
         var className = WindowClass(hwnd);
+        // 桌面软件即使有全屏/游戏引擎类名（如 Steam 大屏幕模式的 SDL 窗口）也不算游戏
+        if (IsDesktopApp(exe, className)) return false;
+
         var style = GetWindowLongPtr(hwnd, GWL_STYLE).ToInt64();
         var fullscreenState = QueryNotificationState();
         var path = KeyboardHookService.ProcessImagePath(pid);
@@ -101,7 +121,7 @@ internal static class GameWindowDetector
     }
 
     /// <summary>窗口矩形是否覆盖其所属显示器的整个屏幕（允许 2px 取整误差与略微超出）。</summary>
-    private static bool CoversOwnMonitor(IntPtr hwnd)
+    internal static bool CoversOwnMonitor(IntPtr hwnd)
     {
         if (!GetWindowRect(hwnd, out var rect)) return false;
         if (rect.Right - rect.Left <= 0 || rect.Bottom - rect.Top <= 0) return false;
@@ -114,7 +134,23 @@ internal static class GameWindowDetector
             && rect.Right >= screen.Right - 2 && rect.Bottom >= screen.Bottom - 2;
     }
 
-    private static bool IsGameLibraryPath(string path)
+    /// <summary>窗口是否至少占所在显示器的指定宽高比例（用于放过窗口化游戏、排除 Dock/小工具条）。</summary>
+    internal static bool CoversMostOfMonitor(IntPtr hwnd, double widthRatio, double heightRatio)
+    {
+        if (!GetWindowRect(hwnd, out var rect)) return false;
+        if (rect.Right - rect.Left <= 0 || rect.Bottom - rect.Top <= 0) return false;
+        var monitor = MonitorFromWindow(hwnd, MONITOR_DEFAULTTONEAREST);
+        if (monitor == IntPtr.Zero) return false;
+        var info = new MONITORINFO { cbSize = Marshal.SizeOf<MONITORINFO>() };
+        if (!GetMonitorInfo(monitor, ref info)) return false;
+        var screen = info.rcMonitor;
+        var mw = screen.Right - screen.Left;
+        var mh = screen.Bottom - screen.Top;
+        if (mw <= 0 || mh <= 0) return false;
+        return rect.Right - rect.Left >= mw * widthRatio && rect.Bottom - rect.Top >= mh * heightRatio;
+    }
+
+    internal static bool IsGameLibraryPath(string path)
     {
         var lower = path.ToLowerInvariant();
         foreach (var marker in GameLibraryMarkers)
@@ -124,7 +160,7 @@ internal static class GameWindowDetector
         return false;
     }
 
-    private static bool IsGameWindowClass(string className)
+    internal static bool IsGameWindowClass(string className)
     {
         foreach (var known in GameWindowClasses)
         {
@@ -133,9 +169,10 @@ internal static class GameWindowDetector
         return false;
     }
 
-    private static bool IsDesktopApp(string exe, string className)
+    internal static bool IsDesktopApp(string exe, string className)
     {
         var lower = exe.ToLowerInvariant();
+        if (IsUserExcluded(lower)) return true;
         switch (lower)
         {
             case "explorer": case "applicationframehost": case "shellexperiencehost":
@@ -153,6 +190,31 @@ internal static class GameWindowDetector
         }
         return className is "Progman" or "WorkerW" or "Shell_TrayWnd" or "Shell_SecondaryTrayWnd"
             or "ApplicationFrameWindow" or "Windows.UI.Core.CoreWindow" or "XamlExplorerHostIslandWindow";
+    }
+
+    /// <summary>读取用户排除名单（按文件修改时间缓存；文件不存在/读取失败时视为空名单）</summary>
+    private static bool IsUserExcluded(string exe)
+    {
+        try
+        {
+            var info = new FileInfo(ExcludeFile);
+            if (!info.Exists) return false;
+            if (info.LastWriteTimeUtc != _userExcludedAt)
+            {
+                var set = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+                foreach (var line in File.ReadAllLines(ExcludeFile))
+                {
+                    var name = line.Trim();
+                    if (name.Length == 0 || name.StartsWith('#')) continue;
+                    if (name.EndsWith(".exe", StringComparison.OrdinalIgnoreCase)) name = name[..^4];
+                    set.Add(name);
+                }
+                _userExcluded = set;
+                _userExcludedAt = info.LastWriteTimeUtc;
+            }
+            return _userExcluded.Contains(exe);
+        }
+        catch { return false; }
     }
 
     private static int QueryNotificationState()

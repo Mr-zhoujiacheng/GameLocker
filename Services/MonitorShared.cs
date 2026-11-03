@@ -22,10 +22,16 @@ internal sealed class MonitorShared : IDisposable
     private const int OffFrameMs = 24;  // double
     private const int OffCount = 32;    // int  帧时间样本数
     private const int OffHistory = 40;  // double[180]，40..1479
+    private const int OffSamplePid = 1480; // int 本次帧统计对应的进程
     private const int OffMagic = 1484;  // int
     private const int OffCpuTemp = 1492; // double 助手读到的 CPU 封装温度（PawnIO/MSR，NaN=不可用）
     private const int OffGpuTemp = 1500; // double 助手读到的 GPU 温度（厂商 WMI，NaN=不可用）
-    private const int Magic = 0x4D4F4E31; // "MON1"
+    private const int OffOriginalFps = 1508; // double，NaN=无明确原生帧标记
+    private const int OffFrameGeneration = 1516; // int：观察到生成帧
+    private const int OffOutputTargetPid = 1520;
+    private const int OffOutputSamplePid = 1524;
+    private const int OffOutputFps = 1528;
+    private const int Magic = 0x4D4F4E34; // "MON4"
 
     private const long FreshMs = 3000;
 
@@ -48,6 +54,8 @@ internal sealed class MonitorShared : IDisposable
             var shared = new MonitorShared(mmf, view);
             view.Write(OffMagic, Magic);
             view.Write(OffSeq, 0);
+            view.Write(OffTargetPid, 0);
+            view.Write(OffOriginalFps, double.NaN);
             return shared;
         }
         catch
@@ -83,6 +91,19 @@ internal sealed class MonitorShared : IDisposable
         try { _view.Write(OffTargetPid, pid); } catch { }
     }
 
+    public void SetOutputTargetPid(int pid) => _view.Write(OffOutputTargetPid, pid);
+    public int ReadOutputTargetPid() => _view.ReadInt32(OffOutputTargetPid);
+    public double ReadOutputFps(int pid)
+    {
+        var seq = _view.ReadInt32(OffSeq);
+        if (seq == 0 || (seq & 1) != 0 || pid <= 0
+            || Environment.TickCount64 - _view.ReadInt64(OffTick) > FreshMs) return double.NaN;
+        var samplePid = _view.ReadInt32(OffOutputSamplePid);
+        var fps = _view.ReadDouble(OffOutputFps);
+        return samplePid == pid && ReadOutputTargetPid() == pid && _view.ReadInt32(OffSeq) == seq
+            ? fps : double.NaN;
+    }
+
     /// <summary>助手：读取目标进程号</summary>
     public int ReadTargetPid()
     {
@@ -90,13 +111,18 @@ internal sealed class MonitorShared : IDisposable
     }
 
     /// <summary>助手：发布一帧统计数据（含心跳时间，主进程据此判断助手是否存活）</summary>
-    public void Publish(double fps, double frameMs, double[] history, double cpuTemp, double gpuTemp)
+    public void Publish(double fps, double frameMs, double[] history, double cpuTemp, double gpuTemp, int targetPid, double originalFps, bool frameGenerationDetected, int outputPid = 0, double outputFps = double.NaN)
     {
         try
         {
             var seq = _view.ReadInt32(OffSeq);
             _view.Write(OffSeq, seq + 1); // 奇数：写入中
+            _view.Write(OffSamplePid, targetPid);
+            _view.Write(OffOutputSamplePid, outputPid);
+            _view.Write(OffOutputFps, outputFps);
             _view.Write(OffFps, fps);
+            _view.Write(OffOriginalFps, originalFps);
+            _view.Write(OffFrameGeneration, frameGenerationDetected ? 1 : 0);
             _view.Write(OffFrameMs, frameMs);
             _view.Write(OffCpuTemp, cpuTemp);
             _view.Write(OffGpuTemp, gpuTemp);
@@ -111,9 +137,11 @@ internal sealed class MonitorShared : IDisposable
     }
 
     /// <summary>主进程：读一帧统计数据；助手未运行/无数据/正在写入时返回 false</summary>
-    public bool TryRead(out double fps, out double frameMs, out double[] history, out double cpuTemp, out double gpuTemp)
+    public bool TryRead(out double fps, out double frameMs, out double[] history, out double cpuTemp, out double gpuTemp, out double originalFps, out bool frameGenerationDetected)
     {
         fps = 0;
+        originalFps = double.NaN;
+        frameGenerationDetected = false;
         frameMs = 0;
         cpuTemp = double.NaN;
         gpuTemp = double.NaN;
@@ -127,16 +155,22 @@ internal sealed class MonitorShared : IDisposable
             var values = new double[count];
             for (var i = 0; i < count; i++)
                 values[i] = _view.ReadDouble(OffHistory + i * 8L);
+            var samplePid = _view.ReadInt32(OffSamplePid);
             var f = _view.ReadDouble(OffFps);
+            var original = _view.ReadDouble(OffOriginalFps);
+            var generated = _view.ReadInt32(OffFrameGeneration) == 1;
             var ms = _view.ReadDouble(OffFrameMs);
             var temp = _view.ReadDouble(OffCpuTemp);
             var gtemp = _view.ReadDouble(OffGpuTemp);
             if (_view.ReadInt32(OffSeq) != seq1) return false; // 读取期间被写入，丢弃
-            fps = f;
-            frameMs = ms;
+            var sameTarget = samplePid == ReadTargetPid();
+            frameGenerationDetected = sameTarget && generated;
+            fps = sameTarget ? f : 0;
+            originalFps = sameTarget && double.IsFinite(original) && original > 0 ? original : double.NaN;
+            frameMs = sameTarget ? ms : 0;
             cpuTemp = temp;
             gpuTemp = gtemp;
-            history = values;
+            history = sameTarget ? values : [];
             return true;
         }
         catch

@@ -552,10 +552,13 @@ public sealed partial class MainWindow : Window
 
         // OptiScaler 点击磁贴后，弹窗显示适配性并询问是否注入
         OptiScalerService.InspectionReady += OnOptiInspection;
+        // 没检测到游戏进程时，弹出手动拖入 exe 的注入窗口
+        OptiScalerService.ManualRequested += OnOptiManualRequested;
 
         // 触屏：点弹窗底部放大的提示图标 = 执行对应手柄指令（与物理手柄共用同一处理入口）
         TrainerChoiceHintBar.HintTapped += key => HandleTrainerChoice(GamepadHintBar.ToGamepadButtons(key));
         OptiHintBar.HintTapped += key => HandleOpti(GamepadHintBar.ToGamepadButtons(key));
+        OptiManualHintBar.HintTapped += key => HandleOptiManual(GamepadHintBar.ToGamepadButtons(key));
         SaveRestoreHintBar.HintTapped += key => _saveRestoreInput?.Invoke(GamepadHintBar.ToGamepadButtons(key));
 
         Root.Navigate(typeof(MainPage));
@@ -630,7 +633,7 @@ public sealed partial class MainWindow : Window
         {
             try
             {
-                if (_trainerChoiceOpen || _optiOpen || _saveRestoreOpen)
+                if (_trainerChoiceOpen || _optiOpen || _optiManualOpen || _saveRestoreOpen)
                     throw new IOException("请先关闭当前弹窗后重试恢复");
                 SaveRestoreTitle.Text = "退出恢复重启？";
                 SaveRestoreSubtitle.Text = "恢复方式确认";
@@ -671,7 +674,7 @@ public sealed partial class MainWindow : Window
 
     private Task<SaveRestoreChoice?> ShowSaveRestoreAsync(SaveRestoreRequest request)
     {
-        if (_trainerChoiceOpen || _optiOpen || _saveRestoreOpen)
+        if (_trainerChoiceOpen || _optiOpen || _optiManualOpen || _saveRestoreOpen)
             throw new IOException("请先关闭当前弹窗，再选择存档备份");
 
         var completion = new TaskCompletionSource<SaveRestoreChoice?>(TaskCreationOptions.RunContinuationsAsynchronously);
@@ -1074,6 +1077,191 @@ public sealed partial class MainWindow : Window
         _optiInspection = null;
         _optiIn?.Stop();
         OptiOverlay.Visibility = Visibility.Collapsed;
+    }
+
+    // ---- 手动注入：没检测到游戏进程时，把游戏 exe 拖进来（自动识别目录 + 适配性检查） ----
+
+    private bool _optiManualOpen;
+    private bool _optiManualBusy;
+    private LaunchItem? _optiManualItem;
+    private OptiScalerInspection? _optiManualInsp;
+    private Storyboard? _optiManualIn;
+
+    private void OnOptiManualRequested(LaunchItem item) =>
+        DispatcherQueue.TryEnqueue(() => ShowOptiManual(item));
+
+    private void ShowOptiManual(LaunchItem item)
+    {
+        if (_optiManualOpen) return;
+        _optiManualOpen = true;
+        _optiManualBusy = false;
+        _optiManualItem = item;
+        _optiManualInsp = null;
+
+        OptiManualGame.Text = "—";
+        OptiManualDir.Text = "—";
+        OptiManualStatus.Text = "—";
+        OptiManualDll.Text = "—";
+        OptiManualInfo.Visibility = Visibility.Collapsed;
+        OptiManualDropTitle.Text = "把游戏 exe 拖到这里";
+        OptiManualDropSub.Text = "注入目录 = exe 所在目录（游戏无需正在运行）";
+        OptiManualHint.Text = "拖入后会检查适配性。A 注入（覆盖前自动备份，可用「一键还原」恢复）。";
+        OptiManualHintBar.Hints = "A:注入|B:取消";
+
+        OptiManualOverlay.Visibility = Visibility.Visible;
+        PlayOptiManualIn();
+        if (_shown) BringToForeground();
+    }
+
+    private void PlayOptiManualIn()
+    {
+        var fade = new DoubleAnimation { From = 0, To = 1, Duration = TimeSpan.FromMilliseconds(140) };
+        Storyboard.SetTarget(fade, OptiManualMask);
+        Storyboard.SetTargetProperty(fade, "Opacity");
+
+        var scaleX = new DoubleAnimation
+        {
+            From = 0.94, To = 1, Duration = TimeSpan.FromMilliseconds(190),
+            EasingFunction = new CubicEase { EasingMode = EasingMode.EaseOut }
+        };
+        var scaleY = new DoubleAnimation
+        {
+            From = 0.94, To = 1, Duration = TimeSpan.FromMilliseconds(190),
+            EasingFunction = new CubicEase { EasingMode = EasingMode.EaseOut }
+        };
+        Storyboard.SetTarget(scaleX, OptiManualScale);
+        Storyboard.SetTargetProperty(scaleX, "ScaleX");
+        Storyboard.SetTarget(scaleY, OptiManualScale);
+        Storyboard.SetTargetProperty(scaleY, "ScaleY");
+
+        var sb = new Storyboard();
+        sb.Children.Add(fade);
+        sb.Children.Add(scaleX);
+        sb.Children.Add(scaleY);
+        _optiManualIn?.Stop();
+        _optiManualIn = sb;
+        sb.Begin();
+    }
+
+    private void OnOptiManualDragOver(object sender, DragEventArgs e)
+    {
+        var hasFiles = e.DataView.Contains(Windows.ApplicationModel.DataTransfer.StandardDataFormats.StorageItems);
+        e.AcceptedOperation = hasFiles
+            ? Windows.ApplicationModel.DataTransfer.DataPackageOperation.Copy
+            : Windows.ApplicationModel.DataTransfer.DataPackageOperation.None;
+        if (e.DragUIOverride is { } ui) ui.Caption = hasFiles ? "释放以检查并注入" : "只接受 .exe 文件";
+        SetOptiManualDropHighlight(hasFiles);
+    }
+
+    private void OnOptiManualDragLeave(object sender, DragEventArgs e) => SetOptiManualDropHighlight(false);
+
+    /// <summary>拖入高亮：边框换成主题蓝、底色略加深，离开/放下即恢复</summary>
+    private void SetOptiManualDropHighlight(bool on)
+    {
+        if (!_optiManualOpen) return;
+        OptiManualDrop.BorderBrush = new SolidColorBrush(on ? Windows.UI.Color.FromArgb(0xFF, 0x4C, 0xC2, 0xFF)
+            : Windows.UI.Color.FromArgb(0x44, 0xFF, 0xFF, 0xFF));
+        OptiManualDrop.Background = new SolidColorBrush(on ? Windows.UI.Color.FromArgb(0x24, 0x4C, 0xC2, 0xFF)
+            : Windows.UI.Color.FromArgb(0x14, 0xFF, 0xFF, 0xFF));
+    }
+
+    private async void OnOptiManualDrop(object sender, DragEventArgs e)
+    {
+        SetOptiManualDropHighlight(false);
+        if (!_optiManualOpen || _optiManualBusy) return;
+        if (!e.DataView.Contains(Windows.ApplicationModel.DataTransfer.StandardDataFormats.StorageItems)) return;
+        try
+        {
+            var items = await e.DataView.GetStorageItemsAsync();
+            var file = items.OfType<Windows.Storage.StorageFile>()
+                .FirstOrDefault(f => f.Name.EndsWith(".exe", StringComparison.OrdinalIgnoreCase));
+            if (file is null)
+            {
+                OptiManualDropTitle.Text = "只支持 .exe 文件";
+                OptiManualDropSub.Text = "请拖入游戏的可执行文件（exe）";
+                return;
+            }
+            await InspectManualFileAsync(file.Path, file.Name);
+        }
+        catch (Exception ex)
+        {
+            OptiManualDropTitle.Text = "读取拖入文件失败";
+            OptiManualDropSub.Text = ex.Message;
+        }
+    }
+
+    /// <summary>拖入 exe 后：读目录、识别游戏名、检查适配性（不依赖游戏是否在运行）</summary>
+    private async Task InspectManualFileAsync(string path, string fileName)
+    {
+        if (_optiManualBusy) return;
+        _optiManualBusy = true;
+        OptiManualDropTitle.Text = fileName;
+        OptiManualDropSub.Text = "正在检查适配性…";
+        OptiManualInfo.Visibility = Visibility.Collapsed;
+        OptiManualHint.Text = "正在检查适配性…";
+        try
+        {
+            var insp = await OptiScalerService.InspectFileAsync(path);
+            if (!_optiManualOpen) return;
+            if (insp is null)
+            {
+                OptiManualDropTitle.Text = "读取失败";
+                OptiManualDropSub.Text = "无法读取该 exe，请换一个文件或确认路径可访问";
+                OptiManualHint.Text = "拖入后会检查适配性。按 A 注入（自动备份）。";
+                return;
+            }
+
+            _optiManualInsp = insp;
+            OptiManualGame.Text = string.IsNullOrWhiteSpace(insp.GameName) ? insp.ExeName : insp.GameName;
+            OptiManualDir.Text = insp.GameDir;
+            OptiManualStatus.Text = $"{insp.Status} {insp.StatusText}";
+            OptiManualDll.Text = insp.SuggestedDll;
+            OptiManualInfo.Visibility = Visibility.Visible;
+            OptiManualHint.Text = insp.AlreadyInjected
+                ? "该目录已注入过 OptiScaler。继续注入会覆盖现有文件（覆盖前自动备份），按 A 注入。"
+                : "已识别目录并检查完成。按 A 注入（覆盖前自动备份，可用「一键还原」恢复）。";
+        }
+        finally
+        {
+            _optiManualBusy = false;
+        }
+    }
+
+    /// <summary>遮罩内手柄按键：A=注入（自动备份），B/View=取消</summary>
+    private void HandleOptiManual(GamepadButtons b)
+    {
+        if (b.HasFlag(GamepadButtons.A)) { ConfirmOptiManual(); return; }
+        if (b.HasFlag(GamepadButtons.B) || b.HasFlag(GamepadButtons.View)) CloseOptiManual();
+    }
+
+    private void ConfirmOptiManual()
+    {
+        if (_optiManualBusy)
+        {
+            OptiManualHint.Text = "正在检查适配性，请稍候…";
+            return;
+        }
+        var item = _optiManualItem;
+        var insp = _optiManualInsp;
+        if (item is null || insp is null)
+        {
+            OptiManualHint.Text = "请先把游戏 exe 拖入上面的框内";
+            return;
+        }
+        CloseOptiManual();
+        OptiScalerService.InjectManual(item, insp);
+    }
+
+    private void OnOptiManualMaskTapped(object sender, TappedRoutedEventArgs e) => CloseOptiManual();
+
+    private void CloseOptiManual()
+    {
+        _optiManualOpen = false;
+        _optiManualBusy = false;
+        _optiManualItem = null;
+        _optiManualInsp = null;
+        _optiManualIn?.Stop();
+        OptiManualOverlay.Visibility = Visibility.Collapsed;
     }
 
     // ---- 弹出/隐藏动画：物理移动真实窗口（SetWindowPos 直调 + CompositionTarget.Rendering 帧对齐）。
@@ -1790,6 +1978,13 @@ public sealed partial class MainWindow : Window
         if (_optiOpen)
         {
             HandleOpti(buttons);
+            return;
+        }
+
+        // 手动注入遮罩（拖入 exe）：A=备份注入，X=直接注入，B=取消
+        if (_optiManualOpen)
+        {
+            HandleOptiManual(buttons);
             return;
         }
 

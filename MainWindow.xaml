@@ -127,6 +127,93 @@
             </Border>
         </Grid>
 
+        <!-- 手动注入：没检测到游戏进程时，把游戏 exe 拖进来（自动识别目录 + 适配性检查，A=备份注入 / X=直接注入） -->
+        <Grid x:Name="OptiManualOverlay" RequestedTheme="Dark" Visibility="Collapsed" AllowDrop="True">
+            <Border x:Name="OptiManualMask" Background="#C00A0C10" Tapped="OnOptiManualMaskTapped"/>
+            <Border x:Name="OptiManualPanel" HorizontalAlignment="Center" VerticalAlignment="Center"
+                    CornerRadius="16" Padding="20,20,20,0"
+                    Background="#E6242424" BorderBrush="#33FFFFFF" BorderThickness="1.5"
+                    RenderTransformOrigin="0.5,0.5">
+                <Border.RenderTransform>
+                    <ScaleTransform x:Name="OptiManualScale" ScaleX="1" ScaleY="1"/>
+                </Border.RenderTransform>
+                <StackPanel Width="430" Spacing="12">
+                    <StackPanel Orientation="Horizontal" HorizontalAlignment="Center" Spacing="10" Margin="0,0,0,2">
+                        <Border Width="26" Height="26" CornerRadius="8" Background="#2A4CC2FF" VerticalAlignment="Center">
+                            <FontIcon Glyph="&#xE8C8;" FontSize="13" Foreground="#4CC2FF"/>
+                        </Border>
+                        <TextBlock Text="手动注入 OptiScaler" FontSize="19" FontWeight="SemiBold" VerticalAlignment="Center"/>
+                    </StackPanel>
+
+                    <TextBlock Text="没有检测到正在运行的游戏。把游戏 exe 拖到下面，会自动识别它所在目录并检查适配性。"
+                               FontSize="12.5" Opacity="0.75" TextWrapping="Wrap"/>
+
+                    <Border x:Name="OptiManualDrop" AllowDrop="True" CornerRadius="12"
+                            Background="#14FFFFFF" BorderBrush="#44FFFFFF" BorderThickness="1.5"
+                            Padding="16,20" DragOver="OnOptiManualDragOver" DragLeave="OnOptiManualDragLeave"
+                            Drop="OnOptiManualDrop">
+                        <StackPanel Spacing="8" HorizontalAlignment="Center">
+                            <FontIcon Glyph="&#xE8B7;" FontSize="26" Foreground="#4CC2FF"
+                                      HorizontalAlignment="Center"/>
+                            <TextBlock x:Name="OptiManualDropTitle" Text="把游戏 exe 拖到这里"
+                                       FontSize="15" FontWeight="SemiBold" HorizontalAlignment="Center"/>
+                            <TextBlock x:Name="OptiManualDropSub" Text="注入目录 = exe 所在目录（游戏无需正在运行）"
+                                       FontSize="12" Opacity="0.65" TextWrapping="Wrap" TextAlignment="Center"/>
+                        </StackPanel>
+                    </Border>
+
+                    <Border x:Name="OptiManualInfo" Visibility="Collapsed" CornerRadius="12"
+                            Background="#14FFFFFF" BorderBrush="#26FFFFFF" BorderThickness="1" Padding="16,14">
+                        <StackPanel Spacing="9">
+                            <Grid ColumnSpacing="10">
+                                <Grid.ColumnDefinitions>
+                                    <ColumnDefinition Width="Auto"/>
+                                    <ColumnDefinition Width="*"/>
+                                </Grid.ColumnDefinitions>
+                                <TextBlock Grid.Column="0" Text="游戏" FontSize="13" Opacity="0.6" VerticalAlignment="Top"/>
+                                <TextBlock Grid.Column="1" x:Name="OptiManualGame" Text="—"
+                                           FontSize="13" FontWeight="SemiBold" TextWrapping="Wrap"/>
+                            </Grid>
+                            <Grid ColumnSpacing="10">
+                                <Grid.ColumnDefinitions>
+                                    <ColumnDefinition Width="Auto"/>
+                                    <ColumnDefinition Width="*"/>
+                                </Grid.ColumnDefinitions>
+                                <TextBlock Grid.Column="0" Text="目录" FontSize="13" Opacity="0.6" VerticalAlignment="Top"/>
+                                <TextBlock Grid.Column="1" x:Name="OptiManualDir" Text="—"
+                                           FontSize="12" Opacity="0.85" TextWrapping="Wrap" MaxLines="2"
+                                           TextTrimming="CharacterEllipsis"/>
+                            </Grid>
+                            <Grid ColumnSpacing="10">
+                                <Grid.ColumnDefinitions>
+                                    <ColumnDefinition Width="Auto"/>
+                                    <ColumnDefinition Width="*"/>
+                                </Grid.ColumnDefinitions>
+                                <TextBlock Grid.Column="0" Text="适配性" FontSize="13" Opacity="0.6" VerticalAlignment="Top"/>
+                                <TextBlock Grid.Column="1" x:Name="OptiManualStatus" Text="—"
+                                           FontSize="13" TextWrapping="Wrap"/>
+                            </Grid>
+                            <Grid ColumnSpacing="10">
+                                <Grid.ColumnDefinitions>
+                                    <ColumnDefinition Width="Auto"/>
+                                    <ColumnDefinition Width="*"/>
+                                </Grid.ColumnDefinitions>
+                                <TextBlock Grid.Column="0" Text="建议注入" FontSize="13" Opacity="0.6" VerticalAlignment="Top"/>
+                                <TextBlock Grid.Column="1" x:Name="OptiManualDll" Text="—"
+                                           FontSize="13" FontWeight="SemiBold" TextWrapping="Wrap"/>
+                            </Grid>
+                        </StackPanel>
+                    </Border>
+
+                    <TextBlock x:Name="OptiManualHint" FontSize="12" Opacity="0.6" TextWrapping="Wrap"
+                               Text="拖入后会检查适配性。A 注入（覆盖前自动备份，可用「一键还原」恢复）。"/>
+
+                    <ctl:GamepadHintBar x:Name="OptiManualHintBar" TouchMode="True"
+                                        HorizontalAlignment="Center" Margin="0,8,0,0" Hints="A:注入|B:取消"/>
+                </StackPanel>
+            </Border>
+        </Grid>
+
         <Grid x:Name="SaveRestoreOverlay" RequestedTheme="Dark" Visibility="Collapsed">
             <Border x:Name="SaveRestoreMask" Background="#D80A0C10" Tapped="OnSaveRestoreMaskTapped"/>
             <Border x:Name="SaveRestorePanel" HorizontalAlignment="Center" VerticalAlignment="Center"

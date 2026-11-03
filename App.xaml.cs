@@ -9,6 +9,35 @@ public partial class App : Application
     public static MainWindow? Main { get; private set; }
 
     private TrayHotkeyService? _tray;
+    private Mutex? _instanceMutex;
+
+    [System.Runtime.InteropServices.DllImport("user32.dll", CharSet = System.Runtime.InteropServices.CharSet.Unicode)]
+    private static extern int MessageBoxW(IntPtr hwnd, string text, string caption, uint type);
+
+    private bool AcquireSingleInstance()
+    {
+        try
+        {
+            _instanceMutex = new Mutex(false, @"Local\GameLocker.MainInstance");
+            try
+            {
+                if (_instanceMutex.WaitOne(0)) return true;
+            }
+            catch (AbandonedMutexException)
+            {
+                // 上次异常退出时，系统已将互斥锁的所有权交给当前线程。
+                return true;
+            }
+        }
+        catch (UnauthorizedAccessException)
+        {
+            // 已提权的实例持有互斥锁时，普通权限实例也不能再次启动。
+        }
+        _instanceMutex?.Dispose();
+        _instanceMutex = null;
+        MessageBoxW(IntPtr.Zero, "软件已在运行，请使用托盘图标打开现有窗口。", "GameLocker", 0x00000040 | 0x00010000);
+        return false;
+    }
 
     protected override void OnLaunched(LaunchActivatedEventArgs args)
     {
@@ -21,6 +50,12 @@ public partial class App : Application
         {
             MonitorHelperHost.Run(parentPid);
             Environment.Exit(0);
+        }
+
+        if (!AcquireSingleInstance())
+        {
+            Exit();
+            return;
         }
 
         InstallCrashLogging();

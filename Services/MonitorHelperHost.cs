@@ -49,6 +49,7 @@ internal static class MonitorHelperHost
             WriteVendorStatus(wmiReady);
         });
 
+        LosslessOutputListener? output = null;
         PresentEtwListener? etw = null;
         try
         {
@@ -92,22 +93,31 @@ internal static class MonitorHelperHost
                 tick++;
                 double fps = 0, frameMs = 0;
                 double[] history = [];
+                var targetPid = shared.ReadTargetPid();
+                var outputPid = shared.ReadOutputTargetPid();
+                if (outputPid > 0 && output is null)
+                {
+                    output = new LosslessOutputListener();
+                    if (!output.Start()) Log("小黄鸭输出采集失败：" + output.LastError);
+                }
                 if (etw is not null)
                 {
-                    etw.TargetPid = shared.ReadTargetPid();
+                    etw.TargetPid = targetPid;
                     (fps, frameMs, history) = etw.GetStats();
                 }
                 // 温度约每秒读一次；两次之间沿用上次结果，避免把 NaN 覆盖到主进程
                 if (tick % 2 == 1 && PawnIoMsr.Available) cpuTemp = PawnIoMsr.ReadTemperature();
-                // 厂商 WMI 的 GPU 温度（内部缓存 2 秒，不会每次 200ms 都调固件）
-                var gpuTemp = MsiWmiProbe.ReadGpuTemperature();
-                shared.Publish(fps, frameMs, history, cpuTemp, gpuTemp);
+                // 未经确认的固件热区不能作为 GPU 芯片温度发布。
+                shared.Publish(fps, frameMs, history, cpuTemp, double.NaN, targetPid,
+                    etw?.GetOriginalFps() ?? double.NaN, etw?.FrameGenerationDetected ?? false,
+                    outputPid, output?.GetFps(outputPid) ?? double.NaN);
             }
         }
         finally
         {
             KillTimer(IntPtr.Zero, new UIntPtr(TimerId));
             etw?.Dispose();
+            output?.Dispose();
             PawnIoMsr.Close();
             stop?.Dispose();
             Log("exit");

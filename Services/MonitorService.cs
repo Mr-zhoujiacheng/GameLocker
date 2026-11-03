@@ -11,27 +11,33 @@ public sealed class MonitorSnapshot
 {
     /// <summary>帧率（0=不可用）</summary>
     public double Fps;
+    /// <summary>有明确原生帧标记时的 FPS；NaN 表示无法识别。</summary>
+    public double OriginalFps = double.NaN;
+    /// <summary>观察到生成帧或活动的外部缩放输出，不能再把提交率当作输出率。</summary>
+    public bool FrameGenerationDetected;
+    /// <summary>经过呈现链路确认的输出 FPS；尚无可靠来源时为 NaN。</summary>
+    public double OutputFps = double.NaN;
     /// <summary>平均帧时间（毫秒，0=不可用）</summary>
     public double FrameMs;
     /// <summary>帧时间序列（毫秒，旧→新），用于绘制帧波动线</summary>
     public double[] FrameHistory = [];
     /// <summary>系统 CPU 总占用率（%）</summary>
-    public double CpuUsage;
-    /// <summary>CPU 当前平均频率（MHz，0=不可用）</summary>
-    public double CpuMhz;
+    public double CpuUsage = double.NaN;
+    /// <summary>CPU 当前平均频率（MHz，NaN=不可用）</summary>
+    public double CpuMhz = double.NaN;
     /// <summary>CPU 温度（℃，NaN=不可用）</summary>
     public double CpuTemp = double.NaN;
     /// <summary>CPU 封装功耗（W，NaN=不可用；来自 RAPL 性能计数器）</summary>
     public double CpuPower = double.NaN;
-    /// <summary>GPU 3D 引擎占用率（%，NaN=不可用）</summary>
+    /// <summary>所选 GPU 最忙物理引擎占用率（%，NaN=不可用）</summary>
     public double GpuUsage = double.NaN;
     /// <summary>GPU 频率（MHz，NaN=不可用；来自 NVML，无 NVIDIA 显卡时为 NaN）</summary>
     public double GpuMhz = double.NaN;
     /// <summary>GPU 功耗（W，NaN=不可用；来自 NVML）</summary>
     public double GpuPower = double.NaN;
-    /// <summary>GPU 温度（℃，NaN=不可用；来自 NVML / ADL / 厂商 WMI）</summary>
+    /// <summary>GPU 温度（℃，NaN=不可用；来自 NVML / ADL / IGCL）</summary>
     public double GpuTemp = double.NaN;
-    /// <summary>已使用的显存（GB，NaN=不可用；核显为占用的共享内存）</summary>
+    /// <summary>所选 GPU 的专用显存用量（GB，NaN=不可用，0 为有效读数）</summary>
     public double GpuVram = double.NaN;
     /// <summary>电池当前电量（%，NaN=不可用）</summary>
     public double BatteryPercent = double.NaN;
@@ -44,7 +50,7 @@ public sealed class MonitorSnapshot
     /// <summary>是否已接外接电源</summary>
     public bool OnAc;
     /// <summary>物理内存占用率（%）</summary>
-    public double MemPercent;
+    public double MemPercent = double.NaN;
 }
 
 /// <summary>
@@ -60,6 +66,7 @@ public static class MonitorService
     private static Timer? _timer;
     private static MonitorOverlayWindow? _overlay;
     private static PresentEtwListener? _etw;
+    private static LosslessOutputListener? _losslessOutput;
     private static int _ticking;
     private static int _tickCount;
 
@@ -88,16 +95,10 @@ public static class MonitorService
     private static double _cpuTemp = double.NaN;
     /// <summary>提权助手通过 PawnIO 读到的 CPU 封装温度（NaN=不可用）</summary>
     private static double _helperCpuTemp = double.NaN;
-    /// <summary>提权助手通过厂商 WMI 读到的 GPU 温度（NaN=不可用）</summary>
-    private static double _helperGpuTemp = double.NaN;
+    private static string? _gpuAdapterKey;
+    private static bool _gpuSensorsAligned;
     private static double _cpuPower = double.NaN;
     private static double _cpuMhzFallback;
-
-    // CPU 温度假值判定（见 UpdateCpuTemp）
-    private static double _cpuTempPrev = double.NaN;
-    private static int _cpuTempSameCount;
-    private static double _cpuTempLoadPeak;
-    private static bool _cpuTempIsFake;
 
     private static (double Discharge, double Charge) _batteryRate = (double.NaN, double.NaN);
 
@@ -140,14 +141,20 @@ public static class MonitorService
         _tickCount = 0;
         _lastIdle = _lastKernel = _lastUser = 0;
         LastError = "";
-        // 上一次会话留下的助手温度不可复用，等新助手发布
+        _gpuUsage = _gpuVram = _cpuTemp = _cpuPower = _cpuMhzFallback = double.NaN;
         _helperCpuTemp = double.NaN;
-        _helperGpuTemp = double.NaN;
+        _helperAlive = false;
+        _gpuAdapterKey = null;
+        _gpuSensorsAligned = false;
+        _batteryRate = (double.NaN, double.NaN);
+        _backgroundTick = 0;
+        if (_kmtAdapter == 0) _kmtTries = 0;
+        lock (Gate) _snapshot = new MonitorSnapshot();
 
         var item = FindMonitorItem();
         _metrics = NormalizeMetrics(item?.MonitorMetrics);
-        // 只显示 CPU/内存/时钟等指标时不开帧率会话，避免白跑 ETW / 提权助手
-        if (NeedsFrameStats()) StartFrameSource();
+        // CPU 温度也需要初始化 MSR 或提权助手，不显示帧率时不启动本地 ETW。
+        if (NeedsFrameStats() || Want(MonitorMetric.CpuTemp)) StartFrameSource();
 
         try
         {
@@ -178,6 +185,8 @@ public static class MonitorService
     private static MonitorMetric NormalizeMetrics(MonitorMetric? m)
     {
         var v = m ?? MonitorMetric.All;
+        if ((v & MonitorMetric.OriginalFps) != 0)
+            v = (v & ~MonitorMetric.OriginalFps) | MonitorMetric.Fps;
         return v == MonitorMetric.None ? MonitorMetric.All : v;
     }
 
@@ -187,11 +196,13 @@ public static class MonitorService
     /// <summary>按需启动帧率来源：已提权 → 本地 ETW；未提权 → 提权助手（UAC 取消则降级为无帧率）</summary>
     private static void StartFrameSource()
     {
-        if (_etw is not null || _shared is not null || _helper is not null) return;
-        if (IsElevated())
-        {
-            // 已提权：直接在本进程读 MSR（驱动缺失时静默安装），放到后台避免卡住开启流程
+        var elevated = IsElevated();
+        if (elevated && Want(MonitorMetric.CpuTemp))
             _ = Task.Run(() => PawnIoMsr.EnsureReady(installIfMissing: true));
+        if (_etw is not null || _shared is not null || _helper is not null) return;
+        if (elevated)
+        {
+            if (!NeedsFrameStats()) return;
             try
             {
                 _etw = new PresentEtwListener();
@@ -224,6 +235,8 @@ public static class MonitorService
         _timer = null;
         _etw?.Dispose();
         _etw = null;
+        _losslessOutput?.Dispose();
+        _losslessOutput = null;
 
         try { _stopEvent?.Set(); } catch { }
 
@@ -258,8 +271,8 @@ public static class MonitorService
         var item = FindMonitorItem();
         _metrics = NormalizeMetrics(item?.MonitorMetrics);
         // 运行中才勾上帧率指标：按需补开 ETW；全部取消则关掉本地 ETW（助手仍保留温度采集）
-        if (NeedsFrameStats()) StartFrameSource();
-        else
+        if (NeedsFrameStats() || Want(MonitorMetric.CpuTemp)) StartFrameSource();
+        if (!NeedsFrameStats())
         {
             _etw?.Dispose();
             _etw = null;
@@ -375,78 +388,93 @@ public static class MonitorService
     private static MonitorSnapshot Sample()
     {
         var n = ++_tickCount;
-        // 只采集勾选显示的指标：没显示的温度/功耗/显存等不再周期性查询硬件
-        var wantCpuUsage = Want(MonitorMetric.CpuUsage) || Want(MonitorMetric.CpuTemp);
-        var s = new MonitorSnapshot
+        var s = new MonitorSnapshot();
+        var targetPid = NeedsFrameStats() ? ForegroundPid() : 0;
+        var outputPid = NeedsFrameStats() ? LosslessScalingService.ActiveOutputPid() : 0;
+        s.FrameGenerationDetected = outputPid > 0;
+        if (outputPid > 0 && IsElevated() && _losslessOutput is null)
         {
-            CpuUsage = wantCpuUsage ? ReadCpuUsage() : 0,
-            CpuMhz = Want(MonitorMetric.CpuFreq) ? ReadCpuMhz() : 0,
-            MemPercent = Want(MonitorMetric.Memory) ? ReadMemoryPercent() : 0,
-            GpuMhz = Want(MonitorMetric.GpuFreq) ? ReadGpuClock() : double.NaN,
-            GpuPower = Want(MonitorMetric.GpuPower) ? ReadGpuPower() : double.NaN,
-            GpuTemp = Want(MonitorMetric.GpuTemp) ? ReadGpuTemp() : double.NaN
-        };
+            _losslessOutput = new LosslessOutputListener();
+            _losslessOutput.Start();
+        }
+        // 助手温度必须先读取，失效时不能继续使用上次的温度。
+        if (_shared is not null)
+        {
+            _shared.SetTargetPid(targetPid);
+            _shared.SetOutputTargetPid(outputPid);
+            if (_shared.TryRead(out var fps, out var frameMs, out var history, out var helperTemp, out _, out var originalFps, out var frameGenerationDetected))
+            {
+                _helperAlive = true;
+                s.Fps = fps;
+                s.FrameMs = frameMs;
+                s.FrameHistory = history;
+                s.OriginalFps = originalFps;
+                s.FrameGenerationDetected |= frameGenerationDetected;
+                _helperCpuTemp = helperTemp is > 0 and < 130 ? helperTemp : double.NaN;
+                if (double.IsNaN(_helperCpuTemp)) _cpuTemp = double.NaN;
+            }
+            else
+            {
+                _helperAlive = false;
+                _helperCpuTemp = _cpuTemp = double.NaN;
+            }
+        }
 
-        // GPU 占用 / 电池功率走 WMI（较慢），错开周期在后台采样并缓存
-        if (n % 2 == 0)
+        // 身份发现先于显存及厂商传感器；仅勾选传感器时也需要发现。
+        if (n == 1 || n % 2 == 0)
         {
-            if (Want(MonitorMetric.GpuUsage)) _gpuUsage = ReadGpuUsage();
+            if (Want(MonitorMetric.GpuUsage | MonitorMetric.GpuVram | MonitorMetric.GpuFreq
+                | MonitorMetric.GpuPower | MonitorMetric.GpuTemp)) _gpuUsage = ReadGpuUsage();
             if (Want(MonitorMetric.GpuVram)) _gpuVram = ReadGpuVram();
             if (Want(MonitorMetric.Battery)) _batteryRate = ReadBatteryRate();
         }
-        if (n % 5 == 0)
+        var wantCpuUsage = Want(MonitorMetric.CpuUsage);
+        s.CpuUsage = wantCpuUsage ? ReadCpuUsage() : double.NaN;
+        s.CpuMhz = Want(MonitorMetric.CpuFreq) ? ReadCpuMhz() : double.NaN;
+        s.MemPercent = Want(MonitorMetric.Memory) ? ReadMemoryPercent() : double.NaN;
+        s.GpuMhz = Want(MonitorMetric.GpuFreq) ? ReadGpuClock() : double.NaN;
+        s.GpuPower = Want(MonitorMetric.GpuPower) ? ReadGpuPower() : double.NaN;
+        s.GpuTemp = Want(MonitorMetric.GpuTemp) ? ReadGpuTemp() : double.NaN;
+
+        if (n == 1 || n % 5 == 0)
         {
             if (Want(MonitorMetric.CpuTemp))
             {
                 // 优先用 PawnIO/MSR 的真实封装温度：本进程已提权直接读，否则用提权助手回传的值
                 var msrTemp = IsElevated() ? PawnIoMsr.ReadTemperature() : _helperCpuTemp;
-                if (msrTemp is > 0 and < 130)
-                {
-                    _cpuTempIsFake = false;
-                    _cpuTempSameCount = 0;
-                    _cpuTempLoadPeak = 0;
-                    _cpuTemp = Math.Round(msrTemp * 10) / 10;
-                }
-                else
-                {
-                    UpdateCpuTemp(ReadCpuTemp(), s.CpuUsage);
-                }
+                _cpuTemp = msrTemp is > 0 and < 130 ? Math.Round(msrTemp * 10) / 10 : double.NaN;
             }
-            // GPU 功耗的近似值依赖 RAPL 缓存，所以显示 GPU 功耗时也要刷新
-            if (Want(MonitorMetric.CpuPower) || Want(MonitorMetric.GpuPower)) _cpuPower = ReadCpuPower();
-            if (Want(MonitorMetric.CpuFreq) && _cpuMhzFallback <= 0) _cpuMhzFallback = ReadCpuMhzWmi();
+            if (Want(MonitorMetric.CpuPower)) _cpuPower = ReadCpuPower();
+            if (Want(MonitorMetric.CpuFreq)) _cpuMhzFallback = ReadCpuMhzWmi();
         }
         s.GpuUsage = _gpuUsage;
         s.GpuVram = _gpuVram;
         s.CpuTemp = _cpuTemp;
         s.CpuPower = _cpuPower;
-        if (s.CpuMhz <= 0) s.CpuMhz = _cpuMhzFallback;
+        if (Want(MonitorMetric.CpuFreq) && (double.IsNaN(s.CpuMhz) || s.CpuMhz <= 0))
+            s.CpuMhz = _cpuMhzFallback;
 
         if (Want(MonitorMetric.Battery) || Want(MonitorMetric.BatteryPercent)) ReadBattery(s);
 
         // 帧率：本地 ETW 优先，否则读提权助手发布的共享内存
         if (_etw is { Available: true })
         {
-            _etw.TargetPid = ForegroundPid();
+            _etw.TargetPid = targetPid;
             var (fps, frameMs, history) = _etw.GetStats();
             s.Fps = fps;
             s.FrameMs = frameMs;
             s.FrameHistory = history;
-        }
-        else if (_shared is not null)
-        {
-            _shared.SetTargetPid(ForegroundPid());
-            if (_shared.TryRead(out var fps, out var frameMs, out var history, out var helperTemp, out var helperGpuTemp))
-            {
-                _helperAlive = true;
-                s.Fps = fps;
-                s.FrameMs = frameMs;
-                s.FrameHistory = history;
-                _helperCpuTemp = helperTemp;
-                _helperGpuTemp = helperGpuTemp;
-            }
+            s.OriginalFps = _etw.GetOriginalFps();
+            s.FrameGenerationDetected |= _etw.FrameGenerationDetected;
         }
 
+        if (outputPid > 0)
+        {
+            // 外部插帧的输入来自游戏，输出来自小黄鸭的独立显示链，绝不按倍率推算。
+            s.OriginalFps = targetPid != outputPid && s.Fps > 0 ? s.Fps : double.NaN;
+            s.OutputFps = _losslessOutput?.GetFps(outputPid)
+                ?? _shared?.ReadOutputFps(outputPid) ?? double.NaN;
+        }
         return s;
     }
 
@@ -532,21 +560,21 @@ public static class MonitorService
 
     private static double ReadCpuUsage()
     {
-        if (!GetSystemTimes(out var idle, out var kernel, out var user)) return 0;
+        if (!GetSystemTimes(out var idle, out var kernel, out var user)) return double.NaN;
         var i = ToValue(idle);
         var k = ToValue(kernel);
         var u = ToValue(user);
         if (_lastKernel == 0)
         {
             _lastIdle = i; _lastKernel = k; _lastUser = u;
-            return 0;
+            return double.NaN;
         }
         var di = i - _lastIdle;
         var dk = k - _lastKernel;
         var du = u - _lastUser;
         _lastIdle = i; _lastKernel = k; _lastUser = u;
         var total = dk + du; // kernel 已含 idle
-        if (total == 0) return 0;
+        if (total == 0) return double.NaN;
         return Math.Clamp((1.0 - (double)di / total) * 100.0, 0, 100);
     }
 
@@ -578,15 +606,15 @@ public static class MonitorService
             {
                 // ProcessorInformation = 11
                 if (CallNtPowerInformation(11, IntPtr.Zero, 0, ptr, (uint)(size * count)) != 0)
-                    return 0;
+                    return double.NaN;
                 var sum = 0UL;
                 for (var i = 0; i < count; i++)
                     sum += Marshal.PtrToStructure<PROCESSOR_POWER_INFORMATION>(ptr + i * size).CurrentMhz;
-                return (double)sum / count;
+                return sum > 0 ? (double)sum / count : double.NaN;
             }
             finally { Marshal.FreeHGlobal(ptr); }
         }
-        catch { return 0; }
+        catch { return double.NaN; }
     }
 
     /// <summary>回退：WMI 报告的当前主频（CallNtPowerInformation 在部分设备返回 0）</summary>
@@ -603,9 +631,9 @@ public static class MonitorService
                 if (v is null) continue;
                 max = Math.Max(max, Convert.ToDouble(v));
             }
-            return max;
+            return max > 0 ? max : double.NaN;
         }
-        catch { return 0; }
+        catch { return double.NaN; }
     }
 
     // ---- 内存占用 ----
@@ -633,10 +661,10 @@ public static class MonitorService
         try
         {
             var mem = new MEMORYSTATUSEX { Length = (uint)Marshal.SizeOf<MEMORYSTATUSEX>() };
-            if (!GlobalMemoryStatusEx(ref mem)) return 0;
+            if (!GlobalMemoryStatusEx(ref mem)) return double.NaN;
             return mem.MemoryLoad;
         }
-        catch { return 0; }
+        catch { return double.NaN; }
     }
 
     // ---- 电池 ----
@@ -693,56 +721,105 @@ public static class MonitorService
 
     // ---- GPU 占用 ----
 
-    /// <summary>汇总 GPUEngine 计数器中 3D 引擎的占用率（Windows 性能计数器，普通权限可读）</summary>
+    private static string? GpuAdapterKey(string name)
+    {
+        var match = System.Text.RegularExpressions.Regex.Match(name,
+            @"(?:^|_)luid_0x([0-9a-f]+)_0x([0-9a-f]+)_phys_(\d+)(?:_|$)",
+            System.Text.RegularExpressions.RegexOptions.IgnoreCase);
+        if (!match.Success
+            || !uint.TryParse(match.Groups[1].Value, System.Globalization.NumberStyles.HexNumber,
+                System.Globalization.CultureInfo.InvariantCulture, out var high)
+            || !uint.TryParse(match.Groups[2].Value, System.Globalization.NumberStyles.HexNumber,
+                System.Globalization.CultureInfo.InvariantCulture, out var low)
+            || !uint.TryParse(match.Groups[3].Value, System.Globalization.NumberStyles.None,
+                System.Globalization.CultureInfo.InvariantCulture, out var phys)) return null;
+        return FormattableString.Invariant($"luid_0x{high:x8}_0x{low:x8}_phys_{phys}");
+    }
+
+    /// <summary>同物理引擎跨进程求和，适配器取最忙引擎，再选择最忙适配器。</summary>
     private static double ReadGpuUsage()
     {
+        _gpuAdapterKey = null;
+        _gpuSensorsAligned = false;
         try
         {
+            var engines = new Dictionary<(string Adapter, string Engine), double>();
+            var adapters = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
             using var searcher = new ManagementObjectSearcher(@"root\CIMV2",
                 "SELECT Name, UtilizationPercentage FROM Win32_PerfFormattedData_GPUPerformanceCounters_GPUEngine");
-            double sum = 0;
-            var found = false;
             foreach (var o in searcher.Get())
             {
                 var name = o["Name"] as string ?? "";
-                if (!name.Contains("engtype_3D", StringComparison.OrdinalIgnoreCase)) continue;
-                var v = o["UtilizationPercentage"];
-                if (v is null) continue;
-                sum += Convert.ToDouble(v);
-                found = true;
+                var adapter = GpuAdapterKey(name);
+                if (adapter is null) continue;
+                adapters.Add(adapter);
+                var engine = System.Text.RegularExpressions.Regex.Match(name, @"(?:^|_)eng_(\d+)(?:_|$)",
+                    System.Text.RegularExpressions.RegexOptions.IgnoreCase);
+                if (!engine.Success || o["UtilizationPercentage"] is not { } v) continue;
+                var usage = Convert.ToDouble(v);
+                if (!double.IsFinite(usage) || usage < 0) continue;
+                var key = (adapter, engine.Groups[1].Value);
+                engines.TryGetValue(key, out var sum);
+                engines[key] = sum + usage;
             }
-            return found ? Math.Clamp(sum, 0, 100) : double.NaN;
+            // 内存实例也参与身份枚举，失败不能清掉已取得的引擎使用率。
+            var memoryEnumerated = false;
+            try
+            {
+                using var memory = new ManagementObjectSearcher(@"root\CIMV2",
+                    "SELECT Name FROM Win32_PerfFormattedData_GPUPerformanceCounters_GPUAdapterMemory");
+                foreach (var o in memory.Get())
+                    if (GpuAdapterKey(o["Name"] as string ?? "") is { } adapter) adapters.Add(adapter);
+                memoryEnumerated = true;
+            }
+            catch { }
+
+            var busiest = double.NaN;
+            foreach (var entry in engines)
+            {
+                if (!double.IsNaN(busiest) && entry.Value <= busiest) continue;
+                busiest = entry.Value;
+                _gpuAdapterKey = entry.Key.Adapter;
+            }
+            if (_gpuAdapterKey is null && adapters.Count == 1) _gpuAdapterKey = adapters.First();
+            // ADL / IGCL 仍仅在可证明单卡时使用，NVML 另按 LUID 绑定。
+            try
+            {
+                using var controllers = new ManagementObjectSearcher(@"root\CIMV2", "SELECT PNPDeviceID FROM Win32_VideoController");
+                using var controllerList = controllers.Get();
+                _gpuSensorsAligned = memoryEnumerated && _gpuAdapterKey is not null
+                    && adapters.Count == 1 && controllerList.Count == 1
+                    && !controllerList.Cast<ManagementBaseObject>().Any(o =>
+                        (o["PNPDeviceID"] as string ?? "").Contains("VEN_10DE", StringComparison.OrdinalIgnoreCase));
+            }
+            catch { _gpuSensorsAligned = false; }
+            return double.IsNaN(busiest) ? double.NaN : Math.Clamp(busiest, 0, 100);
         }
-        catch { return double.NaN; }
+        catch
+        {
+            _gpuAdapterKey = null;
+            _gpuSensorsAligned = false;
+            return double.NaN;
+        }
     }
 
-    /// <summary>
-    /// 已使用的显存（GB）：WDDM 的「GPU 适配器内存」计数器，DedicatedUsage + SharedUsage 之和。
-    /// 核显没有独立显存，DedicatedUsage 通常为 0，SharedUsage 就是它占用的系统内存。
-    /// </summary>
+    /// <summary>所选适配器的专用显存用量（GB），0 是有效读数，不包含共享内存。</summary>
     private static double ReadGpuVram()
     {
         try
         {
             using var searcher = new ManagementObjectSearcher(@"root\CIMV2",
-                "SELECT Name, DedicatedUsage, SharedUsage FROM Win32_PerfFormattedData_GPUPerformanceCounters_GPUAdapterMemory");
-            double bytes = 0;
-            var found = false;
+                "SELECT Name, DedicatedUsage FROM Win32_PerfFormattedData_GPUPerformanceCounters_GPUAdapterMemory");
+            if (_gpuAdapterKey is null) return double.NaN;
             foreach (var o in searcher.Get())
             {
-                if (o["DedicatedUsage"] is { } d)
-                {
-                    bytes += Convert.ToDouble(d);
-                    found = true;
-                }
-                if (o["SharedUsage"] is { } sh)
-                {
-                    bytes += Convert.ToDouble(sh);
-                    found = true;
-                }
+                if (GpuAdapterKey(o["Name"] as string ?? "") != _gpuAdapterKey) continue;
+                if (o["DedicatedUsage"] is not { } d) continue;
+                var bytes = Convert.ToDouble(d);
+                return double.IsFinite(bytes) && bytes >= 0
+                    ? bytes / 1024d / 1024d / 1024d : double.NaN;
             }
-            if (!found || bytes <= 0) return double.NaN;
-            return Math.Round(bytes / 1024d / 1024d / 1024d, 1);
+            return double.NaN;
         }
         catch { return double.NaN; }
     }
@@ -750,7 +827,7 @@ public static class MonitorService
     // ---- GPU 频率 / 功耗（NVML，需 NVIDIA 驱动自带的 nvml.dll）----
 
     private static bool _nvmlTried;
-    private static IntPtr _nvmlDevice;
+    private static readonly List<IntPtr> _nvmlDevices = [];
 
     private static void EnsureNvml()
     {
@@ -763,15 +840,95 @@ public static class MonitorService
             for (uint i = 0; i < count; i++)
             {
                 if (nvmlDeviceGetHandleByIndex_v2(i, out var device) != 0) continue;
-                _nvmlDevice = device;
-                break;
+                _nvmlDevices.Add(device);
             }
         }
         catch
         {
             // 无 nvml.dll（AMD/Intel 机器）：保持 NaN，界面显示"—"
-            _nvmlDevice = IntPtr.Zero;
         }
+    }
+
+    private static IntPtr SelectNvmlDevice()
+    {
+        EnsureNvml();
+        var key = _gpuAdapterKey;
+        if (key is null) return IntPtr.Zero;
+        var parts = key.Split('_');
+        if (parts.Length != 5
+            || !uint.TryParse(parts[1].AsSpan(2), System.Globalization.NumberStyles.HexNumber,
+                System.Globalization.CultureInfo.InvariantCulture, out var high)
+            || !uint.TryParse(parts[2].AsSpan(2), System.Globalization.NumberStyles.HexNumber,
+                System.Globalization.CultureInfo.InvariantCulture, out var low)
+            || !uint.TryParse(parts[4], out var phys)) return IntPtr.Zero;
+        try
+        {
+            foreach (var device in _nvmlDevices)
+            {
+                var luid = new byte[8];
+                if (nvmlDeviceGetLuid(device, luid, out var nodeMask) != 0) continue;
+                // Windows LUID 原始布局为 LowPart 后接 HighPart，均为小端整数。
+                if (BitConverter.ToUInt32(luid, 0) != low || BitConverter.ToUInt32(luid, 4) != high) continue;
+                if (nodeMask != 0 && (phys >= 32 || (nodeMask & (1u << (int)phys)) == 0)) continue;
+                return device;
+            }
+        }
+        catch (EntryPointNotFoundException)
+        {
+            // 旧版驱动没有 LUID 接口，仅在 DXGI 和 NVML 都唯一识别 NVIDIA 时绑定。
+            if (_nvmlDevices.Count == 1 && phys == 0 && IsUniqueNvidiaAdapter(high, low))
+                return _nvmlDevices[0];
+        }
+        catch { }
+        return IntPtr.Zero;
+    }
+
+    private static bool IsUniqueNvidiaAdapter(uint high, uint low)
+    {
+        IntPtr factory = IntPtr.Zero;
+        try
+        {
+            var iid = new Guid("770aae78-f26f-4dba-a829-253c83d1b387");
+            if (CreateDXGIFactory1(ref iid, out factory) < 0) return false;
+            var enumerate = Marshal.GetDelegateForFunctionPointer<EnumAdaptersDelegate>(
+                Marshal.ReadIntPtr(Marshal.ReadIntPtr(factory), 12 * IntPtr.Size));
+            var count = 0;
+            var matched = false;
+            for (uint i = 0; ; i++)
+            {
+                if (enumerate(factory, i, out var adapter) < 0) break;
+                try
+                {
+                    var getDesc = Marshal.GetDelegateForFunctionPointer<GetAdapterDescDelegate>(
+                        Marshal.ReadIntPtr(Marshal.ReadIntPtr(adapter), 10 * IntPtr.Size));
+                    if (getDesc(adapter, out var desc) < 0 || desc.VendorId != 0x10de) continue;
+                    count++;
+                    if (desc.LuidHigh == high && desc.LuidLow == low) matched = true;
+                }
+                finally { Marshal.Release(adapter); }
+            }
+            return count == 1 && matched;
+        }
+        catch { return false; }
+        finally { if (factory != IntPtr.Zero) Marshal.Release(factory); }
+    }
+
+    [DllImport("dxgi.dll")]
+    private static extern int CreateDXGIFactory1(ref Guid iid, out IntPtr factory);
+
+    [UnmanagedFunctionPointer(CallingConvention.StdCall)]
+    private delegate int EnumAdaptersDelegate(IntPtr factory, uint index, out IntPtr adapter);
+
+    [UnmanagedFunctionPointer(CallingConvention.StdCall)]
+    private delegate int GetAdapterDescDelegate(IntPtr adapter, out GpuAdapterDesc desc);
+
+    [StructLayout(LayoutKind.Sequential, CharSet = CharSet.Unicode)]
+    private struct GpuAdapterDesc
+    {
+        [MarshalAs(UnmanagedType.ByValTStr, SizeConst = 128)] public string Description;
+        public uint VendorId, DeviceId, SubSysId, Revision;
+        public UIntPtr DedicatedVideoMemory, DedicatedSystemMemory, SharedSystemMemory;
+        public uint LuidLow, LuidHigh;
     }
 
     private static double ReadGpuPower()
@@ -784,97 +941,76 @@ public static class MonitorService
 
     private static double ReadGpuPowerRaw()
     {
-        EnsureNvml();
-        if (_nvmlDevice != IntPtr.Zero)
+        var device = SelectNvmlDevice();
+        if (device != IntPtr.Zero)
         {
             try
             {
                 // 大于 500 W 的读数必然是驱动异常值，直接丢弃
-                if (nvmlDeviceGetPowerUsage(_nvmlDevice, out var milliwatts) == 0
+                if (nvmlDeviceGetPowerUsage(device, out var milliwatts) == 0
                     && milliwatts is > 0 and < 500_000)
                     return milliwatts / 1000.0;
             }
             catch { }
+            return double.NaN;
         }
+        if (!_gpuSensorsAligned) return double.NaN;
         var adlPower = ReadAdlPower();
         if (!double.IsNaN(adlPower)) return adlPower;
         // Intel 核显：IGCL 功率域（多数核显驱动不提供，此时仍为 NaN）
         var igclPower = IntelGpuTemp.ReadPower();
         if (!double.IsNaN(igclPower)) return igclPower;
-        // WDDM 适配器性能数据的 Power 字段单位是"最大功耗的百分比"，
-        // 无法换算为瓦特（Intel 核显恒为 0），因此不做兜底，界面显示"—"
-        // 既非 NVIDIA 也非 AMD 时，按 Intel 核显处理：Lunar Lake 没有独立 GPU 功耗计量，
-        // 用 RAPL 的「封装 − 核心」近似 GPU/uncore 部分（空载偏低，游戏负载下有参考价值）
-        return ReadGpuPowerApprox();
+        return double.NaN;
     }
-
-    /// <summary>
-    /// GPU 功耗近似值（W）：RAPL 的 RAPL_Package0_PKG − RAPL_Package0_PP0。
-    /// 不是纯 GPU 功耗（含内存控制器等 uncore），仅用于没有独立 GPU 功耗传感器的核显机型。
-    /// </summary>
-    private static double ReadGpuPowerApprox()
-    {
-        // 数值来自 ReadCpuPower() 的同一次查询缓存（每 5 秒刷新一次）
-        var pkg = _raplPkg;
-        var pp0 = _raplPp0;
-        if (double.IsNaN(pkg) || double.IsNaN(pp0) || pkg <= pp0) return double.NaN;
-        var watts = (pkg - pp0) / 1000.0;
-        return watts is > 0 and < 200 ? Math.Round(watts, 1) : double.NaN;
-    }
-
-    /// <summary>RAPL 封装 / CPU 核心功耗缓存（mW，NaN=不可用）</summary>
-    private static double _raplPkg = double.NaN;
-    private static double _raplPp0 = double.NaN;
 
     private static double ReadGpuClock()
     {
-        EnsureNvml();
-        if (_nvmlDevice != IntPtr.Zero)
+        var device = SelectNvmlDevice();
+        if (device != IntPtr.Zero)
         {
             try
             {
                 // NVML_CLOCK_GRAPHICS = 0
-                if (nvmlDeviceGetClockInfo(_nvmlDevice, 0, out var mhz) == 0 && mhz > 0)
+                if (nvmlDeviceGetClockInfo(device, 0, out var mhz) == 0 && mhz > 0)
                     return mhz;
             }
             catch { }
+            return double.NaN;
         }
+        if (!_gpuSensorsAligned) return double.NaN;
         var adl = ReadAdlClock();
         if (!double.IsNaN(adl)) return adl;
         // Intel 核显：IGCL 频率域（WDDM 的 MaxFrequency 在掌机上常为 0，读不到时钟）
         var igcl = IntelGpuTemp.ReadClock();
         if (!double.IsNaN(igcl)) return igcl;
-        var kmt = ReadKmtClock();
-        return kmt > 0 ? kmt : double.NaN;
+        return ReadKmtClock();
     }
 
     /// <summary>
-    /// GPU 温度（℃）：NVIDIA 走 NVML，AMD 走 ADL，Intel 核显走 IGCL；
-    /// IGCL 不提供温度时退回厂商 WMI（MSI_ACPI Get_Thermal，Lunar Lake 上与 CPU 同 die，读数接近封装温度）。
+    /// GPU 温度（℃）：仅使用与所选适配器一致的 NVML、ADL 或 IGCL 传感器。
     /// </summary>
     private static double ReadGpuTemp()
     {
-        EnsureNvml();
-        if (_nvmlDevice != IntPtr.Zero)
+        var device = SelectNvmlDevice();
+        if (device != IntPtr.Zero)
         {
             try
             {
                 // NVML_TEMPERATURE_GPU = 0
-                if (nvmlDeviceGetTemperature(_nvmlDevice, 0, out var celsius) == 0 && celsius > 0)
+                if (nvmlDeviceGetTemperature(device, 0, out var celsius) == 0 && celsius > 0)
                     return celsius;
             }
             catch { }
+            return double.NaN;
         }
+        if (!_gpuSensorsAligned) return double.NaN;
         var adl = ReadAdlTemp();
         if (!double.IsNaN(adl)) return adl;
 
         var igcl = IntelGpuTemp.Read();
         if (!double.IsNaN(igcl)) return igcl;
 
-        // Intel 核显：驱动不给温度传感器时用厂商 WMI；助手回传优先（主进程未提权也能拿到）
-        if (_helperGpuTemp is > 0 and < 130) return _helperGpuTemp;
-        var vendor = MsiWmiProbe.ReadGpuTemperature();
-        return vendor is > 0 and < 130 ? vendor : double.NaN;
+        return double.NaN;
     }
 
     [DllImport("nvml.dll", EntryPoint = "nvmlInit_v2")]
@@ -885,6 +1021,10 @@ public static class MonitorService
 
     [DllImport("nvml.dll", EntryPoint = "nvmlDeviceGetHandleByIndex_v2")]
     private static extern int nvmlDeviceGetHandleByIndex_v2(uint index, out IntPtr device);
+
+    [DllImport("nvml.dll", EntryPoint = "nvmlDeviceGetLuid", ExactSpelling = true, CallingConvention = CallingConvention.Cdecl)]
+    private static extern int nvmlDeviceGetLuid(IntPtr device,
+        [Out, MarshalAs(UnmanagedType.LPArray, SizeConst = 8)] byte[] luid, out uint deviceNodeMask);
 
     [DllImport("nvml.dll", EntryPoint = "nvmlDeviceGetPowerUsage")]
     private static extern int nvmlDeviceGetPowerUsage(IntPtr device, out uint milliwatts);
@@ -949,17 +1089,19 @@ public static class MonitorService
                 // 各节点的 Frequency 是同一个 GT 时钟，取 MaxFrequency 最大的节点作为读数来源
                 ulong bestMax = 0;
                 uint bestNode = 0;
+                var foundNode = false;
                 for (uint node = 0; node < 8; node++)
                 {
                     var (ret, perf) = QueryNodePerf(open.hAdapter, node);
                     if (ret != 0) continue;
-                    if (perf.MaxFrequency > bestMax)
+                    if (!foundNode || perf.MaxFrequency > bestMax)
                     {
+                        foundNode = true;
                         bestMax = perf.MaxFrequency;
                         bestNode = node;
                     }
                 }
-                if (bestMax > 0)
+                if (foundNode)
                 {
                     _kmtAdapter = open.hAdapter;
                     _kmtNode = bestNode;
@@ -967,7 +1109,7 @@ public static class MonitorService
                 }
                 else
                 {
-                    _kmtDiag += "所有节点 MaxFrequency=0 ";
+                    _kmtDiag += "所有节点查询失败 ";
                 }
                 break;
             }
@@ -1120,7 +1262,7 @@ public static class MonitorService
             sb.AppendLine($"ADL: create={_adlCreateResult} ready={_adlReady} adapter={_adlAdapter} activitySize={_adlActivitySize}");
             sb.AppendLine($"ADL 探测: {_adlProbeLog}");
             sb.AppendLine($"ADL 读数: clock={ReadAdlClock()} MHz, power={ReadAdlPower()} W");
-            sb.AppendLine($"NVML: device={(_nvmlDevice != IntPtr.Zero ? "已找到" : "无")}");
+            sb.AppendLine($"NVML: devices={_nvmlDevices.Count} adapter={_gpuAdapterKey ?? "无"} matched={(SelectNvmlDevice() != IntPtr.Zero ? "是" : "否")}");
             var kmtClock = ReadKmtClock();
             sb.AppendLine($"WDDM(KMT): {(_kmtDiag.Length > 0 ? _kmtDiag : "未尝试")}, node={_kmtNode}, clock={kmtClock} MHz");
             if (_kmtAdapter != 0)
@@ -1141,8 +1283,8 @@ public static class MonitorService
             sb.AppendLine($"IGCL 功耗: {IntelGpuTemp.PowerStatus} / power={igclPower} W / {IntelGpuTemp.PowerDetail}");
             var vendorTemp = MsiWmiProbe.ReadGpuTemperature();
             sb.AppendLine($"厂商 WMI: {(MsiWmiProbe.Available ? "可用（" + MsiWmiProbe.MethodList + "）" : MsiWmiProbe.Status)}"
-                + $" / GPU 温度={vendorTemp} ℃ / 助手回传={_helperGpuTemp} ℃");
-            sb.AppendLine($"CPU 温度: 采用={ReadCpuTemp()} ℃ / 固定值判定={(_cpuTempIsFake ? "是（界面显示—）" : "否")}");
+                + $" / 未验证热区原始读数={vendorTemp} ℃（不作为 GPU 温度）");
+            sb.AppendLine($"CPU 温度: 采用={_cpuTemp} ℃（仅可信 MSR 来源）");
             var msrTemp = IsElevated() ? PawnIoMsr.ReadTemperature() : double.NaN;
             var msrStatus = IsElevated()
                 ? PawnIoMsr.Status
@@ -1151,7 +1293,7 @@ public static class MonitorService
             sb.AppendLine($"厂商传感器(EC/WMI): {(_helperAlive ? "由提权助手采集（见日志末尾「厂商传感器」段）" : "监控未开启或助手未运行")}");
             foreach (var line in ThermalZoneDetails()) sb.AppendLine("  " + line);
             sb.AppendLine($"CPU 功耗(RAPL): {ReadCpuPower()} W");
-            sb.AppendLine($"GPU 功耗: {ReadGpuPower()} W（无独立传感器时用 RAPL PKG−PP0 近似，含 uncore）");
+            sb.AppendLine($"GPU 功耗: {ReadGpuPower()} W（无可靠且匹配的传感器时不可用）");
             foreach (var line in PowerSourceDetails()) sb.AppendLine("  " + line);
             sb.AppendLine($"电池功率: 放电={_batteryRate.Discharge} W / 充电={_batteryRate.Charge} W");
             // 直接把浮层当前显示的数值写进诊断：哪一项是"—"一目了然
@@ -1307,7 +1449,7 @@ public static class MonitorService
         finally { Marshal.FreeHGlobal(buffer); }
     }
 
-    /// <summary>AMD 整卡功耗（ADL OD6，单位 mW；APU 上驱动可能不支持，此时返回 NaN）</summary>
+    /// <summary>AMD 整卡功耗（ADL OD6，单位 1/256 W；APU 上驱动可能不支持，此时返回 NaN）</summary>
     private static double ReadAdlPower()
     {
         EnsureAdl();
@@ -1315,9 +1457,9 @@ public static class MonitorService
         try
         {
             // ADL_OD6_POWER_NOW = 0
-            if (ADL_Overdrive6_CurrentPower_Get(_adlAdapter, 0, out var milliwatts) != 0) return double.NaN;
-            // 部分 AMD APU 上这个接口会返回 590000 这类异常值（约 590 W），必须过滤
-            return milliwatts is > 0 and < 500_000 ? milliwatts / 1000.0 : double.NaN;
+            if (ADL_Overdrive6_CurrentPower_Get(_adlAdapter, 0, out var rawPower) != 0) return double.NaN;
+            var watts = rawPower / 256.0;
+            return watts is > 0 and < 500 ? watts : double.NaN;
         }
         catch { return double.NaN; }
     }
@@ -1344,7 +1486,7 @@ public static class MonitorService
     {
         try
         {
-            double pkg = double.NaN, pp0 = double.NaN;
+            double pkg = double.NaN;
             using var searcher = new ManagementObjectSearcher(@"root\CIMV2",
                 "SELECT Name, Power FROM Win32_PerfFormattedData_PowerMeterCounter_EnergyMeter");
             foreach (var o in searcher.Get())
@@ -1353,99 +1495,11 @@ public static class MonitorService
                 if (o["Power"] is not { } v) continue;
                 var mw = Convert.ToDouble(v);
                 if (name.Contains("RAPL_Package0_PKG", StringComparison.OrdinalIgnoreCase)) pkg = mw;
-                else if (name.Contains("RAPL_Package0_PP0", StringComparison.OrdinalIgnoreCase)) pp0 = mw;
             }
-            // 顺手缓存给 GPU 功耗近似值用（同一次查询，避免每秒多跑一条 WMI）
-            _raplPkg = pkg;
-            _raplPp0 = pp0;
             if (pkg > 0) return pkg / 1000.0;
         }
         catch { }
         return double.NaN;
     }
 
-    // ---- CPU 温度 ----
-
-    /// <summary>
-    /// 记录 CPU 温度并识别"假传感器"。真实 CPU 温度必然随负载变化，也不可能在 CPU 有明显负载时
-    /// 仍低于 35℃；而部分机型（如微星 Claw 掌机）的 ACPI 热区只返回固定的环境温度（例如恒定 28℃）。
-    /// 判据：连续 24 次采样（约 2 分钟）读数完全一致、低于 35℃，且期间 CPU 占用达到过 40% 以上
-    /// → 判定为固件固定值，界面显示"—"，避免误导。温度一旦变化过就恢复为真实读数。
-    /// </summary>
-    private static void UpdateCpuTemp(double temp, double cpuUsage)
-    {
-        if (double.IsNaN(temp))
-        {
-            _cpuTempPrev = double.NaN;
-            _cpuTempSameCount = 0;
-            _cpuTempLoadPeak = 0;
-            _cpuTemp = double.NaN;
-            return;
-        }
-
-        if (!double.IsNaN(_cpuTempPrev) && Math.Abs(temp - _cpuTempPrev) < 0.05)
-        {
-            _cpuTempSameCount++;
-        }
-        else
-        {
-            _cpuTempSameCount = 1;
-            _cpuTempLoadPeak = 0;
-            _cpuTempIsFake = false;
-        }
-        _cpuTempPrev = temp;
-        if (cpuUsage > _cpuTempLoadPeak) _cpuTempLoadPeak = cpuUsage;
-
-        // Windows 下 CPU 封装温度不可能低于 30℃（真实值一般在 40℃ 以上）：
-        // 这种"低温固定值"是固件上报的环境温度，直接判假，不必等两分钟
-        if (!_cpuTempIsFake && temp < 30) _cpuTempIsFake = true;
-
-        if (!_cpuTempIsFake && _cpuTempSameCount >= 24 && temp < 35 && _cpuTempLoadPeak >= 40)
-            _cpuTempIsFake = true;
-
-        _cpuTemp = _cpuTempIsFake ? double.NaN : temp;
-    }
-
-    /// <summary>
-    /// 优先读性能计数器里的 ACPI 热区温度（Kelvin，普通权限可读，无需 WMI 特权）；
-    /// 不可用时再尝试 root\WMI MSAcpi_ThermalZoneTemperature（需管理员）。
-    /// </summary>
-    private static double ReadCpuTemp()
-    {
-        try
-        {
-            using var searcher = new ManagementObjectSearcher(@"root\CIMV2",
-                "SELECT Name, Temperature FROM Win32_PerfFormattedData_Counters_ThermalZoneInformation");
-            var best = double.NaN;
-            foreach (var o in searcher.Get())
-            {
-                var v = o["Temperature"];
-                if (v is null) continue;
-                var c = Convert.ToDouble(v) - 273.15; // 性能计数器为 Kelvin
-                if (c is > 10 and < 150 && (double.IsNaN(best) || c > best)) best = c;
-            }
-            if (!double.IsNaN(best)) return best;
-        }
-        catch { }
-        return ReadAcpiTemp();
-    }
-
-    private static double ReadAcpiTemp()
-    {
-        try
-        {
-            using var searcher = new ManagementObjectSearcher(@"root\WMI",
-                "SELECT CurrentTemperature FROM MSAcpi_ThermalZoneTemperature");
-            var best = double.NaN;
-            foreach (var o in searcher.Get())
-            {
-                var v = o["CurrentTemperature"];
-                if (v is null) continue;
-                var c = Convert.ToDouble(v) / 10.0 - 273.15;
-                if (double.IsNaN(best) || c > best) best = c;
-            }
-            return best is > 0 and < 150 ? best : double.NaN;
-        }
-        catch { return double.NaN; }
-    }
 }

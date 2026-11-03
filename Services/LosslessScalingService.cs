@@ -521,6 +521,22 @@ public static class LosslessScalingService
     }
 
     /// <summary>该进程是否有可见的缩放覆盖层窗口（LosslessScalingBlk 即画面输出层）</summary>
+    internal static int ActiveOutputPid()
+    {
+        var pid = 0;
+        EnumWindows((h, _) =>
+        {
+            if (!IsWindowVisible(h)) return true;
+            var cls = new StringBuilder(64);
+            GetClassNameW(h, cls, cls.Capacity);
+            if (!string.Equals(cls.ToString(), "LosslessScalingBlk", StringComparison.OrdinalIgnoreCase)) return true;
+            GetWindowThreadProcessId(h, out var owner);
+            pid = (int)owner;
+            return false;
+        }, IntPtr.Zero);
+        return pid;
+    }
+
     private static bool HasOverlay(int pid)
     {
         var found = false;

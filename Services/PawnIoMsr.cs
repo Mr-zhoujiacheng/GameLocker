@@ -198,7 +198,7 @@ internal static class PawnIoMsr
 
         // 封装温度（首选）
         if (ReadMsr(MsrPackageThermStatus, out var package) && (package & 0x8000_0000) != 0)
-            return tjMax - ((package >> 16) & 0x7F);
+            return (double)tjMax - ((package >> 16) & 0x7F);
 
         // 回退：逐核读 0x19C 取最高（需要把当前线程临时绑到对应核心）
         var best = double.NaN;
@@ -210,7 +210,7 @@ internal static class PawnIoMsr
             try
             {
                 if (!ReadMsr(MsrThermStatus, out var status) || (status & 0x8000_0000) == 0) continue;
-                var value = tjMax - ((status >> 16) & 0x7F);
+                var value = (double)tjMax - ((status >> 16) & 0x7F);
                 if (double.IsNaN(best) || value > best) best = value;
             }
             finally

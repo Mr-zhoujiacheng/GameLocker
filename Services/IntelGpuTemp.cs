@@ -282,19 +282,19 @@ internal static class IntelGpuTemp
                     var device = Marshal.ReadIntPtr(devices, i * IntPtr.Size);
                     if (bestDevice == IntPtr.Zero) bestDevice = device;
 
-                    // 频率域：取第一个能枚举到的（核显只有一个设备，取到即用）
+                    // 未解析域类型时仅接受唯一频率域，避免误取内存等其他域。
                     if (!_freqReady && enumFreq is not null && _getFreqState is not null)
                     {
                         uint freqCount = 0;
                         freqEnumRet = enumFreq(device, ref freqCount, IntPtr.Zero);
-                        if (freqEnumRet == 0 && freqCount > 0)
+                        if (freqEnumRet == 0 && freqCount == 1)
                         {
                             if (freqCount > 8) freqCount = 8;
                             var domains = Marshal.AllocHGlobal(IntPtr.Size * (int)freqCount);
                             try
                             {
                                 var n = freqCount;
-                                if (enumFreq(device, ref n, domains) == 0 && n > 0)
+                                if (enumFreq(device, ref n, domains) == 0 && n == 1)
                                 {
                                     _freq = Marshal.ReadIntPtr(domains, 0);
                                     _freqReady = _freq != IntPtr.Zero;
@@ -304,7 +304,7 @@ internal static class IntelGpuTemp
                         }
                     }
 
-                    if (enumSensors is null) continue;
+                    if (enumSensors is null || getProperties is null) continue;
                     uint sensorCount = 0;
                     tempEnumRet = enumSensors(device, ref sensorCount, IntPtr.Zero);
                     if (tempEnumRet != 0 || sensorCount == 0) continue;
@@ -331,7 +331,7 @@ internal static class IntelGpuTemp
                                 SensorGpu => 1,
                                 _ => 99
                             };
-                            if (rank >= bestRank) continue;
+                            if (rank == 99 || rank >= bestRank) continue;
                             bestRank = rank;
                             _sensor = sensor;
                         }
@@ -357,9 +357,11 @@ internal static class IntelGpuTemp
                     {
                         PowerStatus = "功率域枚举失败：" + Describe(powerRet);
                     }
-                    else if (_powerDomainCount == 0)
+                    else if (_powerDomainCount != 1)
                     {
-                        PowerStatus = "驱动未提供功率域：" + Describe(powerRet);
+                        PowerStatus = _powerDomainCount == 0
+                            ? "驱动未提供功率域：" + Describe(powerRet)
+                            : "存在多个功率域，无法确认 GPU 功耗来源";
                     }
                     else
                     {
@@ -367,7 +369,7 @@ internal static class IntelGpuTemp
                         var domains = Marshal.AllocHGlobal(IntPtr.Size * (int)n);
                         try
                         {
-                            if (enumPower(bestDevice, ref n, domains) == 0 && n > 0)
+                            if (enumPower(bestDevice, ref n, domains) == 0 && n == 1)
                                 _powerDomain = Marshal.ReadIntPtr(domains, 0);
                         }
                         finally { Marshal.FreeHGlobal(domains); }

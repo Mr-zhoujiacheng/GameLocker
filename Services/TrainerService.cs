@@ -87,7 +87,7 @@ public static class TrainerService
             if ((int)pid == Environment.ProcessId) return;
             using var p = Process.GetProcessById((int)pid);
             var exe = p.ProcessName;
-            if (!IsGameLikeProcess(hwnd, exe)) return;
+            if (!IsLikelyGameForeground(hwnd, exe, pid)) return;
             var title = WindowText(hwnd);
             if (string.IsNullOrWhiteSpace(title)) return; // 无标题的窗口不认作游戏
             if (!string.Equals(LastExeName, exe, StringComparison.OrdinalIgnoreCase))
@@ -110,7 +110,7 @@ public static class TrainerService
     {
         var lower = exe.ToLowerInvariant();
 
-        // 1) 系统核心 / 资源管理器壳 —— 冻结、杀进程都不应该操作它们
+        // 1) 系统核心 / 资源管理器壳 / UWP 宿主 / 通知与截图等系统界面
         switch (lower)
         {
             case "system": case "registry": case "idle": case "csrss": case "wininit":
@@ -119,6 +119,10 @@ public static class TrainerService
             case "searchhost": case "searchindexer": case "searchprotocolhost":
             case "runtimebroker": // UWP/系统设置宿主
             case "explorer": case "startmenuexperiencehost": case "shellappruntime":
+            case "shellexperiencehost": case "applicationframehost": case "gamebar":
+            case "xboxgamebarwidgets": case "textinputhost": case "lockapp": case "logonui":
+            case "snippingtool": case "screenclippinghost": case "snipandsketch":
+            case "taskmgr": case "resmon": case "perfmon": case "mmc":
                 return false;
         }
 
@@ -128,7 +132,7 @@ public static class TrainerService
         // 3) 修改器自身 / WeMod / FLiNG 家族
         if (lower.Contains("trainer") || lower.Contains("wemod") || lower.Contains("fling")) return false;
 
-        // 4) 常见非游戏桌面软件 —— 命中即放行
+        // 4) 常见非游戏桌面软件 —— 精确名
         if (lower is
             // 启动器 / 商店 / 平台 / 工具
             "steam" or "steamwebhelper" or "epicgameslauncher" or "uplay" or "upc" or "goggalaxy" or "itch" or "battlenet" or "origin"
@@ -136,19 +140,26 @@ public static class TrainerService
             // 浏览器
             or "chrome" or "msedge" or "firefox" or "brave" or "opera" or "vivaldi"
             // 聊天
-            or "qq" or "wechat" or "discord" or "telegram" or "skype" or "teams" or "slack" or "wemeetapp"
+            or "qq" or "wechat" or "weixin" or "discord" or "telegram" or "skype" or "teams" or "slack" or "wemeetapp" or "wemeet"
             // 音乐 / 视频
             or "sodamusic" or "neteasecloudmusic" or "qqmusic" or "luna" or "spotify" or "vlc" or "potplayer" or "mpv"
             // 系统设置 / 控制面板
             or "systemsettings" or "control" or "winver" or "regedit" or "taskmgr" or "resmon" or "perfmon"
             // 开发工具
-            or "trae cn" or "code" or "pycharm64" or "devenv" or "studio64" or "xcode"
+            or "trae cn" or "code" or "pycharm64" or "devenv" or "studio64" or "xcode" or "windowsterminal" or "wt"
             // 办公
             or "explorer" /* 已在上方兜底 */ or "onenote" or "winword" or "excel" or "powerpnt" or "outlook"
             )
             return false;
 
-        // 5) 窗口类名黑名单 —— 系统托盘气泡 / 通知中心 / 任务小组件 / 输入法候选窗
+        // 5) 常见非游戏软件家族（按前缀，覆盖新版改名/子进程，如 QQNT、Weixin、steamwebhelper、
+        //    NexusDock 之外的各类聊天/工具/云盘；游戏 exe 极少以这些前缀开头）
+        foreach (var token in NonGamePrefixes)
+        {
+            if (lower.StartsWith(token, StringComparison.Ordinal)) return false;
+        }
+
+        // 6) 窗口类名黑名单 —— 系统托盘气泡 / 通知中心 / 任务小组件 / 输入法候选窗
         if (hwnd != IntPtr.Zero)
         {
             var cls = GetClassName(hwnd);
@@ -158,8 +169,63 @@ public static class TrainerService
                 return false;
         }
 
-        // 6) 默认放行：任何其它有窗口的 EXE 都被视为"游戏候选"
+        // 7) 仍是"候选"：还需要"像游戏"的证据，见 IsLikelyGameForeground
         return true;
+    }
+
+    /// <summary>常见非游戏软件家族前缀（聊天/平台/浏览器/媒体/工具/办公/远程等）</summary>
+    private static readonly string[] NonGamePrefixes =
+    {
+        // 社交 / 聊天（含腾讯全家桶）
+        "qq", "tencent", "wechat", "weixin", "wxwork", "wework", "wemeet", "feishu", "lark",
+        "dingtalk", "telegram", "discord", "slack", "teams", "zoom", "skype",
+        // 平台 / 启动器 / 商店
+        "steam", "epic", "ubisoft", "uplay", "upc", "battlenet", "blizzard", "gog", "galaxyclient",
+        "eaapp", "eadesktop", "wegame", "xbox", "gamingservices", "riotclient", "bethesda",
+        "rockstar", "itch", "nxdock",
+        // 浏览器
+        "chrome", "msedge", "firefox", "brave", "opera", "vivaldi", "sogou", "360se", "360chrome",
+        "ucbrowser", "maxthon", "chromium",
+        // 媒体 / 娱乐
+        "potplayer", "vlc", "mpv", "mpc", "kmplayer", "gomplayer", "iqiyi", "youku", "bilibili",
+        "douyin", "kuaishou", "netease", "cloudmusic", "kugou", "kuwo", "spotify", "wmplayer",
+        // 系统工具 / 截图 / 录屏 / 监控
+        "snippingtool", "screenclippinghost", "snip", "obs", "fraps", "msiafterburner", "rtss",
+        "clash", "v2ray", "xray", "mihomo", "verge",
+        // 下载 / 云盘 / 办公 / 开发
+        "thunder", "xunlei", "idman", "baidunetdisk", "aliyundrive", "onedrive", "dropbox",
+        "wps", "winword", "excel", "powerpnt", "outlook", "onenote", "notion", "acrobat",
+        "photoshop", "illustrator", "notepad", "sublime", "pycharm", "devenv", "idea",
+        // 远程 / 串流
+        "todesk", "sunlogin", "anydesk", "rustdesk", "parsec", "moonlight", "steamlink"
+    };
+
+    /// <summary>
+    /// 修改器 / OptiScaler 用的"真游戏"判定：在 IsGameLikeProcess 之上再要求游戏证据，
+    /// 避免把 QQ、Steam、通知中心、截图工具、Dock、代理软件等普通前台窗口当成当前游戏。
+    /// 证据：游戏库安装路径 / 游戏引擎窗口类 / 本启动器启动过（且不是桌面软件）/ 窗口真正盖满显示器。
+    /// </summary>
+    public static bool IsLikelyGameForeground(IntPtr hwnd, string exe, uint pid)
+    {
+        if (!IsGameLikeProcess(hwnd, exe)) return false;
+
+        var cls = GetClassName(hwnd);
+        if (GameWindowDetector.IsDesktopApp(exe, cls)) return false;
+
+        // 强证据 1：游戏库 / 平台安装目录（Steam、Epic、GOG、Xbox、WeGame 等）
+        var path = KeyboardHookService.ProcessImagePath(pid);
+        if (path.Length > 0 && GameWindowDetector.IsGameLibraryPath(path)) return true;
+
+        // 强证据 2：Unity / Unreal / SDL / Source 等游戏引擎窗口类
+        if (GameWindowDetector.IsGameWindowClass(cls)) return true;
+
+        // 强证据 3：由本启动器启动，且窗口至少占到显示器 60% 宽 / 45% 高
+        // （排除被加进启动器的 QQ、Dock 工具栏、设置面板这类小/窄窗口）
+        if (LaunchService.IsTrackedProcess((int)pid) &&
+            GameWindowDetector.CoversMostOfMonitor(hwnd, 0.6, 0.45)) return true;
+
+        // 兜底：窗口真正盖满所在显示器（最大化只盖工作区不算，侧栏/小工具窗也会被排除）
+        return GameWindowDetector.CoversOwnMonitor(hwnd);
     }
 
     /// <summary>

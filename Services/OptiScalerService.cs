@@ -306,6 +306,9 @@ public static class OptiScalerService
     /// 不在这里弹窗，避免服务层引入 UI 依赖。</summary>
     public static event Action<LaunchItem, OptiScalerInspection>? InspectionReady;
 
+    /// <summary>没检测到游戏进程（后台线程）：交由 UI 弹手动拖入 exe 的窗口</summary>
+    public static event Action<LaunchItem>? ManualRequested;
+
     private static void Report(string text, bool error = false, double? progress = null) =>
         StatusChanged?.Invoke(new OptiScalerMessage(text, error, progress));
 
@@ -334,12 +337,14 @@ public static class OptiScalerService
         {
             if (string.IsNullOrEmpty(TrainerService.LastExeName))
             {
-                Report("未检测到游戏进程，请先运行游戏再点此磁贴", true);
+                Report("未检测到游戏进程，可手动拖入游戏程序注入");
+                ManualRequested?.Invoke(item);
                 return;
             }
             if (!TrainerService.IsGameRunning())
             {
-                Report($"游戏 {TrainerService.CurrentGameName()} 已退出，请先运行游戏", true);
+                Report($"游戏 {TrainerService.CurrentGameName()} 已退出，可手动拖入游戏程序注入");
+                ManualRequested?.Invoke(item);
                 return;
             }
             if (!TrainerService.IsLastGameActuallyForeground())
@@ -352,7 +357,8 @@ public static class OptiScalerService
             var exePath = TrainerService.CurrentGameExePath();
             if (string.IsNullOrEmpty(exePath) || !File.Exists(exePath))
             {
-                Report("无法获取游戏可执行文件路径，请以普通权限运行游戏后重试", true);
+                Report("无法获取游戏可执行文件路径，可手动拖入游戏程序注入");
+                ManualRequested?.Invoke(item);
                 return;
             }
 
@@ -461,6 +467,114 @@ public static class OptiScalerService
         }
     }
 
+    // ---- 手动注入（没检测到游戏进程时，拖入 exe）----
+
+    /// <summary>手动模式：只从拖入的 exe 路径做适配性检查，不依赖正在运行的游戏</summary>
+    public static async Task<OptiScalerInspection?> InspectFileAsync(string exePath)
+    {
+        try
+        {
+            if (!File.Exists(exePath)) return null;
+            Report("正在检查 OptiScaler 适配性…");
+            var insp = await InspectAsync(exePath, ManualGameName(exePath));
+            DebugLog.Write($"OptiScaler: 手动检查 {insp.GameName}（{insp.ExeName}）→ {insp.StatusText}，建议 {insp.SuggestedDll}");
+            return insp;
+        }
+        catch (Exception ex)
+        {
+            DebugLog.Write($"OptiScaler: 手动检查异常 {ex.GetType().Name}: {ex.Message}");
+            return null;
+        }
+    }
+
+    /// <summary>拖入的 exe 没有窗口标题可用：取文件的产品名，回退文件名</summary>
+    private static string ManualGameName(string exePath)
+    {
+        try
+        {
+            var vi = FileVersionInfo.GetVersionInfo(exePath);
+            foreach (var name in new[] { vi.ProductName, vi.FileDescription })
+            {
+                var text = (name ?? "").Trim();
+                if (text.Length > 0) return text;
+            }
+        }
+        catch { /* 读不到版本信息就用文件名 */ }
+        return Path.GetFileNameWithoutExtension(exePath);
+    }
+
+    /// <summary>手动确认：注入前自动备份被覆盖文件，可在编辑页一键还原</summary>
+    public static void InjectManual(LaunchItem item, OptiScalerInspection insp)
+    {
+        if (_busy) { Report("正在处理中，请稍候…", true); return; }
+        _busy = true;
+        _ = InjectManualAsync(item, insp);
+    }
+
+    private static async Task InjectManualAsync(LaunchItem item, OptiScalerInspection insp)
+    {
+        try
+        {
+            var root = await EnsurePackageAsync(item);
+            if (root is null)
+            {
+                Report("无法获取 OptiScaler 包（网络或解压失败）", true);
+                return;
+            }
+
+            var fsr4Root = await EnsureFsr4ForItemAsync(item);
+            if (fsr4Root is null && Fsr4VariantOf(item).Length > 0)
+            {
+                Report("FSR4 文件获取失败，已取消注入（请检查网络后重试）", true);
+                return;
+            }
+
+            // 游戏若正在运行，先关掉释放文件句柄（手动模式下不依赖"最后记录的游戏"状态）
+            var wasRunning = IsProcessAlive(insp.ExeName);
+            if (wasRunning)
+            {
+                Report($"正在关闭游戏 {insp.GameName}…");
+                if (!await CloseGameAsync(insp.ExeName, useTrainerState: false))
+                {
+                    Report("无法关闭游戏进程，已取消注入（请手动退出游戏后重试）", true);
+                    return;
+                }
+            }
+
+            var proxy = string.IsNullOrWhiteSpace(item.OptiDllName) ? insp.SuggestedDll : item.OptiDllName!;
+            Report($"正在备份并注入 OptiScaler（{proxy}）…");
+            if (!InjectFiles(root, insp.GameDir, proxy, item, out var error, fsr4Root,
+                    insp.ExeName, insp.GameName))
+            {
+                if (wasRunning)
+                {
+                    await Task.Delay(400);
+                    TryLaunch(insp.ExePath);
+                }
+                Report((error.Length > 0 ? error : "注入失败") + (wasRunning ? "（已重新打开游戏）" : ""), true);
+                return;
+            }
+
+            Report("正在打开游戏…");
+            await Task.Delay(400);
+            if (TryLaunch(insp.ExePath) is { } err)
+            {
+                Report("注入成功，但无法打开游戏：" + err, true);
+                return;
+            }
+            Report($"已备份并注入 OptiScaler（{proxy}），可在编辑页一键还原");
+        }
+        catch (Exception ex)
+        {
+            DebugLog.Write($"OptiScaler: 手动注入异常 {ex.GetType().Name}: {ex.Message}\n{ex}");
+            Report("注入失败：" + ex.Message, true);
+        }
+        finally
+        {
+            _busy = false;
+        }
+    }
+
     /// <summary>一键还原：还原指定备份（key=备份目录名）；key 为空时回退到"当前游戏优先、否则最近一次"。
     /// 同步，返回给 UI 展示的一句话结果。</summary>
     public static string Restore(string? key = null)
@@ -524,12 +638,12 @@ public static class OptiScalerService
 
     // ---- 适配性检查 ----
 
-    private static async Task<OptiScalerInspection> InspectAsync(string exePath)
+    private static async Task<OptiScalerInspection> InspectAsync(string exePath, string? gameName = null)
     {
         var exeName = Path.GetFileNameWithoutExtension(exePath);
         var insp = new OptiScalerInspection
         {
-            GameName = TrainerService.CurrentGameName(),
+            GameName = gameName ?? TrainerService.CurrentGameName(),
             ExeName = exeName,
             ExePath = exePath,
             GameDir = Path.GetDirectoryName(exePath) ?? ""
@@ -1716,10 +1830,11 @@ public static class OptiScalerService
 
     /// <summary>
     /// 把包内文件复制到游戏目录（OptiScaler.dll 改名为代理 DLL）；fsr4Root 非空时再补入 FSR4 附加文件。
-    /// 覆盖前统一备份，最后写入 ini 关键项。
+    /// 覆盖前统一备份并写 manifest，可在编辑页一键还原。
     /// </summary>
     private static bool InjectFiles(
-        string pkgRoot, string gameDir, string proxy, LaunchItem item, out string error, string? fsr4Root = null)
+        string pkgRoot, string gameDir, string proxy, LaunchItem item, out string error,
+        string? fsr4Root = null, string? backupKey = null, string? gameName = null)
     {
         error = "";
         try
@@ -1738,14 +1853,16 @@ public static class OptiScalerService
             if (files.Length == 0) { error = "OptiScaler 包为空"; return false; }
 
             // 备份目录按游戏进程名归类；每次注入只保留最新一份（可还原）
-            var key = Sanitize(string.IsNullOrEmpty(TrainerService.LastExeName) ? "game" : TrainerService.LastExeName);
+            var key = Sanitize(string.IsNullOrEmpty(backupKey ?? TrainerService.LastExeName)
+                ? "game"
+                : (backupKey ?? TrainerService.LastExeName));
             var bdir = Path.Combine(BackupDir, key);
             try { if (Directory.Exists(bdir)) Directory.Delete(bdir, true); } catch { /* 旧备份删不掉：随后会覆盖 */ }
             Directory.CreateDirectory(Path.Combine(bdir, "files"));
 
             var manifest = new OptiBackupManifest
             {
-                Game = TrainerService.CurrentGameName(),
+                Game = gameName ?? TrainerService.CurrentGameName(),
                 GameDir = gameDir,
                 ExeName = key,
                 Proxy = proxy,
@@ -1999,8 +2116,9 @@ public static class OptiScalerService
 
     // ---- 关闭 / 重新打开游戏 ----
 
-    /// <summary>关闭游戏进程并等待其完全退出（成功返回 true；无法结束进程时返回 false，避免在游戏运行时注入）</summary>
-    private static async Task<bool> CloseGameAsync(string exeName)
+    /// <summary>关闭游戏进程并等待其完全退出（成功返回 true；无法结束进程时返回 false，避免在游戏运行时注入）。
+    /// useTrainerState=false 时只按进程名判断（手动注入不依赖"最后记录的游戏"）。</summary>
+    private static async Task<bool> CloseGameAsync(string exeName, bool useTrainerState = true)
     {
         if (string.IsNullOrEmpty(exeName)) return false;
         var killed = 0;
@@ -2024,13 +2142,15 @@ public static class OptiScalerService
         {
             DebugLog.Write($"OptiScaler: 结束进程异常 {ex.Message}");
         }
-        if (killed == 0 && !TrainerService.IsGameRunning() && !IsProcessAlive(exeName)) return true;
+        var trainerRunning = useTrainerState && TrainerService.IsGameRunning();
+        if (killed == 0 && !trainerRunning && !IsProcessAlive(exeName)) return true;
 
         // 不只看"最后记录的游戏"，同名的进程全部退出再注入，避免文件仍被占用
         var sw = Stopwatch.StartNew();
-        while (sw.Elapsed < TimeSpan.FromSeconds(15) && (TrainerService.IsGameRunning() || IsProcessAlive(exeName)))
+        while (sw.Elapsed < TimeSpan.FromSeconds(15)
+               && ((useTrainerState && TrainerService.IsGameRunning()) || IsProcessAlive(exeName)))
             await Task.Delay(300);
-        var ok = !TrainerService.IsGameRunning() && !IsProcessAlive(exeName);
+        var ok = !(useTrainerState && TrainerService.IsGameRunning()) && !IsProcessAlive(exeName);
         if (!ok) DebugLog.Write($"OptiScaler: 游戏进程 {exeName} 未完全退出，放弃注入");
         return ok;
     }

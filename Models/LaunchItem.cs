@@ -176,6 +176,8 @@ public enum MonitorMetric
     GpuVram = 1 << 14,
     /// <summary>当前时间（时:分:秒，24 小时制）</summary>
     Clock = 1 << 15,
+    /// <summary>旧版原始帧率选项，仅保留用于配置迁移</summary>
+    OriginalFps = 1 << 16,
 
     /// <summary>CPU 块的任意一项（用于决定 CPU 块是否显示）</summary>
     CpuAny = CpuUsage | CpuFreq | CpuTemp | CpuPower,

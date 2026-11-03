@@ -35,7 +35,6 @@ public static class ScreenTranslateService
     private static long _pendingSince;
     private static bool _mouseDown;
     private static int _watchTicks;
-    private static bool _promptSuppressed;
     private static readonly uint _selfPid = (uint)System.Diagnostics.Process.GetCurrentProcess().Id;
 
     /// <summary>当前是否处于翻译流程（等待选窗、已选中窗口等待开始，或正在显示译文）</summary>
@@ -79,7 +78,6 @@ public static class ScreenTranslateService
         _pendingSince = 0;
         _watchTicks = 0;
         _mouseDown = LeftDown();
-        _promptSuppressed = false;
 
         Interlocked.Increment(ref _seq);
         OnUi(() =>
@@ -115,31 +113,11 @@ public static class ScreenTranslateService
         {
             if (_stage == StageSelecting)
             {
-                SuppressPromptForLauncher();
                 PollSelector();
             }
             else if (_stage == StageShowing && ++_watchTicks % 2 == 0) WatchTarget();
         }
         catch { /* 单次轮询失败不影响后续 */ }
-    }
-
-    /// <summary>选窗阶段用户唤出启动器时先把面板藏起来（停止要按 A），启动器收起后再恢复</summary>
-    private static void SuppressPromptForLauncher()
-    {
-        var shown = App.Main?.IsShown ?? false;
-        if (shown == _promptSuppressed) return;
-        _promptSuppressed = shown;
-        if (shown) OnUi(Hud.HidePanel);
-        else OnUi(ShowSelectingStatus);
-    }
-
-    /// <summary>选窗/待开始阶段的状态文案（面板恢复显示时用）</summary>
-    private static void ShowSelectingStatus()
-    {
-        if (_target != IntPtr.Zero)
-            Hud.ShowPrompt("已选中窗口", "点「开始翻译」开始 · 按 A 关闭");
-        else
-            Hud.ShowPrompt("点击要翻译的窗口", "选中后点「开始翻译」· 按 A 关闭");
     }
 
     /// <summary>选窗阶段：盯住前台窗口，用户点击某个窗口使其获得焦点后立刻锁定</summary>
@@ -328,7 +306,6 @@ public static class ScreenTranslateService
         _pending = _target;
         _pendingSince = Environment.TickCount64;
         _mouseDown = LeftDown();
-        _promptSuppressed = false;
         OnUi(() =>
         {
             Hud.HideOverlay();
@@ -836,7 +813,7 @@ public static class ScreenTranslateService
         }
 
         /// <summary>覆盖层也是置顶窗口，重新显示会盖住面板：把它再提到最前，保证按钮始终可点</summary>
-        private static void RaisePanel()
+        public static void RaisePanel()
         {
             if (_panel != IntPtr.Zero && _panelVisible)
                 SetWindowPos(_panel, TopMost, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE);
@@ -848,6 +825,7 @@ public static class ScreenTranslateService
             Create();
             if (_panel == IntPtr.Zero) return;
             _panelVisible = true;
+            SetTimer(_panel, (UIntPtr)1, 250, IntPtr.Zero);
             var pw = Scaled(PanelW);
             var ph = Scaled(PanelH);
             var margin = Scaled(PanelMargin);
@@ -861,7 +839,11 @@ public static class ScreenTranslateService
         {
             _panelVisible = false;
             _pressed = 0;
-            if (_panel != IntPtr.Zero) ShowWindow(_panel, SW_HIDE);
+            if (_panel != IntPtr.Zero)
+            {
+                KillTimer(_panel, (UIntPtr)1);
+                ShowWindow(_panel, SW_HIDE);
+            }
         }
 
         /// <summary>更新面板上的状态文字（主状态 + 次说明）</summary>
@@ -931,7 +913,7 @@ public static class ScreenTranslateService
                     ShowWindow(_overlay, SW_HIDE);
                     _overlayVisible = false;
                 }
-                if (_panelVisible) HidePanel();
+                RaisePanel();
                 return;
             }
             if (!_panelVisible) ShowPanel();
@@ -1133,6 +1115,9 @@ public static class ScreenTranslateService
     {
         switch (msg)
         {
+            case 0x0113: // WM_TIMER
+                if (hwnd == Hud.PanelHandle) Hud.RaisePanel();
+                return IntPtr.Zero;
             case 0x000F: // WM_PAINT
                 Hud.Paint(hwnd);
                 return IntPtr.Zero;
@@ -1152,6 +1137,9 @@ public static class ScreenTranslateService
         }
         return DefWindowProcW(hwnd, msg, wParam, lParam);
     }
+
+    [DllImport("user32.dll")] private static extern UIntPtr SetTimer(IntPtr hwnd, UIntPtr id, uint interval, IntPtr callback);
+    [DllImport("user32.dll")] private static extern bool KillTimer(IntPtr hwnd, UIntPtr id);
 
     private static IntPtr TopMost => new(-1); // HWND_TOPMOST
 

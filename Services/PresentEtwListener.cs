@@ -4,14 +4,18 @@ using System.Runtime.InteropServices;
 namespace GameLocker.Services;
 
 /// <summary>
-/// 用 ETW 实时会话监听 Microsoft-Windows-DXGI 的 Present 事件，统计前台进程的真实帧率、帧时间与帧波动。
-/// 原理与 PresentMon 一致：Present 事件每帧一条，按事件时间戳差得到帧时间。
+/// 用 ETW 实时会话监听 Microsoft-Windows-DXGI 的 Present 事件，估算目标进程的提交帧率、帧时间与帧波动。
+/// 按事件时间戳差统计，不包含 PresentMon 的完整呈现链路分析，也不代表实际显示帧率。
 /// 需要管理员权限（StartTrace 失败时静默降级，调用方显示"—"）。
 /// </summary>
 internal sealed class PresentEtwListener : IDisposable
 {
     /// <summary>DXGI 提供程序 GUID（CA11C036-0102-4A2D-A6AD-F03CFED5D3C9）</summary>
     private static readonly Guid DxgiProviderId = new("CA11C036-0102-4A2D-A6AD-F03CFED5D3C9");
+    // Intel-PresentMon 官方标记需要 SDK/驱动 instrumentation；并非普遍支持 DLSS/FSR。
+    // 仅使用目标进程的 PresentFrameType，不处理无法归属目标的驱动 PID 或 FlipFrameType。
+    private static readonly Guid PresentMonProviderId = new("ECAA4712-4644-442F-B94C-A32F6CF8A499");
+    private const ushort PresentFrameTypeEventId = 1;
 
     /// <summary>Present 事件 ID。只统计 42：43（PresentMultiplaneOverlay）与 42 成对出现，
     /// 两条都计数会让帧率翻倍；它也不是普通游戏提交流程的帧计数依据</summary>
@@ -30,11 +34,6 @@ internal sealed class PresentEtwListener : IDisposable
     private const int FrameWindow = 600;
     /// <summary>帧率统计窗口（毫秒）</summary>
     private const double FpsWindowMs = 1000;
-    /// <summary>重复事件合并窗口的下限/上限（100ns）：1ms~5ms。
-    /// 真实重复事件的间隔因驱动而异（可能 0.5ms，也可能 4ms），固定窗口要么漏合并导致帧率翻倍，
-    /// 要么误合并 240Hz 的真实帧；这里按已统计的平均帧间隔自适应（见 RecordFrame）</summary>
-    private const long DedupeMinTicks = 10_000;
-    private const long DedupeMaxTicks = 50_000;
 
     /// <summary>输出给悬浮条绘制的帧时间样本数</summary>
     private const int HistoryMax = 180;
@@ -120,12 +119,64 @@ internal sealed class PresentEtwListener : IDisposable
     private int _count;
     private int _head;
     private long _lastTimestamp;
-    /// <summary>已计入帧的平均事件间隔（100ns，指数滑动平均），用于自适应去重窗口</summary>
-    private double _avgDelta;
     private long _lastCallbackTick;
+    private int _targetPid;
+    private long _targetVersion;
+    private readonly HashSet<uint> _originalFrameIds = new();
+    private readonly Queue<uint> _originalFrameOrder = new();
+    private readonly Queue<long> _originalTimestamps = new();
+    private long _lastOriginalTimestamp;
+    private long _lastOriginalCallbackTick;
+    private long _lastGeneratedCallbackTick;
+
+    public bool FrameGenerationDetected
+    {
+        get
+        {
+            lock (_gate)
+                return _lastGeneratedCallbackTick != 0
+                    && Stopwatch.GetTimestamp() - _lastGeneratedCallbackTick < 3 * Stopwatch.Frequency;
+        }
+    }
 
     /// <summary>被统计的目标进程（前台进程；0=无目标）</summary>
-    public volatile int TargetPid;
+    public int TargetPid
+    {
+        get { lock (_gate) return _targetPid; }
+        set
+        {
+            lock (_gate)
+            {
+                if (_targetPid == value) return;
+                _targetPid = value;
+                _targetVersion++;
+                ResetStatsLocked();
+            }
+        }
+    }
+
+    private void ResetStatsLocked()
+    {
+        ResetDxgiStatsLocked();
+        ResetOriginalStatsLocked();
+        _lastGeneratedCallbackTick = 0;
+    }
+
+    private void ResetOriginalStatsLocked()
+    {
+        _originalFrameIds.Clear();
+        _originalFrameOrder.Clear();
+        _originalTimestamps.Clear();
+        _lastOriginalTimestamp = _lastOriginalCallbackTick = 0;
+    }
+
+    private void ResetDxgiStatsLocked()
+    {
+        Array.Clear(_intervals, 0, _intervals.Length);
+        Array.Clear(_timestamps, 0, _timestamps.Length);
+        _count = _head = 0;
+        _lastTimestamp = _lastCallbackTick = 0;
+    }
 
     /// <summary>ETW 会话是否成功启动；false 表示无权/不可用，调用方应显示"—"</summary>
     public bool Available { get; private set; }
@@ -193,6 +244,11 @@ internal sealed class PresentEtwListener : IDisposable
                 return false;
             }
 
+            // 可选标记源：启用失败不影响 DXGI 提交帧率监听。
+            var presentMonProvider = PresentMonProviderId;
+            EnableTraceEx2(_sessionHandle, ref presentMonProvider, EVENT_CONTROL_CODE_ENABLE_PROVIDER,
+                TRACE_LEVEL_INFORMATION, 1, 0, 0, IntPtr.Zero);
+
             _callback = OnEvent;
             var logfile = new EVENT_TRACE_LOGFILE
             {
@@ -256,14 +312,45 @@ internal sealed class PresentEtwListener : IDisposable
         try
         {
             var record = Marshal.PtrToStructure<EVENT_RECORD>(recordPtr);
-            if (record.EventHeader.ProviderId != DxgiProviderId) return;
+            var isDxgi = record.EventHeader.ProviderId == DxgiProviderId;
+            var isPresentMon = record.EventHeader.ProviderId == PresentMonProviderId;
+            if (!isDxgi && !isPresentMon) return;
             var id = record.EventHeader.EventDescriptor.Id;
-            RawEvents++;
-            var pid = TargetPid;
-            var mine = pid > 0 && record.EventHeader.ProcessId == (uint)pid;
-            if (mine) DiagCount(record, id);
-            if (!mine || id != PresentEventId) return;
-            RecordFrame(record.EventHeader.TimeStamp);
+            if (isDxgi) RawEvents++;
+            int pid;
+            long targetVersion;
+            lock (_gate)
+            {
+                pid = _targetPid;
+                targetVersion = _targetVersion;
+            }
+            if (pid <= 0 || record.EventHeader.ProcessId != (uint)pid) return;
+            if (isPresentMon)
+            {
+                var version = record.EventHeader.EventDescriptor.Version;
+                // 官方 manifest：v0 为 UInt32 FrameId + byte FrameType，v1 尾部另有 UInt32。
+                if (id != PresentFrameTypeEventId || record.UserData == IntPtr.Zero
+                    || !((version == 0 && record.UserDataLength == 5)
+                        || (version == 1 && record.UserDataLength == 9))) return;
+                var frameType = Marshal.ReadByte(record.UserData, 4);
+                // 官方枚举：XeFG=50、AFMF=100、DLSS=150；Repeated(2) 不是生成帧。
+                if (frameType is 50 or 100 or 150)
+                {
+                    lock (_gate)
+                    {
+                        if (_targetPid == pid && _targetVersion == targetVersion)
+                            _lastGeneratedCallbackTick = Stopwatch.GetTimestamp();
+                    }
+                    return;
+                }
+                if (frameType != 1) return;
+                var frameId = unchecked((uint)Marshal.ReadInt32(record.UserData, 0));
+                RecordOriginalFrame(pid, targetVersion, frameId, record.EventHeader.TimeStamp);
+                return;
+            }
+            DiagCount(record, id);
+            if (id != PresentEventId) return;
+            RecordFrame(pid, targetVersion, record.EventHeader.TimeStamp);
         }
         catch { }
     }
@@ -273,39 +360,74 @@ internal sealed class PresentEtwListener : IDisposable
     /// ProcessTrace 是批量投递的，同一批事件会在几乎同一微秒内连续回调，
     /// 用回调时刻算间隔会全部变成 0.001ms 而被过滤掉。
     /// </summary>
-    private void RecordFrame(long eventTimestamp)
+    private void RecordFrame(int pid, long targetVersion, long eventTimestamp)
     {
-        var now = Stopwatch.GetTimestamp();
         lock (_gate)
         {
-            _lastCallbackTick = now;
-            if (eventTimestamp <= 0) return;
+            // 目标可能在回调筛选后切换，版本同时防止 A→B→A 的旧回调混入。
+            if (_targetPid != pid || _targetVersion != targetVersion || eventTimestamp <= 0) return;
             if (_lastTimestamp > 0)
             {
                 var delta = eventTimestamp - _lastTimestamp;
-                // 时间戳回退：视为重新开始统计
-                if (delta <= 0)
-                {
-                    _lastTimestamp = eventTimestamp;
-                    return;
-                }
-                // 同一帧的重复事件：间隔明显小于平均帧间隔的不计入（自适应窗口）
-                var dedupe = _avgDelta > 0
-                    ? Math.Clamp((long)(_avgDelta * 0.55), DedupeMinTicks, DedupeMaxTicks)
-                    : 20_000;
-                if (delta < dedupe) return;
+                if (delta == 0) return;
                 var ms = delta / 10000.0;
-                // 过滤异常间隔（暂停/切换窗口导致的秒级空档）
-                if (ms is > 0.2 and < 500)
+                // 回退或长空档后重新采样，避免旧曲线与新时间轴混用。
+                if (delta < 0 || ms >= 500)
                 {
+                    ResetDxgiStatsLocked();
+                }
+                else
+                {
+                    // 仅保留原有的极短间隔下限；不按历史均值推断重复，避免吞掉真实加速。
+                    if (ms <= 0.2) return;
                     _intervals[_head] = ms;
                     _timestamps[_head] = eventTimestamp;
                     _head = (_head + 1) % FrameWindow;
                     if (_count < FrameWindow) _count++;
-                    _avgDelta = _avgDelta > 0 ? _avgDelta * 0.9 + delta * 0.1 : delta;
                 }
             }
             _lastTimestamp = eventTimestamp;
+            _lastCallbackTick = Stopwatch.GetTimestamp();
+        }
+    }
+
+    private void RecordOriginalFrame(int pid, long targetVersion, uint frameId, long eventTimestamp)
+    {
+        lock (_gate)
+        {
+            if (_targetPid != pid || _targetVersion != targetVersion || eventTimestamp <= 0) return;
+            if (_originalFrameIds.Contains(frameId)) return;
+            if (_lastOriginalTimestamp > 0
+                && (eventTimestamp < _lastOriginalTimestamp
+                    || eventTimestamp - _lastOriginalTimestamp >= 5_000_000))
+                ResetOriginalStatsLocked();
+
+            _originalFrameIds.Add(frameId);
+            _originalFrameOrder.Enqueue(frameId);
+            if (_originalFrameOrder.Count > FrameWindow)
+                _originalFrameIds.Remove(_originalFrameOrder.Dequeue());
+
+            _originalTimestamps.Enqueue(eventTimestamp);
+            while (_originalTimestamps.Count > FrameWindow
+                || eventTimestamp - _originalTimestamps.Peek() > 10_000_000)
+                _originalTimestamps.Dequeue();
+            _lastOriginalTimestamp = eventTimestamp;
+            _lastOriginalCallbackTick = Stopwatch.GetTimestamp();
+        }
+    }
+
+    /// <summary>原始帧标记的最近一秒帧率；无标记、样本不足或到达过期时返回 NaN。</summary>
+    public double GetOriginalFps()
+    {
+        lock (_gate)
+        {
+            if (_originalTimestamps.Count < 2
+                || Stopwatch.GetTimestamp() - _lastOriginalCallbackTick >= 1.5 * Stopwatch.Frequency)
+                return double.NaN;
+            var duration = _lastOriginalTimestamp - _originalTimestamps.Peek();
+            return duration > 0
+                ? (_originalTimestamps.Count - 1) * 10_000_000.0 / duration
+                : double.NaN;
         }
     }
 
@@ -317,17 +439,22 @@ internal sealed class PresentEtwListener : IDisposable
             if (_count == 0) return (0, 0, []);
             // 最近 1.5 秒没有新的 Present（进程切走/空闲）→ 视为无数据
             var freshTicks = (long)(1.5 * Stopwatch.Frequency);
-            var fresh = Stopwatch.GetTimestamp() - _lastCallbackTick < freshTicks;
+            if (Stopwatch.GetTimestamp() - _lastCallbackTick >= freshTicks) return (0, 0, []);
 
             // 帧率窗口：以最新一帧的时间戳为基准往前 1 秒
             var windowTicks = FpsWindowMs * 10000.0;
             var newest = _timestamps[(_head - 1 + FrameWindow) % FrameWindow];
-            var framesInWindow = 0;
+            var intervalsInWindow = 0;
+            var coveredMs = 0.0;
             var sum = 0.0;
             for (var i = 0; i < _count; i++)
             {
                 var idx = (_head - _count + i + FrameWindow) % FrameWindow;
-                if (newest - _timestamps[idx] <= windowTicks) framesInWindow++;
+                if (newest - _timestamps[idx] < windowTicks)
+                {
+                    intervalsInWindow++;
+                    coveredMs += _intervals[idx];
+                }
                 if (i >= _count - 30) sum += _intervals[idx];
             }
 
@@ -341,7 +468,9 @@ internal sealed class PresentEtwListener : IDisposable
             }
 
             var avg = sum / Math.Min(30, _count);
-            var fps = fresh && framesInWindow > 1 ? framesInWindow * (1000.0 / FpsWindowMs) : 0;
+            // 每个样本代表一个完整间隔，而非一个端点；以实际覆盖时长归一化。
+            // 启动不足一秒或环形缓冲不足一秒时也适用，边界不额外计入一帧。
+            var fps = coveredMs > 0 ? intervalsInWindow * 1000.0 / coveredMs : 0;
             return (fps, avg, history);
         }
     }

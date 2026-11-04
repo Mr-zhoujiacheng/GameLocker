@@ -1163,7 +1163,7 @@ public static class MonitorService
     }
 
     /// <summary>
-    /// GPU 温度（℃）：仅使用与所选适配器一致的 NVML、ADL 或 IGCL 传感器。
+    /// GPU 温度（℃）：匹配适配器的 NVML/ADL/IGCL；Intel 核显可回退到 HWiNFO CPU GT。
     /// </summary>
     private static double ReadGpuTemp()
     {
@@ -1180,7 +1180,11 @@ public static class MonitorService
             return double.NaN;
         }
         if (_gpuAdapterKey is not null && _gpuAdapterKey == IntelGpuTemp.AdapterKey)
-            return IntelGpuTemp.Read();
+        {
+            var temperature = IntelGpuTemp.Read();
+            if (!double.IsNaN(temperature)) return temperature;
+            return IntelGpuTemp.IsIntegrated ? HwInfoGtTemperature.Read() : double.NaN;
+        }
         if (!_gpuSensorsAligned) return double.NaN;
         var adl = ReadAdlTemp();
         if (!double.IsNaN(adl)) return adl;

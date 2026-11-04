@@ -80,6 +80,27 @@ internal static class IntelGpuTemp
         public uint ThrottleReasons;
     }
 
+    // igcl_api.h x64：设备标识为 Windows LUID；完整结构大小 320 字节。
+    [StructLayout(LayoutKind.Explicit, Size = 320)]
+    private struct DeviceProperties
+    {
+        [FieldOffset(0)] public uint Size;
+        [FieldOffset(4)] public byte Version;
+        [FieldOffset(8)] public IntPtr DeviceId;
+        [FieldOffset(16)] public uint DeviceIdSize;
+        [FieldOffset(64)] public uint VendorId;
+        [FieldOffset(188)] public uint AdapterFlags;
+    }
+
+    [UnmanagedFunctionPointer(CallingConvention.Cdecl)]
+    private delegate int DevicePropertiesDelegate(IntPtr device, ref DeviceProperties properties);
+
+    public static string? AdapterKey { get { lock (Gate) { EnsureReady(); return _adapterKey; } } }
+    public static bool IsIntegrated { get { lock (Gate) { EnsureReady(); return _isIntegrated; } } }
+    public static string IdentityStatus { get; private set; } = "未尝试";
+    private static string? _adapterKey;
+    private static bool _isIntegrated;
+
     [UnmanagedFunctionPointer(CallingConvention.Cdecl)]
     private delegate int InitDelegate(ref InitArgs args, out IntPtr apiHandle);
 
@@ -362,6 +383,33 @@ internal static class IntelGpuTemp
                 }
 
                 var device = Marshal.ReadIntPtr(devices, 0);
+                var getDeviceProperties = GetProc<DevicePropertiesDelegate>("ctlGetDeviceProperties");
+                if (getDeviceProperties is not null)
+                {
+                    var luid = Marshal.AllocHGlobal(8);
+                    try
+                    {
+                        Marshal.WriteInt64(luid, 0);
+                        var properties = new DeviceProperties
+                        {
+                            Size = (uint)Marshal.SizeOf<DeviceProperties>(), Version = 0,
+                            DeviceId = luid, DeviceIdSize = 8
+                        };
+                        var propertyResult = getDeviceProperties(device, ref properties);
+                        var low = unchecked((uint)Marshal.ReadInt32(luid));
+                        var high = unchecked((uint)Marshal.ReadInt32(luid, 4));
+                        if (propertyResult == 0 && properties.VendorId == 0x8086
+                            && properties.DeviceIdSize == 8 && (low != 0 || high != 0))
+                        {
+                            _adapterKey = FormattableString.Invariant($"luid_0x{high:x8}_0x{low:x8}_phys_0");
+                            _isIntegrated = (properties.AdapterFlags & 1) != 0;
+                            IdentityStatus = $"{_adapterKey}，核显={_isIntegrated}";
+                        }
+                        else IdentityStatus = $"设备身份不可用：0x{propertyResult:X8}，vendor=0x{properties.VendorId:X4}，size={properties.DeviceIdSize}";
+                    }
+                    finally { Marshal.FreeHGlobal(luid); }
+                }
+                else IdentityStatus = "缺少 ctlGetDeviceProperties";
                 if (enumFreq is not null && getFreqProperties is not null && _getFreqState is not null)
                 {
                     uint freqCount = 0;

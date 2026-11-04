@@ -37,7 +37,7 @@ public sealed class MonitorSnapshot
     public double GpuPower = double.NaN;
     /// <summary>GPU 温度（℃，NaN=不可用；来自 NVML / ADL / IGCL）</summary>
     public double GpuTemp = double.NaN;
-    /// <summary>所选 GPU 的专用显存用量（GB，NaN=不可用，0 为有效读数）</summary>
+    /// <summary>所选 GPU 显存用量（GB；Intel 核显含共享内存，NaN=不可用，0 为有效读数）</summary>
     public double GpuVram = double.NaN;
     /// <summary>电池当前电量（%，NaN=不可用）</summary>
     public double BatteryPercent = double.NaN;
@@ -845,13 +845,15 @@ public static class MonitorService
         }
         if (_gpuAdapterKey is null && adapters.Count == 1) _gpuAdapterKey = adapters.First();
         // 厂商传感器身份由完整 DXGI 硬件拓扑确认，不依赖 WMI 是否可用。
-        AlignSingleGpuSensors();
+        AlignSingleGpuSensors(engines, adapters);
         _gpuEngineStatus += $"；选中引擎匹配={engines.Keys.Any(k => k.Adapter == _gpuAdapterKey)}";
         _gpuMemoryIdentityStatus += $"；选中身份匹配={(_gpuAdapterKey is not null && memoryAdapters.Contains(_gpuAdapterKey))}";
-        return double.IsNaN(busiest) ? double.NaN : Math.Clamp(busiest, 0, 100);
+        var selectedEngines = engines.Where(e => e.Key.Adapter == _gpuAdapterKey).Select(e => e.Value).ToArray();
+        return selectedEngines.Length == 0 ? double.NaN : Math.Clamp(selectedEngines.Max(), 0, 100);
     }
 
-    private static void AlignSingleGpuSensors()
+    private static void AlignSingleGpuSensors(
+        Dictionary<(string Adapter, string Engine), double> engines, HashSet<string> adapters)
     {
         _gpuSensorsAligned = false;
         _gpuDxgiCandidates = "无";
@@ -894,6 +896,17 @@ public static class MonitorService
                 }
                 finally { Marshal.Release(adapter); }
             }
+            var intelKey = IntelGpuTemp.AdapterKey;
+            if (intelKey is not null && adapters.Contains(intelKey))
+            {
+                var selectedBusy = engines.Any(e => e.Key.Adapter == _gpuAdapterKey && e.Value > 0);
+                if (_gpuAdapterKey == intelKey || !selectedBusy)
+                {
+                    _gpuAdapterKey = intelKey;
+                    _gpuAlignmentStatus = "Intel IGCL LUID 与 WMI 精确匹配；" + IntelGpuTemp.IdentityStatus;
+                    return;
+                }
+            }
             if (hardware.Count != 1)
             {
                 _gpuAlignmentStatus = $"拒绝：完整 DXGI 拓扑中受支持硬件数={hardware.Count}，要求单卡";
@@ -918,7 +931,7 @@ public static class MonitorService
         }
     }
 
-    /// <summary>所选适配器的专用显存用量（GB），0 是有效读数，不包含共享内存。</summary>
+    /// <summary>所选适配器显存用量（GB）；Intel 核显统计专用+共享，独显仅专用，0 是有效读数。</summary>
     private static double ReadGpuVram()
     {
         var key = _gpuAdapterKey;
@@ -930,7 +943,7 @@ public static class MonitorService
         try
         {
             using var searcher = new ManagementObjectSearcher(@"root\CIMV2",
-                "SELECT Name, DedicatedUsage FROM Win32_PerfFormattedData_GPUPerformanceCounters_GPUAdapterMemory");
+                "SELECT Name, DedicatedUsage, SharedUsage FROM Win32_PerfFormattedData_GPUPerformanceCounters_GPUAdapterMemory");
             var matched = false;
             foreach (var o in searcher.Get())
             {
@@ -938,8 +951,15 @@ public static class MonitorService
                 matched = true;
                 if (o["DedicatedUsage"] is not { } d) continue;
                 var bytes = Convert.ToDouble(d);
+                var integrated = key == IntelGpuTemp.AdapterKey && IntelGpuTemp.IsIntegrated;
+                var shared = integrated && o["SharedUsage"] is { } s ? Convert.ToDouble(s) : double.NaN;
                 var valid = double.IsFinite(bytes) && bytes >= 0;
-                _gpuVramStatus = valid ? $"匹配 {key}，DedicatedUsage 有效" : $"匹配 {key}，DedicatedUsage 无效";
+                if (integrated)
+                {
+                    valid &= double.IsFinite(shared) && shared >= 0;
+                    bytes += shared;
+                }
+                _gpuVramStatus = $"匹配 {key}，口径={(integrated ? "DedicatedUsage+SharedUsage（核显）" : "DedicatedUsage")}，有效={valid}，bytes={bytes}";
                 return valid ? bytes / 1024d / 1024d / 1024d : double.NaN;
             }
             _gpuVramStatus = matched ? $"匹配 {key}，缺少 DedicatedUsage" : $"无匹配实例：{key}";
@@ -1106,6 +1126,8 @@ public static class MonitorService
             catch { }
             return double.NaN;
         }
+        if (_gpuAdapterKey is not null && _gpuAdapterKey == IntelGpuTemp.AdapterKey)
+            return IntelGpuTemp.ReadPower();
         if (!_gpuSensorsAligned) return double.NaN;
         var adlPower = ReadAdlPower();
         if (!double.IsNaN(adlPower)) return adlPower;
@@ -1129,6 +1151,8 @@ public static class MonitorService
             catch { }
             return double.NaN;
         }
+        if (_gpuAdapterKey is not null && _gpuAdapterKey == IntelGpuTemp.AdapterKey)
+            return IntelGpuTemp.ReadClock();
         if (!_gpuSensorsAligned) return double.NaN;
         var adl = ReadAdlClock();
         if (!double.IsNaN(adl)) return adl;
@@ -1155,6 +1179,8 @@ public static class MonitorService
             catch { }
             return double.NaN;
         }
+        if (_gpuAdapterKey is not null && _gpuAdapterKey == IntelGpuTemp.AdapterKey)
+            return IntelGpuTemp.Read();
         if (!_gpuSensorsAligned) return double.NaN;
         var adl = ReadAdlTemp();
         if (!double.IsNaN(adl)) return adl;
@@ -1450,7 +1476,8 @@ public static class MonitorService
             sb.AppendLine($"所选 GPU: {_gpuAdapterKey ?? "无"} / 单卡传感器对齐={_gpuSensorsAligned}");
             sb.AppendLine($"引擎 WMI: {_gpuEngineStatus}");
             sb.AppendLine($"显存身份 WMI: {_gpuMemoryIdentityStatus}");
-            sb.AppendLine($"专用显存 WMI: {_gpuVramStatus}（仅 DedicatedUsage，不含共享/预算）");
+            sb.AppendLine($"GPU 显存 WMI: {_gpuVramStatus}（Intel 核显含共享，独显仅专用；不含预算）");
+            sb.AppendLine($"IGCL 设备身份: {IntelGpuTemp.IdentityStatus}");
             sb.AppendLine($"DXGI 候选: {_gpuDxgiCandidates}");
             sb.AppendLine($"DXGI 对齐: {_gpuAlignmentStatus}");
             sb.AppendLine($"NVML 旧驱动唯一卡回退: {_gpuNvmlFallbackStatus}");
@@ -1462,7 +1489,7 @@ public static class MonitorService
             {
                 var s = _snapshot;
                 sb.AppendLine($"浮层 CPU: 使用 {s.CpuUsage:0}% / 频率 {V(s.CpuMhz, "MHz")} / 温度 {V(s.CpuTemp, "℃")} / 功耗 {V(s.CpuPower, "W")}");
-                sb.AppendLine($"浮层 GPU 快照: 使用 {V(s.GpuUsage, "%")} / 频率 {V(s.GpuMhz, "MHz")} / 温度 {V(s.GpuTemp, "℃")} / 功耗 {V(s.GpuPower, "W")} / 专用显存 {V(s.GpuVram, "GB")}");
+                sb.AppendLine($"浮层 GPU 快照: 使用 {V(s.GpuUsage, "%")} / 频率 {V(s.GpuMhz, "MHz")} / 温度 {V(s.GpuTemp, "℃")} / 功耗 {V(s.GpuPower, "W")} / 显存 {V(s.GpuVram, "GB")}");
                 sb.AppendLine($"浮层 电池: 电量 {V(s.BatteryPercent, "%")} / 功率 {V(s.BatteryPower, "W")} / 充电={s.Charging} / 接电源={s.OnAc}");
             }
             var dir = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData), "GameLocker");

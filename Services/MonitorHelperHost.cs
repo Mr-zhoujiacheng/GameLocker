@@ -98,8 +98,9 @@ internal static class MonitorHelperHost
                 if (outputPid > 0 && output is null)
                 {
                     output = new LosslessOutputListener();
-                    if (!output.Start()) Log("小黄鸭输出采集失败：" + output.LastError);
+                    if (!output.Start()) Log("显示帧采集失败：" + output.LastError);
                 }
+                output?.SetTargets(targetPid, outputPid);
                 if (etw is not null)
                 {
                     etw.TargetPid = targetPid;
@@ -109,7 +110,8 @@ internal static class MonitorHelperHost
                 if (tick % 2 == 1 && PawnIoMsr.Available) cpuTemp = PawnIoMsr.ReadTemperature();
                 // 未经确认的固件热区不能作为 GPU 芯片温度发布。
                 shared.Publish(fps, frameMs, history, cpuTemp, double.NaN, targetPid,
-                    etw?.GetOriginalFps() ?? double.NaN, etw?.FrameGenerationDetected ?? false,
+                    etw?.GetOriginalFps() ?? double.NaN,
+                    (etw?.FrameGenerationDetected ?? false) || (output?.HasGeneratedFrames(targetPid) ?? false),
                     outputPid, output?.GetFps(outputPid) ?? double.NaN);
             }
         }

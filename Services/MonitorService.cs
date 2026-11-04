@@ -67,6 +67,7 @@ public static class MonitorService
     private static MonitorOverlayWindow? _overlay;
     private static PresentEtwListener? _etw;
     private static LosslessOutputListener? _losslessOutput;
+    private static int _frameTargetPid;
     private static int _ticking;
     private static int _tickCount;
 
@@ -237,6 +238,7 @@ public static class MonitorService
         _etw = null;
         _losslessOutput?.Dispose();
         _losslessOutput = null;
+        _frameTargetPid = 0;
 
         try { _stopEvent?.Set(); } catch { }
 
@@ -390,13 +392,17 @@ public static class MonitorService
         var n = ++_tickCount;
         var s = new MonitorSnapshot();
         var targetPid = NeedsFrameStats() ? ForegroundPid() : 0;
-        var outputPid = NeedsFrameStats() ? LosslessScalingService.ActiveOutputPid() : 0;
-        s.FrameGenerationDetected = outputPid > 0;
+        var losslessPid = NeedsFrameStats() ? LosslessScalingService.ActiveOutputPid() : 0;
+        var outputPid = losslessPid > 0 ? losslessPid : targetPid;
+        s.FrameGenerationDetected = losslessPid > 0;
         if (outputPid > 0 && IsElevated() && _losslessOutput is null)
         {
             _losslessOutput = new LosslessOutputListener();
             _losslessOutput.Start();
         }
+        var frameTargetChanged = _frameTargetPid != targetPid;
+        _frameTargetPid = targetPid;
+        _losslessOutput?.SetTargets(targetPid, outputPid);
         // 助手温度必须先读取，失效时不能继续使用上次的温度。
         if (_shared is not null)
         {
@@ -468,12 +474,17 @@ public static class MonitorService
             s.FrameGenerationDetected |= _etw.FrameGenerationDetected;
         }
 
-        if (outputPid > 0)
+        s.FrameGenerationDetected |= _losslessOutput?.HasGeneratedFrames(targetPid) ?? false;
+        if (outputPid > 0 && !frameTargetChanged)
         {
-            // 外部插帧的输入来自游戏，输出来自小黄鸭的独立显示链，绝不按倍率推算。
-            s.OriginalFps = targetPid != outputPid && s.Fps > 0 ? s.Fps : double.NaN;
+            // 游戏允许合成显示；小黄鸭仍只读取独立显示链，不按提交率或倍率推算。
             s.OutputFps = _losslessOutput?.GetFps(outputPid)
                 ?? _shared?.ReadOutputFps(outputPid) ?? double.NaN;
+        }
+        if (losslessPid > 0)
+        {
+            // 外部插帧输入是游戏的 ETW 原始帧率；内置插帧则保留 ETW 的原始帧分类结果。
+            s.OriginalFps = targetPid != losslessPid && s.Fps > 0 ? s.Fps : double.NaN;
         }
         return s;
     }
@@ -763,14 +774,12 @@ public static class MonitorService
                 engines[key] = sum + usage;
             }
             // 内存实例也参与身份枚举，失败不能清掉已取得的引擎使用率。
-            var memoryEnumerated = false;
             try
             {
                 using var memory = new ManagementObjectSearcher(@"root\CIMV2",
                     "SELECT Name FROM Win32_PerfFormattedData_GPUPerformanceCounters_GPUAdapterMemory");
                 foreach (var o in memory.Get())
                     if (GpuAdapterKey(o["Name"] as string ?? "") is { } adapter) adapters.Add(adapter);
-                memoryEnumerated = true;
             }
             catch { }
 
@@ -782,25 +791,49 @@ public static class MonitorService
                 _gpuAdapterKey = entry.Key.Adapter;
             }
             if (_gpuAdapterKey is null && adapters.Count == 1) _gpuAdapterKey = adapters.First();
-            // ADL / IGCL 仍仅在可证明单卡时使用，NVML 另按 LUID 绑定。
-            try
-            {
-                using var controllers = new ManagementObjectSearcher(@"root\CIMV2", "SELECT PNPDeviceID FROM Win32_VideoController");
-                using var controllerList = controllers.Get();
-                _gpuSensorsAligned = memoryEnumerated && _gpuAdapterKey is not null
-                    && adapters.Count == 1 && controllerList.Count == 1
-                    && !controllerList.Cast<ManagementBaseObject>().Any(o =>
-                        (o["PNPDeviceID"] as string ?? "").Contains("VEN_10DE", StringComparison.OrdinalIgnoreCase));
-            }
-            catch { _gpuSensorsAligned = false; }
+            // 厂商传感器身份由 DXGI 硬件适配器确认，不依赖显存性能计数器是否可用。
+            AlignSingleGpuSensors();
             return double.IsNaN(busiest) ? double.NaN : Math.Clamp(busiest, 0, 100);
         }
         catch
         {
-            _gpuAdapterKey = null;
-            _gpuSensorsAligned = false;
+            AlignSingleGpuSensors();
             return double.NaN;
         }
+    }
+
+    private static void AlignSingleGpuSensors()
+    {
+        _gpuSensorsAligned = false;
+        IntPtr factory = IntPtr.Zero;
+        try
+        {
+            var iid = new Guid("770aae78-f26f-4dba-a829-253c83d1b387");
+            if (CreateDXGIFactory1(ref iid, out factory) < 0) return;
+            var enumerate = Marshal.GetDelegateForFunctionPointer<EnumAdaptersDelegate>(
+                Marshal.ReadIntPtr(Marshal.ReadIntPtr(factory), 12 * IntPtr.Size));
+            var hardware = new List<GpuAdapterDesc>();
+            for (uint i = 0; ; i++)
+            {
+                if (enumerate(factory, i, out var adapter) < 0) break;
+                try
+                {
+                    var getDesc = Marshal.GetDelegateForFunctionPointer<GetAdapterDescDelegate>(
+                        Marshal.ReadIntPtr(Marshal.ReadIntPtr(adapter), 10 * IntPtr.Size));
+                    if (getDesc(adapter, out var desc) >= 0 && desc.VendorId is 0x8086 or 0x1002 or 0x10de)
+                        hardware.Add(desc);
+                }
+                finally { Marshal.Release(adapter); }
+            }
+            if (hardware.Count != 1) return;
+            var selected = hardware[0];
+            var key = FormattableString.Invariant($"luid_0x{selected.LuidHigh:x8}_0x{selected.LuidLow:x8}_phys_0");
+            if (_gpuAdapterKey is not null && !string.Equals(_gpuAdapterKey, key, StringComparison.OrdinalIgnoreCase)) return;
+            _gpuAdapterKey = key;
+            _gpuSensorsAligned = selected.VendorId is 0x8086 or 0x1002;
+        }
+        catch { }
+        finally { if (factory != IntPtr.Zero) Marshal.Release(factory); }
     }
 
     /// <summary>所选适配器的专用显存用量（GB），0 是有效读数，不包含共享内存。</summary>

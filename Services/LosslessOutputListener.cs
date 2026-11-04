@@ -4,7 +4,7 @@ using System.Text;
 
 namespace GameLocker.Services;
 
-/// <summary>监听 Lossless Scaling 的独立翻转输出；不把桌面合成或 UI 提交当作显示帧。</summary>
+/// <summary>监听目标进程的实际显示时长；Lossless Scaling 仅接受独立显示链。</summary>
 internal sealed class LosslessOutputListener : IDisposable
 {
     private const int MaxSamples = 2000;
@@ -22,7 +22,32 @@ internal sealed class LosslessOutputListener : IDisposable
     private int[]? _columns;
     private string? _lastError;
 
-    private readonly record struct Sample(long ReceivedAt, double Interval);
+    private int _targetPid;
+    private int _outputPid;
+
+    private readonly record struct Sample(long ReceivedAt, double Interval, bool Generated);
+
+    // 捕获会话只启动一次；前台切换只更新内存过滤条件，不能携带上个游戏的样本。
+    internal void SetTargets(int targetPid, int outputPid)
+    {
+        lock (_gate)
+        {
+            if (_targetPid == targetPid && _outputPid == outputPid) return;
+            _targetPid = targetPid;
+            _outputPid = outputPid;
+            _chains.Clear();
+        }
+    }
+
+    internal bool HasGeneratedFrames(int pid)
+    {
+        lock (_gate)
+        {
+            if (_disposed || pid <= 0) return false;
+            Prune(Stopwatch.GetTimestamp());
+            return _chains.Any(pair => pair.Key.Pid == pid && pair.Value.Any(sample => sample.Generated));
+        }
+    }
 
     internal string? LastError
     {
@@ -39,8 +64,8 @@ internal sealed class LosslessOutputListener : IDisposable
             _startAttempted = true;
             var process = new Process
             {
-                StartInfo = CreateStartInfo("--process_name", "LosslessScaling.exe",
-                    "--output_stdout", "--no_console_stats", "--v1_metrics", "--exclude_dropped",
+                StartInfo = CreateStartInfo(
+                    "--output_stdout", "--no_console_stats", "--v2_metrics", "--track_frame_type", "--exclude_dropped",
                     "--no_track_input", "--no_track_gpu", "--session_name", _sessionName,
                     "--stop_existing_session")
             };
@@ -131,8 +156,8 @@ internal sealed class LosslessOutputListener : IDisposable
             if (fields == null || fields.Count == 0) return;
             if (fields[0].Equals("Application", StringComparison.OrdinalIgnoreCase))
             {
-                string[] names = { "Application", "ProcessID", "SwapChainAddress", "Dropped",
-                    "msBetweenDisplayChange", "PresentMode" };
+                string[] names = { "Application", "ProcessID", "SwapChainAddress", "FrameType",
+                    "DisplayedTime", "PresentMode" };
                 var columns = new int[names.Length];
                 for (var i = 0; i < names.Length; i++)
                 {
@@ -151,23 +176,26 @@ internal sealed class LosslessOutputListener : IDisposable
             }
             if (_columns == null || _columns.Any(column => column >= fields.Count)) return;
             var c = _columns;
-            if (!fields[c[0]].Equals("LosslessScaling.exe", StringComparison.OrdinalIgnoreCase)
-                || fields[c[3]] != "0"
-                || !int.TryParse(fields[c[1]], NumberStyles.None, CultureInfo.InvariantCulture, out var pid)
-                || pid <= 0
+            if (!int.TryParse(fields[c[1]], NumberStyles.None, CultureInfo.InvariantCulture, out var pid)
+                || pid <= 0 || (pid != _targetPid && pid != _outputPid)
                 || !TryParseChain(fields[c[2]], out var chain)
                 || !double.TryParse(fields[c[4]], NumberStyles.Float, CultureInfo.InvariantCulture, out var interval)
                 || !double.IsFinite(interval) || interval <= 0)
                 return;
             var mode = fields[c[5]];
-            if (!mode.Contains("Independent Flip", StringComparison.OrdinalIgnoreCase)
-                && !mode.Contains("Hardware: Legacy Flip", StringComparison.OrdinalIgnoreCase))
+            var lossless = pid == _outputPid && (pid != _targetPid
+                || fields[c[0]].Equals("LosslessScaling.exe", StringComparison.OrdinalIgnoreCase));
+            if (lossless && !mode.Contains("Independent Flip", StringComparison.OrdinalIgnoreCase)
+                && !mode.Equals("Hardware: Legacy Flip", StringComparison.OrdinalIgnoreCase))
                 return;
 
             var key = (pid, chain);
             if (!_chains.TryGetValue(key, out var samples))
                 _chains[key] = samples = new Queue<Sample>();
-            samples.Enqueue(new Sample(now, interval));
+            // v2.6 CsvOutput.cpp 的 FrameTypeToString；Unknown/Application 不推测为生成帧。
+            var generated = fields[c[3]].Equals("Intel XeSS-FG", StringComparison.OrdinalIgnoreCase)
+                || fields[c[3]].Equals("AMD AFMF", StringComparison.OrdinalIgnoreCase);
+            samples.Enqueue(new Sample(now, interval, generated));
             while (samples.Count > MaxSamples) samples.Dequeue();
         }
     }

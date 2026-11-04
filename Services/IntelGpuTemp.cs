@@ -41,6 +41,32 @@ internal static class IntelGpuTemp
         public double MaxTemperature;
     }
 
+    private const int FrequencyDomainGpu = 0;
+
+    // Intel igcl_api.h: bool 为 1 字节；enum / int32_t 为 4 字节。
+    [StructLayout(LayoutKind.Sequential, Pack = 8)]
+    private struct FreqProperties
+    {
+        public uint Size;
+        public byte Version;
+        public int Type;
+        public byte CanControl;
+        public double Min;
+        public double Max;
+    }
+
+    // 官方 ctl_power_properties_t 没有 type / GPU 标识，不能按域数量推断来源。
+    [StructLayout(LayoutKind.Sequential, Pack = 8)]
+    private struct PowerProperties
+    {
+        public uint Size;
+        public byte Version;
+        public byte CanControl;
+        public int DefaultLimit;
+        public int MinLimit;
+        public int MaxLimit;
+    }
+
     [StructLayout(LayoutKind.Sequential, Pack = 8)]
     private struct FreqState
     {
@@ -73,21 +99,39 @@ internal static class IntelGpuTemp
     private delegate int EnumFrequencyDelegate(IntPtr device, ref uint count, IntPtr domains);
 
     [UnmanagedFunctionPointer(CallingConvention.Cdecl)]
+    private delegate int FrequencyPropertiesDelegate(IntPtr domain, ref FreqProperties properties);
+
+    [UnmanagedFunctionPointer(CallingConvention.Cdecl)]
+    private delegate int PowerPropertiesDelegate(IntPtr domain, ref PowerProperties properties);
+
+    [UnmanagedFunctionPointer(CallingConvention.Cdecl)]
     private delegate int FrequencyStateDelegate(IntPtr domain, ref FreqState state);
 
     [UnmanagedFunctionPointer(CallingConvention.Cdecl)]
     private delegate int EnumPowerDelegate(IntPtr device, ref uint count, IntPtr domains);
 
-    /// <summary>ctl_power_energy_counter_t：能量（微焦）与时间戳（微秒）</summary>
-    [StructLayout(LayoutKind.Sequential)]
-    private struct EnergyCounter
+    [StructLayout(LayoutKind.Explicit, Size = 24)]
+    private struct TelemetryItem
     {
-        public ulong Energy;
-        public ulong Timestamp;
+        [FieldOffset(0)] public byte Supported;
+        [FieldOffset(4)] public int Units;
+        [FieldOffset(8)] public int Type;
+        [FieldOffset(16)] public double Value;
+    }
+
+    // Intel igcl_api.h ctl_power_telemetry_t，MSVC x64 默认对齐验证。
+    // 保留完整 native 大小，未声明的尾部仍留给驱动写入；Version=0 不请求扩展指标。
+    [StructLayout(LayoutKind.Explicit, Size = 1024)]
+    private struct PowerTelemetry
+    {
+        [FieldOffset(0)] public uint Size;
+        [FieldOffset(4)] public byte Version;
+        [FieldOffset(8)] public TelemetryItem Timestamp;
+        [FieldOffset(32)] public TelemetryItem GpuEnergy;
     }
 
     [UnmanagedFunctionPointer(CallingConvention.Cdecl)]
-    private delegate int PowerEnergyDelegate(IntPtr domain, ref EnergyCounter counter);
+    private delegate int PowerTelemetryDelegate(IntPtr device, ref PowerTelemetry telemetry);
 
     [DllImport("kernel32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
     private static extern IntPtr LoadLibraryW(string path);
@@ -102,13 +146,14 @@ internal static class IntelGpuTemp
     private static IntPtr _module;
     private static IntPtr _sensor;
     private static IntPtr _freq;
-    private static IntPtr _powerDomain;
+    private static IntPtr _powerDevice;
     private static uint _powerDomainCount;
-    private static ulong _lastEnergy;
-    private static ulong _lastEnergyTs;
+    private static bool _hasPowerBaseline;
+    private static double _lastEnergy;
+    private static double _lastEnergyTs;
     private static SensorStateDelegate? _getState;
     private static FrequencyStateDelegate? _getFreqState;
-    private static PowerEnergyDelegate? _getEnergy;
+    private static PowerTelemetryDelegate? _getPowerTelemetry;
 
     /// <summary>温度初始化结果，写入诊断文件便于在掌机上排查</summary>
     public static string Status { get; private set; } = "未尝试";
@@ -159,33 +204,65 @@ internal static class IntelGpuTemp
         }
     }
 
-    /// <summary>读取 GPU 功耗（W）：由驱动功率域的能量计数器差分得到；不可用返回 NaN</summary>
+    /// <summary>读取 GPU 芯片功耗（W）：gpuEnergyCounter（J）/ timeStamp（s）差分；不可用返回 NaN</summary>
     public static double ReadPower()
     {
         lock (Gate)
         {
             EnsureReady();
-            if (_getEnergy is null || _powerDomain == IntPtr.Zero) return double.NaN;
+            if (_getPowerTelemetry is null || _powerDevice == IntPtr.Zero) return double.NaN;
             try
             {
-                var counter = new EnergyCounter();
-                if (_getEnergy(_powerDomain, ref counter) != 0)
+                var telemetry = new PowerTelemetry { Size = (uint)Marshal.SizeOf<PowerTelemetry>(), Version = 0 };
+                var ret = _getPowerTelemetry(_powerDevice, ref telemetry);
+                if (ret != 0)
                 {
-                    PowerDetail = "能量计数器读取失败";
+                    _hasPowerBaseline = false;
+                    PowerDetail = "ctlPowerTelemetryGet 失败：" + Describe(ret);
                     return double.NaN;
                 }
-                // 微焦 / 微秒 = 瓦特；第一次采样只记基线
-                var result = double.NaN;
-                if (_lastEnergyTs != 0 && counter.Timestamp > _lastEnergyTs && counter.Energy >= _lastEnergy)
-                    result = (double)(counter.Energy - _lastEnergy) / (counter.Timestamp - _lastEnergyTs);
-                PowerDetail = $"energy={counter.Energy} ts={counter.Timestamp}"
-                    + $" Δenergy={counter.Energy - _lastEnergy} Δts={counter.Timestamp - _lastEnergyTs} W={result:0.##}";
-                _lastEnergy = counter.Energy;
-                _lastEnergyTs = counter.Timestamp;
-                return result is > 0 and < 500 ? Math.Round(result, 1) : double.NaN;
+                return UpdatePower(telemetry);
             }
-            catch { return double.NaN; }
+            catch (Exception ex)
+            {
+                _hasPowerBaseline = false;
+                PowerDetail = "GPU 遥测异常：" + ex.Message;
+                return double.NaN;
+            }
         }
+    }
+
+    private static double UpdatePower(PowerTelemetry telemetry)
+    {
+        var energy = telemetry.GpuEnergy;
+        var time = telemetry.Timestamp;
+        // ctl_data_value_t 是 union，仅在 DOUBLE(9)、焦耳(6)/秒(7) 时解释为 double。
+        if (energy.Supported == 0 || time.Supported == 0 || energy.Type != 9 || time.Type != 9
+            || energy.Units != 6 || time.Units != 7
+            || !double.IsFinite(energy.Value) || !double.IsFinite(time.Value) || energy.Value < 0 || time.Value < 0)
+        {
+            _hasPowerBaseline = false;
+            PowerDetail = $"GPU 遥测不可用：energy(supported/type/unit)={energy.Supported}/{energy.Type}/{energy.Units}，time={time.Supported}/{time.Type}/{time.Units}，J={energy.Value} s={time.Value}";
+            return double.NaN;
+        }
+        var deltaEnergy = energy.Value - _lastEnergy;
+        var deltaTime = time.Value - _lastEnergyTs;
+        var result = double.NaN;
+        var reason = "首帧基线";
+        if (_hasPowerBaseline)
+        {
+            if (deltaTime > 0 && deltaEnergy >= 0)
+            {
+                result = deltaEnergy / deltaTime;
+                reason = "GPU 能量差分";
+            }
+            else reason = "时间戳未前进或计数器回退，重建基线";
+        }
+        _lastEnergy = energy.Value;
+        _lastEnergyTs = time.Value;
+        _hasPowerBaseline = true;
+        PowerDetail = $"{reason}：gpuEnergy(J)={energy.Value} time(s)={time.Value} ΔJ={deltaEnergy} Δs={deltaTime} W={result:0.###}";
+        return double.IsFinite(result) && result is >= 0 and < 500 ? Math.Round(result, 1) : double.NaN;
     }
 
     private static T? GetProc<T>(string name) where T : Delegate
@@ -214,8 +291,10 @@ internal static class IntelGpuTemp
             _getState = GetProc<SensorStateDelegate>("ctlTemperatureGetState");
             var enumFreq = GetProc<EnumFrequencyDelegate>("ctlEnumFrequencyDomains");
             _getFreqState = GetProc<FrequencyStateDelegate>("ctlFrequencyGetState");
+            var getFreqProperties = GetProc<FrequencyPropertiesDelegate>("ctlFrequencyGetProperties");
             var enumPower = GetProc<EnumPowerDelegate>("ctlEnumPowerDomains");
-            _getEnergy = GetProc<PowerEnergyDelegate>("ctlPowerGetEnergyCounter");
+            var getPowerProperties = GetProc<PowerPropertiesDelegate>("ctlPowerGetProperties");
+            _getPowerTelemetry = GetProc<PowerTelemetryDelegate>("ctlPowerTelemetryGet");
             if (init is null || enumDevices is null)
             {
                 Status = ClockStatus = PowerStatus = "ControlLib.dll 缺少基础接口";
@@ -261,127 +340,137 @@ internal static class IntelGpuTemp
                 Status = ClockStatus = PowerStatus = msg;
                 return;
             }
-            if (count > 8) count = 8;
+            // 没有目标适配器的 LUID 映射时，只能安全使用唯一的 Intel 设备。
+            if (count != 1)
+            {
+                Status = ClockStatus = PowerStatus = $"发现 {count} 个 Intel 设备，无 LUID 映射，拒绝混用遥测";
+                return;
+            }
 
             var devices = Marshal.AllocHGlobal(IntPtr.Size * (int)count);
             try
             {
                 var deviceCount = count;
-                if (enumDevices(api, ref deviceCount, devices) != 0)
+                devRet = enumDevices(api, ref deviceCount, devices);
+                if (devRet != 0 || deviceCount != 1)
                 {
-                    Status = ClockStatus = PowerStatus = "设备枚举失败";
+                    Status = ClockStatus = PowerStatus = $"设备枚举不可用（数量 {deviceCount}，返回码 0x{devRet:X8}），无 LUID 映射";
                     return;
                 }
 
-                var bestRank = int.MaxValue;
-                var tempEnumRet = 0;
-                var freqEnumRet = 0;
-                var bestDevice = IntPtr.Zero;
-                for (var i = 0; i < deviceCount; i++)
+                var device = Marshal.ReadIntPtr(devices, 0);
+                if (enumFreq is not null && getFreqProperties is not null && _getFreqState is not null)
                 {
-                    var device = Marshal.ReadIntPtr(devices, i * IntPtr.Size);
-                    if (bestDevice == IntPtr.Zero) bestDevice = device;
-
-                    // 未解析域类型时仅接受唯一频率域，避免误取内存等其他域。
-                    if (!_freqReady && enumFreq is not null && _getFreqState is not null)
+                    uint freqCount = 0;
+                    var freqRet = enumFreq(device, ref freqCount, IntPtr.Zero);
+                    var details = new List<string>();
+                    uint gpuCount = 0;
+                    if (freqRet == 0 && freqCount > 0)
                     {
-                        uint freqCount = 0;
-                        freqEnumRet = enumFreq(device, ref freqCount, IntPtr.Zero);
-                        if (freqEnumRet == 0 && freqCount == 1)
-                        {
-                            if (freqCount > 8) freqCount = 8;
-                            var domains = Marshal.AllocHGlobal(IntPtr.Size * (int)freqCount);
-                            try
-                            {
-                                var n = freqCount;
-                                if (enumFreq(device, ref n, domains) == 0 && n == 1)
-                                {
-                                    _freq = Marshal.ReadIntPtr(domains, 0);
-                                    _freqReady = _freq != IntPtr.Zero;
-                                }
-                            }
-                            finally { Marshal.FreeHGlobal(domains); }
-                        }
-                    }
-
-                    if (enumSensors is null || getProperties is null) continue;
-                    uint sensorCount = 0;
-                    tempEnumRet = enumSensors(device, ref sensorCount, IntPtr.Zero);
-                    if (tempEnumRet != 0 || sensorCount == 0) continue;
-                    if (sensorCount > 8) sensorCount = 8;
-
-                    var sensors = Marshal.AllocHGlobal(IntPtr.Size * (int)sensorCount);
-                    try
-                    {
-                        var n = sensorCount;
-                        if (enumSensors(device, ref n, sensors) != 0) continue;
-                        for (var k = 0; k < n; k++)
-                        {
-                            var sensor = Marshal.ReadIntPtr(sensors, k * IntPtr.Size);
-                            var props = new TempProperties
-                            {
-                                Size = (uint)Marshal.SizeOf<TempProperties>(),
-                                Version = 0
-                            };
-                            var type = getProperties(sensor, ref props) == 0 ? props.Type : -1;
-                            // 只认全局 / GPU 核心传感器；内存温度、最低温传感器不参与
-                            var rank = type switch
-                            {
-                                SensorGlobal => 0,
-                                SensorGpu => 1,
-                                _ => 99
-                            };
-                            if (rank == 99 || rank >= bestRank) continue;
-                            bestRank = rank;
-                            _sensor = sensor;
-                        }
-                    }
-                    finally { Marshal.FreeHGlobal(sensors); }
-                }
-
-                _tempReady = _sensor != IntPtr.Zero;
-                if (_tempReady)
-                    Status = $"就绪（传感器类型 {bestRank}）";
-                else if (enumSensors is not null && getProperties is not null && _getState is not null)
-                    Status = "驱动未提供温度传感器：" + Describe(tempEnumRet);
-
-                if (_freqReady)
-                    ClockStatus = "就绪";
-                else if (enumFreq is not null && _getFreqState is not null)
-                    ClockStatus = "驱动未提供频率域：" + Describe(freqEnumRet);
-
-                if (enumPower is not null && _getEnergy is not null)
-                {
-                    var powerRet = enumPower(bestDevice, ref _powerDomainCount, IntPtr.Zero);
-                    if (powerRet != 0)
-                    {
-                        PowerStatus = "功率域枚举失败：" + Describe(powerRet);
-                    }
-                    else if (_powerDomainCount != 1)
-                    {
-                        PowerStatus = _powerDomainCount == 0
-                            ? "驱动未提供功率域：" + Describe(powerRet)
-                            : "存在多个功率域，无法确认 GPU 功耗来源";
-                    }
-                    else
-                    {
-                        var n = Math.Min(_powerDomainCount, 8u);
-                        var domains = Marshal.AllocHGlobal(IntPtr.Size * (int)n);
+                        var domains = Marshal.AllocHGlobal(checked(IntPtr.Size * (int)freqCount));
                         try
                         {
-                            if (enumPower(bestDevice, ref n, domains) == 0 && n == 1)
-                                _powerDomain = Marshal.ReadIntPtr(domains, 0);
+                            var n = freqCount;
+                            freqRet = enumFreq(device, ref n, domains);
+                            if (freqRet == 0 && n <= freqCount)
+                            {
+                                for (var k = 0; k < n; k++)
+                                {
+                                    var domain = Marshal.ReadIntPtr(domains, k * IntPtr.Size);
+                                    var props = new FreqProperties { Size = (uint)Marshal.SizeOf<FreqProperties>(), Version = 0 };
+                                    var propRet = getFreqProperties(domain, ref props);
+                                    details.Add(propRet == 0 ? $"域{k}:type={props.Type}" : $"域{k}属性失败：{Describe(propRet)}");
+                                    if (propRet != 0 || props.Type != FrequencyDomainGpu || domain == IntPtr.Zero) continue;
+                                    gpuCount++;
+                                    _freq = domain;
+                                }
+                            }
+                            else details.Add($"句柄枚举失败：返回数量 {n}，0x{freqRet:X8}");
                         }
                         finally { Marshal.FreeHGlobal(domains); }
-                        PowerStatus = _powerDomain != IntPtr.Zero
-                            ? $"就绪（{_powerDomainCount} 个域）"
-                            : "功率域句柄获取失败";
                     }
+                    _freqReady = gpuCount == 1;
+                    if (!_freqReady) _freq = IntPtr.Zero;
+                    ClockStatus = $"{(_freqReady ? "就绪" : "无唯一可确认的 GPU 频率域")}（域数 {freqCount}，GPU 域数 {gpuCount}，枚举 0x{freqRet:X8}）；{string.Join("；", details)}";
                 }
-                else
+                else ClockStatus = "ControlLib.dll 缺少频率接口（含 ctlFrequencyGetProperties）";
+
+                if (enumSensors is not null && getProperties is not null && _getState is not null)
                 {
-                    PowerStatus = "ControlLib.dll 缺少功率域接口";
+                    uint sensorCount = 0;
+                    var tempRet = enumSensors(device, ref sensorCount, IntPtr.Zero);
+                    var details = new List<string>();
+                    var bestRank = int.MaxValue;
+                    var selectedType = -1;
+                    if (tempRet == 0 && sensorCount > 0)
+                    {
+                        var sensors = Marshal.AllocHGlobal(checked(IntPtr.Size * (int)sensorCount));
+                        try
+                        {
+                            var n = sensorCount;
+                            tempRet = enumSensors(device, ref n, sensors);
+                            if (tempRet == 0 && n <= sensorCount)
+                            {
+                                for (var k = 0; k < n; k++)
+                                {
+                                    var sensor = Marshal.ReadIntPtr(sensors, k * IntPtr.Size);
+                                    var props = new TempProperties { Size = (uint)Marshal.SizeOf<TempProperties>(), Version = 0 };
+                                    var propRet = getProperties(sensor, ref props);
+                                    details.Add(propRet == 0 ? $"传感器{k}:type={props.Type}" : $"传感器{k}属性失败：{Describe(propRet)}");
+                                    if (propRet != 0 || sensor == IntPtr.Zero) continue;
+                                    // 优先 GPU 核心最高温，其次设备全局最高温；不取内存或最低温。
+                                    var rank = props.Type switch { SensorGpu => 0, SensorGlobal => 1, _ => 99 };
+                                    if (rank == 99 || rank >= bestRank) continue;
+                                    bestRank = rank;
+                                    selectedType = props.Type;
+                                    _sensor = sensor;
+                                }
+                            }
+                            else details.Add($"句柄枚举失败：返回数量 {n}，0x{tempRet:X8}");
+                        }
+                        finally { Marshal.FreeHGlobal(sensors); }
+                    }
+                    _tempReady = _sensor != IntPtr.Zero;
+                    Status = $"{(_tempReady ? $"就绪（传感器类型 {selectedType}）" : "无可用 GPU/全局温度传感器")}（传感器数 {sensorCount}，枚举 0x{tempRet:X8}）；{string.Join("；", details)}";
                 }
+
+                if (enumPower is not null && getPowerProperties is not null)
+                {
+                    var powerRet = enumPower(device, ref _powerDomainCount, IntPtr.Zero);
+                    var details = new List<string>();
+                    if (powerRet == 0 && _powerDomainCount > 0)
+                    {
+                        var domains = Marshal.AllocHGlobal(checked(IntPtr.Size * (int)_powerDomainCount));
+                        try
+                        {
+                            var n = _powerDomainCount;
+                            powerRet = enumPower(device, ref n, domains);
+                            if (powerRet == 0 && n <= _powerDomainCount)
+                            {
+                                for (var k = 0; k < n; k++)
+                                {
+                                    var props = new PowerProperties { Size = (uint)Marshal.SizeOf<PowerProperties>(), Version = 0 };
+                                    var propRet = getPowerProperties(Marshal.ReadIntPtr(domains, k * IntPtr.Size), ref props);
+                                    details.Add(propRet == 0
+                                        ? $"域{k}:canControl={props.CanControl},default/min/max(mW)={props.DefaultLimit}/{props.MinLimit}/{props.MaxLimit}"
+                                        : $"域{k}属性失败：{Describe(propRet)}");
+                                }
+                            }
+                            else details.Add($"句柄枚举失败：返回数量 {n}，0x{powerRet:X8}");
+                        }
+                        finally { Marshal.FreeHGlobal(domains); }
+                    }
+                    // ctl_power_properties_t 无域类型，唯一域也不能证明不是 CPU 整包功耗。
+                    PowerStatus = $"功率域不用于 GPU 功耗（域数 {_powerDomainCount}，枚举 0x{powerRet:X8}）：ctl_power_properties_t 无域类型；{string.Join("；", details)}";
+                }
+                else PowerStatus = "ControlLib.dll 缺少功率域接口（含 ctlPowerGetProperties）";
+
+                if (_getPowerTelemetry is not null)
+                {
+                    _powerDevice = device;
+                    PowerStatus = "使用 ctlPowerTelemetryGet.gpuEnergyCounter（J）/timeStamp（s），支持性见 PowerDetail；" + PowerStatus;
+                }
+                else PowerStatus = "GPU 功耗不可用：缺少 ctlPowerTelemetryGet；" + PowerStatus;
             }
             finally { Marshal.FreeHGlobal(devices); }
         }

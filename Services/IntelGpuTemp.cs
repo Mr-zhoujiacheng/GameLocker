@@ -176,10 +176,11 @@ internal static class IntelGpuTemp
             if (!_tempReady || _getState is null || _sensor == IntPtr.Zero) return double.NaN;
             try
             {
-                if (_getState(_sensor, out var celsius) != 0) return double.NaN;
-                return celsius is > 0 and < 150 ? celsius : double.NaN;
+                var ret = _getState(_sensor, out var celsius);
+                Status = ret == 0 ? $"最近温度读数={celsius} ℃" : "温度读取失败：" + Describe(ret);
+                return ret == 0 && celsius is > 0 and < 150 ? celsius : double.NaN;
             }
-            catch { return double.NaN; }
+            catch (Exception ex) { Status = "温度读取异常：" + ex.Message; return double.NaN; }
         }
     }
 
@@ -197,10 +198,11 @@ internal static class IntelGpuTemp
                     Size = (uint)Marshal.SizeOf<FreqState>(),
                     Version = 0
                 };
-                if (_getFreqState(_freq, ref state) != 0) return double.NaN;
-                return state.Actual is > 0 and < 5000 ? Math.Round(state.Actual) : double.NaN;
+                var ret = _getFreqState(_freq, ref state);
+                ClockStatus = ret == 0 ? $"最近核心频率={state.Actual} MHz" : "频率读取失败：" + Describe(ret);
+                return ret == 0 && state.Actual is > 0 and < 5000 ? Math.Round(state.Actual) : double.NaN;
             }
-            catch { return double.NaN; }
+            catch (Exception ex) { ClockStatus = "频率读取异常：" + ex.Message; return double.NaN; }
         }
     }
 
@@ -280,7 +282,8 @@ internal static class IntelGpuTemp
             _module = LoadLibraryW("ControlLib.dll");
             if (_module == IntPtr.Zero)
             {
-                Status = ClockStatus = PowerStatus = "未安装 Intel 显卡控制库";
+                var error = Marshal.GetLastWin32Error();
+                Status = ClockStatus = PowerStatus = $"加载 ControlLib.dll 失败：Win32={error}（{new System.ComponentModel.Win32Exception(error).Message}）";
                 return;
             }
 

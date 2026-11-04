@@ -68,6 +68,10 @@ public static class MonitorService
     private static PresentEtwListener? _etw;
     private static LosslessOutputListener? _losslessOutput;
     private static int _frameTargetPid;
+    private static int _lastOutputPid;
+    private static double _lastOutputFps = double.NaN;
+    private static long _lastOutputTick;
+    private static bool _lastOutputGenerated;
     private static int _ticking;
     private static int _tickCount;
 
@@ -140,6 +144,10 @@ public static class MonitorService
         if (IsRunning) return;
         IsRunning = true;
         _tickCount = 0;
+        _frameTargetPid = _lastOutputPid = 0;
+        _lastOutputFps = double.NaN;
+        _lastOutputTick = 0;
+        _lastOutputGenerated = false;
         _lastIdle = _lastKernel = _lastUser = 0;
         LastError = "";
         _gpuUsage = _gpuVram = _cpuTemp = _cpuPower = _cpuMhzFallback = double.NaN;
@@ -174,7 +182,6 @@ public static class MonitorService
         catch { _overlay = null; }
 
         _timer = new Timer(Tick, null, 250, 1000);
-        _ = Task.Run(WriteGpuDiagnostics);
         StateChanged?.Invoke();
     }
 
@@ -238,7 +245,10 @@ public static class MonitorService
         _etw = null;
         _losslessOutput?.Dispose();
         _losslessOutput = null;
-        _frameTargetPid = 0;
+        _frameTargetPid = _lastOutputPid = 0;
+        _lastOutputFps = double.NaN;
+        _lastOutputTick = 0;
+        _lastOutputGenerated = false;
 
         try { _stopEvent?.Set(); } catch { }
 
@@ -376,6 +386,7 @@ public static class MonitorService
 
             var snapshot = Sample();
             lock (Gate) _snapshot = snapshot;
+            if (_tickCount == 1) _ = Task.Run(WriteGpuDiagnostics);
 
             _overlay?.Update(snapshot);
             if (fullscreen || (alwaysOn && !appFg)) _overlay?.ReassertTopmost();
@@ -480,6 +491,27 @@ public static class MonitorService
             // 游戏允许合成显示；小黄鸭仍只读取独立显示链，不按提交率或倍率推算。
             s.OutputFps = _losslessOutput?.GetFps(outputPid)
                 ?? _shared?.ReadOutputFps(outputPid) ?? double.NaN;
+        }
+        var outputTick = Environment.TickCount64;
+        if (frameTargetChanged || _lastOutputPid != outputPid || outputPid <= 0)
+        {
+            _lastOutputPid = outputPid;
+            _lastOutputFps = double.NaN;
+            _lastOutputTick = 0;
+            _lastOutputGenerated = false;
+        }
+        if (double.IsFinite(s.OutputFps) && s.OutputFps > 0)
+        {
+            _lastOutputFps = s.OutputFps;
+            _lastOutputTick = outputTick;
+            _lastOutputGenerated = s.FrameGenerationDetected;
+        }
+        else if (outputPid > 0 && !frameTargetChanged && outputTick - _lastOutputTick <= 5000
+            && double.IsFinite(_lastOutputFps))
+        {
+            // 仅跨越短暂采集空窗；不能跨进程沿用，也不能用缓存续期。
+            s.OutputFps = _lastOutputFps;
+            s.FrameGenerationDetected |= _lastOutputGenerated;
         }
         if (losslessPid > 0)
         {
@@ -732,6 +764,14 @@ public static class MonitorService
 
     // ---- GPU 占用 ----
 
+    private static string _gpuEngineStatus = "未采样";
+    private static string _gpuMemoryIdentityStatus = "未采样";
+    private static string _gpuVramStatus = "未采样";
+    private static string _gpuDxgiCandidates = "未枚举";
+    private static string _gpuAlignmentStatus = "未对齐";
+    private static string _gpuNvmlFallbackStatus = "未尝试";
+    private const int DxgiErrorNotFound = unchecked((int)0x887A0002);
+
     private static string? GpuAdapterKey(string name)
     {
         var match = System.Text.RegularExpressions.Regex.Match(name,
@@ -752,10 +792,10 @@ public static class MonitorService
     {
         _gpuAdapterKey = null;
         _gpuSensorsAligned = false;
+        var engines = new Dictionary<(string Adapter, string Engine), double>();
+        var adapters = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
         try
         {
-            var engines = new Dictionary<(string Adapter, string Engine), double>();
-            var adapters = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
             using var searcher = new ManagementObjectSearcher(@"root\CIMV2",
                 "SELECT Name, UtilizationPercentage FROM Win32_PerfFormattedData_GPUPerformanceCounters_GPUEngine");
             foreach (var o in searcher.Get())
@@ -773,88 +813,143 @@ public static class MonitorService
                 engines.TryGetValue(key, out var sum);
                 engines[key] = sum + usage;
             }
-            // 内存实例也参与身份枚举，失败不能清掉已取得的引擎使用率。
-            try
-            {
-                using var memory = new ManagementObjectSearcher(@"root\CIMV2",
-                    "SELECT Name FROM Win32_PerfFormattedData_GPUPerformanceCounters_GPUAdapterMemory");
-                foreach (var o in memory.Get())
-                    if (GpuAdapterKey(o["Name"] as string ?? "") is { } adapter) adapters.Add(adapter);
-            }
-            catch { }
-
-            var busiest = double.NaN;
-            foreach (var entry in engines)
-            {
-                if (!double.IsNaN(busiest) && entry.Value <= busiest) continue;
-                busiest = entry.Value;
-                _gpuAdapterKey = entry.Key.Adapter;
-            }
-            if (_gpuAdapterKey is null && adapters.Count == 1) _gpuAdapterKey = adapters.First();
-            // 厂商传感器身份由 DXGI 硬件适配器确认，不依赖显存性能计数器是否可用。
-            AlignSingleGpuSensors();
-            return double.IsNaN(busiest) ? double.NaN : Math.Clamp(busiest, 0, 100);
+            _gpuEngineStatus = $"成功，适配器={adapters.Count}，引擎={engines.Count}";
         }
-        catch
+        catch (Exception ex)
         {
-            AlignSingleGpuSensors();
-            return double.NaN;
+            engines.Clear();
+            _gpuEngineStatus = $"错误 0x{ex.HResult:X8}: {ex.Message}";
         }
+
+        var memoryAdapters = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        try
+        {
+            using var memory = new ManagementObjectSearcher(@"root\CIMV2",
+                "SELECT Name FROM Win32_PerfFormattedData_GPUPerformanceCounters_GPUAdapterMemory");
+            foreach (var o in memory.Get())
+                if (GpuAdapterKey(o["Name"] as string ?? "") is { } adapter) memoryAdapters.Add(adapter);
+            _gpuMemoryIdentityStatus = $"成功，适配器={memoryAdapters.Count}";
+        }
+        catch (Exception ex)
+        {
+            _gpuMemoryIdentityStatus = $"错误 0x{ex.HResult:X8}: {ex.Message}";
+        }
+        adapters.UnionWith(memoryAdapters);
+
+        var busiest = double.NaN;
+        foreach (var entry in engines)
+        {
+            if (!double.IsNaN(busiest) && entry.Value <= busiest) continue;
+            busiest = entry.Value;
+            _gpuAdapterKey = entry.Key.Adapter;
+        }
+        if (_gpuAdapterKey is null && adapters.Count == 1) _gpuAdapterKey = adapters.First();
+        // 厂商传感器身份由完整 DXGI 硬件拓扑确认，不依赖 WMI 是否可用。
+        AlignSingleGpuSensors();
+        _gpuEngineStatus += $"；选中引擎匹配={engines.Keys.Any(k => k.Adapter == _gpuAdapterKey)}";
+        _gpuMemoryIdentityStatus += $"；选中身份匹配={(_gpuAdapterKey is not null && memoryAdapters.Contains(_gpuAdapterKey))}";
+        return double.IsNaN(busiest) ? double.NaN : Math.Clamp(busiest, 0, 100);
     }
 
     private static void AlignSingleGpuSensors()
     {
         _gpuSensorsAligned = false;
+        _gpuDxgiCandidates = "无";
+        _gpuAlignmentStatus = "未对齐";
+        var candidates = new List<string>();
         IntPtr factory = IntPtr.Zero;
         try
         {
             var iid = new Guid("770aae78-f26f-4dba-a829-253c83d1b387");
-            if (CreateDXGIFactory1(ref iid, out factory) < 0) return;
+            var result = CreateDXGIFactory1(ref iid, out factory);
+            if (result < 0)
+            {
+                _gpuAlignmentStatus = $"拒绝：创建 DXGI 工厂失败 0x{result:X8}";
+                return;
+            }
             var enumerate = Marshal.GetDelegateForFunctionPointer<EnumAdaptersDelegate>(
                 Marshal.ReadIntPtr(Marshal.ReadIntPtr(factory), 12 * IntPtr.Size));
             var hardware = new List<GpuAdapterDesc>();
             for (uint i = 0; ; i++)
             {
-                if (enumerate(factory, i, out var adapter) < 0) break;
+                result = enumerate(factory, i, out var adapter);
+                if (result == DxgiErrorNotFound) break;
+                if (result < 0)
+                {
+                    _gpuAlignmentStatus = $"拒绝：DXGI 枚举不完整，index={i} HRESULT=0x{result:X8}";
+                    return;
+                }
                 try
                 {
                     var getDesc = Marshal.GetDelegateForFunctionPointer<GetAdapterDescDelegate>(
-                        Marshal.ReadIntPtr(Marshal.ReadIntPtr(adapter), 10 * IntPtr.Size));
-                    if (getDesc(adapter, out var desc) >= 0 && desc.VendorId is 0x8086 or 0x1002 or 0x10de)
-                        hardware.Add(desc);
+                        Marshal.ReadIntPtr(Marshal.ReadIntPtr(adapter), 8 * IntPtr.Size));
+                    result = getDesc(adapter, out var desc);
+                    if (result < 0)
+                    {
+                        _gpuAlignmentStatus = $"拒绝：DXGI GetDesc 失败，index={i} HRESULT=0x{result:X8}";
+                        return;
+                    }
+                    candidates.Add(FormattableString.Invariant($"{desc.Description} vendor=0x{desc.VendorId:x4} luid_0x{desc.LuidHigh:x8}_0x{desc.LuidLow:x8}_phys_0"));
+                    if (desc.VendorId is 0x8086 or 0x1002 or 0x10de) hardware.Add(desc);
                 }
                 finally { Marshal.Release(adapter); }
             }
-            if (hardware.Count != 1) return;
+            if (hardware.Count != 1)
+            {
+                _gpuAlignmentStatus = $"拒绝：完整 DXGI 拓扑中受支持硬件数={hardware.Count}，要求单卡";
+                return;
+            }
             var selected = hardware[0];
             var key = FormattableString.Invariant($"luid_0x{selected.LuidHigh:x8}_0x{selected.LuidLow:x8}_phys_0");
-            if (_gpuAdapterKey is not null && !string.Equals(_gpuAdapterKey, key, StringComparison.OrdinalIgnoreCase)) return;
+            if (_gpuAdapterKey is not null && !string.Equals(_gpuAdapterKey, key, StringComparison.OrdinalIgnoreCase))
+            {
+                _gpuAlignmentStatus = $"拒绝：选中身份 {_gpuAdapterKey} 与 DXGI 单卡 {key} 不符";
+                return;
+            }
             _gpuAdapterKey = key;
             _gpuSensorsAligned = selected.VendorId is 0x8086 or 0x1002;
+            _gpuAlignmentStatus = _gpuSensorsAligned ? "单卡身份匹配，允许 ADL/IGCL/KMT" : "单卡身份匹配，NVIDIA 须经 NVML 匹配";
         }
-        catch { }
-        finally { if (factory != IntPtr.Zero) Marshal.Release(factory); }
+        catch (Exception ex) { _gpuAlignmentStatus = $"拒绝：DXGI 异常 0x{ex.HResult:X8}: {ex.Message}"; }
+        finally
+        {
+            _gpuDxgiCandidates = candidates.Count == 0 ? "无" : string.Join("；", candidates);
+            if (factory != IntPtr.Zero) Marshal.Release(factory);
+        }
     }
 
     /// <summary>所选适配器的专用显存用量（GB），0 是有效读数，不包含共享内存。</summary>
     private static double ReadGpuVram()
     {
+        var key = _gpuAdapterKey;
+        if (key is null)
+        {
+            _gpuVramStatus = "未查询：无选中适配器";
+            return double.NaN;
+        }
         try
         {
             using var searcher = new ManagementObjectSearcher(@"root\CIMV2",
                 "SELECT Name, DedicatedUsage FROM Win32_PerfFormattedData_GPUPerformanceCounters_GPUAdapterMemory");
-            if (_gpuAdapterKey is null) return double.NaN;
+            var matched = false;
             foreach (var o in searcher.Get())
             {
-                if (GpuAdapterKey(o["Name"] as string ?? "") != _gpuAdapterKey) continue;
+                if (!string.Equals(GpuAdapterKey(o["Name"] as string ?? ""), key, StringComparison.OrdinalIgnoreCase)) continue;
+                matched = true;
                 if (o["DedicatedUsage"] is not { } d) continue;
                 var bytes = Convert.ToDouble(d);
-                return double.IsFinite(bytes) && bytes >= 0
-                    ? bytes / 1024d / 1024d / 1024d : double.NaN;
+                var valid = double.IsFinite(bytes) && bytes >= 0;
+                _gpuVramStatus = valid ? $"匹配 {key}，DedicatedUsage 有效" : $"匹配 {key}，DedicatedUsage 无效";
+                return valid ? bytes / 1024d / 1024d / 1024d : double.NaN;
             }
+            _gpuVramStatus = matched ? $"匹配 {key}，缺少 DedicatedUsage" : $"无匹配实例：{key}";
             return double.NaN;
         }
-        catch { return double.NaN; }
+        catch (Exception ex)
+        {
+            _gpuVramStatus = $"错误 0x{ex.HResult:X8}: {ex.Message}";
+            return double.NaN;
+        }
     }
 
     // ---- GPU 频率 / 功耗（NVML，需 NVIDIA 驱动自带的 nvml.dll）----
@@ -922,27 +1017,51 @@ public static class MonitorService
         try
         {
             var iid = new Guid("770aae78-f26f-4dba-a829-253c83d1b387");
-            if (CreateDXGIFactory1(ref iid, out factory) < 0) return false;
+            var result = CreateDXGIFactory1(ref iid, out factory);
+            if (result < 0)
+            {
+                _gpuNvmlFallbackStatus = $"拒绝：创建 DXGI 工厂失败 0x{result:X8}";
+                return false;
+            }
             var enumerate = Marshal.GetDelegateForFunctionPointer<EnumAdaptersDelegate>(
                 Marshal.ReadIntPtr(Marshal.ReadIntPtr(factory), 12 * IntPtr.Size));
             var count = 0;
             var matched = false;
             for (uint i = 0; ; i++)
             {
-                if (enumerate(factory, i, out var adapter) < 0) break;
+                result = enumerate(factory, i, out var adapter);
+                if (result == DxgiErrorNotFound) break;
+                if (result < 0)
+                {
+                    _gpuNvmlFallbackStatus = $"拒绝：DXGI 枚举不完整，index={i} HRESULT=0x{result:X8}";
+                    return false;
+                }
                 try
                 {
                     var getDesc = Marshal.GetDelegateForFunctionPointer<GetAdapterDescDelegate>(
-                        Marshal.ReadIntPtr(Marshal.ReadIntPtr(adapter), 10 * IntPtr.Size));
-                    if (getDesc(adapter, out var desc) < 0 || desc.VendorId != 0x10de) continue;
+                        Marshal.ReadIntPtr(Marshal.ReadIntPtr(adapter), 8 * IntPtr.Size));
+                    result = getDesc(adapter, out var desc);
+                    if (result < 0)
+                    {
+                        _gpuNvmlFallbackStatus = $"拒绝：DXGI GetDesc 失败，index={i} HRESULT=0x{result:X8}";
+                        return false;
+                    }
+                    if (desc.VendorId != 0x10de) continue;
                     count++;
                     if (desc.LuidHigh == high && desc.LuidLow == low) matched = true;
                 }
                 finally { Marshal.Release(adapter); }
             }
+            _gpuNvmlFallbackStatus = count == 1 && matched
+                ? "完整拓扑中唯一 NVIDIA 且 LUID 匹配"
+                : $"拒绝：NVIDIA 数={count}，LUID 匹配={matched}";
             return count == 1 && matched;
         }
-        catch { return false; }
+        catch (Exception ex)
+        {
+            _gpuNvmlFallbackStatus = $"拒绝：DXGI 异常 0x{ex.HResult:X8}: {ex.Message}";
+            return false;
+        }
         finally { if (factory != IntPtr.Zero) Marshal.Release(factory); }
     }
 
@@ -1292,6 +1411,7 @@ public static class MonitorService
                     sb.AppendLine($"显卡: {o["Name"]} / 驱动 {o["DriverVersion"]}");
             }
             catch (Exception ex) { sb.AppendLine("WMI 显卡枚举失败: " + ex.Message); }
+            sb.AppendLine("[独立数据源探测：原始读数不代表已匹配浮层所选 GPU]");
             sb.AppendLine($"ADL: create={_adlCreateResult} ready={_adlReady} adapter={_adlAdapter} activitySize={_adlActivitySize}");
             sb.AppendLine($"ADL 探测: {_adlProbeLog}");
             sb.AppendLine($"ADL 读数: clock={ReadAdlClock()} MHz, power={ReadAdlPower()} W");
@@ -1304,7 +1424,6 @@ public static class MonitorService
                 sb.AppendLine($"WDDM 适配器: ret={aret} memFreq={aperf.MemoryFrequency} maxMem={aperf.MaxMemoryFrequency}"
                     + $" power(0.1%)={aperf.Power} temp(0.1C)={aperf.Temperature} fan={aperf.FanRPM}");
             }
-            sb.AppendLine($"GPU 最终读数: clock={ReadGpuClock()} MHz, power={ReadGpuPower()} W, vram={ReadGpuVram()} GB");
             // 注意先 Read() 再取 Status：Status 是初始化时写的，顺序反了会显示"未尝试"
             var igclTemp = IntelGpuTemp.Read();
             sb.AppendLine($"ControlLib.dll={(File.Exists(Path.Combine(Environment.SystemDirectory, "ControlLib.dll")) ? "存在" : "缺失")}"
@@ -1326,7 +1445,15 @@ public static class MonitorService
             sb.AppendLine($"厂商传感器(EC/WMI): {(_helperAlive ? "由提权助手采集（见日志末尾「厂商传感器」段）" : "监控未开启或助手未运行")}");
             foreach (var line in ThermalZoneDetails()) sb.AppendLine("  " + line);
             sb.AppendLine($"CPU 功耗(RAPL): {ReadCpuPower()} W");
-            sb.AppendLine($"GPU 功耗: {ReadGpuPower()} W（无可靠且匹配的传感器时不可用）");
+            sb.AppendLine($"GPU 匹配后即时探测（非浮层快照）: clock={ReadGpuClock()} MHz, power={ReadGpuPower()} W, temp={ReadGpuTemp()} ℃");
+            sb.AppendLine("[GPU 最近采样身份与匹配状态：未采样时保持未采样，不在诊断线程重置采样]");
+            sb.AppendLine($"所选 GPU: {_gpuAdapterKey ?? "无"} / 单卡传感器对齐={_gpuSensorsAligned}");
+            sb.AppendLine($"引擎 WMI: {_gpuEngineStatus}");
+            sb.AppendLine($"显存身份 WMI: {_gpuMemoryIdentityStatus}");
+            sb.AppendLine($"专用显存 WMI: {_gpuVramStatus}（仅 DedicatedUsage，不含共享/预算）");
+            sb.AppendLine($"DXGI 候选: {_gpuDxgiCandidates}");
+            sb.AppendLine($"DXGI 对齐: {_gpuAlignmentStatus}");
+            sb.AppendLine($"NVML 旧驱动唯一卡回退: {_gpuNvmlFallbackStatus}");
             foreach (var line in PowerSourceDetails()) sb.AppendLine("  " + line);
             sb.AppendLine($"电池功率: 放电={_batteryRate.Discharge} W / 充电={_batteryRate.Charge} W");
             // 直接把浮层当前显示的数值写进诊断：哪一项是"—"一目了然
@@ -1335,7 +1462,7 @@ public static class MonitorService
             {
                 var s = _snapshot;
                 sb.AppendLine($"浮层 CPU: 使用 {s.CpuUsage:0}% / 频率 {V(s.CpuMhz, "MHz")} / 温度 {V(s.CpuTemp, "℃")} / 功耗 {V(s.CpuPower, "W")}");
-                sb.AppendLine($"浮层 GPU: 使用 {V(s.GpuUsage, "%")} / 频率 {V(s.GpuMhz, "MHz")} / 温度 {V(s.GpuTemp, "℃")} / 功耗 {V(s.GpuPower, "W")}");
+                sb.AppendLine($"浮层 GPU 快照: 使用 {V(s.GpuUsage, "%")} / 频率 {V(s.GpuMhz, "MHz")} / 温度 {V(s.GpuTemp, "℃")} / 功耗 {V(s.GpuPower, "W")} / 专用显存 {V(s.GpuVram, "GB")}");
                 sb.AppendLine($"浮层 电池: 电量 {V(s.BatteryPercent, "%")} / 功率 {V(s.BatteryPower, "W")} / 充电={s.Charging} / 接电源={s.OnAc}");
             }
             var dir = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData), "GameLocker");

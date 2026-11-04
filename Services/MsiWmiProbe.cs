@@ -142,8 +142,8 @@ internal static class MsiWmiProbe
 
     /// <summary>
     /// 读取 GPU 温度（℃）：取 Get_Thermal[3] 输出包的第 8 字节（固件给的热区读数）。
-    /// 在 MSI Claw 上实测该字节与 EC 0x9E（封装温度）同源，Lunar Lake 的 GPU 与 CPU 同 die，
-    /// 因此它是比"—"更接近真实 GPU 温度的值；接口不可用或数值不合理时返回 NaN。
+    /// 兼容旧版的固件参考读数，尚未确认为独立 GPU/GT 核心温度。
+    /// 接口不可用或数值不合理时返回 NaN。
     /// </summary>
     public static double ReadGpuTemperature()
     {

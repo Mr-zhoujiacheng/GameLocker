@@ -100,6 +100,7 @@ public static class MonitorService
     private static double _cpuTemp = double.NaN;
     /// <summary>提权助手通过 PawnIO 读到的 CPU 封装温度（NaN=不可用）</summary>
     private static double _helperCpuTemp = double.NaN;
+    private static double _helperGpuTemp = double.NaN;
     private static string? _gpuAdapterKey;
     private static bool _gpuSensorsAligned;
     private static double _cpuPower = double.NaN;
@@ -151,7 +152,7 @@ public static class MonitorService
         _lastIdle = _lastKernel = _lastUser = 0;
         LastError = "";
         _gpuUsage = _gpuVram = _cpuTemp = _cpuPower = _cpuMhzFallback = double.NaN;
-        _helperCpuTemp = double.NaN;
+        _helperCpuTemp = _helperGpuTemp = double.NaN;
         _helperAlive = false;
         _gpuAdapterKey = null;
         _gpuSensorsAligned = false;
@@ -163,7 +164,7 @@ public static class MonitorService
         var item = FindMonitorItem();
         _metrics = NormalizeMetrics(item?.MonitorMetrics);
         // CPU 温度也需要初始化 MSR 或提权助手，不显示帧率时不启动本地 ETW。
-        if (NeedsFrameStats() || Want(MonitorMetric.CpuTemp)) StartFrameSource();
+        if (NeedsFrameStats() || Want(MonitorMetric.CpuTemp | MonitorMetric.GpuTemp)) StartFrameSource();
 
         try
         {
@@ -283,7 +284,7 @@ public static class MonitorService
         var item = FindMonitorItem();
         _metrics = NormalizeMetrics(item?.MonitorMetrics);
         // 运行中才勾上帧率指标：按需补开 ETW；全部取消则关掉本地 ETW（助手仍保留温度采集）
-        if (NeedsFrameStats() || Want(MonitorMetric.CpuTemp)) StartFrameSource();
+        if (NeedsFrameStats() || Want(MonitorMetric.CpuTemp | MonitorMetric.GpuTemp)) StartFrameSource();
         if (!NeedsFrameStats())
         {
             _etw?.Dispose();
@@ -419,7 +420,7 @@ public static class MonitorService
         {
             _shared.SetTargetPid(targetPid);
             _shared.SetOutputTargetPid(outputPid);
-            if (_shared.TryRead(out var fps, out var frameMs, out var history, out var helperTemp, out _, out var originalFps, out var frameGenerationDetected))
+            if (_shared.TryRead(out var fps, out var frameMs, out var history, out var helperTemp, out var helperGpuTemp, out var originalFps, out var frameGenerationDetected))
             {
                 _helperAlive = true;
                 s.Fps = fps;
@@ -427,13 +428,14 @@ public static class MonitorService
                 s.FrameHistory = history;
                 s.OriginalFps = originalFps;
                 s.FrameGenerationDetected |= frameGenerationDetected;
+                _helperGpuTemp = helperGpuTemp is > 0 and < 130 ? helperGpuTemp : double.NaN;
                 _helperCpuTemp = helperTemp is > 0 and < 130 ? helperTemp : double.NaN;
                 if (double.IsNaN(_helperCpuTemp)) _cpuTemp = double.NaN;
             }
             else
             {
                 _helperAlive = false;
-                _helperCpuTemp = _cpuTemp = double.NaN;
+                _helperCpuTemp = _helperGpuTemp = _cpuTemp = double.NaN;
             }
         }
 
@@ -1163,7 +1165,7 @@ public static class MonitorService
     }
 
     /// <summary>
-    /// GPU 温度（℃）：匹配适配器的 NVML/ADL/IGCL；Intel 核显可回退到 HWiNFO CPU GT。
+    /// GPU 温度（℃）：匹配适配器的 NVML/ADL/IGCL；Intel 核显回退到 MSI 固件参考温度或 HWiNFO CPU GT。
     /// </summary>
     private static double ReadGpuTemp()
     {
@@ -1183,7 +1185,11 @@ public static class MonitorService
         {
             var temperature = IntelGpuTemp.Read();
             if (!double.IsNaN(temperature)) return temperature;
-            return IntelGpuTemp.IsIntegrated ? HwInfoGtTemperature.Read() : double.NaN;
+            if (!IntelGpuTemp.IsIntegrated) return double.NaN;
+            // 恢复旧版 MSI 固件参考温度；此热区未经确认为独立 GT 核心温度。
+            if (_helperGpuTemp is > 0 and < 130) return _helperGpuTemp;
+            var vendor = MsiWmiProbe.ReadGpuTemperature();
+            return vendor is > 0 and < 130 ? vendor : HwInfoGtTemperature.Read();
         }
         if (!_gpuSensorsAligned) return double.NaN;
         var adl = ReadAdlTemp();

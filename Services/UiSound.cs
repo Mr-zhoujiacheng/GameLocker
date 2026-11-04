@@ -9,13 +9,18 @@ internal enum UiSoundKind
     Move,
     /// <summary>A 键（确认/启动）</summary>
     Confirm,
+    /// <summary>鼠标/触摸点中开关、下拉、列表项、磁贴等控件时的选择反馈音（沿用旧版 A 键音）</summary>
+    Select,
     /// <summary>B 键（返回/收起）</summary>
-    Back
+    Back,
+    /// <summary>报错、未检测到、操作失败等提示</summary>
+    Error
 }
 
 /// <summary>
-/// 手柄操作的界面音效：移动 / A / B 三种，运行时合成极短的 PCM16，
-/// 共用一个常驻 waveOut 设备直接写缓冲，避免 PlaySound 每次开关音频设备的延迟，
+/// 界面音效：移动 / A / B / 报错四种。移动音在运行时合成极短的 PCM16；
+/// A / B / 报错来自 kopanel 开源项目的振荡器参数（success / warning / error），已转成 WAV 嵌入资源。
+/// 四种共用一个常驻 waveOut 设备直接写缓冲，避免 PlaySound 每次开关音频设备的延迟，
 /// 连续按方向键也不会有明显滞后。
 /// </summary>
 internal static class UiSound
@@ -23,6 +28,9 @@ internal static class UiSound
     private const uint WaveMapper = 0xFFFFFFFF;
     private const uint WhdrDone = 0x00000001;
     private const int SampleRate = 44100;
+
+    /// <summary>总体音量系数：合成音与嵌入音效统一按此比例缩放（0.55 约 -5dB，比原始版本轻一档）</summary>
+    private const double Volume = 0.55;
 
     private static readonly object Gate = new();
     private static readonly Dictionary<UiSoundKind, Buffer> Buffers = [];
@@ -118,7 +126,7 @@ internal static class UiSound
 
     private static Buffer CreateBuffer(UiSoundKind kind)
     {
-        var pcm = CreatePcm(kind);
+        var pcm = ScalePcm(CreatePcm(kind), Volume);
         var pin = GCHandle.Alloc(pcm, GCHandleType.Pinned);
         var headerPtr = Marshal.AllocHGlobal(Marshal.SizeOf<WAVEHDR>());
         var header = new WAVEHDR
@@ -137,32 +145,45 @@ internal static class UiSound
     }
 
     /// <summary>
-    /// 合成一段短音（气泡 pop 风格）：音高在几十毫秒内快速下坠，听感软糯，
-    /// 移动 / A / B 用同一种音色，只靠起止音高区分；2.5ms 起音 + 指数衰减 + 尾巴淡出，圆润不刺耳。
+    /// 生成各键 PCM：移动音在运行时合成（最短、连按不拖尾）；
+    /// A / B / 报错读取嵌入的 WAV（kopanel 的 success / warning / error 参数还原，已按软件响度放大）。
     /// </summary>
     private static byte[] CreatePcm(UiSoundKind kind)
     {
-        var durationMs = kind == UiSoundKind.Confirm ? 70 : 50;
+        if (kind != UiSoundKind.Move)
+        {
+            return LoadPcmResource(kind switch
+            {
+                UiSoundKind.Confirm => "UiSoundConfirm.wav",
+                UiSoundKind.Select => "UiSoundSelect.wav",
+                UiSoundKind.Back => "UiSoundBack.wav",
+                _ => "UiSoundError.wav"
+            });
+        }
+
+        // 越短越像机械按键的"嗒"，移动音最短，连按方向键不会连成一片
+        const int durationMs = 30;
         var count = SampleRate * durationMs / 1000;
         var duration = durationMs / 1000.0;
         var bytes = new byte[count * 2];
 
-        var (startHz, endHz) = kind switch
-        {
-            UiSoundKind.Move => (520.0, 150.0),    // 下滑幅度小，轻点
-            UiSoundKind.Confirm => (660.0, 220.0), // A：起音更高，落点更实
-            _ => (440.0, 110.0)                     // B：整体更低，回落感
-        };
+        // 轻抬走向 + 二次谐波颗粒感；decay 越短尾音收得越快
+        const double startHz = 640.0, endHz = 820.0, decay = 0.0055, gain = 0.62, harmonic = 0.16;
 
+        // 相位累加：每一步按瞬时频率递推，避免"频率 × 时间"的写法在扫频时产生额外的频率抖动
+        var phase = 0.0;
+        var fadeOut = Math.Min(0.004, duration / 8);
         for (var i = 0; i < count; i++)
         {
             var t = i / (double)SampleRate;
             var freq = startHz + (endHz - startHz) * (t / duration);
-            var v = Math.Sin(2 * Math.PI * freq * t) * SoftAttack(t) * Math.Exp(-t / 0.016) * 0.62;
+            phase += 2 * Math.PI * freq / SampleRate;
+            var v = (Math.Sin(phase) + harmonic * Math.Sin(phase * 2))
+                    * SoftAttack(t) * Math.Exp(-t / decay) * gain;
 
-            // 统一在最后 6ms 淡出，保证包络收在 0，避免尾部爆音
+            // 统一在末尾短淡出，保证包络收在 0，避免尾部爆音
             var tail = duration - t;
-            if (tail < 0.006) v *= tail / 0.006;
+            if (tail < fadeOut) v *= tail / fadeOut;
 
             var sample = (short)Math.Clamp(v * 12000, short.MinValue, short.MaxValue);
             bytes[i * 2] = (byte)(sample & 0xFF);
@@ -171,8 +192,52 @@ internal static class UiSound
         return bytes;
     }
 
-    /// <summary>2.5ms 平滑起音，避免音头“啪”的一声</summary>
-    private static double SoftAttack(double t) => t < 0.0025 ? t / 0.0025 : 1.0;
+    /// <summary>按比例缩放 16bit PCM 的振幅（不改变波形与音色，只调响度）</summary>
+    private static byte[] ScalePcm(byte[] pcm, double scale)
+    {
+        if (Math.Abs(scale - 1) < 0.001) return pcm;
+        for (var i = 0; i + 1 < pcm.Length; i += 2)
+        {
+            var sample = (short)(pcm[i] | (pcm[i + 1] << 8));
+            var scaled = (short)Math.Clamp(Math.Round(sample * scale), short.MinValue, short.MaxValue);
+            pcm[i] = (byte)(scaled & 0xFF);
+            pcm[i + 1] = (byte)((scaled >> 8) & 0xFF);
+        }
+        return pcm;
+    }
+
+    /// <summary>
+    /// 从嵌入的 WAV 资源读 PCM 数据。转码时已固定为 44.1kHz / 单声道 / 16bit（与合成音同一格式，
+    /// 可直接走同一条 waveOut 缓冲）；这里遍历 RIFF chunk 取 data 段，兼容带 LIST 等附加块的标准 WAV。
+    /// </summary>
+    private static byte[] LoadPcmResource(string name)
+    {
+        var asm = typeof(UiSound).Assembly;
+        using var stream = asm.GetManifestResourceStream($"GameLocker.Resources.{name}")
+            ?? throw new InvalidOperationException($"缺少音效资源 {name}");
+        using var ms = new MemoryStream();
+        stream.CopyTo(ms);
+        var bytes = ms.ToArray();
+
+        // RIFF 头：'RIFF' + size + 'WAVE'，其后是若干 chunk（4 字节 id + 4 字节长度 + 数据）
+        var pos = 12;
+        while (pos + 8 <= bytes.Length)
+        {
+            var id = BitConverter.ToInt32(bytes, pos);
+            var size = BitConverter.ToInt32(bytes, pos + 4);
+            if (id == 0x61746164) // 'data'
+            {
+                var pcm = new byte[size];
+                Array.Copy(bytes, pos + 8, pcm, 0, size);
+                return pcm;
+            }
+            pos += 8 + size + (size & 1); // chunk 数据按 2 字节对齐
+        }
+        throw new InvalidOperationException($"{name} 中找不到 data 块");
+    }
+
+    /// <summary>1.5ms 平滑起音：够快显出清脆感，又不会在音头"啪"的一声</summary>
+    private static double SoftAttack(double t) => t < 0.0015 ? t / 0.0015 : 1.0;
 
     [StructLayout(LayoutKind.Sequential)]
     private struct WAVEFORMATEX

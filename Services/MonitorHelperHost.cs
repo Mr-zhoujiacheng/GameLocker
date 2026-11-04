@@ -83,6 +83,7 @@ internal static class MonitorHelperHost
         SetTimer(IntPtr.Zero, new UIntPtr(TimerId), 500, IntPtr.Zero);
         // 主进程每秒消费一次，助手 500ms 发布一次已足够；温度再降一半频率并缓存上次读数
         var cpuTemp = double.NaN;
+        var gpuTemp = double.NaN;
         var tick = 0;
         try
         {
@@ -108,8 +109,9 @@ internal static class MonitorHelperHost
                 }
                 // 温度约每秒读一次；两次之间沿用上次结果，避免把 NaN 覆盖到主进程
                 if (tick % 2 == 1 && PawnIoMsr.Available) cpuTemp = PawnIoMsr.ReadTemperature();
-                // 未经确认的固件热区不能作为 GPU 芯片温度发布。
-                shared.Publish(fps, frameMs, history, cpuTemp, double.NaN, targetPid,
+                // 兼容旧版的 MSI 固件参考温度，不代表已确认的独立 GT 温度。
+                if (tick % 2 == 1) gpuTemp = MsiWmiProbe.ReadGpuTemperature();
+                shared.Publish(fps, frameMs, history, cpuTemp, gpuTemp, targetPid,
                     etw?.GetOriginalFps() ?? double.NaN,
                     (etw?.FrameGenerationDetected ?? false) || (output?.HasGeneratedFrames(targetPid) ?? false),
                     outputPid, output?.GetFps(outputPid) ?? double.NaN);

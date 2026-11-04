@@ -1054,10 +1054,10 @@
                         <TextBlock Text="翻译引擎" FontSize="15" Opacity="0.9"/>
                         <ComboBox x:Name="TranslateEngineCombo" HorizontalAlignment="Stretch" FontSize="14"
                                   SelectionChanged="OnTranslateEngineChanged">
-                            <ComboBoxItem Content="免费接口（必应 / MyMemory，无需配置）" Tag="free"/>
+                            <ComboBoxItem Content="免费接口（有道 / 腾讯 / 必应 / MyMemory）" Tag="free"/>
                             <ComboBoxItem Content="Azure 翻译（需填写密钥与区域）" Tag="azure"/>
                         </ComboBox>
-                        <TextBlock Text="免费接口无需配置，但可能限流；Azure 更稳定，需要 Azure 翻译资源的密钥与区域。"
+                        <TextBlock Text="识别文本会发送到所选在线服务。免费模式可能同时请求两个提供商，并在失败时切换；Azure 模式仅请求 Azure，失败不会转发到免费接口。"
                                    FontSize="12" Opacity="0.55" TextWrapping="Wrap"/>
                     </StackPanel>
 
@@ -1778,7 +1778,7 @@
         <!-- 页脚固定操作栏：保存按钮固定在页面最下方，不随表单滚动（文件浏览时收起）；
              宽度由 AddItemPage.LayoutForm() 设为与表单一致（min(640, 可用宽)）并居中，
              避免全屏/居中模式下被拉成整屏宽，也不会因内容自适应而缩成小按钮 -->
-        <Border x:Name="FooterBar" Grid.Row="2" Padding="24,12,24,0"
+        <Border x:Name="FooterBar" Grid.Row="2" Padding="24,12,24,14"
                 BorderThickness="0,1,0,0" BorderBrush="#1AFFFFFF">
             <Button x:Name="SaveButton" Style="{StaticResource SaveButtonStyle}" Click="OnSaveClick"
                     HorizontalAlignment="Center">
@@ -1789,7 +1789,12 @@
             </Button>
         </Border>
 
-        <!-- 底部按键提示：手柄图标徽章，单行，透明背景 -->
-        <ctl:GamepadHintBar x:Name="HintBar" Grid.Row="3" Margin="0,8,0,12"/>
+        <!-- 悬浮放大的按键提示：浮在内容之上，不占布局行（与主页一致） -->
+        <Border Grid.Row="0" Grid.RowSpan="99"
+                HorizontalAlignment="Right" VerticalAlignment="Top"
+                Margin="0,14,20,0" Padding="16,6" CornerRadius="16"
+                Background="#73121018" BorderBrush="#26FFFFFF" BorderThickness="1">
+            <ctl:GamepadHintBar x:Name="HintBar" BadgeScale="1"/>
+        </Border>
     </Grid>
 </Page>

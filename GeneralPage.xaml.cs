@@ -354,12 +354,11 @@ public sealed partial class GeneralPage : Page, ISettingsGamepad
         App.Main?.SyncEdgeGesture();
     }
 
-    /// <summary>操作音效开关 → 保存；打开时立刻放一声确认音，便于确认已生效</summary>
+    /// <summary>操作音效开关 → 保存（A 键确认音由 MainWindow 的全局音效统一播放，这里不再重复）</summary>
     private void OnUiSoundChanged(object sender, Microsoft.UI.Xaml.RoutedEventArgs e)
     {
         if (!_ready) return;
         SettingsService.Update(s => s.UiSoundEnabled = UiSoundToggle.IsOn);
-        if (UiSoundToggle.IsOn) UiSound.Play(UiSoundKind.Confirm);
     }
 
     /// <summary>平板模式开关 → 保存并立即隐藏/恢复本页提示条（其他页面进入时由 GamepadHintBar 自行应用）</summary>

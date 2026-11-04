@@ -190,9 +190,10 @@ public sealed partial class MainPage : Page
         };
 
         // 添加方式遮罩：鼠标点击选项/面板外空白（遮罩层）
-        ChoiceCustom.Tapped += (_, _) => { CloseChoice(); App.Main?.RootNavigateAddItem(); };
-        ChoiceWidget.Tapped += (_, _) => { CloseChoice(); App.Main?.RootNavigateWidget(); };
-        ChoiceSubPage.Tapped += (_, _) => { CloseChoice(); AddSubPage(); };
+        // 自绘卡片不是标准控件：点中即标记已处理，全局点击音效据此发声（点遮罩空白仍安静）
+        ChoiceCustom.Tapped += (_, e) => { e.Handled = true; CloseChoice(); App.Main?.RootNavigateAddItem(); };
+        ChoiceWidget.Tapped += (_, e) => { e.Handled = true; CloseChoice(); App.Main?.RootNavigateWidget(); };
+        ChoiceSubPage.Tapped += (_, e) => { e.Handled = true; CloseChoice(); AddSubPage(); };
         ChoiceMask.Tapped += (_, _) => CloseChoice();
 
         // 抽屉改名遮罩：点击面板外空白（遮罩层）取消
@@ -204,7 +205,7 @@ public sealed partial class MainPage : Page
         for (var i = 0; i < _powerCards.Length; i++)
         {
             var index = i;
-            _powerCards[i].Tapped += (_, _) => ChoosePower(index);
+            _powerCards[i].Tapped += (_, e) => { e.Handled = true; ChoosePower(index); };
         }
 
         // 触屏：弹窗底部放大的提示图标可直接点按，走与手柄按键相同的处理入口
@@ -231,6 +232,8 @@ public sealed partial class MainPage : Page
         DrawerHost.DoubleTapped += (_, _) => BeginRenameDrawerTab();
         // 抽屉面板尺寸变化（内容重排/窗口缩放）：同步底部 toast 的位置（面板收起时 toast 需随其占位高度下移）
         DrawerHost.SizeChanged += (_, _) => UpdateToastOffset();
+        // 悬浮提示条本身高度随提示内容变化（提示条换文案/隐藏）：toast 跟着重新定位
+        HintBarShell.SizeChanged += (_, _) => UpdateToastOffset();
     }
 
     private readonly DispatcherTimer _clockTimer;
@@ -417,7 +420,7 @@ public sealed partial class MainPage : Page
         {
             _resizeQueued = false;
             if (_imagesReleased) return;
-            var availW = TileScroll.ViewportWidth > 0 ? TileScroll.ViewportWidth : TileHost.ActualWidth;
+            var availW = TileAvailWidth();
             if (availW <= 0) return;
             var cols = Math.Max(2, (int)((availW + Gap) / (Unit + Gap)));
             if (cols != _layoutCols || _placedTiles.Count == 0)
@@ -425,10 +428,10 @@ public sealed partial class MainPage : Page
                 LayoutTiles();
                 return;
             }
-            // 列数没变：磁贴尺寸/位置都不变，只需随可视宽度重新水平居中
-            var maxCol = 0;
-            foreach (var p in _placedTiles) maxCol = Math.Max(maxCol, p.col);
-            var usedW = (maxCol + 1) * (Unit + Gap) - Gap;
+            // 列数没变：按磁贴右边界计算整组宽度，不能只取起始列，否则会漏掉宽磁贴的跨度。
+            var usedW = 0.0;
+            foreach (var p in _placedTiles)
+                usedW = Math.Max(usedW, p.col * (Unit + Gap) + p.tile.Width);
             var offsetX = Math.Max(0, (availW - usedW) / 2);
             foreach (var (tile, c, r) in _placedTiles)
             {
@@ -1081,17 +1084,15 @@ public sealed partial class MainPage : Page
         catch { return root.ActualHeight; }
     }
 
-    /// <summary>底部 toast 相对抽屉的动态底边距：toast 常驻磁贴区底部（Row0 底），抽屉（Row1）在它下方占位，
-    /// 故抽屉可见时天然位于抽屉上方。开启"自动隐藏"后面板被平移出屏、但仍占 Row1 的布局高度，
-    /// 此时需把 toast 下移这段高度，让它落到磁贴区最底部，而不是悬在半空。
-    /// 面板高度 + 上下外边距（DrawerHost Margin="12,6,12,8" → 6+8=14）即需补下的距离。</summary>
+    /// <summary>底部布局随提示条高度同步：提示条钉在窗口最底部，toast 落在它上方；
+    /// 抽屉面板底边也让到提示条上方（抽屉在上、提示条在最下面），两者不再互相遮挡。</summary>
     private void UpdateToastOffset()
     {
-        var reserve = _drawerHidden && DrawerHost.Visibility == Visibility.Visible
-            ? DrawerHost.ActualHeight + 14
-            : 0;
-        // 30 为无抽屉时的默认底边距（XAML 中的 Margin 0,0,0,30）
-        MoveHintBar.Margin = new Thickness(0, 0, 0, 30 - reserve);
+        var barHeight = HintBarShell.Visibility == Visibility.Visible ? HintBarShell.ActualHeight : 0;
+        var bar = barHeight > 0 ? barHeight + 26 : 20;
+        MoveHintBar.Margin = new Thickness(0, 0, 0, bar);
+        // 提示条底边距 18 + 自身高度 + 8 间距，正好等于 barHeight + 26
+        DrawerHost.Margin = new Thickness(12, 6, 12, barHeight > 0 ? bar : 8);
     }
 
     /// <summary>抽屉手势感应区高度（DIP）：抽屉收起（面板不在屏上）时，窗口底部这条窄带内上下划也归抽屉</summary>
@@ -1265,6 +1266,11 @@ public sealed partial class MainPage : Page
             FileTransferPanel.BorderBrush = new SolidColorBrush(Windows.UI.Color.FromArgb(0x2E, 0xFF, 0xFF, 0xFF));
             FileTransferPanel.BorderThickness = new Thickness(1.2);
         }
+        FileTransferDropZone.Background = new SolidColorBrush(Windows.UI.Color.FromArgb(
+            (byte)(on ? 0x30 : 0x10), 0x4C, 0xC2, 0xFF));
+        FileTransferDropZone.BorderBrush = new SolidColorBrush(Windows.UI.Color.FromArgb(
+            (byte)(on ? 0xFF : 0x66), 0x4C, 0xC2, 0xFF));
+        FileTransferDropText.Text = on ? "释放以加入待发送" : (_ftDropped.Count == 0 ? "将文件拖到这里" : "继续拖入文件");
     }
 
     /// <summary>外部文件拖到（离开）抽屉面板时的描边反馈</summary>
@@ -1348,6 +1354,8 @@ public sealed partial class MainPage : Page
     private void ShowToast(string text, ToastKind kind = ToastKind.Success, double? progress = null)
     {
         var warn = kind == ToastKind.Warning;
+        // 报错 / 未检测到 / 操作失败等提示统一给一声错误音（与成功的提示音区分开）
+        if (warn && SettingsService.Current.UiSoundEnabled) UiSound.Play(UiSoundKind.Error);
         var accent = warn ? Windows.UI.Color.FromArgb(0xFF, 0xFF, 0xB9, 0x00)
                           : Windows.UI.Color.FromArgb(0xFF, 0x4C, 0xC2, 0xFF);
         MoveHintIcon.Glyph = warn ? "\uE7BA" : "\uE73E"; // 感叹号 / 对勾
@@ -1421,20 +1429,12 @@ public sealed partial class MainPage : Page
         ShowToast(skipped > 0 ? $"已添加 {added} 个磁贴（跳过 {skipped} 个重复/不支持）" : $"已添加 {added} 个磁贴");
     }
 
-    /// <summary>播放手柄操作音效（常规设置里关闭「操作音效」时静默）</summary>
-    private static void PlayCue(UiSoundKind kind)
-    {
-        if (SettingsService.Current.UiSoundEnabled) UiSound.Play(kind);
-    }
-
     /// <summary>
     /// 处理手柄按键。返回 true = 已消费（MainWindow 跳过默认路由）。
     /// </summary>
     public bool HandleGamepad(GamepadButtons buttons)
     {
-        // A/B 的操作反馈音：在分派之前统一发声，遮罩/抽屉/常规模式都能听到
-        if (buttons.HasFlag(GamepadButtons.A)) PlayCue(UiSoundKind.Confirm);
-        else if (buttons.HasFlag(GamepadButtons.B)) PlayCue(UiSoundKind.Back);
+        // A/B 的操作反馈音由 MainWindow 的全局音效统一播放（所有页面共用），这里不再重复播放
 
         // 添加方式选择遮罩 / 抽屉改名遮罩 / 电源菜单 / 文件传输浮层 打开：按键优先交给遮罩
         if (_choiceOpen) return HandleChoice(buttons);
@@ -1723,6 +1723,19 @@ public sealed partial class MainPage : Page
 
     private static (int Cols, int Rows) CellsOf(TileSize size) => Packing.CellsOf(size);
 
+    /// <summary>
+    /// 磁贴可视宽度：按页面根宽度扣除 ScrollViewer 的左右内边距。
+    /// 不用 ViewportWidth / TileHost.ActualWidth —— 窗口尺寸变化或内容超宽时它们会给出滞后/偏大的值，
+    /// 导致列数多算一列，磁贴整体右移、最右列被窗口边缘裁掉。
+    /// </summary>
+    private double TileAvailWidth()
+    {
+        var root = Content as FrameworkElement;
+        var total = root is { ActualWidth: > 0 } ? root.ActualWidth : TileScroll.ActualWidth;
+        var pad = TileScroll.Padding.Left + TileScroll.Padding.Right;
+        return Math.Max(0, total - pad);
+    }
+
     /// <summary>自动流式排布：每个磁贴放入第一个能容纳它的空位（按 _display 显示序列）</summary>
     private void LayoutTiles()
     {
@@ -1750,7 +1763,7 @@ public sealed partial class MainPage : Page
         // 抽屉区域引用由 RenderDrawerPanel 重建
 
         // 列数以可视区宽度为准（ViewportWidth 已扣除 Padding，保证最右列不被裁切）
-        var availW = TileScroll.ViewportWidth > 0 ? TileScroll.ViewportWidth : TileHost.ActualWidth;
+        var availW = TileAvailWidth();
         if (availW <= 0)
         {
             _layoutCols = -1; // 首帧未测量：下次尺寸变化必须完整重排
@@ -1817,7 +1830,7 @@ public sealed partial class MainPage : Page
                 maxCol = Math.Max(maxCol, add.c);
 
                 _addTile = CreateAddTile();
-                _addTile.Tapped += (_, _) => OpenAddFromEdit();
+                _addTile.Tapped += (_, e) => { e.Handled = true; OpenAddFromEdit(); };
                 _placedTiles.Add((_addTile, add.c, add.r));
                 TileHost.Children.Add(_addTile);
                 _tiles.Add(_addTile);
@@ -1832,6 +1845,12 @@ public sealed partial class MainPage : Page
             Canvas.SetLeft(tile, offsetX + c * (Unit + Gap));
             Canvas.SetTop(tile, r * (Unit + Gap));
         }
+
+        // 清掉上次切页动画可能残留的横向位移：动画被打断（切页途中呼出/隐藏启动器）时
+        // PageSlide.X 会停在非零值，导致整块磁贴偏移、最右列被窗口边缘遮住。
+        // 切页流程在 LayoutTiles 之后会重新设置滑入起点，因此这里归零不影响切页动画。
+        PageSlide.X = 0;
+        TileScroll.Opacity = 1;
 
         // 撑满视口靠 XAML 的 MinWidth/MinHeight 绑定实现（垂直靠左上，暂不居中）；这里只设内容实际高度供超出时滚动
         TileHost.Height = Math.Max(200, (maxRow + 1) * (Unit + Gap));
@@ -2785,7 +2804,6 @@ public sealed partial class MainPage : Page
         LayoutDrawerContent(owner);
         UpdateSelection();
         BringDrawerPillIntoView();
-        if (ds.Count > 1) PlayCue(UiSoundKind.Move);
     }
 
     /// <summary>切到指定抽屉（点击标签条药丸）：保持当前层级</summary>
@@ -2894,7 +2912,7 @@ public sealed partial class MainPage : Page
     private bool MoveInDrawer(int dx, int dy)
     {
         if (_drawerInnerTiles.Count == 0) return false;
-        if (_drawerFocusPos < 0 || _drawerFocusPos >= _drawerInnerTiles.Count) { FocusDrawerItem(0); PlayCue(UiSoundKind.Move); return true; }
+        if (_drawerFocusPos < 0 || _drawerFocusPos >= _drawerInnerTiles.Count) { FocusDrawerItem(0); return true; }
         var cur = _drawerFocusPos;
         var (cx, cy) = Center(_drawerInnerTiles[cur]);
         int best = -1;
@@ -2909,7 +2927,7 @@ public sealed partial class MainPage : Page
             var score = cross * 10 + along;
             if (score < bestScore) { bestScore = score; best = i; }
         }
-        if (best >= 0) { FocusDrawerItem(best); PlayCue(UiSoundKind.Move); return true; }
+        if (best >= 0) { FocusDrawerItem(best); return true; }
         return false;
     }
 
@@ -4361,8 +4379,8 @@ public sealed partial class MainPage : Page
         {
             _wallpaperWired = true;
             WallpaperMask.Tapped += (_, _) => CloseWallpaperMenu();
-            WallpaperDesktop.Tapped += (_, _) => ChooseWallpaper(0);
-            WallpaperLock.Tapped += (_, _) => ChooseWallpaper(1);
+            WallpaperDesktop.Tapped += (_, e) => { e.Handled = true; ChooseWallpaper(0); };
+            WallpaperLock.Tapped += (_, e) => { e.Handled = true; ChooseWallpaper(1); };
         }
         WallpaperOverlay.Visibility = Visibility.Visible;
         UpdateWallpaperCursor();
@@ -4469,6 +4487,7 @@ public sealed partial class MainPage : Page
         _fileTransferOpen = true;
         _ftIndex = 0;
         _ftDropped.Clear();
+        HighlightFileTransferDrop(false);
         FileTransferOverlay.Visibility = Visibility.Visible;
         PlayFileTransferIn();
         FileTransferService.StateChanged += OnFileTransferChanged;
@@ -4580,33 +4599,23 @@ public sealed partial class MainPage : Page
         FileTransferFilesHeader.Text = _ftDropped.Count > 0
             ? $"待发送文件（{_ftDropped.Count} 个 · X 发送）"
             : "待发送文件（把文件拖进窗口）";
-        if (_ftDropped.Count == 0)
+        FileTransferDropText.Text = _ftDropped.Count == 0 ? "将文件拖到这里" : "继续拖入文件";
+        foreach (var path in _ftDropped)
         {
-            FileTransferFileList.Children.Add(new TextBlock
+            string name;
+            string size;
+            try
             {
-                Text = "从资源管理器或桌面把文件拖进本窗口 · X 发送 · Y 清空",
-                FontSize = 12, Opacity = 0.45, Margin = new Thickness(4, 2, 0, 2)
-            });
-        }
-        else
-        {
-            foreach (var path in _ftDropped)
-            {
-                string name;
-                string size;
-                try
-                {
-                    var fi = new FileInfo(path);
-                    name = fi.Name;
-                    size = FileTransferService.SizeText(fi.Length);
-                }
-                catch
-                {
-                    name = Path.GetFileName(path);
-                    size = "—";
-                }
-                FileTransferFileList.Children.Add(MakeFileTransferRow(name, size, selected: false, highlight: false));
+                var fi = new FileInfo(path);
+                name = fi.Name;
+                size = FileTransferService.SizeText(fi.Length);
             }
+            catch
+            {
+                name = Path.GetFileName(path);
+                size = "—";
+            }
+            FileTransferFileList.Children.Add(MakeFileTransferRow(name, size, selected: false, highlight: false));
         }
 
         // 进度
@@ -5234,7 +5243,6 @@ public sealed partial class MainPage : Page
         if (best < 0) return false;
         _selected = best;
         UpdateSelection();
-        PlayCue(UiSoundKind.Move);
         return true;
     }
 
@@ -5631,8 +5639,27 @@ public sealed partial class MainPage : Page
         outSb.Begin();
     }
 
+    /// <summary>点击源是否落在主页磁贴上：磁贴是自绘 Border（不是标准控件），供全局点击音效判定用</summary>
+    public bool IsTileSource(object? source)
+    {
+        for (var el = source as DependencyObject; el is not null; el = VisualTreeHelper.GetParent(el))
+        {
+            if (el is Border border && _tiles.Contains(border)) return true;
+        }
+        return false;
+    }
+
     public void FocusGrid()
     {
+        // 呼出主页时兜底复位：切页/组展开动画若在启动器隐藏期间被打断，状态会卡在"动画中"，
+        // 造成后续切页无响应、磁贴停在半滑出位置；重新呼出时按静止状态恢复。
+        _pageAnimating = false;
+        _groupAnimating = false;
+        PageSlide.X = 0;
+        TileScroll.Opacity = 1;
+        // 首次启动时窗口尺寸可能还没定下来，磁贴按早期宽度排过一次会整块偏右；
+        // 每次呼出都按当前实际尺寸复核一次列数/偏移（列数不变只重设位置，不重建磁贴）。
+        QueueResizeLayout();
         if (_tiles.Count > 0) UpdateSelection();
     }
 }

@@ -8,7 +8,7 @@ namespace GameLocker.Services;
 /// <summary>
 /// 文本翻译：免费接口同时挂多个源（腾讯 TranSmart、有道、Bing、MyMemory），
 /// 每次翻译并发请求"当前最快"的两个，谁先给出有效译文就用谁，并持续记录各自的实测耗时；
-/// 连续失败的接口冷却一段时间。配置了 Azure 时优先 Azure，失败也回退免费接口。
+/// 连续失败的接口冷却一段时间。Azure 模式仅请求 Azure，不会回退免费接口。
 /// 仅被屏幕翻译小组件使用。
 /// </summary>
 public static class TranslateService
@@ -36,6 +36,41 @@ public static class TranslateService
     private static readonly Dictionary<string, long> DeadUntil = [];
     private static readonly object EngineLock = new();
 
+    public static string EngineName(string name) => name switch
+    {
+        "free" => "自动免费",
+        "youdao" => "有道",
+        "tencent" => "腾讯",
+        "bing" => "Bing",
+        "mymemory" => "MyMemory",
+        "azure" => "Azure",
+        _ => name
+    };
+
+    public static string GetEngineStatus(string name, bool azureConfigured)
+    {
+        if (name == "azure" && !azureConfigured) return "未配置";
+        lock (EngineLock)
+        {
+            if (name == "free")
+            {
+                var statuses = new[] { "youdao", "tencent", "bing", "mymemory" }
+                    .Select(n => GetEngineStatus(n, azureConfigured)).ToArray();
+                if (statuses.Contains("最近可用")) return "最近可用";
+                if (statuses.Contains("未检测")) return "未检测";
+                if (statuses.Contains("待重试")) return "待重试";
+                if (statuses.Contains("最近失败")) return "最近失败";
+                return "冷却中";
+            }
+            if (DeadUntil.GetValueOrDefault(name) > Environment.TickCount64 ||
+                name == "bing" && DateTime.Now < _bingDeadUntil) return "冷却中";
+            if (DeadUntil.ContainsKey(name) || name == "bing" && _bingDeadUntil != DateTime.MinValue)
+                return "待重试";
+            if (FailStreak.GetValueOrDefault(name) > 0) return "最近失败";
+            return Latency.ContainsKey(name) ? "最近可用" : "未检测";
+        }
+    }
+
     /// <summary>语言代码转服务端标签（zh→zh-Hans）</summary>
     public static string Tag(string lang) => lang switch
     {
@@ -45,41 +80,58 @@ public static class TranslateService
         _ => "zh-Hans"
     };
 
-    /// <summary>把文本翻译到目标语言；失败返回 null（不抛异常）</summary>
+    /// <summary>把文本翻译到目标语言；失败返回 null，调用方取消时抛出取消异常</summary>
     public static async Task<string?> TranslateAsync(string text, string engine, string? apiKey, string? region,
-        string source, string target)
+        string source, string target, CancellationToken cancellationToken = default, Action<string>? activity = null)
     {
+        cancellationToken.ThrowIfCancellationRequested();
         text = Clip(text);
-        if (text.Length == 0) return null;
+        if (text.Length == 0 || engine == "azure" && string.IsNullOrWhiteSpace(apiKey)) return null;
 
         var cacheKey = Key(engine, source, target, text);
-        lock (Cache)
-            if (Cache.TryGetValue(cacheKey, out var hit)) return hit;
+        string? cached;
+        lock (Cache) Cache.TryGetValue(cacheKey, out cached);
+        if (cached is not null)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            activity?.Invoke("使用缓存（无请求）");
+            return cached;
+        }
 
         try
         {
-            var result = engine == "azure" && !string.IsNullOrWhiteSpace(apiKey)
-                ? await AzureAsync(text, apiKey!, region, source, target)
-                : null;
-            // Azure 没配或临时失败时回退免费接口，避免因为一个引擎故障就整屏翻译失败
-            if (string.IsNullOrWhiteSpace(result)) result = await FreeAsync(text, source, target);
+            // Azure 与单选模式只请求指定源，不向其它接口发送文本。
+            var result = engine == "free"
+                ? await FreeAsync(text, source, target, cancellationToken, activity)
+                : (await SelectedBatchAsync([text], engine, apiKey, region, source, target, cancellationToken, activity))
+                    .FirstOrDefault();
+            cancellationToken.ThrowIfCancellationRequested();
             if (string.IsNullOrWhiteSpace(result)) return null;
             Put(cacheKey, result);
             return result;
         }
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested) { throw; }
         catch
         {
+            cancellationToken.ThrowIfCancellationRequested();
             return null;
         }
     }
 
     /// <summary>
     /// 批量逐行翻译：Azure / 腾讯 / 有道 / Bing 都支持一次请求多条文本并保持顺序，整屏几十行只发一次；
-    /// 批量接口不可用时回退逐行（含 MyMemory），连续失败两次就放弃剩余行，避免整屏等上几分钟。
+    /// 批量接口不可用时在当前模式内回退逐行；自动免费模式可回退 MyMemory，单选模式不跨源，连续失败两次放弃剩余行。
     /// </summary>
     public static async Task<List<string?>> TranslateLinesAsync(IReadOnlyList<string> lines, string engine,
-        string? apiKey, string? region, string source, string target)
+        string? apiKey, string? region, string source, string target, CancellationToken cancellationToken = default,
+        Action<string>? activity = null)
     {
+        cancellationToken.ThrowIfCancellationRequested();
+        if (engine == "azure" && string.IsNullOrWhiteSpace(apiKey))
+        {
+            activity?.Invoke("Azure 未配置（无请求）");
+            return Enumerable.Repeat<string?>(null, lines.Count).ToList();
+        }
         var results = new List<string?>(lines.Count);
         var missing = new List<int>();
         var texts = new List<string>();
@@ -87,6 +139,7 @@ public static class TranslateService
         {
             for (var i = 0; i < lines.Count; i++)
             {
+                cancellationToken.ThrowIfCancellationRequested();
                 var text = Clip(lines[i]);
                 if (text.Length == 0)
                 {
@@ -104,19 +157,22 @@ public static class TranslateService
                 texts.Add(text);
             }
         }
-        if (missing.Count == 0) return results;
+        if (missing.Count == 0)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            activity?.Invoke(results.Any(value => value is not null) ? "使用缓存（无请求）" : "无待翻译文本（无请求）");
+            return results;
+        }
 
-        var azure = engine == "azure" && !string.IsNullOrWhiteSpace(apiKey);
-        var batch = azure
-            ? await AzureBatchAsync(texts, apiKey!, region, source, target)
-            : new string?[texts.Count];
-        // Azure 批量失败（密钥/额度问题）或未配置时，用并发的免费接口兜底
-        if (batch.All(string.IsNullOrWhiteSpace))
-            batch = await FreeBatchAsync(texts, source, target);
+        var batch = engine == "free"
+            ? await FreeBatchAsync(texts, source, target, cancellationToken, activity)
+            : await SelectedBatchAsync(texts, engine, apiKey, region, source, target, cancellationToken, activity);
+        cancellationToken.ThrowIfCancellationRequested();
 
         for (var i = 0; i < missing.Count; i++)
         {
-            var value = batch[i];
+            cancellationToken.ThrowIfCancellationRequested();
+            var value = i < batch.Length ? batch[i] : null;
             if (string.IsNullOrWhiteSpace(value)) continue;
             results[missing[i]] = value;
             Put(Key(engine, source, target, texts[i]), value);
@@ -125,8 +181,9 @@ public static class TranslateService
         var failures = 0;
         for (var i = 0; i < missing.Count; i++)
         {
+            cancellationToken.ThrowIfCancellationRequested();
             if (results[missing[i]] is not null) continue;
-            var value = await TranslateAsync(lines[missing[i]], engine, apiKey, region, source, target);
+            var value = await TranslateAsync(lines[missing[i]], engine, apiKey, region, source, target, cancellationToken, activity);
             results[missing[i]] = value;
             failures = string.IsNullOrWhiteSpace(value) ? failures + 1 : 0;
             if (failures >= 2) break;
@@ -156,15 +213,43 @@ public static class TranslateService
         }
     }
 
-    private static async Task<string?> AzureAsync(string text, string key, string? region, string source, string target)
+    private static async Task<string?[]> SelectedBatchAsync(IReadOnlyList<string> texts, string engine,
+        string? apiKey, string? region, string source, string target, CancellationToken cancellationToken,
+        Action<string>? activity)
     {
-        var batch = await AzureBatchAsync([text], key, region, source, target);
-        return batch[0];
+        cancellationToken.ThrowIfCancellationRequested();
+        if (texts.Count == 0 || engine == "azure" && string.IsNullOrWhiteSpace(apiKey))
+            return new string?[texts.Count];
+        Func<Task<string?[]>>? run = engine switch
+        {
+            "youdao" => () => YoudaoBatchAsync(texts, source, target, cancellationToken),
+            "tencent" => () => TencentBatchAsync(texts, source, target, cancellationToken),
+            "bing" => () => BingBatchAsync(texts, source, target, cancellationToken),
+            "mymemory" => async () =>
+            {
+                var lines = new string?[texts.Count];
+                for (var i = 0; i < texts.Count; i++)
+                {
+                    cancellationToken.ThrowIfCancellationRequested();
+                    lines[i] = await MyMemoryAsync(texts[i], source, target, cancellationToken);
+                }
+                return lines;
+            },
+            "azure" => () => AzureBatchAsync(texts, apiKey!, region, source, target, cancellationToken),
+            _ => null
+        };
+        if (run is null) return new string?[texts.Count];
+        activity?.Invoke("请求：" + EngineName(engine));
+        var result = await RunEngine(engine, run, cancellationToken);
+        cancellationToken.ThrowIfCancellationRequested();
+        activity?.Invoke((result.Lines.Any(v => !string.IsNullOrWhiteSpace(v)) ? "采用：" : "请求失败：") + EngineName(engine));
+        return result.Lines;
     }
 
     private static async Task<string?[]> AzureBatchAsync(IReadOnlyList<string> texts, string key, string? region,
-        string source, string target)
+        string source, string target, CancellationToken cancellationToken)
     {
+        cancellationToken.ThrowIfCancellationRequested();
         var fail = new string?[texts.Count];
         try
         {
@@ -177,35 +262,47 @@ public static class TranslateService
             };
             req.Headers.Add("Ocp-Apim-Subscription-Key", key);
             if (!string.IsNullOrWhiteSpace(region)) req.Headers.Add("Ocp-Apim-Subscription-Region", region.Trim());
-            using var resp = await Http.SendAsync(req);
+            using var resp = await Http.SendAsync(req, cancellationToken);
             if (!resp.IsSuccessStatusCode) return fail;
-            var body = await resp.Content.ReadAsStringAsync();
+            var body = await resp.Content.ReadAsStringAsync(cancellationToken);
             using var doc = JsonDocument.Parse(body);
             var root = doc.RootElement;
             for (var i = 0; i < texts.Count && i < root.GetArrayLength(); i++)
+            {
+                cancellationToken.ThrowIfCancellationRequested();
                 fail[i] = root[i].GetProperty("translations")[0].GetProperty("text").GetString();
+            }
         }
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested) { throw; }
         catch { }
+        cancellationToken.ThrowIfCancellationRequested();
         return fail;
     }
 
     /// <summary>单行翻译：并发免费接口（最快者优先），全部失败再回退 MyMemory</summary>
-    private static async Task<string?> FreeAsync(string text, string source, string target)
+    private static async Task<string?> FreeAsync(string text, string source, string target,
+        CancellationToken cancellationToken, Action<string>? activity)
     {
-        var batch = await FreeBatchAsync([text], source, target);
-        if (!string.IsNullOrWhiteSpace(batch[0])) return batch[0];
-        return await MyMemoryAsync(text, source, target);
+        cancellationToken.ThrowIfCancellationRequested();
+        var batch = await FreeBatchAsync([text], source, target, cancellationToken, activity);
+        var value = batch.FirstOrDefault();
+        if (!string.IsNullOrWhiteSpace(value)) return value;
+        return (await SelectedBatchAsync([text], "mymemory", null, null, source, target,
+            cancellationToken, activity)).FirstOrDefault();
     }
 
     /// <summary>
     /// 免费接口批量翻译：按实测耗时排序，同时只发起"当前最快的两个"，先返回有效译文的胜出；
-    /// 这样既不用轮询等待慢接口，也不会把免费接口打爆。
+    /// 胜出后取消其它请求并观察其完成，主动取消不影响健康度。
     /// </summary>
-    private static async Task<string?[]> FreeBatchAsync(IReadOnlyList<string> texts, string source, string target)
+    private static async Task<string?[]> FreeBatchAsync(IReadOnlyList<string> texts, string source, string target,
+        CancellationToken cancellationToken, Action<string>? activity)
     {
+        cancellationToken.ThrowIfCancellationRequested();
         var fail = new string?[texts.Count];
         if (texts.Count == 0) return fail;
 
+        using var race = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
         var candidates = new List<(string Name, Func<Task<string?[]>> Run)>();
         foreach (var name in RankEngines())
         {
@@ -214,46 +311,66 @@ public static class TranslateService
                 case "youdao":
                     // 有道用换行拼批：URL 太长容易失败，整批超过 1500 字就跳过它
                     if (texts.Sum(t => t.Length) <= 1500)
-                        candidates.Add(("youdao", () => YoudaoBatchAsync(texts, source, target)));
+                        candidates.Add(("youdao", () => YoudaoBatchAsync(texts, source, target, race.Token)));
                     break;
                 case "tencent":
-                    candidates.Add(("tencent", () => TencentBatchAsync(texts, source, target)));
+                    candidates.Add(("tencent", () => TencentBatchAsync(texts, source, target, race.Token)));
                     break;
                 case "bing":
-                    candidates.Add(("bing", () => BingBatchAsync(texts, source, target)));
+                    candidates.Add(("bing", () => BingBatchAsync(texts, source, target, race.Token)));
                     break;
             }
             if (candidates.Count >= 2) break;
         }
         if (candidates.Count == 0) return fail;
 
-        var pending = candidates.Select(c => RunEngine(c.Name, c.Run)).ToList();
-        while (pending.Count > 0)
+        activity?.Invoke("请求：" + string.Join(" + ", candidates.Select(c => EngineName(c.Name))));
+        var tasks = candidates.Select(c => RunEngine(c.Name, c.Run, race.Token)).ToList();
+        var pending = tasks.ToList();
+        try
         {
-            Task<EngineResult> done;
-            try { done = await Task.WhenAny(pending); }
-            catch { break; }
-            pending.Remove(done);
-
-            EngineResult result;
-            try { result = await done; }
-            catch { continue; }
-
-            var ok = result.Lines.Any(v => !string.IsNullOrWhiteSpace(v));
-            Record(result.Name, result.Ms, ok);
-            if (ok) return result.Lines;
+            while (pending.Count > 0)
+            {
+                cancellationToken.ThrowIfCancellationRequested();
+                var done = await Task.WhenAny(pending);
+                pending.Remove(done);
+                var result = await done;
+                cancellationToken.ThrowIfCancellationRequested();
+                if (result.Lines.Any(v => !string.IsNullOrWhiteSpace(v)))
+                {
+                    race.Cancel();
+                    activity?.Invoke("采用：" + EngineName(result.Name));
+                    return result.Lines;
+                }
+            }
+            return fail;
         }
-        return fail;
+        finally
+        {
+            // 取消败方并等待所有包装任务，确保健康记录完成且没有未观察异常。
+            race.Cancel();
+            try { await Task.WhenAll(tasks); }
+            catch (OperationCanceledException) when (race.IsCancellationRequested) { }
+            cancellationToken.ThrowIfCancellationRequested();
+        }
     }
 
-    /// <summary>把一次接口调用包起来，记录耗时并保证异常不会冒出去</summary>
-    private static async Task<EngineResult> RunEngine(string name, Func<Task<string?[]>> run)
+    /// <summary>每个完成的请求自行记录健康度；主动取消不计失败，HTTP 超时仍按失败处理</summary>
+    private static async Task<EngineResult> RunEngine(string name, Func<Task<string?[]>> run,
+        CancellationToken cancellationToken)
     {
         var watch = Stopwatch.StartNew();
         string?[] lines;
         try { lines = await run(); }
-        catch { lines = []; }
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested) { throw; }
+        catch
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            lines = [];
+        }
         watch.Stop();
+        cancellationToken.ThrowIfCancellationRequested();
+        Record(name, watch.ElapsedMilliseconds, lines.Any(v => !string.IsNullOrWhiteSpace(v)));
         return new EngineResult(name, lines, watch.ElapsedMilliseconds);
     }
 
@@ -265,7 +382,8 @@ public static class TranslateService
         {
             var now = Environment.TickCount64;
             var alive = all
-                .Where(n => DeadUntil.GetValueOrDefault(n, 0) <= now)
+                .Where(n => DeadUntil.GetValueOrDefault(n, 0) <= now &&
+                    (n != "bing" || DateTime.Now >= _bingDeadUntil))
                 .OrderBy(n => Latency.GetValueOrDefault(n, SeedLatency(n)))
                 .ToList();
             return alive.Count > 0 ? alive : ["youdao", "tencent"];
@@ -289,6 +407,8 @@ public static class TranslateService
                 var old = Latency.GetValueOrDefault(name, SeedLatency(name));
                 Latency[name] = old * 0.6 + ms * 0.4;
                 FailStreak[name] = 0;
+                DeadUntil.Remove(name);
+                if (name == "bing") _bingDeadUntil = DateTime.MinValue;
                 DebugLog.Write($"翻译引擎: {name} 成功 {ms}ms");
             }
             else
@@ -302,8 +422,9 @@ public static class TranslateService
     }
 
     /// <summary>腾讯 TranSmart：一次 POST 提交多行，返回顺序一致的 auto_translation 数组</summary>
-    private static async Task<string?[]> TencentBatchAsync(IReadOnlyList<string> texts, string source, string target)
+    private static async Task<string?[]> TencentBatchAsync(IReadOnlyList<string> texts, string source, string target, CancellationToken cancellationToken)
     {
+        cancellationToken.ThrowIfCancellationRequested();
         var fail = new string?[texts.Count];
         try
         {
@@ -320,10 +441,10 @@ public static class TranslateService
                 Content = new StringContent(JsonSerializer.Serialize(body), Encoding.UTF8, "application/json")
             };
             req.Headers.TryAddWithoutValidation("User-Agent", UserAgent);
-            using var resp = await Http.SendAsync(req);
+            using var resp = await Http.SendAsync(req, cancellationToken);
             if (!resp.IsSuccessStatusCode) return fail;
 
-            var json = await resp.Content.ReadAsStringAsync();
+            var json = await resp.Content.ReadAsStringAsync(cancellationToken);
             using var doc = JsonDocument.Parse(json);
             var root = doc.RootElement;
             if (root.TryGetProperty("header", out var header) &&
@@ -331,15 +452,21 @@ public static class TranslateService
                 code.GetString() != "succ") return fail;
             if (!root.TryGetProperty("auto_translation", out var arr)) return fail;
             for (var i = 0; i < texts.Count && i < arr.GetArrayLength(); i++)
+            {
+                cancellationToken.ThrowIfCancellationRequested();
                 fail[i] = arr[i].GetString();
+            }
         }
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested) { throw; }
         catch { }
+        cancellationToken.ThrowIfCancellationRequested();
         return fail;
     }
 
     /// <summary>有道免密钥接口：用换行拼接多行，返回按换行拆分的译文，行数不一致视为失败</summary>
-    private static async Task<string?[]> YoudaoBatchAsync(IReadOnlyList<string> texts, string source, string target)
+    private static async Task<string?[]> YoudaoBatchAsync(IReadOnlyList<string> texts, string source, string target, CancellationToken cancellationToken)
     {
+        cancellationToken.ThrowIfCancellationRequested();
         var fail = new string?[texts.Count];
         try
         {
@@ -350,10 +477,10 @@ public static class TranslateService
 
             using var req = new HttpRequestMessage(HttpMethod.Get, url);
             req.Headers.TryAddWithoutValidation("User-Agent", UserAgent);
-            using var resp = await Http.SendAsync(req);
+            using var resp = await Http.SendAsync(req, cancellationToken);
             if (!resp.IsSuccessStatusCode) return fail;
 
-            var json = await resp.Content.ReadAsStringAsync();
+            var json = await resp.Content.ReadAsStringAsync(cancellationToken);
             using var doc = JsonDocument.Parse(json);
             var root = doc.RootElement;
             if (root.TryGetProperty("errorCode", out var code) && code.GetInt32() != 0) return fail;
@@ -362,9 +489,14 @@ public static class TranslateService
             var parts = (arr[0].GetString() ?? "").Replace("\r", "").Split('\n');
             if (parts.Length != texts.Count) return fail; // 换行被合并/拆开时不硬塞，交给其它接口
             for (var i = 0; i < parts.Length; i++)
+            {
+                cancellationToken.ThrowIfCancellationRequested();
                 fail[i] = parts[i].Trim();
+            }
         }
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested) { throw; }
         catch { }
+        cancellationToken.ThrowIfCancellationRequested();
         return fail;
     }
 
@@ -377,16 +509,18 @@ public static class TranslateService
     };
 
     /// <summary>MyMemory 回退（匿名额度有限，单次最多约 500 字节，长文本按段翻译）</summary>
-    private static async Task<string?> MyMemoryAsync(string text, string source, string target)
+    private static async Task<string?> MyMemoryAsync(string text, string source, string target, CancellationToken cancellationToken)
     {
+        cancellationToken.ThrowIfCancellationRequested();
         var from = source == "auto" ? GuessSource(text) : Tag(source);
         var to = Tag(target) == "zh-Hans" ? "zh-CN" : Tag(target);
         var parts = new List<string>();
-        foreach (var chunk in SplitByBytes(text, 420))
+        foreach (var chunk in SplitByBytes(text, 420, cancellationToken))
         {
+            cancellationToken.ThrowIfCancellationRequested();
             var url = $"https://api.mymemory.translated.net/get?q={Uri.EscapeDataString(chunk)}"
                 + $"&langpair={from}|{to}&de={Uri.EscapeDataString(MyMemoryEmail)}";
-            var json = await Http.GetStringAsync(url);
+            var json = await Http.GetStringAsync(url, cancellationToken);
             using var doc = JsonDocument.Parse(json);
             var translated = doc.RootElement.GetProperty("responseData").GetProperty("translatedText").GetString();
             if (string.IsNullOrWhiteSpace(translated)) continue;
@@ -409,13 +543,14 @@ public static class TranslateService
     }
 
     /// <summary>按 UTF-8 字节数把文本切成若干段（尽量不切断单词/句子），供有长度限制的接口使用</summary>
-    private static List<string> SplitByBytes(string text, int maxBytes)
+    private static List<string> SplitByBytes(string text, int maxBytes, CancellationToken cancellationToken)
     {
         var list = new List<string>();
         var start = 0;
         var bytes = 0;
         for (var i = 0; i < text.Length; i++)
         {
+            cancellationToken.ThrowIfCancellationRequested();
             var size = Encoding.UTF8.GetByteCount(text.AsSpan(i, 1));
             if (bytes + size > maxBytes && i > start)
             {
@@ -429,10 +564,11 @@ public static class TranslateService
         return list;
     }
 
-    private static async Task<string?[]> BingBatchAsync(IReadOnlyList<string> texts, string source, string target)
+    private static async Task<string?[]> BingBatchAsync(IReadOnlyList<string> texts, string source, string target, CancellationToken cancellationToken)
     {
+        cancellationToken.ThrowIfCancellationRequested();
         var fail = new string?[texts.Count];
-        var token = await BingTokenAsync();
+        var token = await BingTokenAsync(cancellationToken);
         if (token is null) return fail;
 
         try
@@ -445,40 +581,49 @@ public static class TranslateService
                     Encoding.UTF8, "application/json")
             };
             req.Headers.Add("Authorization", "Bearer " + token);
-            using var resp = await Http.SendAsync(req);
+            using var resp = await Http.SendAsync(req, cancellationToken);
             if (!resp.IsSuccessStatusCode)
             {
                 _freeToken = ""; // 强制下次刷新 token
                 return fail;
             }
-            var body = await resp.Content.ReadAsStringAsync();
+            var body = await resp.Content.ReadAsStringAsync(cancellationToken);
             using var doc = JsonDocument.Parse(body);
             var root = doc.RootElement;
             for (var i = 0; i < texts.Count && i < root.GetArrayLength(); i++)
+            {
+                cancellationToken.ThrowIfCancellationRequested();
                 fail[i] = root[i].GetProperty("translations")[0].GetProperty("text").GetString();
+            }
         }
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested) { throw; }
         catch
         {
+            cancellationToken.ThrowIfCancellationRequested();
             _bingDeadUntil = DateTime.Now.AddMinutes(30);
         }
+        cancellationToken.ThrowIfCancellationRequested();
         return fail;
     }
 
-    private static async Task<string?> BingTokenAsync()
+    private static async Task<string?> BingTokenAsync(CancellationToken cancellationToken)
     {
+        cancellationToken.ThrowIfCancellationRequested();
         if (DateTime.Now < _bingDeadUntil) return null;
         if (DateTime.Now - _freeTokenAt > TimeSpan.FromMinutes(8) || string.IsNullOrEmpty(_freeToken))
         {
             try
             {
-                var token = await Http.GetStringAsync("https://edge.microsoft.com/translate/auth");
+                var token = await Http.GetStringAsync("https://edge.microsoft.com/translate/auth", cancellationToken);
                 if (string.IsNullOrWhiteSpace(token)) { _bingDeadUntil = DateTime.Now.AddMinutes(30); return null; }
                 _freeToken = token.Trim();
                 _freeTokenAt = DateTime.Now;
             }
+            catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested) { throw; }
             catch
             {
-                // 端点不可用（404/被拦截/超时）：30 分钟内直接走 MyMemory
+                cancellationToken.ThrowIfCancellationRequested();
+                // 端点不可用（404/被拦截/超时）：30 分钟内跳过 Bing
                 _bingDeadUntil = DateTime.Now.AddMinutes(30);
                 return null;
             }

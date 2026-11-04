@@ -14,8 +14,10 @@ namespace GameLocker.Controls;
 /// </summary>
 public sealed partial class GamepadHintBar : UserControl
 {
-    /// <summary>整体缩放系数（统一缩小徽章与文字）</summary>
-    private const double S = 0.85;
+    /// <summary>默认整体缩放系数（统一缩小徽章与文字），页面可用 Scale 单独放大</summary>
+    private const double DefaultScale = 0.85;
+
+    private double _scale = DefaultScale;
 
     public GamepadHintBar()
     {
@@ -23,6 +25,23 @@ public sealed partial class GamepadHintBar : UserControl
         // 平板模式：每次连接视觉树（含缓存页返回）按设置隐藏提示条；触屏模式的图标本身就是操作入口，必须保留
         Loaded += (_, _) => Visibility = SettingsService.Current.TabletMode && !TouchMode
             ? Visibility.Collapsed : Visibility.Visible;
+    }
+
+    /// <summary>缩放系数：徽章直径与说明文字一起放大/缩小（默认 0.85，主页悬浮提示条用 1.0）</summary>
+    public static readonly DependencyProperty BadgeScaleProperty = DependencyProperty.Register(
+        nameof(BadgeScale), typeof(double), typeof(GamepadHintBar),
+        new PropertyMetadata(DefaultScale, (d, e) =>
+        {
+            var bar = (GamepadHintBar)d;
+            var value = (double)e.NewValue;
+            bar._scale = value > 0 ? value : DefaultScale;
+            bar.SetHints(bar.Hints);
+        }));
+
+    public double BadgeScale
+    {
+        get => (double)GetValue(BadgeScaleProperty);
+        set => SetValue(BadgeScaleProperty, value);
     }
 
     /// <summary>XAML 声明式配置入口（等价于调用 SetHints）</summary>
@@ -90,18 +109,18 @@ public sealed partial class GamepadHintBar : UserControl
             }
             return;
         }
-        RootPanel.Spacing = 7 * S;
+        RootPanel.Spacing = 7 * _scale;
         foreach (var part in spec.Split('|'))
         {
             var kv = part.Split(':', 2);
             var key = kv[0].Trim();
             var label = kv.Length > 1 ? kv[1].Trim() : "";
-            RootPanel.Children.Add(BuildBadge(key));
+            RootPanel.Children.Add(BuildBadge(key, _scale));
             if (label.Length > 0)
                 RootPanel.Children.Add(new TextBlock
                 {
                     Text = label,
-                    FontSize = 11 * S,
+                    FontSize = 11 * _scale,
                     Opacity = 0.75,
                     VerticalAlignment = VerticalAlignment.Center
                 });
@@ -134,7 +153,7 @@ public sealed partial class GamepadHintBar : UserControl
     }
 
     /// <summary>按按键标识生成对应徽章；无对应按键图标的中文词渲染为文字胶囊</summary>
-    private static FrameworkElement BuildBadge(string key, double scale = S) => key.ToUpperInvariant() switch
+    private static FrameworkElement BuildBadge(string key, double scale = DefaultScale) => key.ToUpperInvariant() switch
     {
         "A" => Circle("A", ColorFromRgb(0x10, 0x7C, 0x10), scale),   // 绿
         "B" => Circle("B", ColorFromRgb(0xD8, 0x3B, 0x01), scale),   // 红
@@ -156,7 +175,7 @@ public sealed partial class GamepadHintBar : UserControl
     private static readonly Color White = Color.FromArgb(0xFF, 0xFF, 0xFF, 0xFF);
 
     /// <summary>圆形按键徽章（A/B/X/Y）：彩色圆 + 居中字母</summary>
-    private static Border Circle(string text, Color fill, double scale = S, bool darkText = false)
+    private static Border Circle(string text, Color fill, double scale = DefaultScale, bool darkText = false)
     {
         var d = 18 * scale;
         return new Border
@@ -181,7 +200,7 @@ public sealed partial class GamepadHintBar : UserControl
     }
 
     /// <summary>胶囊徽章（LB/RB/L3/R3/方向/View/Menu）：半透明底 + 居中文字或图形</summary>
-    private static Border Pill(string content, bool icon = false, double scale = S)
+    private static Border Pill(string content, bool icon = false, double scale = DefaultScale)
     {
         return new Border
         {

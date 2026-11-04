@@ -148,9 +148,9 @@
                 <ScrollViewer.RenderTransform>
                     <TranslateTransform x:Name="PageSlide"/>
                 </ScrollViewer.RenderTransform>
-                <!-- MinWidth/MinHeight 绑定撑满视口：WinUI3 ScrollViewer 会把小于视口的内容居中，撑满后磁贴靠左靠上 -->
+                <!-- MinWidth 用视口宽度（ActualWidth 含左右 Padding 会让画布比可视区宽，导致最右列被裁） -->
                 <Canvas x:Name="TileHost"
-                        MinWidth="{Binding ActualWidth, ElementName=TileScroll}"
+                        MinWidth="{Binding ViewportWidth, ElementName=TileScroll}"
                         MinHeight="{Binding ActualHeight, ElementName=TileScroll}"/>
             </ScrollViewer>
 
@@ -212,8 +212,15 @@
             </Border>
         </Grid>
 
-        <!-- 底部按键提示：手柄图标徽章，单行，透明背景 -->
-        <ctl:GamepadHintBar x:Name="HintBar" Grid.Row="2" Margin="0,8,0,12"/>
+        <!-- 底部按键提示：悬浮玻璃胶囊，钉在窗口最底部（不占布局行）。
+             抽屉展开时由代码给抽屉面板留出这条提示条的高度，抽屉在上、提示条在最下面，两者不重叠 -->
+        <Border x:Name="HintBarShell" Grid.Row="0" Grid.RowSpan="3"
+                HorizontalAlignment="Center" VerticalAlignment="Bottom"
+                Margin="0,0,0,18" Padding="18,8" CornerRadius="18"
+                Background="#73121018" BorderBrush="#26FFFFFF" BorderThickness="1"
+                Visibility="{x:Bind HintBar.Visibility, Mode=OneWay}">
+            <ctl:GamepadHintBar x:Name="HintBar" BadgeScale="1"/>
+        </Border>
 
         <!-- 添加方式选择遮罩：X 键 / 编辑模式"添加磁贴"弹出，三选一（自定义 / 小组件 / 副页块），手柄可操作。
              玻璃质感面板 + 强调色图标徽章；选中项用强调色描边 + 底色高亮（见 UpdateChoiceCursor） -->
@@ -533,6 +540,16 @@
 
                     <!-- 待发送文件：从资源管理器/桌面直接拖进本窗口加入，不再在窗口内浏览目录 -->
                     <TextBlock x:Name="FileTransferFilesHeader" Text="待发送文件（把文件拖进窗口）" FontSize="12" Opacity="0.5" Margin="4,4,0,0"/>
+                    <Border x:Name="FileTransferDropZone" CornerRadius="14" Padding="16,20"
+                            Background="#104CC2FF" BorderBrush="#664CC2FF" BorderThickness="1">
+                        <StackPanel Spacing="8" HorizontalAlignment="Center">
+                            <FontIcon Glyph="&#xE8B7;" FontSize="28" Foreground="#4CC2FF"/>
+                            <TextBlock x:Name="FileTransferDropText" Text="将文件拖到这里" FontSize="17"
+                                       FontWeight="SemiBold" HorizontalAlignment="Center"/>
+                            <TextBlock Text="从桌面或资源管理器拖入文件，按 X 发送"
+                                       FontSize="12" Opacity="0.6" TextWrapping="Wrap" TextAlignment="Center"/>
+                        </StackPanel>
+                    </Border>
                     <ScrollViewer MaxHeight="190" VerticalScrollBarVisibility="Auto">
                         <StackPanel x:Name="FileTransferFileList" Spacing="6"/>
                     </ScrollViewer>

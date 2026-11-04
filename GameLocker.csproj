@@ -13,7 +13,7 @@
     <EnableMsixTooling>false</EnableMsixTooling>
     <ApplicationManifest>app.manifest</ApplicationManifest>
     <AssemblyName>GameLocker</AssemblyName>
-    <Version>2.9.2</Version>
+    <Version>2.9.3</Version>
     <ApplicationIcon>Assets\GameLocker.ico</ApplicationIcon>
     <NoWarn>$(NoWarn);CA1416</NoWarn>
     <!-- dotnet CLI 构建时指向 VS BuildTools 的 AppxPackage 任务目录（生成 PRI 所需） -->
@@ -50,6 +50,11 @@
     <EmbeddedResource Include="Resources\IntelMSR.bin" />
     <!-- LpcACPIEC 签名模块：ACPI EC 端口访问，用于探测厂商 EC 里的 GPU 温度 -->
     <EmbeddedResource Include="Resources\LpcACPIEC.bin" />
+    <!-- 界面音效：A 键确认、B 键返回、报错/未检测到（kopanel 开源的 success / warning / error 参数还原） -->
+    <EmbeddedResource Include="Resources\UiSoundConfirm.wav" />
+    <EmbeddedResource Include="Resources\UiSoundSelect.wav" />
+    <EmbeddedResource Include="Resources\UiSoundBack.wav" />
+    <EmbeddedResource Include="Resources\UiSoundError.wav" />
     <!-- 屏幕键盘的中文拼音字典（音节 → 常用字，按频次排序） -->
     <EmbeddedResource Include="Resources\pinyin.tsv" />
     <!-- 屏幕键盘的双字词表（拼音 → 词语，按词频排序），用于提高两字词联想准确度 -->

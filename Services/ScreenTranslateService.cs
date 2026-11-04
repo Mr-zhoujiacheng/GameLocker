@@ -28,8 +28,12 @@ public static class ScreenTranslateService
     private static volatile bool _running;
     private static volatile int _stage = StageIdle;
     private static LaunchItem? _item;
+    private static string _selectedEngine = "auto";
+    private static string EffectiveEngine => _selectedEngine == "auto"
+        ? (_item?.TranslateEngine == "azure" ? "azure" : "free") : _selectedEngine;
     private static Timer? _timer;
     private static long _seq;
+    private static CancellationTokenSource? _translationCancellation;
     private static IntPtr _target;
     private static IntPtr _pending;
     private static long _pendingSince;
@@ -57,20 +61,26 @@ public static class ScreenTranslateService
 
     public static void Start(LaunchItem item)
     {
+        if (App.Main?.DispatcherQueue is { HasThreadAccess: false })
+        {
+            OnUi(() => Start(item));
+            return;
+        }
         // 已在流程中（编辑页保存了翻译设置）：只更新设置；正在翻译时用新设置原地重译
         if (_running && _target != IntPtr.Zero && IsLiveTarget(_target))
         {
             _item = item;
             if (_stage == StageShowing)
             {
-                var again = Interlocked.Increment(ref _seq);
-                _ = TranslateTargetAsync(again);
+                BeginTranslation();
             }
             return;
         }
 
         Stop();
         _item = item;
+        _selectedEngine = "auto";
+        Hud.SetActivity("尚未调用接口");
         _running = true;
         _stage = StageSelecting;
         _target = IntPtr.Zero;
@@ -79,7 +89,7 @@ public static class ScreenTranslateService
         _watchTicks = 0;
         _mouseDown = LeftDown();
 
-        Interlocked.Increment(ref _seq);
+        CancelTranslation();
         OnUi(() =>
         {
             App.Main?.HideToTray();
@@ -89,17 +99,27 @@ public static class ScreenTranslateService
         var timer = _timer;
         _timer = null;
         timer?.Dispose();
-        _timer = new Timer(_ => Tick(), null, PollMs, PollMs);
+        Timer? pollTimer = null;
+        pollTimer = new Timer(_ => OnUi(() =>
+        {
+            if (_running && ReferenceEquals(_timer, pollTimer)) Tick();
+        }), null, PollMs, PollMs);
+        _timer = pollTimer;
     }
 
     public static void Stop()
     {
+        if (App.Main?.DispatcherQueue is { HasThreadAccess: false })
+        {
+            OnUi(Stop);
+            return;
+        }
         _running = false;
         _stage = StageIdle;
         _target = IntPtr.Zero;
         _pending = IntPtr.Zero;
         _item = null;
-        Interlocked.Increment(ref _seq);
+        CancelTranslation();
         var timer = _timer;
         _timer = null;
         timer?.Dispose();
@@ -111,6 +131,15 @@ public static class ScreenTranslateService
         if (!_running) return;
         try
         {
+            Hud.SyncPanelVisibility();
+            if (App.Main?.IsShown == true)
+            {
+                Hud.SuppressOverlay();
+                _pending = IntPtr.Zero;
+                _pendingSince = 0;
+                _mouseDown = LeftDown();
+                return;
+            }
             if (_stage == StageSelecting)
             {
                 PollSelector();
@@ -179,7 +208,7 @@ public static class ScreenTranslateService
         if (changed && _stage == StageShowing)
         {
             // 翻译中换了目标窗口：取消进行中的识别/翻译，撤掉旧译文，等用户再点开始
-            Interlocked.Increment(ref _seq);
+            CancelTranslation();
             _stage = StageSelecting;
             OnUi(Hud.HideOverlay);
         }
@@ -195,10 +224,52 @@ public static class ScreenTranslateService
         });
     }
 
-    /// <summary>截图 → OCR → 批量翻译 → 在 UI 线程重建覆盖层</summary>
-    private static async Task TranslateTargetAsync(long seq)
+    private static void CancelTranslation()
     {
-        await Task.Delay(LockDelayMs);
+        Interlocked.Increment(ref _seq);
+        var cancellation = _translationCancellation;
+        _translationCancellation = null;
+        cancellation?.Cancel();
+    }
+
+    private static void BeginTranslation()
+    {
+        CancelTranslation();
+        if (!_running) return;
+        var cancellation = new CancellationTokenSource();
+        _translationCancellation = cancellation;
+        var seq = _seq;
+        _stage = StageShowing;
+        _watchTicks = 0;
+        Hud.HideOverlay();
+        Hud.SetActivity("等待文字识别，尚未请求");
+        Hud.SetStatus("正在识别文字…", "请稍候");
+        _ = RunTranslationAsync(seq, cancellation);
+    }
+
+    private static async Task RunTranslationAsync(long seq, CancellationTokenSource cancellation)
+    {
+        try
+        {
+            await TranslateTargetAsync(seq, cancellation.Token);
+        }
+        catch (OperationCanceledException) when (cancellation.IsCancellationRequested) { }
+        catch (Exception ex)
+        {
+            DebugLog.Write($"屏幕翻译: 任务失败 {ex.GetType().Name}");
+            Retry(seq, "翻译失败", "识别或翻译异常，可点「开始翻译」重试");
+        }
+        finally
+        {
+            if (ReferenceEquals(_translationCancellation, cancellation)) _translationCancellation = null;
+            cancellation.Dispose();
+        }
+    }
+
+    /// <summary>截图 → OCR → 批量翻译 → 在 UI 线程重建覆盖层</summary>
+    private static async Task TranslateTargetAsync(long seq, CancellationToken token)
+    {
+        await Task.Delay(LockDelayMs, token);
         if (seq != _seq || !_running) return;
 
         var item = _item;
@@ -206,30 +277,42 @@ public static class ScreenTranslateService
         if (item is null || hwnd == IntPtr.Zero) return;
         if (!IsLiveTarget(hwnd))
         {
-            OnUi(Stop);
+            OnUi(seq, Stop);
             return;
         }
 
         RECT rect;
-        if (!GetWindowRect(hwnd, out rect)) return;
+        if (!GetWindowRect(hwnd, out rect))
+        {
+            Retry(seq, "无法读取窗口位置", "可点「开始翻译」重试");
+            return;
+        }
         var w = rect.Right - rect.Left;
         var h = rect.Bottom - rect.Top;
-        if (w < MinWidth || h < MinHeight) return;
-
-        var cap = Capture(rect, w, h);
-        if (cap is null)
+        if (w < MinWidth || h < MinHeight)
         {
-            DebugLog.Write($"屏幕翻译: 截图失败 {w}x{h}");
-            Retry("截图失败", "可再点「开始翻译」重试");
+            Retry(seq, "窗口尺寸过小", "请调整窗口大小后重试");
             return;
         }
 
-        var lines = await OcrAsync(cap, w, h, item.TranslateSource);
+        token.ThrowIfCancellationRequested();
+        var cap = await Task.Run(() => Capture(hwnd, w, h), token);
+        token.ThrowIfCancellationRequested();
+        if (seq != _seq || !_running) return;
+        if (cap is null)
+        {
+            DebugLog.Write($"屏幕翻译: 截图失败 {w}x{h}");
+            Retry(seq, "窗口捕获失败（部分游戏不支持）", "可重试；不会改为截取桌面");
+            return;
+        }
+
+        token.ThrowIfCancellationRequested();
+        var lines = await OcrAsync(cap, w, h, item.TranslateSource, token);
         if (seq != _seq || !_running) return;
         if (lines.Count == 0)
         {
             DebugLog.Write($"屏幕翻译: OCR 未识别到文字 {w}x{h}");
-            Retry("未识别到文字", "可换一个窗口再试");
+            Retry(seq, "未识别到文字", "部分游戏不支持窗口捕获，可重试或换窗");
             return;
         }
 
@@ -244,22 +327,26 @@ public static class ScreenTranslateService
         }
         if (payload.Count == 0)
         {
-            Retry("没有可翻译的文字", "该窗口的文字已经是目标语言");
+            Retry(seq, "没有可翻译的文字", "该窗口的文字已经是目标语言");
             return;
         }
 
-        OnUi(() => Hud.SetStatus($"正在翻译 {payload.Count} 行…", "在线翻译中，请稍候"));
+        OnUi(seq, () => Hud.SetStatus($"正在翻译 {payload.Count} 行…", "在线翻译中，请稍候"));
+        token.ThrowIfCancellationRequested();
+        if (seq != _seq || !_running) return;
 
+        var engine = EffectiveEngine;
         var translated = await TranslateService.TranslateLinesAsync(
-            payload, item.TranslateEngine, item.TranslateApiKey, item.TranslateRegion,
-            item.TranslateSource, item.TranslateTarget);
+            payload, engine, item.TranslateApiKey, item.TranslateRegion,
+            item.TranslateSource, item.TranslateTarget, token,
+            activity => OnUi(seq, () => Hud.SetActivity(activity)));
         if (seq != _seq || !_running) return;
 
         var ok = translated.Count(t => !string.IsNullOrWhiteSpace(t));
-        DebugLog.Write($"屏幕翻译: OCR {lines.Count} 行, 待译 {payload.Count} 行, 成功 {ok} 行, 引擎={item.TranslateEngine}");
+        DebugLog.Write($"屏幕翻译: OCR {lines.Count} 行, 待译 {payload.Count} 行, 成功 {ok} 行, 引擎={engine}");
         if (ok == 0)
         {
-            Retry("翻译失败", "在线翻译不可用，可在编辑页填入 Azure 密钥");
+            Retry(seq, "翻译失败", "在线翻译不可用，可在编辑页填入 Azure 密钥");
             return;
         }
 
@@ -285,12 +372,12 @@ public static class ScreenTranslateService
 
         if (drawn.Count == 0)
         {
-            Retry("翻译失败", "检查翻译引擎设置后重试");
+            Retry(seq, "翻译失败", "检查翻译引擎设置后重试");
             return;
         }
 
         var rectCopy = rect;
-        OnUi(() =>
+        OnUi(seq, () =>
         {
             Hud.ShowOverlay(drawn, rectCopy);
             Hud.SetStatus($"已翻译 {drawn.Count} 行", "点「停止翻译」恢复原状");
@@ -298,10 +385,15 @@ public static class ScreenTranslateService
     }
 
     /// <summary>识别/翻译失败：撤掉译文、停留在原窗口，用户可再点「开始翻译」重试</summary>
-    private static void Retry(string title, string sub)
+    private static void Retry(long seq, string title, string sub)
     {
-        if (!_running) return;
-        Interlocked.Increment(ref _seq);
+        if (App.Main?.DispatcherQueue is { HasThreadAccess: false })
+        {
+            OnUi(seq, () => Retry(seq, title, sub));
+            return;
+        }
+        if (!_running || seq != _seq) return;
+        CancelTranslation();
         _stage = StageSelecting;
         _pending = _target;
         _pendingSince = Environment.TickCount64;
@@ -330,18 +422,14 @@ public static class ScreenTranslateService
             return;
         }
 
-        _stage = StageShowing;
-        _watchTicks = 0;
-        var seq = Interlocked.Increment(ref _seq);
-        OnUi(() => Hud.SetStatus("正在识别文字…", "请稍候"));
-        _ = TranslateTargetAsync(seq);
+        BeginTranslation();
     }
 
     /// <summary>面板「停止翻译」：只撤掉译文恢复原状，流程与面板保持，可再次开始</summary>
     private static void StopTranslating()
     {
         if (!_running) return;
-        Interlocked.Increment(ref _seq);
+        CancelTranslation();
         _stage = StageSelecting;
         _pending = _target;
         _pendingSince = Environment.TickCount64;
@@ -373,9 +461,17 @@ public static class ScreenTranslateService
             return;
         }
 
-        var suppressed = App.Main?.IsShown ?? false;
+        var suppressed = !CanShowOverlay();
         var copy = rect;
         OnUi(() => Hud.Follow(copy, suppressed));
+    }
+
+    private static bool CanShowOverlay()
+    {
+        if (!_running || _stage != StageShowing || App.Main?.IsShown == true) return false;
+        var foreground = GetForegroundWindow();
+        return IsLiveTarget(_target) &&
+            (foreground == _target || (Hud.PanelHandle != IntPtr.Zero && foreground == Hud.PanelHandle));
     }
 
     private static bool IsLiveTarget(IntPtr hwnd) => hwnd != IntPtr.Zero && IsWindow(hwnd) && !IsIconic(hwnd);
@@ -386,8 +482,21 @@ public static class ScreenTranslateService
         var queue = App.Main?.DispatcherQueue;
         if (queue is null) return;
         if (queue.HasThreadAccess) action();
-        else queue.TryEnqueue(() => action());
+        else
+        {
+            var seq = _seq;
+            var running = _running;
+            queue.TryEnqueue(() =>
+            {
+                if (seq == _seq && running == _running) action();
+            });
+        }
     }
+
+    private static void OnUi(long seq, Action action) => OnUi(() =>
+    {
+        if (_running && seq == _seq) action();
+    });
 
     private static string ClassNameOf(IntPtr hwnd)
     {
@@ -412,16 +521,29 @@ public static class ScreenTranslateService
 
     private sealed record OverlayLine(string Text, int X, int Y, int W, int H, uint Bg, uint Fg);
 
-    private static Captured? Capture(RECT rect, int w, int h)
+    private static Captured? Capture(IntPtr hwnd, int w, int h)
     {
-        IntPtr screenDc = IntPtr.Zero, memDc = IntPtr.Zero, hbmp = IntPtr.Zero, old = IntPtr.Zero;
+        IntPtr windowDc = IntPtr.Zero, memDc = IntPtr.Zero, hbmp = IntPtr.Zero, old = IntPtr.Zero;
         try
         {
-            screenDc = GetDC(IntPtr.Zero);
-            memDc = CreateCompatibleDC(screenDc);
-            hbmp = CreateCompatibleBitmap(screenDc, w, h);
+            windowDc = GetDC(hwnd);
+            if (windowDc == IntPtr.Zero) return null;
+            memDc = CreateCompatibleDC(windowDc);
+            if (memDc == IntPtr.Zero) return null;
+            hbmp = CreateCompatibleBitmap(windowDc, w, h);
+            if (hbmp == IntPtr.Zero) return null;
             old = SelectObject(memDc, hbmp);
-            if (!BitBlt(memDc, 0, 0, w, h, screenDc, rect.Left, rect.Top, SRCCOPY)) return null;
+            if (old == IntPtr.Zero || old == new IntPtr(-1))
+            {
+                old = IntPtr.Zero;
+                return null;
+            }
+            // 只要求目标窗口自行绘制，绝不从桌面复制，避免采集遮挡窗口内容。
+            const uint PW_RENDERFULLCONTENT = 2;
+            if (!PrintWindow(hwnd, memDc, PW_RENDERFULLCONTENT)) return null;
+            var selected = SelectObject(memDc, old);
+            if (selected == IntPtr.Zero || selected == new IntPtr(-1)) return null;
+            old = IntPtr.Zero;
 
             var info = new BITMAPINFO
             {
@@ -436,7 +558,7 @@ public static class ScreenTranslateService
                 }
             };
             var pixels = new byte[w * h * 4];
-            if (GetDIBits(memDc, hbmp, 0, (uint)h, pixels, ref info, 0) == 0) return null;
+            if (GetDIBits(memDc, hbmp, 0, (uint)h, pixels, ref info, 0) != h) return null;
 
             // OCR 用的副本做暗底反相/灰度拉伸，保留原始像素用于覆盖层取色
             var processed = (byte[])pixels.Clone();
@@ -460,9 +582,9 @@ public static class ScreenTranslateService
         finally
         {
             if (old != IntPtr.Zero) SelectObject(memDc, old);
-            if (hbmp != IntPtr.Zero) DeleteObject(hbmp);
             if (memDc != IntPtr.Zero) DeleteDC(memDc);
-            if (screenDc != IntPtr.Zero) ReleaseDC(IntPtr.Zero, screenDc);
+            if (hbmp != IntPtr.Zero) DeleteObject(hbmp);
+            if (windowDc != IntPtr.Zero) ReleaseDC(hwnd, windowDc);
         }
     }
 
@@ -520,20 +642,21 @@ public static class ScreenTranslateService
         buf[offset + 3] = (byte)(value >> 24);
     }
 
-    private static async Task<List<TextLine>> OcrAsync(Captured cap, int w, int h, string source)
+    private static async Task<List<TextLine>> OcrAsync(Captured cap, int w, int h, string source, CancellationToken token)
     {
+        token.ThrowIfCancellationRequested();
         var engines = GetEngines(source);
         if (engines.Count == 0) return [];
 
-        var stream = new InMemoryRandomAccessStream();
+        using var stream = new InMemoryRandomAccessStream();
         using (var writer = new DataWriter(stream))
         {
             writer.WriteBytes(cap.Bmp);
-            await writer.StoreAsync();
+            await writer.StoreAsync().AsTask(token);
             writer.DetachStream();
         }
         stream.Seek(0);
-        var decoder = await BitmapDecoder.CreateAsync(stream);
+        var decoder = await BitmapDecoder.CreateAsync(stream).AsTask(token);
 
         // 小窗口按 2 倍放大再识别：系统 OCR 对 12px 以下的文字几乎识别不出来；
         // 4K 这类大窗口本身字够大，放大反而拖慢
@@ -546,14 +669,15 @@ public static class ScreenTranslateService
         };
         // 屏幕截图的 alpha 通道无意义，必须用 Ignore：按预乘 alpha 解码会把像素当成全透明
         using var bitmap = await decoder.GetSoftwareBitmapAsync(BitmapPixelFormat.Bgra8, BitmapAlphaMode.Ignore,
-            transform, ExifOrientationMode.IgnoreExifOrientation, ColorManagementMode.DoNotColorManage);
+            transform, ExifOrientationMode.IgnoreExifOrientation, ColorManagementMode.DoNotColorManage).AsTask(token);
 
         var best = new List<TextLine>();
         var bestScore = -1;
         var bestText = "";
         foreach (var (engine, chinese) in engines)
         {
-            var result = await engine.RecognizeAsync(bitmap);
+            token.ThrowIfCancellationRequested();
+            var result = await engine.RecognizeAsync(bitmap).AsTask(token);
             // 按"该引擎对应文字的数量"打分：中文引擎读英文界面会夹带大量空格和误识别汉字，
             // 直接比长度会让它永远胜出，必须按中文字数 / 英文字母数分别计分
             var score = Score(result.Text, chinese);
@@ -745,9 +869,33 @@ public static class ScreenTranslateService
         private const int TRANSPARENT_BK = 1;
 
         // 右上角常驻控制面板
-        private const int PanelW = 272;
-        private const int PanelH = 132;
+        private const int PanelW = 356;
+        private const int PanelH = 196;
+        private const int DropdownExpand = 106;
+        private const int DT_RIGHT = 0x00000002;
+        private static bool _engineDropdownOpen;
+        private static string _engineStatusSnapshot = "";
+        private static int PanelHeight => PanelH + (_engineDropdownOpen ? DropdownExpand : 0);
+        private static readonly string[] EngineChoices = ["auto", "youdao", "tencent", "bing", "mymemory", "azure"];
+        private static string _activity = "尚未调用接口";
         private const int PanelMargin = 16;
+
+        // 配色（COLORREF = 0x00BBGGRR，注意红蓝通道顺序相反）
+        private const uint ColOutline = 0x00302D38;
+        private const uint ColBackground = 0x00141319;
+        private const uint ColDivider = 0x0028252F;
+        private const uint ColText = 0x00F2F2F6;
+        private const uint ColTextDim = 0x009696A1;
+        private const uint ColAccent = 0x00E0A25A;
+        private const uint ColAccentLine = 0x005A4A38;
+        private const uint ColGreen = 0x0090D67C;
+        private const uint ColAmber = 0x005CB2E0;
+        private const uint ColRed = 0x006C6CE0;
+        private const uint ColGrey = 0x00827A7A;
+        private const uint ColStart = 0x00F08B4C;
+        private const uint ColStartHot = 0x00FF9C5E;
+        private const uint ColStop = 0x005C5CD7;
+        private const uint ColStopHot = 0x006E6EE5;
 
         private static IntPtr _overlay, _panel;
         private static bool _registered;
@@ -759,6 +907,8 @@ public static class ScreenTranslateService
         private static bool _panelVisible;
         private static RECT _rect;
         private static int _pressed; // 1=底部按钮被按下 0=无
+        private static int _hover;   // 与 _pressed 取值一致，表示鼠标悬停在哪个控件
+        private static bool _trackingLeave;
         private static RECT _actionRect;
         private static double _scale = 1;
 
@@ -801,7 +951,7 @@ public static class ScreenTranslateService
             {
                 var dpi = GetDpiForWindow(_panel);
                 _scale = dpi > 0 ? dpi / 96.0 : 1;
-                SetLayeredWindowAttributes(_panel, 0, 232, LWA_ALPHA);
+                SetLayeredWindowAttributes(_panel, 0, 205, LWA_ALPHA);
             }
         }
 
@@ -823,25 +973,68 @@ public static class ScreenTranslateService
         public static void ShowPanel()
         {
             Create();
-            if (_panel == IntPtr.Zero) return;
+            if (_panel == IntPtr.Zero || !_running || App.Main?.IsShown == true) return;
+            if (_panelVisible) return;
             _panelVisible = true;
-            SetTimer(_panel, (UIntPtr)1, 250, IntPtr.Zero);
+            ResizePanel();
+            InvalidateRect(_panel, IntPtr.Zero, false);
+        }
+
+        private static void ResizePanel()
+        {
             var pw = Scaled(PanelW);
-            var ph = Scaled(PanelH);
+            var ph = Scaled(PanelHeight);
             var margin = Scaled(PanelMargin);
             var x = Math.Max(margin, GetSystemMetrics(0) - pw - margin);
             SetWindowPos(_panel, TopMost, x, margin, pw, ph, SWP_NOACTIVATE | SWP_SHOWWINDOW);
-            InvalidateRect(_panel, IntPtr.Zero, true);
+            // 裁成圆角，避免面板四角出现生硬的直角方块
+            var radius = Scaled(12);
+            var rgn = CreateRoundRectRgn(0, 0, pw + 1, ph + 1, radius, radius);
+            if (rgn != IntPtr.Zero && SetWindowRgn(_panel, rgn, true) == 0) DeleteObject(rgn);
+            InvalidateRect(_panel, IntPtr.Zero, false);
             UpdateWindow(_panel);
+        }
+
+        public static void SyncPanelVisibility()
+        {
+            if (!_running || App.Main?.IsShown == true)
+            {
+                if (_panelVisible) HidePanel();
+            }
+            else
+            {
+                if (!_panelVisible) ShowPanel();
+                var snapshot = string.Join("|", EngineChoices.Select(EngineLabel));
+                if (_engineStatusSnapshot != snapshot)
+                {
+                    _engineStatusSnapshot = snapshot;
+                    InvalidateRect(_panel, IntPtr.Zero, false);
+                }
+            }
+        }
+
+        public static void SuppressOverlay()
+        {
+            if (_overlay != IntPtr.Zero) ShowWindow(_overlay, SW_HIDE);
+            _overlayVisible = false;
+        }
+
+        public static void SetActivity(string text)
+        {
+            if (_activity == text) return;
+            _activity = text;
+            if (_panelVisible) InvalidateRect(_panel, IntPtr.Zero, false);
         }
 
         public static void HidePanel()
         {
             _panelVisible = false;
+            _engineDropdownOpen = false;
+            _hover = 0;
+            if (_pressed != 0) ReleaseCapture();
             _pressed = 0;
             if (_panel != IntPtr.Zero)
             {
-                KillTimer(_panel, (UIntPtr)1);
                 ShowWindow(_panel, SW_HIDE);
             }
         }
@@ -849,11 +1042,12 @@ public static class ScreenTranslateService
         /// <summary>更新面板上的状态文字（主状态 + 次说明）</summary>
         public static void SetStatus(string main, string sub = "")
         {
+            if (_status == main && _statusSub == sub) return;
             _status = main;
             _statusSub = sub;
             if (_panel != IntPtr.Zero && _panelVisible)
             {
-                InvalidateRect(_panel, IntPtr.Zero, true);
+                InvalidateRect(_panel, IntPtr.Zero, false);
                 UpdateWindow(_panel);
             }
         }
@@ -875,9 +1069,10 @@ public static class ScreenTranslateService
             if (_overlay == IntPtr.Zero) return;
             lock (LineLock) _lines = lines;
             _rect = rect;
-            // 启动器正显示时先不弹（编辑页改设置会走到这里），等它收起后由看门狗补显
-            if (App.Main?.IsShown == true)
+            // 首次显示也遵守前台限制；保留译文供目标重新获得前台时恢复。
+            if (!CanShowOverlay())
             {
+                ShowWindow(_overlay, SW_HIDE);
                 _overlayVisible = false;
                 return;
             }
@@ -906,7 +1101,7 @@ public static class ScreenTranslateService
         public static void Follow(RECT rect, bool suppressed)
         {
             if (_overlay == IntPtr.Zero) return;
-            if (suppressed)
+            if (suppressed || !CanShowOverlay() || _lines.Count == 0)
             {
                 if (_overlayVisible)
                 {
@@ -945,7 +1140,18 @@ public static class ScreenTranslateService
 
             if (hwnd == _panel)
             {
-                PaintPanel(dc, client);
+                var buffer = CreateCompatibleDC(dc);
+                var bitmap = CreateCompatibleBitmap(dc, client.Right, client.Bottom);
+                if (buffer != IntPtr.Zero && bitmap != IntPtr.Zero)
+                {
+                    var previous = SelectObject(buffer, bitmap);
+                    PaintPanel(buffer, client);
+                    BitBlt(dc, 0, 0, client.Right, client.Bottom, buffer, 0, 0, 0x00CC0020);
+                    SelectObject(buffer, previous);
+                }
+                else PaintPanel(dc, client);
+                if (bitmap != IntPtr.Zero) DeleteObject(bitmap);
+                if (buffer != IntPtr.Zero) DeleteDC(buffer);
                 EndPaint(hwnd, ref ps);
                 return;
             }
@@ -959,65 +1165,240 @@ public static class ScreenTranslateService
             EndPaint(hwnd, ref ps);
         }
 
-        /// <summary>右上角控制面板：标题 + 当前状态/进度 + 「开始翻译 / 停止翻译」按钮</summary>
+        /// <summary>右上角控制面板：标题 + 当前状态/进度 + 接口下拉 + 「开始翻译 / 停止翻译」按钮</summary>
         private static void PaintPanel(IntPtr dc, RECT client)
         {
             var w = client.Right;
             var h = client.Bottom;
 
-            var outer = CreateSolidBrush(0x00423F4B);
-            FillRect(dc, ref client, outer);
-            DeleteObject(outer);
-            var inner = new RECT { Left = 1, Top = 1, Right = w - 1, Bottom = h - 1 };
-            var bg = CreateSolidBrush(0x001B1A20);
-            FillRect(dc, ref inner, bg);
-            DeleteObject(bg);
+            // 圆角外框 + 深色底：两层圆角填充模拟 1px 描边
+            FillRound(dc, 0, 0, w, h, 12, ColOutline);
+            FillRound(dc, 1, 1, w - 1, h - 1, 11, ColBackground);
 
             SetBkMode(dc, TRANSPARENT_BK);
 
-            var titleRect = new RECT { Left = Scaled(14), Top = Scaled(8), Right = w - Scaled(14), Bottom = Scaled(32) };
-            SelectObject(dc, GetFont(Scaled(16)));
-            SetTextColor(dc, 0x00FFFFFF);
+            // 标题行：左侧标题，右侧接口下拉（左右排列）
+            FillRound(dc, Scaled(14), Scaled(12), Scaled(18), Scaled(31), 2, ColAccent);
+            var titleRect = new RECT { Left = Scaled(26), Top = Scaled(9), Right = w - Scaled(192), Bottom = Scaled(34) };
+            SelectObject(dc, GetFont(Scaled(16), 600));
+            SetTextColor(dc, ColText);
             DrawTextW(dc, "屏幕翻译", -1, ref titleRect, DT_SINGLELINE | DT_VCENTER | DT_NOPREFIX);
 
-            var mainRect = new RECT { Left = Scaled(14), Top = Scaled(34), Right = w - Scaled(14), Bottom = Scaled(58) };
-            SelectObject(dc, GetFont(Scaled(13)));
-            SetTextColor(dc, 0x00DEDEE4);
-            DrawTextW(dc, _status, -1, ref mainRect, DT_SINGLELINE | DT_VCENTER | DT_NOPREFIX | DT_END_ELLIPSIS);
+            PaintDropdown(dc, w);
+            FillBar(dc, Scaled(12), Scaled(44), w - Scaled(12), Scaled(45), ColDivider);
 
-            if (_statusSub.Length > 0)
+            if (_engineDropdownOpen)
             {
-                var subRect = new RECT { Left = Scaled(14), Top = Scaled(58), Right = w - Scaled(14), Bottom = Scaled(80) };
-                SelectObject(dc, GetFont(Scaled(11)));
-                SetTextColor(dc, 0x009898A2);
-                DrawTextW(dc, _statusSub, -1, ref subRect, DT_SINGLELINE | DT_VCENTER | DT_NOPREFIX | DT_END_ELLIPSIS);
+                // 展开时下拉列表接管状态区：统一卡片底 + 行内高亮，避免每行独立方块显得碎
+                var first = EngineRect(0, w);
+                var last = EngineRect(EngineChoices.Length - 1, w);
+                FillRound(dc, first.Left, first.Top - Scaled(3), last.Right, last.Bottom + Scaled(5), 8, 0x0034303D);
+                FillRound(dc, first.Left + 1, first.Top - Scaled(2), last.Right - 1, last.Bottom + Scaled(4), 7, 0x001A1721);
+                for (var i = 0; i < EngineChoices.Length; i++)
+                    PaintEngineRow(dc, EngineRect(i, w), EngineChoices[i]);
+            }
+            else
+            {
+                var mainRect = new RECT { Left = Scaled(16), Top = Scaled(52), Right = w - Scaled(16), Bottom = Scaled(74) };
+                SelectObject(dc, GetFont(Scaled(13)));
+                SetTextColor(dc, ColText);
+                DrawTextW(dc, _status, -1, ref mainRect, DT_SINGLELINE | DT_VCENTER | DT_NOPREFIX | DT_END_ELLIPSIS);
+
+                if (_statusSub.Length > 0)
+                {
+                    var subRect = new RECT { Left = Scaled(16), Top = Scaled(74), Right = w - Scaled(16), Bottom = Scaled(92) };
+                    SelectObject(dc, GetFont(Scaled(11)));
+                    SetTextColor(dc, ColTextDim);
+                    DrawTextW(dc, _statusSub, -1, ref subRect, DT_SINGLELINE | DT_VCENTER | DT_NOPREFIX | DT_END_ELLIPSIS);
+                }
+
+                var activityRect = new RECT { Left = Scaled(16), Top = Scaled(94), Right = w - Scaled(16), Bottom = Scaled(114) };
+                SelectObject(dc, GetFont(Scaled(12)));
+                SetTextColor(dc, ColGreen);
+                DrawTextW(dc, _activity, -1, ref activityRect, DT_SINGLELINE | DT_VCENTER | DT_NOPREFIX | DT_END_ELLIPSIS);
             }
 
+            var hintTop = Scaled(_engineDropdownOpen ? 232 : 124);
+            var hint = new RECT { Left = Scaled(16), Top = hintTop, Right = w - Scaled(16), Bottom = hintTop + Scaled(18) };
+            SelectObject(dc, GetFont(Scaled(10)));
+            SetTextColor(dc, ColTextDim);
+            DrawTextW(dc, "状态依据实际请求 · 切换后重新翻译", -1, ref hint, DT_SINGLELINE | DT_VCENTER | DT_NOPREFIX);
+
             LayoutAction(w, h, out _actionRect);
-            PaintButton(dc, _actionRect, IsTranslating ? "停止翻译" : "开始翻译", _pressed == 1);
+            PaintPrimaryButton(dc, _actionRect, IsTranslating ? "停止翻译" : "开始翻译");
         }
 
-        private static void PaintButton(IntPtr dc, RECT rect, string text, bool pressed)
+        /// <summary>接口下拉：无填充的细描边样式（与面板同底，只留 1px 边框），展开/悬停时描边提亮</summary>
+        private static void PaintDropdown(IntPtr dc, int w)
         {
-            var border = CreateSolidBrush(0x00484454);
-            FillRect(dc, ref rect, border);
-            DeleteObject(border);
-            var inner = new RECT { Left = rect.Left + 1, Top = rect.Top + 1, Right = rect.Right - 1, Bottom = rect.Bottom - 1 };
-            var fill = CreateSolidBrush(pressed ? 0x00545060u : 0x00302E38u);
-            FillRect(dc, ref inner, fill);
-            DeleteObject(fill);
+            var rect = DropdownRect(w);
+            var active = _engineDropdownOpen || _hover == 2 || _pressed == 2;
+            FillRound(dc, rect.Left, rect.Top, rect.Right, rect.Bottom, 6, active ? ColAccentLine : 0x00373341);
+            FillRound(dc, rect.Left + 1, rect.Top + 1, rect.Right - 1, rect.Bottom - 1, 5,
+                active ? 0x00201C28u : ColBackground);
 
-            SetTextColor(dc, pressed ? 0x00FFFFFFu : 0x00D6D6DEu);
-            SelectObject(dc, GetFont(Scaled(13)));
-            DrawTextW(dc, text, -1, ref inner, DT_CENTER | DT_SINGLELINE | DT_VCENTER | DT_NOPREFIX);
+            var labelRect = new RECT { Left = rect.Left + Scaled(11), Top = rect.Top, Right = rect.Left + Scaled(42), Bottom = rect.Bottom };
+            SelectObject(dc, GetFont(Scaled(9)));
+            SetTextColor(dc, ColTextDim);
+            DrawTextW(dc, "接口", -1, ref labelRect, DT_SINGLELINE | DT_VCENTER | DT_NOPREFIX);
+
+            var valueRect = new RECT { Left = rect.Left + Scaled(44), Top = rect.Top, Right = rect.Right - Scaled(26), Bottom = rect.Bottom };
+            SelectObject(dc, GetFont(Scaled(12)));
+            SetTextColor(dc, ColText);
+            DrawTextW(dc, EngineTitle(_selectedEngine), -1, ref valueRect,
+                DT_SINGLELINE | DT_VCENTER | DT_NOPREFIX | DT_END_ELLIPSIS);
+
+            // 用两条细斜线拼成 chevron，比实心三角更轻
+            var cx = rect.Right - Scaled(14);
+            var cy = (rect.Top + rect.Bottom) / 2;
+            var color = active ? ColAccent : 0x00A5A5B0;
+            if (_engineDropdownOpen)
+            {
+                StrokeLine(dc, cx - Scaled(4), cy + Scaled(2), cx, cy - Scaled(2), color);
+                StrokeLine(dc, cx, cy - Scaled(2), cx + Scaled(4), cy + Scaled(2), color);
+            }
+            else
+            {
+                StrokeLine(dc, cx - Scaled(4), cy - Scaled(2), cx, cy + Scaled(2), color);
+                StrokeLine(dc, cx, cy + Scaled(2), cx + Scaled(4), cy - Scaled(2), color);
+            }
+        }
+
+        /// <summary>下拉列表项：状态圆点 + 接口名 + 右侧状态文字，选中项带强调竖线</summary>
+        private static void PaintEngineRow(IntPtr dc, RECT rect, string name)
+        {
+            var selected = _selectedEngine == name;
+            var index = Array.IndexOf(EngineChoices, name);
+            var hot = _hover == index + 3 || _pressed == index + 3;
+            if (selected || hot)
+                FillRound(dc, rect.Left, rect.Top, rect.Right, rect.Bottom, 6, selected ? 0x002E2A3Au : 0x00231F2Cu);
+            if (selected)
+                FillRound(dc, rect.Left + Scaled(4), rect.Top + Scaled(8), rect.Left + Scaled(7), rect.Bottom - Scaled(8), 1, ColAccent);
+
+            var color = StatusColor(name == "auto" ? "auto" : EngineState(name));
+            var dotY = (rect.Top + rect.Bottom) / 2;
+            FillRound(dc, rect.Left + Scaled(11), dotY - Scaled(3), rect.Left + Scaled(17), dotY + Scaled(3), 3, color);
+
+            var nameRect = new RECT { Left = rect.Left + Scaled(24), Top = rect.Top, Right = rect.Left + Scaled(102), Bottom = rect.Bottom };
+            SelectObject(dc, GetFont(Scaled(12), selected ? 600 : 500));
+            SetTextColor(dc, selected ? ColText : 0x00D2D2DA);
+            DrawTextW(dc, EngineTitle(name), -1, ref nameRect,
+                DT_SINGLELINE | DT_VCENTER | DT_NOPREFIX | DT_END_ELLIPSIS);
+
+            var stateRect = new RECT { Left = rect.Left + Scaled(102), Top = rect.Top, Right = rect.Right - Scaled(12), Bottom = rect.Bottom };
+            SelectObject(dc, GetFont(Scaled(10)));
+            SetTextColor(dc, color);
+            DrawTextW(dc, name == "auto" ? (_item?.TranslateEngine == "azure" ? "Azure" : "择优") : EngineStateShort(name),
+                -1, ref stateRect, DT_SINGLELINE | DT_VCENTER | DT_NOPREFIX | DT_RIGHT | DT_END_ELLIPSIS);
+        }
+
+        /// <summary>底部主按钮：开始翻译用蓝色强调，翻译中用红色停止色，悬停与按下都提亮</summary>
+        private static void PaintPrimaryButton(IntPtr dc, RECT rect, string text)
+        {
+            var hot = _hover == 1 || _pressed == 1;
+            var color = IsTranslating
+                ? (hot ? ColStopHot : ColStop)
+                : (hot ? ColStartHot : ColStart);
+            FillRound(dc, rect.Left, rect.Top, rect.Right, rect.Bottom, 9, color);
+            // 顶部高光，避免大色块显得扁平
+            FillRound(dc, rect.Left + Scaled(10), rect.Top + 1, rect.Right - Scaled(10), rect.Top + 2, 1, 0x00C0D7FF);
+
+            SelectObject(dc, GetFont(Scaled(13), 600));
+            SetTextColor(dc, 0x00FFFFFF);
+            DrawTextW(dc, text, -1, ref rect, DT_CENTER | DT_SINGLELINE | DT_VCENTER | DT_NOPREFIX);
+        }
+
+        /// <summary>接口状态对应圆点颜色：绿=可用、灰=未检测、橙=待重试/冷却、红=最近失败</summary>
+        private static uint StatusColor(string state) => state switch
+        {
+            "最近可用" => ColGreen,
+            "未检测" => ColGrey,
+            "待重试" or "冷却中" => ColAmber,
+            "最近失败" => ColRed,
+            "未配置" => ColGrey,
+            _ => ColAccent
+        };
+
+        private static void FillRound(IntPtr dc, int left, int top, int right, int bottom, int radius, uint color)
+        {
+            if (right - left <= 0 || bottom - top <= 0) return;
+            var rgn = CreateRoundRectRgn(left, top, right, bottom, radius * 2, radius * 2);
+            if (rgn == IntPtr.Zero) return;
+            var brush = CreateSolidBrush(color);
+            FillRgn(dc, rgn, brush);
+            DeleteObject(brush);
+            DeleteObject(rgn);
+        }
+
+        private static void FillBar(IntPtr dc, int left, int top, int right, int bottom, uint color)
+        {
+            var rect = new RECT { Left = left, Top = top, Right = right, Bottom = bottom };
+            var brush = CreateSolidBrush(color);
+            FillRect(dc, ref rect, brush);
+            DeleteObject(brush);
+        }
+
+        private static void StrokeLine(IntPtr dc, int x1, int y1, int x2, int y2, uint color)
+        {
+            var pen = CreatePen(0, 1, color); // PS_SOLID
+            var old = SelectObject(dc, pen);
+            MoveToEx(dc, x1, y1, IntPtr.Zero);
+            LineTo(dc, x2, y2);
+            SelectObject(dc, old);
+            DeleteObject(pen);
         }
 
         /// <summary>按钮命中区域：整条底部按钮，按窗口实际像素（含 DPI 缩放）计算</summary>
         private static void LayoutAction(int w, int h, out RECT action)
         {
-            var y = h - Scaled(44);
-            var bh = Scaled(32);
+            var y = h - Scaled(46);
+            var bh = Scaled(36);
             action = new RECT { Left = Scaled(12), Top = y, Right = w - Scaled(12), Bottom = y + bh };
+        }
+
+        private static string EngineTitle(string name) =>
+            name == "auto" ? "自动" : TranslateService.EngineName(name);
+
+        private static string EngineLabel(string name) => EngineTitle(name) + " · " + EngineStateShort(name);
+
+        private static string EngineState(string name) =>
+            TranslateService.GetEngineStatus(name, !string.IsNullOrWhiteSpace(_item?.TranslateApiKey));
+
+        /// <summary>下拉列表用的短状态标签（窄列放不下完整描述）</summary>
+        private static string EngineStateShort(string name)
+        {
+            var state = EngineState(name);
+            return state switch
+            {
+                "最近可用" => "可用",
+                "最近失败" => "失败",
+                "冷却中" => "冷却",
+                "待重试" => "重试",
+                _ => state
+            };
+        }
+
+        private static RECT DropdownRect(int width) => new()
+        {
+            Left = width - Scaled(180), Top = Scaled(10),
+            Right = width - Scaled(12), Bottom = Scaled(40)
+        };
+
+        private static RECT EngineRect(int index, int width) => new()
+        {
+            Left = width - Scaled(180), Top = Scaled(46 + index * 30),
+            Right = width - Scaled(12), Bottom = Scaled(74 + index * 30)
+        };
+
+        private static int HitTest(int x, int y)
+        {
+            LayoutAction(Scaled(PanelW), Scaled(PanelHeight), out var action);
+            if (Inside(action, x, y)) return 1;
+            if (Inside(DropdownRect(Scaled(PanelW)), x, y)) return 2;
+            if (_engineDropdownOpen)
+                for (var i = 0; i < EngineChoices.Length; i++)
+                    if (Inside(EngineRect(i, Scaled(PanelW)), x, y)) return i + 3;
+            return 0;
         }
 
         /// <summary>面板鼠标按下：记录按下的按钮并重绘出按压效果</summary>
@@ -1025,12 +1406,12 @@ public static class ScreenTranslateService
         {
             var x = (short)(lParam & 0xFFFF);
             var y = (short)((lParam >> 16) & 0xFFFF);
-            var hit = Inside(_actionRect, x, y) ? 1 : 0;
+            var hit = HitTest(x, y);
             if (hit == _pressed) return;
             _pressed = hit;
             // 捕获鼠标：按下后移到面板外再松开也能收到抬起消息，避免按钮卡在按下的样子
             if (hit != 0) SetCapture(_panel);
-            InvalidateRect(_panel, IntPtr.Zero, true);
+            InvalidateRect(_panel, IntPtr.Zero, false);
         }
 
         /// <summary>面板鼠标抬起：在按钮内抬起才触发动作</summary>
@@ -1038,16 +1419,68 @@ public static class ScreenTranslateService
         {
             var x = (short)(lParam & 0xFFFF);
             var y = (short)((lParam >> 16) & 0xFFFF);
-            var hit = Inside(_actionRect, x, y) ? 1 : 0;
+            var hit = HitTest(x, y);
             var armed = _pressed;
             _pressed = 0;
             if (armed != 0) ReleaseCapture();
-            if (_panel != IntPtr.Zero) InvalidateRect(_panel, IntPtr.Zero, true);
+            if (_panel != IntPtr.Zero) InvalidateRect(_panel, IntPtr.Zero, false);
             if (hit == 0 || hit != armed) return;
 
+            if (hit == 2)
+            {
+                _engineDropdownOpen = !_engineDropdownOpen;
+                ResizePanel();
+                return;
+            }
+            if (hit >= 3)
+            {
+                var engine = EngineChoices[hit - 3];
+                _engineDropdownOpen = false;
+                ResizePanel();
+                if (engine == _selectedEngine) return;
+                if (engine == "azure" && string.IsNullOrWhiteSpace(_item?.TranslateApiKey))
+                {
+                    SetStatus("Azure 未配置", "请先在编辑页填写密钥");
+                    return;
+                }
+                _selectedEngine = engine;
+                if (IsTranslating) BeginTranslation();
+                else SetActivity("已选择：" + (engine == "auto" ? "自动" : TranslateService.EngineName(engine)) + "（尚未请求）");
+                return;
+            }
             // 按钮在两种状态间切换：未翻译→开始翻译；翻译中→停止并恢复原状
             if (IsTranslating) StopTranslating();
             else StartTranslating();
+        }
+
+        /// <summary>面板鼠标移动：更新悬停高亮（变化时才重绘，避免每次移动都刷新）</summary>
+        public static void OnPanelMouseMove(IntPtr lParam)
+        {
+            var x = (short)(lParam & 0xFFFF);
+            var y = (short)((lParam >> 16) & 0xFFFF);
+            var hit = HitTest(x, y);
+            if (hit != _hover)
+            {
+                _hover = hit;
+                if (_panel != IntPtr.Zero) InvalidateRect(_panel, IntPtr.Zero, false);
+            }
+            if (_trackingLeave) return;
+            var tme = new TRACKMOUSEEVENT
+            {
+                cbSize = (uint)Marshal.SizeOf<TRACKMOUSEEVENT>(),
+                dwFlags = 0x00000002, // TME_LEAVE
+                hwndTrack = _panel
+            };
+            _trackingLeave = TrackMouseEvent(ref tme);
+        }
+
+        /// <summary>鼠标离开面板：清掉悬停态</summary>
+        public static void OnPanelMouseLeave()
+        {
+            _trackingLeave = false;
+            if (_hover == 0) return;
+            _hover = 0;
+            if (_panel != IntPtr.Zero) InvalidateRect(_panel, IntPtr.Zero, false);
         }
 
         private static bool Inside(RECT r, int x, int y) =>
@@ -1099,15 +1532,15 @@ public static class ScreenTranslateService
         }
     }
 
-    private static readonly Dictionary<int, IntPtr> FontCache = [];
+    private static readonly Dictionary<(int Height, int Weight), IntPtr> FontCache = [];
 
-    /// <summary>按像素高度缓存字体；charset 用 DEFAULT_CHARSET(1)，中/日/英都由系统字体回退处理</summary>
-    private static IntPtr GetFont(int height)
+    /// <summary>按像素高度与字重缓存字体；charset 用 DEFAULT_CHARSET(1)，中/日/英都由系统字体回退处理</summary>
+    private static IntPtr GetFont(int height, int weight = 500)
     {
         height = Math.Max(8, Math.Min(96, height));
-        if (FontCache.TryGetValue(height, out var cached)) return cached;
-        var font = CreateFontW(-height, 0, 0, 0, 500, 0, 0, 0, 1, 0, 0, 0, 0, "Microsoft YaHei UI");
-        FontCache[height] = font;
+        if (FontCache.TryGetValue((height, weight), out var cached)) return cached;
+        var font = CreateFontW(-height, 0, 0, 0, weight, 0, 0, 0, 1, 0, 0, 0, 0, "Microsoft YaHei UI");
+        FontCache[(height, weight)] = font;
         return font;
     }
 
@@ -1115,9 +1548,6 @@ public static class ScreenTranslateService
     {
         switch (msg)
         {
-            case 0x0113: // WM_TIMER
-                if (hwnd == Hud.PanelHandle) Hud.RaisePanel();
-                return IntPtr.Zero;
             case 0x000F: // WM_PAINT
                 Hud.Paint(hwnd);
                 return IntPtr.Zero;
@@ -1129,6 +1559,12 @@ public static class ScreenTranslateService
             case 0x0201: // WM_LBUTTONDOWN
                 if (hwnd == Hud.PanelHandle) Hud.OnPanelMouseDown(lParam);
                 return IntPtr.Zero;
+            case 0x0200: // WM_MOUSEMOVE
+                if (hwnd == Hud.PanelHandle) Hud.OnPanelMouseMove(lParam);
+                return IntPtr.Zero;
+            case 0x02A3: // WM_MOUSELEAVE
+                if (hwnd == Hud.PanelHandle) Hud.OnPanelMouseLeave();
+                return IntPtr.Zero;
             case 0x0202: // WM_LBUTTONUP
                 if (hwnd == Hud.PanelHandle) Hud.OnPanelMouseUp(lParam);
                 return IntPtr.Zero;
@@ -1138,8 +1574,15 @@ public static class ScreenTranslateService
         return DefWindowProcW(hwnd, msg, wParam, lParam);
     }
 
-    [DllImport("user32.dll")] private static extern UIntPtr SetTimer(IntPtr hwnd, UIntPtr id, uint interval, IntPtr callback);
-    [DllImport("user32.dll")] private static extern bool KillTimer(IntPtr hwnd, UIntPtr id);
+    [DllImport("gdi32.dll")] private static extern bool BitBlt(IntPtr destination, int x, int y, int width, int height,
+        IntPtr source, int sourceX, int sourceY, uint operation);
+    [DllImport("gdi32.dll")] private static extern IntPtr CreateRoundRectRgn(int left, int top, int right, int bottom, int ellipseW, int ellipseH);
+    [DllImport("gdi32.dll")] private static extern bool FillRgn(IntPtr dc, IntPtr region, IntPtr brush);
+    [DllImport("gdi32.dll")] private static extern IntPtr CreatePen(int style, int width, uint color);
+    [DllImport("gdi32.dll")] private static extern bool MoveToEx(IntPtr dc, int x, int y, IntPtr previous);
+    [DllImport("gdi32.dll")] private static extern bool LineTo(IntPtr dc, int x, int y);
+    [DllImport("user32.dll")] private static extern int SetWindowRgn(IntPtr hwnd, IntPtr region, bool redraw);
+    [DllImport("user32.dll")] private static extern bool TrackMouseEvent(ref TRACKMOUSEEVENT tme);
 
     private static IntPtr TopMost => new(-1); // HWND_TOPMOST
 
@@ -1161,6 +1604,12 @@ public static class ScreenTranslateService
 
     [StructLayout(LayoutKind.Sequential)]
     private struct POINT { public int X, Y; }
+
+    [StructLayout(LayoutKind.Sequential)]
+    private struct TRACKMOUSEEVENT
+    {
+        public uint cbSize; public uint dwFlags; public IntPtr hwndTrack; public uint dwHoverTime;
+    }
 
     [StructLayout(LayoutKind.Sequential, CharSet = CharSet.Unicode)]
     private struct WNDCLASSEXW
@@ -1230,11 +1679,9 @@ public static class ScreenTranslateService
     [DllImport("gdi32.dll")] private static extern IntPtr CreateCompatibleBitmap(IntPtr dc, int w, int h);
     [DllImport("gdi32.dll")] private static extern bool DeleteDC(IntPtr dc);
     [DllImport("gdi32.dll")] private static extern bool DeleteObject(IntPtr obj);
-    [DllImport("gdi32.dll")] private static extern bool BitBlt(IntPtr dst, int x, int y, int w, int h,
-        IntPtr src, int sx, int sy, uint rop);
+    [DllImport("user32.dll")] private static extern bool PrintWindow(IntPtr hwnd, IntPtr dc, uint flags);
     [DllImport("gdi32.dll", CharSet = CharSet.Unicode)]
     private static extern bool GetTextExtentPoint32W(IntPtr dc, string text, int length, out SIZE size);
     [DllImport("gdi32.dll")] private static extern int GetDIBits(IntPtr dc, IntPtr bmp, uint start, uint lines,
         [Out] byte[] bits, ref BITMAPINFO info, uint usage);
-    private const uint SRCCOPY = 0x00CC0020;
 }

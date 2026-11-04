@@ -240,8 +240,13 @@
             </Grid>
         </ScrollViewer>
 
-        <!-- 底部按键提示：手柄图标徽章，单行，透明背景 -->
-        <ctl:GamepadHintBar Grid.Row="2" Margin="0,8,0,12"
-                            Hints="DPAD:选择|A:进入|B:返回"/>
+        <!-- 悬浮放大的按键提示：浮在内容之上，不占布局行（与主页一致） -->
+        <Border Grid.Row="0" Grid.RowSpan="99"
+                HorizontalAlignment="Right" VerticalAlignment="Top"
+                Margin="0,14,20,0" Padding="16,6" CornerRadius="16"
+                Background="#73121018" BorderBrush="#26FFFFFF" BorderThickness="1">
+            <ctl:GamepadHintBar BadgeScale="1"
+                                Hints="DPAD:选择|A:进入|B:返回"/>
+        </Border>
     </Grid>
 </Page>

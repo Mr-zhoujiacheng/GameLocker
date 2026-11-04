@@ -563,6 +563,11 @@ public sealed partial class MainWindow : Window
 
         Root.Navigate(typeof(MainPage));
 
+        // 鼠标 / 触摸点击音效：挂在根 Frame 上并接收已被子控件处理的事件，
+        // 只有真的点中控件（按钮/开关/下拉/磁贴等）才发声，点空白处保持安静。
+        Root.AddHandler(UIElement.TappedEvent,
+            new TappedEventHandler(OnAnyTapped), handledEventsToo: true);
+
         if (SettingsService.Current.StartFullscreen && !SettingsService.Current.StartMenuMode && !_fullscreen)
             ToggleFullscreen();
 
@@ -1952,12 +1957,126 @@ public sealed partial class MainWindow : Window
         // 轮询线程触发，marshal 回 UI 线程
         DispatcherQueue.TryEnqueue(() => DispatchButtons(buttons));
 
+    /// <summary>
+    /// 鼠标 / 触摸 / 笔点击的统一反馈：与 A 键同一个确认音（常规设置关闭「操作音效」时静默）。
+    /// 只有真正点中控件才响：内部处理过的点击（e.Handled）、标准控件、以及自绘的主页磁贴；
+    /// 点窗口空白处不发声。
+    /// </summary>
+    private void OnAnyTapped(object sender, TappedRoutedEventArgs e)
+    {
+        if (!_shown || !SettingsService.Current.UiSoundEnabled) return;
+        if (!(e.Handled || IsInteractiveSource(e.OriginalSource) ||
+              (Root.Content is MainPage page && page.IsTileSource(e.OriginalSource))))
+            return;
+        // 开关、下拉、列表项、复选/单选、滑块属于"选择命中"，用 success 音；按钮、磁贴等用 A 键音
+        // 下拉框：点它只是展开列表，用 A 键音；真正选中某项在 SelectionChanged 里播 success
+        if (FindAncestor<ComboBox>(e.OriginalSource) is { } combo)
+        {
+            WireCombo(combo);
+            UiSound.Play(UiSoundKind.Confirm);
+            return;
+        }
+        UiSound.Play(IsSelectionSource(e.OriginalSource) ? UiSoundKind.Select : UiSoundKind.Confirm);
+    }
+
+    /// <summary>手柄当前焦点是否在选择类控件上（开关/列表项/复选/单选/滑块）</summary>
+    private bool IsSelectionFocus()
+    {
+        return FocusedElement() is { } focused && IsSelectionSource(focused);
+    }
+
+    private DependencyObject? FocusedElement()
+    {
+        try
+        {
+            return Root.XamlRoot is { } root ? FocusManager.GetFocusedElement(root) as DependencyObject : null;
+        }
+        catch { return null; }
+    }
+
+    /// <summary>已挂过选中监听的 ComboBox（用户第一次操作时才挂，页面初始化的程序化赋值不会误响）</summary>
+    private readonly HashSet<ComboBox> _comboSoundWired = new();
+
+    /// <summary>下拉列表真正选中某项时才播 success（展开列表本身不响 success）</summary>
+    private void WireCombo(ComboBox combo)
+    {
+        if (!_comboSoundWired.Add(combo)) return;
+        combo.SelectionChanged += (_, _) =>
+        {
+            if (SettingsService.Current.UiSoundEnabled) UiSound.Play(UiSoundKind.Select);
+        };
+    }
+
+    /// <summary>向上找最近的指定类型控件；弹出层里的候选项不在本窗口可视树，不会命中</summary>
+    private static T? FindAncestor<T>(object? source) where T : DependencyObject
+    {
+        for (var el = source as DependencyObject; el is not null; el = VisualTreeHelper.GetParent(el))
+        {
+            if (el is T hit) return hit;
+        }
+        return null;
+    }
+
+    /// <summary>点击/焦点是否落在"选择类"控件上：开关、下拉、列表项、复选/单选、滑块</summary>
+    private static bool IsSelectionSource(object? source)
+    {
+        for (var el = source as DependencyObject; el is not null; el = VisualTreeHelper.GetParent(el))
+        {
+            if (el is ToggleSwitch or CheckBox or RadioButton or ComboBox or Slider
+                or Microsoft.UI.Xaml.Controls.Primitives.SelectorItem)
+                return true;
+        }
+        return false;
+    }
+
+    /// <summary>点击源是否落在标准交互控件上（自绘磁贴、自定义 Border 由各页面另行判定）</summary>
+    private static bool IsInteractiveSource(object? source)
+    {
+        for (var el = source as DependencyObject; el is not null; el = VisualTreeHelper.GetParent(el))
+        {
+            if (el is Microsoft.UI.Xaml.Controls.Primitives.ButtonBase
+                or Microsoft.UI.Xaml.Controls.Primitives.SelectorItem
+                or ToggleSwitch or ComboBox or Slider)
+                return true;
+        }
+        return false;
+    }
+
+    /// <summary>
+    /// 全局操作音效：所有页面共用一套反馈音（常规设置关闭「操作音效」时静默）。
+    /// 方向键包含长按连发，所以连推摇杆/按住十字键时每次移动都有一声，和主机系统一致。
+    /// </summary>
+    private void PlayGlobalCue(GamepadButtons buttons)
+    {
+        if (!SettingsService.Current.UiSoundEnabled) return;
+        // A 键：焦点在开关/列表项这类选择控件上时用 success；展开下拉框、启动磁贴、普通按钮用 A 键音
+        if (buttons.HasFlag(GamepadButtons.A))
+        {
+            // 焦点在下拉框上：A 是展开列表，用 A 键音；列表项、开关等选择控件才是 success
+            if (FocusedElement() is ComboBox combo)
+            {
+                WireCombo(combo);
+                UiSound.Play(UiSoundKind.Confirm);
+            }
+            else UiSound.Play(IsSelectionFocus() ? UiSoundKind.Select : UiSoundKind.Confirm);
+        }
+        else if (buttons.HasFlag(GamepadButtons.B)) UiSound.Play(UiSoundKind.Back);
+        else if (buttons.HasFlag(GamepadButtons.DPadUp) || buttons.HasFlag(GamepadButtons.DPadDown) ||
+                 buttons.HasFlag(GamepadButtons.DPadLeft) || buttons.HasFlag(GamepadButtons.DPadRight))
+            UiSound.Play(UiSoundKind.Move);
+    }
+
     /// <summary>手柄按键派发（UI 线程）。allowDeferB=false 专用于"双击 B 判定到期"后补发单击 B 的原有行为</summary>
     private void DispatchButtons(GamepadButtons buttons, bool allowDeferB = true)
     {
         // 双保险：入队后窗口可能已经隐藏/失去前台，此时一律不处理手柄
         // （否则"在游戏里按 Y"会命中启动器上一次选中的磁贴，把游戏关掉）
         if (!_routing) return;
+
+        // 全局操作音效：在派发之前统一发声，主页 / 设置 / 添加页 / 小组件页等所有页面都能听到，
+        // 各页面不再各自播放，避免重复。方向键（含长按连发）走移动音，A=确认，B=返回。
+        // allowDeferB=false 是双击判定超时后补发的单击 B：首次按下时已经响过，这里不再重复响。
+        if (allowDeferB) PlayGlobalCue(buttons);
 
         if (_saveRestoreInput is not null)
         {

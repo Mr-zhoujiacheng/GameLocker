@@ -377,8 +377,13 @@
                        TextTrimming="CharacterEllipsis"/>
         </Border>
 
-        <!-- 底部：按键提示 -->
-        <ctl:GamepadHintBar Grid.Row="3" Margin="0,2,0,10"
-                            Hints="A:添加到主页|B:返回"/>
+        <!-- 悬浮放大的按键提示：浮在内容之上，不占布局行（与主页一致） -->
+        <Border Grid.Row="0" Grid.RowSpan="99"
+                HorizontalAlignment="Right" VerticalAlignment="Top"
+                Margin="0,14,20,0" Padding="16,6" CornerRadius="16"
+                Background="#73121018" BorderBrush="#26FFFFFF" BorderThickness="1">
+            <ctl:GamepadHintBar BadgeScale="1"
+                                Hints="A:添加到主页|B:返回"/>
+        </Border>
     </Grid>
 </Page>

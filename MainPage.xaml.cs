@@ -535,7 +535,7 @@ public sealed partial class MainPage : Page
         {
             var text = await SystemPanelService.ToggleAsync(SystemPanel.NightLight);
             UpdateNightIcon();
-            ShowToast(text);
+            ShowToast(text, sound: text.Contains("已") ? UiSoundKind.Select : UiSoundKind.Error);
             return;
         }
 
@@ -572,7 +572,7 @@ public sealed partial class MainPage : Page
             return;
         }
 
-        ShowToast($"{name}已{(state.Value ? "开启" : "关闭")}");
+        ShowToast($"{name}已{(state.Value ? "开启" : "关闭")}", sound: UiSoundKind.Select);
         await Task.Delay(400);   // 等系统更新连接状态后再刷新图标颜色
         UpdateNetwork();
         SetGamepadStatus(App.Main?.Gamepad.HasGamepad ?? false);
@@ -1351,11 +1351,12 @@ public sealed partial class MainPage : Page
     private Microsoft.UI.Xaml.DispatcherTimer? _dropToastTimer;
     private Storyboard? _toastIn;
 
-    private void ShowToast(string text, ToastKind kind = ToastKind.Success, double? progress = null)
+    private void ShowToast(string text, ToastKind kind = ToastKind.Success, double? progress = null, UiSoundKind? sound = null)
     {
         var warn = kind == ToastKind.Warning;
-        // 报错 / 未检测到 / 操作失败等提示统一给一声错误音（与成功的提示音区分开）
-        if (warn && SettingsService.Current.UiSoundEnabled) UiSound.Play(UiSoundKind.Error);
+        // 正常关闭仍可显示警告色，但使用开关成功音；真正失败才播放错误音。
+        if (SettingsService.Current.UiSoundEnabled && (sound ?? (warn ? UiSoundKind.Error : null)) is { } cue)
+            UiSound.Play(cue);
         var accent = warn ? Windows.UI.Color.FromArgb(0xFF, 0xFF, 0xB9, 0x00)
                           : Windows.UI.Color.FromArgb(0xFF, 0x4C, 0xC2, 0xFF);
         MoveHintIcon.Glyph = warn ? "\uE7BA" : "\uE73E"; // 感叹号 / 对勾
@@ -3684,7 +3685,7 @@ public sealed partial class MainPage : Page
             // 手柄映射小组件：A/点击 = 开/关映射（长按 = 关闭，见 OnLongPressTick）
             GamepadRemapService.Toggle(item);
             ShowToast(GamepadRemapService.IsEnabled(item) ? "映射已开启" : "映射已关闭",
-                GamepadRemapService.IsEnabled(item) ? ToastKind.Success : ToastKind.Warning);
+                GamepadRemapService.IsEnabled(item) ? ToastKind.Success : ToastKind.Warning, sound: UiSoundKind.Select);
         }
         else if (item.WidgetKind == WidgetKind.RecycleBin)
         {
@@ -3714,16 +3715,16 @@ public sealed partial class MainPage : Page
             RefreshMonitorTiles();
             if (!MonitorService.IsRunning)
             {
-                ShowToast("监控已关闭", ToastKind.Warning);
+                ShowToast("监控已关闭", ToastKind.Warning, sound: UiSoundKind.Select);
             }
             else if (MonitorService.LastError.Length > 0)
             {
                 // 未提权且用户取消了 UAC：其余指标正常，仅帧率不可用
-                ShowToast("监控已开启（" + MonitorService.LastError + "）", ToastKind.Warning);
+                ShowToast("监控已开启（" + MonitorService.LastError + "）", ToastKind.Warning, sound: UiSoundKind.Select);
             }
             else
             {
-                ShowToast("监控已开启", ToastKind.Success);
+                ShowToast("监控已开启", ToastKind.Success, sound: UiSoundKind.Select);
             }
         }
         else if (item.WidgetKind == WidgetKind.FileTransfer)
@@ -3742,6 +3743,7 @@ public sealed partial class MainPage : Page
             if (!OnScreenKeyboard.Toggle(item.KeyboardDockRight, item.KeyboardQwerty,
                     (KeyboardMode)item.KeyboardMode))
                 ShowToast("打开屏幕键盘失败：" + OnScreenKeyboard.LastError, ToastKind.Warning);
+            else if (SettingsService.Current.UiSoundEnabled) UiSound.Play(UiSoundKind.Select);
         }
         else if (item.WidgetKind == WidgetKind.Clash)
         {
@@ -3758,8 +3760,7 @@ public sealed partial class MainPage : Page
             // 屏幕翻译：A/点击 = 隐藏启动器并进入选窗翻译，再按一次停止
             var on = ScreenTranslateService.Toggle(item);
             RefreshTranslateTiles();
-            if (on) ShowToast("点击要翻译的窗口");
-            else ShowToast("翻译已停止");
+            ShowToast(on ? "点击要翻译的窗口" : "翻译已停止", sound: UiSoundKind.Select);
         }
         else
         {
@@ -3796,10 +3797,10 @@ public sealed partial class MainPage : Page
                 ShowToast("切不回游戏窗口：请进入游戏后再按 A", ToastKind.Warning);
                 break;
             case LosslessScalingService.ScaleResult.FrameGenOn:
-                ShowToast("已开启插帧" + minSuffix, minKind);
+                ShowToast("已开启插帧" + minSuffix, minKind, sound: UiSoundKind.Select);
                 break;
             case LosslessScalingService.ScaleResult.FrameGenOff:
-                ShowToast("已关闭插帧" + minSuffix, minKind);
+                ShowToast("已关闭插帧" + minSuffix, minKind, sound: UiSoundKind.Select);
                 break;
             case LosslessScalingService.ScaleResult.ToggleFailed:
                 ShowToast("未能切换插帧：请在小黄鸭里按 Ctrl+Alt+S 确认热键", ToastKind.Warning);
@@ -3822,7 +3823,8 @@ public sealed partial class MainPage : Page
         // A 键后再按一次即复原（静音/熄屏/射频都是开关语义）：先刷新读数再提示，提示内容与磁贴一致
         if (panel == SystemPanel.Brightness) await SystemPanelService.RefreshBrightnessAsync();
         RefreshSystemTiles();
-        ShowToast($"{SystemPanelService.Label(panel)}：{message}");
+        ShowToast($"{SystemPanelService.Label(panel)}：{message}", sound: SystemPanelService.IsLauncher(panel)
+            ? null : message.Contains("已") && !message.Contains("设置页") ? UiSoundKind.Select : UiSoundKind.Error);
         if (SystemPanelService.IsLauncher(panel) && AutoHideAfterLaunch) App.Main?.HideToTray();
     }
 
@@ -3857,7 +3859,7 @@ public sealed partial class MainPage : Page
         if (ForegroundWatcherService.IsProtected(app)) { ShowToast($"{app.ProcessName} 为系统关键进程，不可操作", ToastKind.Warning); return; }
         var (ok, frozen) = ForegroundWatcherService.ToggleFreeze();
         if (!ok) { ShowToast("冻结/解冻失败：权限不足或应用已退出", ToastKind.Warning); return; }
-        ShowToast(frozen ? $"已冻结 {app.ProcessName}" : $"已解冻 {app.ProcessName}", ToastKind.Success);
+        ShowToast(frozen ? $"已冻结 {app.ProcessName}" : $"已解冻 {app.ProcessName}", ToastKind.Success, sound: UiSoundKind.Select);
     }
 
     /// <summary>强制结束前台应用（前台应用监测小组件 Y 键/长按语义）</summary>
@@ -4054,7 +4056,13 @@ public sealed partial class MainPage : Page
         if (item.Kind == LaunchKind.Widget && item.WidgetKind == WidgetKind.System) { ShowToast("系统小组件：右摇杆←→切换 · A 开关 · LB/RB 调整"); return; }
         if (item.Kind == LaunchKind.Widget && item.WidgetKind == WidgetKind.Clash) { _ = RefreshFastestProxyAsync(item); return; }
         if (item.Kind == LaunchKind.Widget && item.WidgetKind == WidgetKind.Wallpaper) { LikeWallpaper(item); return; }
-        if (item.Kind == LaunchKind.Widget && item.WidgetKind == WidgetKind.GamepadMap) { GamepadRemapService.Disable(item); ShowToast("已关闭映射", ToastKind.Warning); return; }
+        if (item.Kind == LaunchKind.Widget && item.WidgetKind == WidgetKind.GamepadMap)
+        {
+            var wasEnabled = GamepadRemapService.IsEnabled(item);
+            GamepadRemapService.Disable(item);
+            if (wasEnabled) ShowToast("已关闭映射", ToastKind.Warning, sound: UiSoundKind.Select);
+            return;
+        }
         if (item.Kind == LaunchKind.Widget && item.WidgetKind == WidgetKind.Settings) { EnterEditMode(); return; }
         if (item.Kind == LaunchKind.Widget && item.WidgetKind == WidgetKind.Power) return;  // 电源磁贴没有"可关闭"的对象
         if (item.Kind == LaunchKind.Widget && item.WidgetKind == WidgetKind.FileTransfer) return; // 文件传输：Y 已用于浮层内刷新列表
@@ -4066,7 +4074,7 @@ public sealed partial class MainPage : Page
             {
                 MonitorService.Stop();
                 RefreshMonitorTiles();
-                ShowToast("监控已关闭", ToastKind.Warning);
+                ShowToast("监控已关闭", ToastKind.Warning, sound: UiSoundKind.Select);
             }
             return;
         }
@@ -4922,7 +4930,7 @@ public sealed partial class MainPage : Page
         if (result.Ok) PersistLayout(); // 记住实际连接的节点
         ShowToast(result.Message, result.Ok
             ? (result.On ? ToastKind.Success : ToastKind.Warning)
-            : ToastKind.Warning);
+            : ToastKind.Warning, sound: result.Ok ? UiSoundKind.Select : UiSoundKind.Error);
     }
 
     /// <summary>小猫咪 Y 键：更新订阅并选最快节点，按结果显示提示</summary>
@@ -5637,6 +5645,34 @@ public sealed partial class MainPage : Page
             inSb.Begin();
         };
         outSb.Begin();
+    }
+
+    private static bool IsToggleItem(LaunchItem? item)
+    {
+        if (item is not { Kind: LaunchKind.Widget }) return false;
+        if (item.WidgetKind == WidgetKind.System)
+            return !SystemPanelService.IsLauncher(SystemPanelService.FromOption(
+                SystemPanelService.NormalizeOption(item.SystemOptionMask, item.SystemOption)));
+        return item.WidgetKind is WidgetKind.GamepadMap or WidgetKind.Foreground or WidgetKind.Monitor
+            or WidgetKind.LosslessScaling or WidgetKind.Keyboard or WidgetKind.Clash or WidgetKind.ScreenTranslate;
+    }
+
+    public bool IsToggleSelected => !_moving && !_choiceOpen && !_renaming && !_powerOpen &&
+        !_wallpaperOpen && !_fileTransferOpen && !_searchOpen &&
+        IsToggleItem(_inDrawer ? FocusedDrawerItem() :
+            (_selected >= 0 && _selected < _display.Count ? _display[_selected].item : null));
+
+    public bool IsToggleTileSource(object? source)
+    {
+        if (_moving) return false;
+        for (var el = source as DependencyObject; el is not null; el = VisualTreeHelper.GetParent(el))
+        {
+            if (el is not Border border) continue;
+            if (_drawerInnerTiles.Contains(border)) return IsToggleItem(border.Tag as LaunchItem);
+            if (_tiles.Contains(border) && border.Tag is int index && index >= 0 && index < _display.Count)
+                return IsToggleItem(_display[index].item);
+        }
+        return false;
     }
 
     /// <summary>点击源是否落在主页磁贴上：磁贴是自绘 Border（不是标准控件），供全局点击音效判定用</summary>

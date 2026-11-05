@@ -270,6 +270,7 @@ public sealed partial class DrawerSettingsPage : Page, ISettingsGamepad
 
         SettingsService.Update(s => s.DrawerColor = hex);
         App.Main?.ApplyDrawerSettings();
+        if (_ready && SettingsService.Current.UiSoundEnabled) UiSound.Play(UiSoundKind.Select);
     }
 
     private void FocusIndex(int i)
@@ -322,7 +323,7 @@ public sealed partial class DrawerSettingsPage : Page, ISettingsGamepad
     {
         if (sender is not Button row) return;
         var i = Array.IndexOf(_controls, row);
-        if (i >= 0) FocusIndex(i);
+        if (i >= 0) { _index = i; FocusIndex(i); }
         ActivateCurrent();
     }
 
@@ -342,6 +343,7 @@ public sealed partial class DrawerSettingsPage : Page, ISettingsGamepad
         SettingsService.Update(s => s.DrawerEnabled = DrawerToggle.IsOn);
         // 即时应用到主页（若已创建）：关闭则隐藏抽屉区域，打开则确保宿主存在并显示
         App.Main?.ApplyDrawerSettings();
+        if (_ready && SettingsService.Current.UiSoundEnabled) UiSound.Play(UiSoundKind.Select);
     }
 
     private void OnUniformSmallChanged(object sender, Microsoft.UI.Xaml.RoutedEventArgs e)
@@ -350,6 +352,7 @@ public sealed partial class DrawerSettingsPage : Page, ISettingsGamepad
         SettingsService.Update(s => s.DrawerUniformSmall = UniformSmallToggle.IsOn);
         // 即时重排抽屉内层磁贴（若主页已创建）
         App.Main?.ApplyDrawerSettings();
+        if (_ready && SettingsService.Current.UiSoundEnabled) UiSound.Play(UiSoundKind.Select);
     }
 
     private void OnAutoHideChanged(object sender, Microsoft.UI.Xaml.RoutedEventArgs e)
@@ -358,6 +361,7 @@ public sealed partial class DrawerSettingsPage : Page, ISettingsGamepad
         SettingsService.Update(s => s.DrawerAutoHide = AutoHideToggle.IsOn);
         // 即时应用：打开立即收起抽屉（带动画），关闭恢复常驻显示
         App.Main?.ApplyDrawerSettings();
+        if (_ready && SettingsService.Current.UiSoundEnabled) UiSound.Play(UiSoundKind.Select);
     }
 
     private void OnTransparentChanged(object sender, Microsoft.UI.Xaml.RoutedEventArgs e)
@@ -366,6 +370,7 @@ public sealed partial class DrawerSettingsPage : Page, ISettingsGamepad
         SettingsService.Update(s => s.DrawerTransparent = TransparentToggle.IsOn);
         // 即时应用：切换玻璃底/透明底与描边粗细
         App.Main?.ApplyDrawerSettings();
+        if (_ready && SettingsService.Current.UiSoundEnabled) UiSound.Play(UiSoundKind.Select);
     }
 
     public bool IsCapturing => false;

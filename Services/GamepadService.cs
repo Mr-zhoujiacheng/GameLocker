@@ -55,6 +55,7 @@ public sealed class GamepadService : IDisposable
     public const int SummonHoldMs = 1000;
 
     private System.Timers.Timer? _timer;
+    private int _polling;
     private GamepadButtons _last;
     private GamepadButtons _current;
     private bool _hasGamepad;
@@ -153,7 +154,12 @@ public sealed class GamepadService : IDisposable
     public void Start()
     {
         _timer = new System.Timers.Timer(16) { AutoReset = true };
-        _timer.Elapsed += (_, _) => Poll();
+        _timer.Elapsed += (_, _) =>
+        {
+            if (Interlocked.Exchange(ref _polling, 1) != 0) return;
+            try { Poll(); }
+            finally { Volatile.Write(ref _polling, 0); }
+        };
         _timer.Start();
     }
 

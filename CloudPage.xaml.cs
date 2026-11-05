@@ -101,6 +101,7 @@ public sealed partial class CloudPage : Page, ISettingsGamepad
         RootBox.Text = CurrentRootFolder;
         StatusText.Text = "已切换到" + CloudBackupProvider.DisplayName;
         RefreshUi();
+        if (SettingsService.Current.UiSoundEnabled) UiSound.Play(UiSoundKind.Select);
     }
 
     private void SaveConfig()

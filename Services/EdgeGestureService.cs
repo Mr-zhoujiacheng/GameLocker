@@ -40,6 +40,7 @@ public sealed class EdgeGestureService : IDisposable
     private readonly HookProcDelegate _hookProc; // 防 GC 回收
     private IntPtr _hook = 0;
     private int _downX, _downY;
+    private long _downAt;
     private volatile bool _tracking;
     private bool _downNearEdge;     // 本次按下起点是否在边缘感应带内（决定抬起时判呼出还是收起）
     private long _lastTrigger;
@@ -48,7 +49,8 @@ public sealed class EdgeGestureService : IDisposable
 
     // ---- Raw Input 触摸 sink（屏外 1x1 窗口，仅接收 WM_INPUT）----
     private IntPtr _sink = 0;
-    private WndProcDelegate? _sinkProc; // 防 GC 回收
+    private readonly string _sinkClassName = $"GLEdgeSink_{Guid.NewGuid():N}";
+    private WndProcDelegate? _sinkProc; // 窗口类存在期间保持同一个委托
     private IntPtr _rawBuf = 0;         // WM_INPUT 解析缓冲（非托管）
     private uint _rawBufSize;
     private readonly Dictionary<IntPtr, IntPtr> _preparsed = new(); // hDevice → HID preparsed data（-1=非触摸设备跳过）
@@ -98,7 +100,8 @@ public sealed class EdgeGestureService : IDisposable
     /// 在 XAML 事件回调里变成 stowed 异常 0xc000027b 崩 CoreMessagingXP（开关关→开即闪退的根因）。</summary>
     public void Start()
     {
-        if (_disposed || _running) return;
+        if (_disposed || _running || _thread?.IsAlive == true) return;
+        _tracking = _tDown = false;
         _running = true;
         var t = new Thread(Run) { IsBackground = true, Name = "EdgeGesture" };
         // 钩子线程必须 MTA：STA 与 WinUI3 CoreMessaging/COM 公寓冲突（WH_MOUSE_LL 只需消息泵，不需要 STA）
@@ -110,11 +113,12 @@ public sealed class EdgeGestureService : IDisposable
     /// <summary>停止本应用手势监听（幂等）</summary>
     public void Stop()
     {
-        if (!_running) return;
         _running = false;
-        // 唤醒阻塞在 GetMessage 的线程立即退出并卸载钩子（否则再 Start 时旧钩子残留双触发）
         var id = _threadId;
         if (id != 0) PostThreadMessage(id, WM_QUIT, IntPtr.Zero, IntPtr.Zero);
+        var thread = _thread;
+        if (thread != null && thread != Thread.CurrentThread && !thread.Join(3000))
+            Log("gesture thread stop timed out");
     }
 
     /// <summary>切换呼出边缘（停靠侧/全屏变化时调用）</summary>
@@ -128,55 +132,66 @@ public sealed class EdgeGestureService : IDisposable
 
     private void Run()
     {
-        _threadId = GetCurrentThreadId();
-        _hook = SetWindowsHookEx(WH_MOUSE_LL, _hookProc, GetModuleHandle(null), 0);
-        Log($"hook installed, handle={_hook}");
-        if (_hook == 0)
+        try
         {
-            Log($"SetWindowsHookEx failed err={Marshal.GetLastWin32Error()}");
-            return;
-        }
-        CreateSink();
+            PeekMessage(out _, IntPtr.Zero, 0, 0, 0);
+            _threadId = GetCurrentThreadId();
+            _hook = SetWindowsHookEx(WH_MOUSE_LL, _hookProc, GetModuleHandle(null), 0);
+            Log($"hook installed, handle={_hook}");
+            if (_hook == 0)
+            {
+                Log($"SetWindowsHookEx failed err={Marshal.GetLastWin32Error()}");
+                return;
+            }
+            CreateSink();
 
-        var msg = new MSG();
-        // 必须 out/ref 传递：按值传 MSG 时本地结构体永远不被填充，
-        // DispatchMessage 收到全零消息 → WM_INPUT 从不投递到 sink（根因）
-        while (_running && GetMessage(out msg, IntPtr.Zero, 0, 0))
+            var msg = new MSG();
+            // 必须 out/ref 传递，否则 WM_INPUT 不会投递到 sink。
+            while (_running && GetMessage(out msg, IntPtr.Zero, 0, 0) > 0)
+            {
+                TranslateMessage(ref msg);
+                DispatchMessage(ref msg);
+            }
+        }
+        catch (Exception ex) { Log($"gesture thread EX: {ex}"); }
+        finally
         {
-            TranslateMessage(ref msg);
-            DispatchMessage(ref msg);
+            _running = false;
+            if (_sink != 0) { DestroyWindow(_sink); _sink = 0; }
+            UnregisterClass(_sinkClassName, GetModuleHandle(null));
+            if (_rawBuf != 0) { Marshal.FreeHGlobal(_rawBuf); _rawBuf = 0; }
+            if (_capsBuf != 0) { Marshal.FreeHGlobal(_capsBuf); _capsBuf = 0; }
+            foreach (var v in _preparsed.Values)
+                if (v != new IntPtr(-1)) Marshal.FreeHGlobal(v);
+            _preparsed.Clear();
+            _fingerLc.Clear();
+            UnhookWindowsHookEx(_hook);
+            _hook = 0;
+            _threadId = 0;
+            Log("hook removed, thread exit");
         }
-
-        if (_sink != 0) { DestroyWindow(_sink); _sink = 0; }
-        if (_rawBuf != 0) { Marshal.FreeHGlobal(_rawBuf); _rawBuf = 0; }
-        if (_capsBuf != 0) { Marshal.FreeHGlobal(_capsBuf); _capsBuf = 0; }
-        foreach (var v in _preparsed.Values)
-            if (v != new IntPtr(-1)) Marshal.FreeHGlobal(v);
-        _preparsed.Clear();
-        _fingerLc.Clear();
-        UnhookWindowsHookEx(_hook);
-        _hook = 0;
-        _threadId = 0;
-        Log("hook removed, thread exit");
     }
 
     /// <summary>创建屏外 1x1 sink 窗口并注册全局原始输入（RIDEV_INPUTSINK：非前台也收 WM_INPUT）</summary>
     private void CreateSink()
     {
-        _sinkProc = SinkWndProc;
+        _sinkProc ??= SinkWndProc;
         var hInst = GetModuleHandle(null);
         var cls = new WNDCLASSEX
         {
             cbSize = (uint)Marshal.SizeOf<WNDCLASSEX>(),
             lpfnWndProc = Marshal.GetFunctionPointerForDelegate(_sinkProc),
             hInstance = hInst,
-            lpszClassName = "GLEdgeSink"
+            lpszClassName = _sinkClassName
         };
-        RegisterClassEx(ref cls); // 类已注册时失败也无妨，直接用同名类建窗
+        if (RegisterClassEx(ref cls) == 0)
+            throw new System.ComponentModel.Win32Exception(Marshal.GetLastWin32Error());
 
         var h = CreateWindowEx(WS_EX_TOOLWINDOW | WS_EX_NOACTIVATE,
-            "GLEdgeSink", "", WS_POPUP,
+            _sinkClassName, "", WS_POPUP,
             -32000, -32000, 1, 1, IntPtr.Zero, IntPtr.Zero, hInst, IntPtr.Zero);
+        if (h == IntPtr.Zero)
+            throw new System.ComponentModel.Win32Exception(Marshal.GetLastWin32Error());
         _sink = h;
         // 屏外 1x1 也必须 Show：从未显示的窗口可能收不到 WM_INPUT（隐藏 vs 屏外可见的投递差异）
         ShowWindow(h, SW_SHOWNOACTIVATE);
@@ -207,7 +222,7 @@ public sealed class EdgeGestureService : IDisposable
     {
         uint size = 0;
         GetRawInputData(lParam, RID_INPUT, IntPtr.Zero, ref size, (uint)Marshal.SizeOf<RAWINPUTHEADER>());
-        if (size == 0 || size > _rawBufSize) { DiagLog($"rid size={size}"); return; }
+        if (size < 32 || size > _rawBufSize) { DiagLog($"rid size={size}"); return; }
         if (GetRawInputData(lParam, RID_INPUT, _rawBuf, ref size, (uint)Marshal.SizeOf<RAWINPUTHEADER>()) != size)
         { DiagLog("rid read fail"); return; }
 
@@ -219,7 +234,7 @@ public sealed class EdgeGestureService : IDisposable
         var sizeHid = Marshal.ReadInt32(_rawBuf, 24);
         var count = Marshal.ReadInt32(_rawBuf, 28);
         var data = _rawBuf + 32;
-        if (sizeHid <= 0 || count <= 0 || 32 + sizeHid * count > size)
+        if (sizeHid <= 0 || count <= 0 || 32L + (long)sizeHid * count > size)
         { DiagLog($"bad frame sizeHid={sizeHid} count={count} size={size}"); return; }
 
         // 设备 → 预解析数据缓存；-1 表示已判定非触摸屏设备（无 Contact Count 字段）
@@ -310,12 +325,21 @@ public sealed class EdgeGestureService : IDisposable
             var nearEdge = NearEdge(_tStartX, _tStartY);
             var elapsed = Environment.TickCount64 - _tDownAt;
             Log($"touch up ({_tLastX},{_tLastY}) inward={inward} nearEdge={nearEdge} ms={elapsed}");
-            if (nearEdge && inward >= Threshold &&
+            var cross = _edge is SummonEdge.Left or SummonEdge.Right
+                ? Math.Abs(_tLastY - _tStartY) : Math.Abs(_tLastX - _tStartX);
+            if (nearEdge && inward >= Threshold && cross < inward && elapsed < 800 &&
                 (Environment.TickCount64 - _lastTrigger) > 600)
             {
                 _lastTrigger = Environment.TickCount64;
                 try { SummonTriggered?.Invoke(); Log("touch summon dispatched"); }
                 catch (Exception ex) { Log($"summon invoke EX: {ex.GetType().Name}: {ex.Message}"); }
+            }
+            else if (!nearEdge && _edge == SummonEdge.Top && -inward >= DismissThreshold &&
+                cross < 80 && elapsed < 500 && Environment.TickCount64 - _lastDismiss > 600)
+            {
+                _lastDismiss = Environment.TickCount64;
+                try { DismissTriggered?.Invoke(); Log("touch dismiss dispatched (top)"); }
+                catch (Exception ex) { Log($"dismiss invoke EX: {ex.GetType().Name}: {ex.Message}"); }
             }
             // 向下滑：起点在窗口内部、竖直向下快滑（横向偏移小，避开横向拖拽）→ 返回上一级
             else if (!nearEdge && (_tLastY - _tStartY) >= DismissThreshold && Math.Abs(_tLastX - _tStartX) < 80 &&
@@ -453,6 +477,7 @@ public sealed class EdgeGestureService : IDisposable
             {
                 // 每次都记起点：抬起时按起点是否在边缘带内，判呼出或收起
                 _downX = info.ptX; _downY = info.ptY;
+                _downAt = Environment.TickCount64;
                 _downNearEdge = NearEdge(info.ptX, info.ptY);
                 _tracking = true;
                 if (_downNearEdge)
@@ -465,11 +490,14 @@ public sealed class EdgeGestureService : IDisposable
             {
                 _tracking = false;
                 var inward = Inward(info.ptX, info.ptY);
+                var elapsed = Environment.TickCount64 - _downAt;
+                var cross = _edge is SummonEdge.Left or SummonEdge.Right
+                    ? Math.Abs(info.ptY - _downY) : Math.Abs(info.ptX - _downX);
                 if (_downNearEdge)
                 {
                     Log($"up at ({info.ptX},{info.ptY}) inward={inward}");
                     // 触摸会合成重复的鼠标消息，600ms 冷却去重，防双触发
-                    if (inward >= Threshold && (Environment.TickCount64 - _lastTrigger) > 600)
+                    if (inward >= Threshold && cross < inward && elapsed < 800 && (Environment.TickCount64 - _lastTrigger) > 600)
                     {
                         _lastTrigger = Environment.TickCount64;
                         try { SummonTriggered?.Invoke(); Log("summon dispatched"); }
@@ -483,7 +511,7 @@ public sealed class EdgeGestureService : IDisposable
                         catch (Exception ex) { Log($"dismiss invoke EX: {ex.GetType().Name}: {ex.Message}"); }
                     }
                 }
-                else if ((info.ptY - _downY) >= DismissThreshold && Math.Abs(info.ptX - _downX) < 80 &&
+                else if (elapsed < 500 && (info.ptY - _downY) >= DismissThreshold && Math.Abs(info.ptX - _downX) < 80 &&
                     (Environment.TickCount64 - _lastBack) > 600)
                 {
                     _lastBack = Environment.TickCount64;
@@ -491,7 +519,7 @@ public sealed class EdgeGestureService : IDisposable
                     catch (Exception ex) { Log($"back invoke EX: {ex.GetType().Name}: {ex.Message}"); }
                 }
                 // 滑到屏幕左/右边缘 → 最小化（与触摸通道同一规则）
-                else if (NearSideEdge(info.ptX) && Math.Abs(info.ptX - _downX) >= DismissThreshold &&
+                else if (elapsed < 500 && NearSideEdge(info.ptX) && Math.Abs(info.ptX - _downX) >= DismissThreshold &&
                     Math.Abs(info.ptY - _downY) < 80 &&
                     (Environment.TickCount64 - _lastDismiss) > 600)
                 {
@@ -508,7 +536,7 @@ public sealed class EdgeGestureService : IDisposable
     private bool NearSideEdge(int x)
     {
         var sw = GetSystemMetrics(0);
-        return x <= EdgeZone || x >= sw - EdgeZone;
+        return x >= 0 && x < sw && (x <= EdgeZone || x >= sw - EdgeZone);
     }
 
     /// <summary>按下点是否落在当前呼出边缘的感应带内</summary>
@@ -516,6 +544,7 @@ public sealed class EdgeGestureService : IDisposable
     {
         var sw = GetSystemMetrics(0);
         var sh = GetSystemMetrics(1);
+        if (x < 0 || x >= sw || y < 0 || y >= sh) return false;
         return _edge switch
         {
             SummonEdge.Right => x >= sw - EdgeZone,
@@ -563,7 +592,7 @@ public sealed class EdgeGestureService : IDisposable
     {
         if (_disposed) return;
         _disposed = true;
-        _running = false;
+        Stop();
     }
 
     // ---- P/Invoke ----
@@ -650,7 +679,10 @@ public sealed class EdgeGestureService : IDisposable
     private static extern IntPtr CallNextHookEx(IntPtr hhk, int nCode, IntPtr wParam, IntPtr lParam);
 
     [DllImport("user32.dll")]
-    private static extern bool GetMessage(out MSG lpMsg, IntPtr hWnd, uint min, uint max);
+    private static extern int GetMessage(out MSG lpMsg, IntPtr hWnd, uint min, uint max);
+
+    [DllImport("user32.dll")]
+    private static extern bool PeekMessage(out MSG lpMsg, IntPtr hWnd, uint min, uint max, uint remove);
 
     [DllImport("user32.dll")]
     private static extern bool TranslateMessage(ref MSG lpMsg);
@@ -670,10 +702,13 @@ public sealed class EdgeGestureService : IDisposable
     [DllImport("kernel32.dll", CharSet = CharSet.Unicode)]
     private static extern IntPtr GetModuleHandle(string? lpModuleName);
 
-    [DllImport("user32.dll", CharSet = CharSet.Unicode)]
+    [DllImport("user32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
     private static extern ushort RegisterClassEx(ref WNDCLASSEX lpwcx);
 
-    [DllImport("user32.dll", CharSet = CharSet.Unicode)]
+    [DllImport("user32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
+    private static extern bool UnregisterClass(string className, IntPtr instance);
+
+    [DllImport("user32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
     private static extern IntPtr CreateWindowEx(int dwExStyle, string lpClassName, string lpWindowName,
         int dwStyle, int x, int y, int nWidth, int nHeight,
         IntPtr hWndParent, IntPtr hMenu, IntPtr hInstance, IntPtr lpParam);

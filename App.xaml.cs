@@ -11,6 +11,12 @@ public partial class App : Application
     private TrayHotkeyService? _tray;
     private Mutex? _instanceMutex;
 
+    public App()
+    {
+        InstallCrashLogging();
+        InitializeComponent();
+    }
+
     [System.Runtime.InteropServices.DllImport("user32.dll", CharSet = System.Runtime.InteropServices.CharSet.Unicode)]
     private static extern int MessageBoxW(IntPtr hwnd, string text, string caption, uint type);
 
@@ -58,7 +64,7 @@ public partial class App : Application
             return;
         }
 
-        InstallCrashLogging();
+        DebugLog.Write($"启动：PID={Environment.ProcessId} 程序={Environment.ProcessPath}");
         MigrateLegacyConfig();
         SettingsService.EnsureAutoStartPath(); // 校正开机自启路径（程序移动/改名后 Run 键会失效）
         // 接管系统屏幕键盘：关掉触屏键盘自动弹出、收起 osk/TabTip，改用本程序键盘

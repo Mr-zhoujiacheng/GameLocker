@@ -505,7 +505,7 @@ internal sealed class MonitorOverlayWindow : IDisposable
             _fontLabel = CreateFontW(-Scaled(9), 0, 0, 0, 400, 0, 0, 0, 1, 0, 0, 5, 0, "Segoe UI");
             _fontValue = CreateFontW(-Scaled(13), 0, 0, 0, 700, 0, 0, 0, 1, 0, 0, 5, 0, "Segoe UI");
             _fontTip = CreateFontW(-Scaled(9), 0, 0, 0, 400, 0, 0, 0, 1, 0, 0, 5, 0, "Segoe UI");
-            _fontFps = CreateFontW(-Scaled(21), 0, 0, 0, 700, 0, 0, 0, 1, 0, 0, 5, 0, "Segoe UI");
+            _fontFps = CreateFontW(-Scaled(24), 0, 0, 0, 700, 0, 0, 0, 1, 0, 0, 5, 0, "Segoe UI");
         }
     }
 
@@ -754,7 +754,7 @@ internal sealed class MonitorOverlayWindow : IDisposable
         SelectObject(hdc, _fontFps);
         SetTextColor(hdc, accent);
         var fps = FormatFps(snap);
-        TextOutW(hdc, left, Scaled(1), fps, fps.Length);
+        TextOutW(hdc, left, Scaled(0), fps, fps.Length);
 
         // 原始帧率使用小号字体，与主帧率底部对齐。
         var extent = new SIZE();
@@ -766,13 +766,13 @@ internal sealed class MonitorOverlayWindow : IDisposable
             {
                 SelectObject(hdc, _fontValue);
                 SetTextColor(hdc, DimColor(accent, 0.86));
-                TextOutW(hdc, suffixX, Scaled(8), original, original.Length);
+                TextOutW(hdc, suffixX, Scaled(9), original, original.Length);
                 if (GetTextExtentPoint32W(hdc, original, original.Length, out var originalExtent))
                     suffixX += originalExtent.CX;
             }
             SelectObject(hdc, _fontLabel);
             SetTextColor(hdc, DimColor(accent, 0.78));
-            TextOutW(hdc, suffixX + Scaled(3), Scaled(7), "FPS", 3);
+            TextOutW(hdc, suffixX + Scaled(3), Scaled(8), "FPS", 3);
         }
 
         if (Has(MonitorMetric.FrameTime))
@@ -780,7 +780,7 @@ internal sealed class MonitorOverlayWindow : IDisposable
             SelectObject(hdc, _fontLabel);
             SetTextColor(hdc, DimColor(accent, 0.86));
             var delay = FormatFrameDelay(snap);
-            TextOutW(hdc, left, Scaled(23), delay, delay.Length);
+            TextOutW(hdc, left, Scaled(26), delay, delay.Length);
         }
         return x + width;
     }

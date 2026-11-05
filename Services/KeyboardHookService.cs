@@ -74,8 +74,9 @@ public sealed class KeyboardHookService : IDisposable
     /// <summary>标记自己注入的事件（写入 dwExtraInfo），钩子据此放行，避免补发的 Win 键被自己吞掉</summary>
     private static readonly IntPtr InjectMarker = (IntPtr)0x474C4B53; // "GLKS"
 
-    private bool _winHeld;            // 物理 Win 键正被按住（按下已被吞掉）
-    private bool _winCombo;           // 本次 Win 按住期间已判定为组合键（已补发 Win 按下）
+    private readonly HashSet<int> _heldWinKeys = new();
+    private readonly HashSet<int> _forwardedWinKeys = new();
+    private bool _winCombo;           // 本次 Win 按住期间已用于组合键，不再触发开始菜单
     private bool _suppressStartClick; // 开始按钮按下已被吞，抬起也要一并吞掉
 
     private RECT _startBtnRect;       // 任务栏开始按钮的屏幕矩形（缓存）
@@ -83,7 +84,8 @@ public sealed class KeyboardHookService : IDisposable
 
     // ---- 开始按钮覆盖窗（触屏拦截）----
     private IntPtr _cover;            // 不可见（alpha=1）TOPMOST 覆盖窗，压住任务栏开始按钮
-    private WndProc? _coverProc;      // 防 GC 回收
+    private readonly string _coverClassName = $"GLStartCover_{Guid.NewGuid():N}";
+    private WndProc? _coverProc;      // 窗口类存在期间保持同一个委托
     private bool _coverDown;          // 覆盖窗上左键已按下（抬起时触发切换）
 
     /// <summary>暂停/恢复判定（捕获键位期间暂停，避免钩子把用户正在按的键吞掉）</summary>
@@ -181,7 +183,10 @@ public sealed class KeyboardHookService : IDisposable
             Interlocked.Exchange(ref _blockUntil, 0);
         }
         blockTimer?.DisposeAsync().AsTask().GetAwaiter().GetResult();
-        _winHeld = false;
+        foreach (var winKey in _forwardedWinKeys)
+            KeySendService.SendKeyOnly(winKey, up: true, InjectMarker);
+        _forwardedWinKeys.Clear();
+        _heldWinKeys.Clear();
         _winCombo = false;
         _suppressUp = false;
         _suppressStartClick = false;
@@ -195,6 +200,7 @@ public sealed class KeyboardHookService : IDisposable
             DestroyWindow(_cover);
             _cover = IntPtr.Zero;
         }
+        UnregisterClass(_coverClassName, GetModuleHandle(null));
         if (_winEvent != IntPtr.Zero)
         {
             UnhookWinEvent(_winEvent);
@@ -237,42 +243,52 @@ public sealed class KeyboardHookService : IDisposable
                 var vk = (int)data.vkCode;
                 var injected = data.dwExtraInfo == InjectMarker;
 
-                // ---- 开始菜单模式：接管 Win 键 ----
-                if (StartMenuMode && !injected && (vk == VK_LWIN || vk == VK_RWIN))
-                {
-                    if (isDown)
-                    {
-                        _winHeld = true;
-                        _winCombo = false;
-                        return (IntPtr)1; // 吞掉按下，系统开始菜单不会弹出
-                    }
-                    _winHeld = false;
-                    // 组合键：补发的 Win 按下已送达系统，这里放行抬起与之配对
-                    if (_winCombo) return CallNextHookEx(_hook, nCode, wParam, lParam);
-                    StartMenuToggle?.Invoke();
-                    return (IntPtr)1;
-                }
-                // Win 按住期间又按下其它键 → 判定为组合键：补发一段带标记的 Win 按下使组合成立
-                if (StartMenuMode && _winHeld && isDown && !_winCombo && !injected)
-                {
-                    _winCombo = true;
-                    KeySendService.SendKeyOnly(VK_LWIN, up: false, InjectMarker);
-                }
-                // 自己注入的事件一律放行（否则补发的 Win 键会被再次吞掉）
+                // 自己补发的 Win 事件直接放行，不能当成物理按键再次处理。
                 if (injected) return CallNextHookEx(_hook, nCode, wParam, lParam);
 
+                // 先匹配呼出键，再补发系统组合键，避免 Win+Tab 等呼出键泄漏给系统。
                 if (Key != 0 && vk == Key)
                 {
-                    if (isDown && CurrentMods() == Mods)
+                    if (isDown && (_suppressUp || CurrentMods() == Mods))
                     {
-                        _suppressUp = true;         // 抬起也要一并吞掉，保持前后台一致
-                        Triggered?.Invoke();
+                        if (!_suppressUp)
+                        {
+                            _suppressUp = true;
+                            if (_heldWinKeys.Count > 0) _winCombo = true;
+                            Triggered?.Invoke();
+                        }
                         return (IntPtr)1;
                     }
                     if (isUp && _suppressUp)
                     {
                         _suppressUp = false;
                         return (IntPtr)1;
+                    }
+                }
+
+                if ((StartMenuMode || _heldWinKeys.Contains(vk)) && (vk == VK_LWIN || vk == VK_RWIN))
+                {
+                    if (isDown)
+                    {
+                        if (_heldWinKeys.Count == 0) _winCombo = false;
+                        _heldWinKeys.Add(vk); // 自动重复不能重置组合键状态
+                        return (IntPtr)1;
+                    }
+                    if (!_heldWinKeys.Remove(vk))
+                        return CallNextHookEx(_hook, nCode, wParam, lParam);
+                    var forwarded = _forwardedWinKeys.Remove(vk);
+                    if (_heldWinKeys.Count == 0 && !_winCombo && StartMenuMode)
+                        StartMenuToggle?.Invoke();
+                    // 仅放行确实补发过的同侧 Win 抬起。
+                    return forwarded ? CallNextHookEx(_hook, nCode, wParam, lParam) : (IntPtr)1;
+                }
+                if (StartMenuMode && _heldWinKeys.Count > 0 && isDown)
+                {
+                    _winCombo = true;
+                    foreach (var winKey in _heldWinKeys)
+                    {
+                        if (_forwardedWinKeys.Add(winKey))
+                            KeySendService.SendKeyOnly(winKey, up: false, InjectMarker);
                     }
                 }
             }
@@ -283,20 +299,21 @@ public sealed class KeyboardHookService : IDisposable
     /// <summary>创建开始按钮覆盖窗（隐藏，由 <see cref="ApplyCover"/> 按模式显隐与定位）</summary>
     private void CreateCover()
     {
-        _coverProc = CoverWndProc;
+        _coverProc ??= CoverWndProc;
         var hInst = GetModuleHandle(null);
         var cls = new WNDCLASSEX
         {
             cbSize = (uint)Marshal.SizeOf<WNDCLASSEX>(),
             lpfnWndProc = Marshal.GetFunctionPointerForDelegate(_coverProc),
             hInstance = hInst,
-            lpszClassName = "GLStartCover"
+            lpszClassName = _coverClassName
         };
-        RegisterClassEx(ref cls); // 类已注册时失败也无妨，直接用同名类建窗
+        if (RegisterClassEx(ref cls) == 0)
+            throw new System.ComponentModel.Win32Exception(Marshal.GetLastWin32Error());
 
         var h = CreateWindowEx(
             WS_EX_LAYERED | WS_EX_TOOLWINDOW | WS_EX_NOACTIVATE | WS_EX_TOPMOST,
-            "GLStartCover", "", WS_POPUP,
+            _coverClassName, "", WS_POPUP,
             0, 0, 0, 0, IntPtr.Zero, IntPtr.Zero, hInst, IntPtr.Zero);
         if (h == IntPtr.Zero) return;
         // alpha=1：肉眼不可见，但命中测试仍返回本窗口（alpha=0 会被穿透，点击直达任务栏）
@@ -312,8 +329,8 @@ public sealed class KeyboardHookService : IDisposable
         if (_cover == IntPtr.Zero) return;
         if (!_running || !_startMenuMode)
         {
-            _winHeld = false;
-            _winCombo = false;
+            // 已吞掉的物理 Win 仍由钩子在抬起时配对处理。
+            _winCombo = true;
             _suppressStartClick = false;
             KillTimer(_cover, (uint)CoverTimerId);
             if (_coverDown)
@@ -700,13 +717,13 @@ public sealed class KeyboardHookService : IDisposable
     }
 
     /// <summary>当前按住的修饰键（左/右任一）</summary>
-    private static int CurrentMods()
+    private int CurrentMods()
     {
         var m = 0;
         if (IsDown(VK_CONTROL)) m |= KeySendService.ModCtrl;
         if (IsDown(VK_SHIFT)) m |= KeySendService.ModShift;
         if (IsDown(VK_MENU)) m |= KeySendService.ModAlt;
-        if (IsDown(VK_LWIN) || IsDown(VK_RWIN)) m |= KeySendService.ModWin;
+        if (_heldWinKeys.Count > 0 || IsDown(VK_LWIN) || IsDown(VK_RWIN)) m |= KeySendService.ModWin;
         return m;
     }
 
@@ -926,6 +943,9 @@ public sealed class KeyboardHookService : IDisposable
     // ---- 覆盖窗相关 ----
     [DllImport("user32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
     private static extern ushort RegisterClassEx(ref WNDCLASSEX lpwcx);
+
+    [DllImport("user32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
+    private static extern bool UnregisterClass(string className, IntPtr instance);
 
     [DllImport("user32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
     private static extern IntPtr CreateWindowEx(int dwExStyle, string lpClassName, string lpWindowName,

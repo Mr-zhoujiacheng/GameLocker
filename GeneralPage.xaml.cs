@@ -337,6 +337,7 @@ public sealed partial class GeneralPage : Page, ISettingsGamepad
     {
         if (!_ready) return;
         Persist();
+        if (SettingsService.Current.UiSoundEnabled) UiSound.Play(UiSoundKind.Select);
     }
 
     private void OnSideChanged(object sender, Microsoft.UI.Xaml.RoutedEventArgs e)
@@ -344,6 +345,7 @@ public sealed partial class GeneralPage : Page, ISettingsGamepad
         if (!_ready) return;
         Persist();
         App.Main?.ApplySidebarLayout();
+        if (SettingsService.Current.UiSoundEnabled) UiSound.Play(UiSoundKind.Select);
     }
 
     /// <summary>边缘手势呼出开关 → 立即启停边缘监听</summary>
@@ -352,13 +354,16 @@ public sealed partial class GeneralPage : Page, ISettingsGamepad
         if (!_ready) return;
         SettingsService.Update(s => s.EdgeGestureSummon = EdgeGestureToggle.IsOn);
         App.Main?.SyncEdgeGesture();
+        if (SettingsService.Current.UiSoundEnabled) UiSound.Play(UiSoundKind.Select);
     }
 
-    /// <summary>操作音效开关 → 保存（A 键确认音由 MainWindow 的全局音效统一播放，这里不再重复）</summary>
+    /// <summary>操作音效开关 → 关闭前或启用后播放一次选择音效</summary>
     private void OnUiSoundChanged(object sender, Microsoft.UI.Xaml.RoutedEventArgs e)
     {
         if (!_ready) return;
+        if (!UiSoundToggle.IsOn && SettingsService.Current.UiSoundEnabled) UiSound.Play(UiSoundKind.Select);
         SettingsService.Update(s => s.UiSoundEnabled = UiSoundToggle.IsOn);
+        if (SettingsService.Current.UiSoundEnabled) UiSound.Play(UiSoundKind.Select);
     }
 
     /// <summary>平板模式开关 → 保存并立即隐藏/恢复本页提示条（其他页面进入时由 GamepadHintBar 自行应用）</summary>
@@ -367,6 +372,7 @@ public sealed partial class GeneralPage : Page, ISettingsGamepad
         if (!_ready) return;
         SettingsService.Update(s => s.TabletMode = TabletModeToggle.IsOn);
         HintBar.Visibility = TabletModeToggle.IsOn ? Visibility.Collapsed : Visibility.Visible;
+        if (SettingsService.Current.UiSoundEnabled) UiSound.Play(UiSoundKind.Select);
     }
 
     /// <summary>替代 Windows 开始菜单开关 → 保存并立即切换窗口形态 + 重挂键盘钩子</summary>
@@ -384,6 +390,7 @@ public sealed partial class GeneralPage : Page, ISettingsGamepad
         _index = Math.Clamp(_index, 0, _controls.Length - 1);
         FocusIndex(_index);
         App.Main?.ApplyStartMenuMode();
+        if (SettingsService.Current.UiSoundEnabled) UiSound.Play(UiSoundKind.Select);
     }
 
     private void Persist()

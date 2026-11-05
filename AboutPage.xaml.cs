@@ -402,6 +402,7 @@ public sealed partial class AboutPage : Page, ISettingsGamepad
         var on = !AutoCheckToggle.IsOn;
         AutoCheckToggle.IsOn = on;
         SettingsService.Update(s => s.AutoCheckUpdates = on);
+        if (SettingsService.Current.UiSoundEnabled) UiSound.Play(UiSoundKind.Select);
         if (on && !UpdateService.AutoChecked) _ = CheckAsync(silent: true);
     }
 
@@ -416,6 +417,7 @@ public sealed partial class AboutPage : Page, ISettingsGamepad
         if (!on) DebugLog.Write("日志已关闭（用户手动关闭）");
         SettingsService.Update(s => s.DiagnosticLog = on);
         if (on) DebugLog.Reset();
+        if (SettingsService.Current.UiSoundEnabled) UiSound.Play(UiSoundKind.Select);
         ExportSub.Text = on
             ? "正在记录，复现问题后点「导出」保存"
             : "默认关闭，复现问题后点「导出」保存";

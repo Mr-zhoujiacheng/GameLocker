@@ -467,9 +467,8 @@ public sealed partial class MainWindow : Window
         Gamepad.AllReleased += OnGamepadAllReleased;
         Gamepad.SummonTriggered += () => DispatcherQueue.TryEnqueue(() =>
         {
-            // 呼出组合键：窗口隐藏或未在前台（被其他窗口遮盖）时，都置顶聚焦
-            if (!Visible || GetForegroundWindow() != _hwnd)
-                ShowFromTray();
+            if ((Root.Content as ISettingsGamepad)?.IsCapturing == true) return;
+            SummonFromHotkey();
         });
         Gamepad.SummonCombo = SettingsService.Current.SummonCombo;
         Gamepad.FullscreenCombo = SettingsService.Current.FullscreenCombo;
@@ -565,6 +564,8 @@ public sealed partial class MainWindow : Window
 
         // 鼠标 / 触摸点击音效：挂在根 Frame 上并接收已被子控件处理的事件，
         // 只有真的点中控件（按钮/开关/下拉/磁贴等）才发声，点空白处保持安静。
+        Root.AddHandler(UIElement.PointerPressedEvent,
+            new PointerEventHandler((_, _) => _pointerSoundVersion = UiSound.PlayVersion), handledEventsToo: true);
         Root.AddHandler(UIElement.TappedEvent,
             new TappedEventHandler(OnAnyTapped), handledEventsToo: true);
 
@@ -1892,7 +1893,10 @@ public sealed partial class MainWindow : Window
     public void ShowSettingsHub()
     {
         if (Root.Content is ISettingsGamepad and not SettingsPage && Root.CanGoBack)
+        {
             Root.GoBack();
+            if (SettingsService.Current.UiSoundEnabled) UiSound.Play(UiSoundKind.Back);
+        }
     }
 
     /// <summary>设置主页 → 分类子页</summary>
@@ -1919,6 +1923,7 @@ public sealed partial class MainWindow : Window
     {
         if (Root.CanGoBack) Root.GoBack();
         else ShowMainPage();
+        if (SettingsService.Current.UiSoundEnabled) UiSound.Play(UiSoundKind.Back);
     }
 
     /// <summary>指定页面是否仍处于导航栈顶（供页面在后台回调里做自救守卫，避免已切走后误执行）</summary>
@@ -1962,49 +1967,20 @@ public sealed partial class MainWindow : Window
     /// 只有真正点中控件才响：内部处理过的点击（e.Handled）、标准控件、以及自绘的主页磁贴；
     /// 点窗口空白处不发声。
     /// </summary>
+    private long _pointerSoundVersion;
+
     private void OnAnyTapped(object sender, TappedRoutedEventArgs e)
     {
-        if (!_shown || !SettingsService.Current.UiSoundEnabled) return;
+        if (!_shown || !SettingsService.Current.UiSoundEnabled ||
+            _pointerSoundVersion != UiSound.PlayVersion) return;
         if (!(e.Handled || IsInteractiveSource(e.OriginalSource) ||
               (Root.Content is MainPage page && page.IsTileSource(e.OriginalSource))))
             return;
         // 开关、下拉、列表项、复选/单选、滑块属于"选择命中"，用 success 音；按钮、磁贴等用 A 键音
-        // 下拉框：点它只是展开列表，用 A 键音；真正选中某项在 SelectionChanged 里播 success
-        if (FindAncestor<ComboBox>(e.OriginalSource) is { } combo)
-        {
-            WireCombo(combo);
-            UiSound.Play(UiSoundKind.Confirm);
-            return;
-        }
+        // 下拉框由页面的展开/提交事件发声，不能用 SelectionChanged 区分预览和提交。
+        if (FindAncestor<ComboBox>(e.OriginalSource) is not null) return;
+        if (Root.Content is MainPage home && home.IsToggleTileSource(e.OriginalSource)) return;
         UiSound.Play(IsSelectionSource(e.OriginalSource) ? UiSoundKind.Select : UiSoundKind.Confirm);
-    }
-
-    /// <summary>手柄当前焦点是否在选择类控件上（开关/列表项/复选/单选/滑块）</summary>
-    private bool IsSelectionFocus()
-    {
-        return FocusedElement() is { } focused && IsSelectionSource(focused);
-    }
-
-    private DependencyObject? FocusedElement()
-    {
-        try
-        {
-            return Root.XamlRoot is { } root ? FocusManager.GetFocusedElement(root) as DependencyObject : null;
-        }
-        catch { return null; }
-    }
-
-    /// <summary>已挂过选中监听的 ComboBox（用户第一次操作时才挂，页面初始化的程序化赋值不会误响）</summary>
-    private readonly HashSet<ComboBox> _comboSoundWired = new();
-
-    /// <summary>下拉列表真正选中某项时才播 success（展开列表本身不响 success）</summary>
-    private void WireCombo(ComboBox combo)
-    {
-        if (!_comboSoundWired.Add(combo)) return;
-        combo.SelectionChanged += (_, _) =>
-        {
-            if (SettingsService.Current.UiSoundEnabled) UiSound.Play(UiSoundKind.Select);
-        };
     }
 
     /// <summary>向上找最近的指定类型控件；弹出层里的候选项不在本窗口可视树，不会命中</summary>
@@ -2022,7 +1998,7 @@ public sealed partial class MainWindow : Window
     {
         for (var el = source as DependencyObject; el is not null; el = VisualTreeHelper.GetParent(el))
         {
-            if (el is ToggleSwitch or CheckBox or RadioButton or ComboBox or Slider
+            if (el is ToggleSwitch or Microsoft.UI.Xaml.Controls.Primitives.ToggleButton or ComboBox or Slider
                 or Microsoft.UI.Xaml.Controls.Primitives.SelectorItem)
                 return true;
         }
@@ -2046,24 +2022,16 @@ public sealed partial class MainWindow : Window
     /// 全局操作音效：所有页面共用一套反馈音（常规设置关闭「操作音效」时静默）。
     /// 方向键包含长按连发，所以连推摇杆/按住十字键时每次移动都有一声，和主机系统一致。
     /// </summary>
-    private void PlayGlobalCue(GamepadButtons buttons)
+    private UiSoundKind? DefaultCue(GamepadButtons buttons)
     {
-        if (!SettingsService.Current.UiSoundEnabled) return;
-        // A 键：焦点在开关/列表项这类选择控件上时用 success；展开下拉框、启动磁贴、普通按钮用 A 键音
-        if (buttons.HasFlag(GamepadButtons.A))
-        {
-            // 焦点在下拉框上：A 是展开列表，用 A 键音；列表项、开关等选择控件才是 success
-            if (FocusedElement() is ComboBox combo)
-            {
-                WireCombo(combo);
-                UiSound.Play(UiSoundKind.Confirm);
-            }
-            else UiSound.Play(IsSelectionFocus() ? UiSoundKind.Select : UiSoundKind.Confirm);
-        }
-        else if (buttons.HasFlag(GamepadButtons.B)) UiSound.Play(UiSoundKind.Back);
-        else if (buttons.HasFlag(GamepadButtons.DPadUp) || buttons.HasFlag(GamepadButtons.DPadDown) ||
-                 buttons.HasFlag(GamepadButtons.DPadLeft) || buttons.HasFlag(GamepadButtons.DPadRight))
-            UiSound.Play(UiSoundKind.Move);
+        if (buttons.HasFlag(GamepadButtons.A)) return UiSoundKind.Confirm;
+        if (buttons.HasFlag(GamepadButtons.B)) return UiSoundKind.Back;
+        if (buttons.HasFlag(GamepadButtons.View))
+            return Root.Content is MainPage ? UiSoundKind.Confirm : UiSoundKind.Back;
+        if (buttons.HasFlag(GamepadButtons.DPadUp) || buttons.HasFlag(GamepadButtons.DPadDown) ||
+            buttons.HasFlag(GamepadButtons.DPadLeft) || buttons.HasFlag(GamepadButtons.DPadRight))
+            return UiSoundKind.Move;
+        return null;
     }
 
     /// <summary>手柄按键派发（UI 线程）。allowDeferB=false 专用于"双击 B 判定到期"后补发单击 B 的原有行为</summary>
@@ -2073,10 +2041,16 @@ public sealed partial class MainWindow : Window
         // （否则"在游戏里按 Y"会命中启动器上一次选中的磁贴，把游戏关掉）
         if (!_routing) return;
 
-        // 全局操作音效：在派发之前统一发声，主页 / 设置 / 添加页 / 小组件页等所有页面都能听到，
-        // 各页面不再各自播放，避免重复。方向键（含长按连发）走移动音，A=确认，B=返回。
-        // allowDeferB=false 是双击判定超时后补发的单击 B：首次按下时已经响过，这里不再重复响。
-        if (allowDeferB) PlayGlobalCue(buttons);
+        var overlay = _saveRestoreInput is not null || _trainerChoiceOpen || _optiOpen || _optiManualOpen;
+        var cue = IsCapturingNow() && !overlay ? null : DefaultCue(buttons);
+        // 开关由实际切换结果反馈；其余主页 A、移动/返回仍立即发声。
+        if (!overlay && buttons.HasFlag(GamepadButtons.A) && Root.Content is MainPage home && home.IsToggleSelected)
+            cue = null;
+        using var feedback = UiSound.BeginFeedback(cue,
+            immediate: cue is UiSoundKind.Move or UiSoundKind.Back || Root.Content is MainPage,
+            alreadyPlayed: !allowDeferB);
+        if (!overlay && allowDeferB && buttons == GamepadButtons.B && Root.Content is not MainPage &&
+            !IsCapturingNow() && HandleBPress()) return;
 
         if (_saveRestoreInput is not null)
         {
@@ -2111,9 +2085,6 @@ public sealed partial class MainWindow : Window
         // 这样双击不会先触发一次返回。
         // 不挂在主页——主页 B 单击本就是"收起窗口到托盘"，与双击同效，延迟反而让收起变卡；
         // 挂起也不用于按键捕获场景——那里 B 是待捕获的原始输入，不能延迟
-        if (allowDeferB && buttons == GamepadButtons.B && Root.Content is not MainPage &&
-            !IsCapturingNow() && HandleBPress()) return;
-
         // 添加页：方向/A/B 全交给页面（浏览状态 B 返回表单；映射按键捕获时把原始按键交给捕获）
         if (Root.Content is AddItemPage add)
         {
@@ -2183,6 +2154,7 @@ public sealed partial class MainWindow : Window
             // 双击窗口内的第二次按下：直接最小化（收起启动器）
             _bPending = false;
             _bTimer?.Stop();
+            if (SettingsService.Current.UiSoundEnabled) UiSound.Play(UiSoundKind.Back);
             HideToTray();
             return true;
         }
@@ -2371,14 +2343,16 @@ public sealed partial class MainWindow : Window
         // 见 OnSwipePointerUp（滑动途中若提前切页，继续滑到边缘就会同时切页+最小化）
 
         // 全屏停靠：向上快滑 → 最小化（竖直手势保持不变）
-        if (fast && edge == SummonEdge.Top && reverse > 120 && cross < 80)
+        if (fast && edge == SummonEdge.Top && reverse > 120 && cross < 80
+            && Environment.TickCount64 - Math.Max(_backAt, _dismissAt) > 600)
         {
             _swipeDone = true;
             _dismissAt = Environment.TickCount64; // 与原始输入通道去重
             Minimize();
         }
         // 向下滑（竖直向下、横向偏移小）→ 返回上一级。全屏停靠时"向下"即呼出方向，不会与上面的反向滑冲突
-        else if (fast && dy > 120 && Math.Abs(dx) < 80)
+        else if (fast && dy > 120 && Math.Abs(dx) < 80
+            && Environment.TickCount64 - Math.Max(_backAt, _dismissAt) > 600)
         {
             _swipeDone = true;
             _backAt = Environment.TickCount64; // 与原始输入通道去重
@@ -2407,7 +2381,7 @@ public sealed partial class MainWindow : Window
         if (Math.Abs(dx) <= 120 || Math.Abs(dy) >= 80) return;
         if (IsNearSideEdge(p))
         {
-            if (Environment.TickCount64 - _dismissAt > 600) // 原始输入通道可能已抢先触发
+            if (Environment.TickCount64 - Math.Max(_backAt, _dismissAt) > 600) // 原始输入通道可能已抢先触发
             {
                 _dismissAt = Environment.TickCount64;
                 Minimize();
@@ -2435,7 +2409,7 @@ public sealed partial class MainWindow : Window
     {
         if (!Visible || GetForegroundWindow() != _hwnd) return;
         if (Environment.TickCount64 - _drawerTouchAt < 900) return; // 抽屉感应区触摸：让位给窗口指针通道
-        if (Environment.TickCount64 - _dismissAt < 600) return; // 与指针通道去重
+        if (Environment.TickCount64 - Math.Max(_backAt, _dismissAt) < 600) return; // 与指针通道去重
         _dismissAt = Environment.TickCount64;
         Minimize();
     }
@@ -2446,7 +2420,7 @@ public sealed partial class MainWindow : Window
     {
         if (!Visible || GetForegroundWindow() != _hwnd) return;
         if (Environment.TickCount64 - _drawerTouchAt < 900) return; // 抽屉感应区触摸：让位给窗口指针通道
-        if (Environment.TickCount64 - _backAt < 600) return; // 与指针通道去重
+        if (Environment.TickCount64 - Math.Max(_backAt, _dismissAt) < 600) return; // 与指针通道去重
         _backAt = Environment.TickCount64;
         BackOneLevel();
     }

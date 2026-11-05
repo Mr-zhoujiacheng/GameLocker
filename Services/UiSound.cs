@@ -18,28 +18,30 @@ internal enum UiSoundKind
 }
 
 /// <summary>
-/// 界面音效：移动 / A / B / 报错四种。移动音在运行时合成极短的 PCM16；
-/// A / B / 报错来自 kopanel 开源项目的振荡器参数（success / warning / error），已转成 WAV 嵌入资源。
-/// 四种共用一个常驻 waveOut 设备直接写缓冲，避免 PlaySound 每次开关音频设备的延迟，
-/// 连续按方向键也不会有明显滞后。
+/// 界面音效：移动 / A / B / 报错 / 选择五种。移动音在运行时合成极短的 PCM16；
+/// A / B / 报错 / 选择来自 kopanel 开源项目的振荡器参数（success / warning / error），已转成 WAV 嵌入资源。
+/// 共用常驻 waveOut 设备直接写缓冲；播放前打断仍在队列中的音效，避免跨种类排队。
+/// 播放时检查默认输出设备变化，写入失败时重新打开设备并重试一次。
 /// </summary>
 internal static class UiSound
 {
-    private const uint WaveMapper = 0xFFFFFFFF;
-    private const uint WhdrDone = 0x00000001;
     private const int SampleRate = 44100;
 
     /// <summary>总体音量系数：合成音与嵌入音效统一按此比例缩放（0.55 约 -5dB，比原始版本轻一档）</summary>
     private const double Volume = 0.55;
 
+    private const uint WaveMapper = 0xFFFFFFFF;
+    private const uint WhdrInQueue = 0x00000010;
+
     private static readonly object Gate = new();
     private static readonly Dictionary<UiSoundKind, Buffer> Buffers = [];
     private static IntPtr _hwo;
+    private static string? _defaultDeviceId;
 
     /// <summary>静音开关：true 后不再发声</summary>
     public static bool Muted { get; set; }
 
-    /// <summary>提前合成并打开音频设备：应用启动时调用一次，第一次按键就能立刻出声</summary>
+    /// <summary>提前合成并打开音频设备：应用启动时调用一次</summary>
     public static void Open()
     {
         lock (Gate)
@@ -47,9 +49,10 @@ internal static class UiSound
             if (_hwo != IntPtr.Zero) return;
             try
             {
+                var deviceId = GetDefaultDeviceId();
                 var format = new WAVEFORMATEX
                 {
-                    wFormatTag = 1,          // PCM
+                    wFormatTag = 1,
                     nChannels = 1,
                     nSamplesPerSec = SampleRate,
                     nAvgBytesPerSec = SampleRate * 2,
@@ -60,6 +63,7 @@ internal static class UiSound
                 if (waveOutOpen(out var hwo, WaveMapper, ref format, IntPtr.Zero, IntPtr.Zero, 0) != 0)
                     return;
                 _hwo = hwo;
+                _defaultDeviceId = deviceId;
 
                 foreach (var kind in Enum.GetValues<UiSoundKind>())
                     Buffers[kind] = CreateBuffer(kind);
@@ -72,22 +76,107 @@ internal static class UiSound
         }
     }
 
-    /// <summary>播放一次音效；设备没打开时先补开</summary>
-    public static void Play(UiSoundKind kind)
+    private static string? GetDefaultDeviceId()
     {
-        if (Muted) return;
-        if (_hwo == IntPtr.Zero) Open();
-        if (_hwo == IntPtr.Zero || !Buffers.TryGetValue(kind, out var buffer)) return;
         try
         {
-            // 上一声还没播完就先掐掉，让这次操作立刻有反馈，而不是排队等几十毫秒
-            var header = Marshal.PtrToStructure<WAVEHDR>(buffer.Header);
-            if ((header.dwFlags & WhdrDone) == 0) waveOutReset(_hwo);
-            waveOutWrite(_hwo, buffer.Header, (uint)Marshal.SizeOf<WAVEHDR>());
+            return Windows.Media.Devices.MediaDevice.GetDefaultAudioRenderId(
+                Windows.Media.Devices.AudioDeviceRole.Default);
         }
         catch
         {
-            // 忽略：音效只是附加反馈
+            // 查询失败仍沿用当前设备，不能阻止播放。
+            return null;
+        }
+    }
+
+    private static Feedback? _feedback;
+    public static long PlayVersion { get; private set; }
+
+    public static IDisposable BeginFeedback(UiSoundKind? fallback, bool immediate = false, bool alreadyPlayed = false)
+        => new Feedback(fallback, immediate, alreadyPlayed);
+
+    private sealed class Feedback : IDisposable
+    {
+        private readonly Feedback? _previous = _feedback;
+        private UiSoundKind? _kind;
+        private bool _explicit;
+        private bool _played;
+
+        public Feedback(UiSoundKind? fallback, bool immediate, bool alreadyPlayed)
+        {
+            _kind = fallback;
+            _played = alreadyPlayed;
+            if (immediate && !alreadyPlayed && fallback is { } kind && SettingsService.Current.UiSoundEnabled)
+            {
+                Play(kind);
+                _played = true;
+            }
+            _feedback = this;
+        }
+
+        public void Set(UiSoundKind kind)
+        {
+            if (_explicit && _kind == UiSoundKind.Error) return;
+            _explicit = true;
+            _kind = kind;
+            if ((!_played || kind == UiSoundKind.Error) && SettingsService.Current.UiSoundEnabled)
+            {
+                _feedback = _previous;
+                try { Play(kind); }
+                finally { _feedback = this; }
+                _played = true;
+            }
+        }
+
+        public void Dispose()
+        {
+            _feedback = _previous;
+            if (!_played && _kind is { } kind && SettingsService.Current.UiSoundEnabled) Play(kind);
+        }
+    }
+
+    /// <summary>播放一次音效；缓存不存在时先补建</summary>
+    public static void Play(UiSoundKind kind)
+    {
+        if (_feedback is { } feedback)
+        {
+            feedback.Set(kind);
+            return;
+        }
+        if (Muted) return;
+        lock (Gate)
+        {
+            PlayVersion++;
+            try
+            {
+                var deviceId = GetDefaultDeviceId();
+                if (_hwo != IntPtr.Zero && deviceId != null && deviceId != _defaultDeviceId)
+                    Close();
+                if (_hwo == IntPtr.Zero) Open();
+                if (_hwo == IntPtr.Zero || !Buffers.TryGetValue(kind, out var buffer)) return;
+
+                // 任意种类仍在播都先打断，不能只检查本次目标缓冲。
+                foreach (var queued in Buffers.Values)
+                {
+                    if ((Marshal.PtrToStructure<WAVEHDR>(queued.Header).dwFlags & WhdrInQueue) == 0)
+                        continue;
+                    waveOutReset(_hwo);
+                    break;
+                }
+                if (waveOutWrite(_hwo, buffer.Header, (uint)Marshal.SizeOf<WAVEHDR>()) == 0) return;
+
+                Close();
+                Open();
+                if (_hwo != IntPtr.Zero && Buffers.TryGetValue(kind, out buffer)
+                    && waveOutWrite(_hwo, buffer.Header, (uint)Marshal.SizeOf<WAVEHDR>()) != 0)
+                    Close();
+            }
+            catch
+            {
+                // 失败时释放设备和缓冲，下一次播放可重新打开。
+                Close();
+            }
         }
     }
 
@@ -98,16 +187,16 @@ internal static class UiSound
         {
             if (_hwo != IntPtr.Zero)
             {
-                try
+                try { waveOutReset(_hwo); } catch { }
+                foreach (var buffer in Buffers.Values)
                 {
-                    waveOutReset(_hwo);
-                    foreach (var buffer in Buffers.Values)
-                        waveOutUnprepareHeader(_hwo, buffer.Header, (uint)Marshal.SizeOf<WAVEHDR>());
-                    waveOutClose(_hwo);
+                    try { waveOutUnprepareHeader(_hwo, buffer.Header, (uint)Marshal.SizeOf<WAVEHDR>()); }
+                    catch { }
                 }
-                catch { }
+                try { waveOutClose(_hwo); } catch { }
                 _hwo = IntPtr.Zero;
             }
+            _defaultDeviceId = null;
 
             foreach (var buffer in Buffers.Values)
             {
@@ -127,26 +216,32 @@ internal static class UiSound
     private static Buffer CreateBuffer(UiSoundKind kind)
     {
         var pcm = ScalePcm(CreatePcm(kind), Volume);
-        var pin = GCHandle.Alloc(pcm, GCHandleType.Pinned);
-        var headerPtr = Marshal.AllocHGlobal(Marshal.SizeOf<WAVEHDR>());
-        var header = new WAVEHDR
+        var buffer = new Buffer();
+        try
         {
-            lpData = pin.AddrOfPinnedObject(),
-            dwBufferLength = (uint)pcm.Length
-        };
-        Marshal.StructureToPtr(header, headerPtr, false);
-        if (waveOutPrepareHeader(_hwo, headerPtr, (uint)Marshal.SizeOf<WAVEHDR>()) != 0)
-        {
-            Marshal.FreeHGlobal(headerPtr);
-            pin.Free();
-            throw new InvalidOperationException("waveOutPrepareHeader 失败");
+            buffer.Pin = GCHandle.Alloc(pcm, GCHandleType.Pinned);
+            buffer.Header = Marshal.AllocHGlobal(Marshal.SizeOf<WAVEHDR>());
+            var header = new WAVEHDR
+            {
+                lpData = buffer.Pin.AddrOfPinnedObject(),
+                dwBufferLength = (uint)pcm.Length
+            };
+            Marshal.StructureToPtr(header, buffer.Header, false);
+            if (waveOutPrepareHeader(_hwo, buffer.Header, (uint)Marshal.SizeOf<WAVEHDR>()) != 0)
+                throw new InvalidOperationException("waveOutPrepareHeader 失败");
+            return buffer;
         }
-        return new Buffer { Pin = pin, Header = headerPtr };
+        catch
+        {
+            if (buffer.Header != IntPtr.Zero) Marshal.FreeHGlobal(buffer.Header);
+            if (buffer.Pin.IsAllocated) buffer.Pin.Free();
+            throw;
+        }
     }
 
     /// <summary>
     /// 生成各键 PCM：移动音在运行时合成（最短、连按不拖尾）；
-    /// A / B / 报错读取嵌入的 WAV（kopanel 的 success / warning / error 参数还原，已按软件响度放大）。
+    /// A / B / 报错 / 选择读取嵌入的 WAV（kopanel 的 success / warning / error 参数还原，已按软件响度放大）。
     /// </summary>
     private static byte[] CreatePcm(UiSoundKind kind)
     {
@@ -207,8 +302,8 @@ internal static class UiSound
     }
 
     /// <summary>
-    /// 从嵌入的 WAV 资源读 PCM 数据。转码时已固定为 44.1kHz / 单声道 / 16bit（与合成音同一格式，
-    /// 可直接走同一条 waveOut 缓冲）；这里遍历 RIFF chunk 取 data 段，兼容带 LIST 等附加块的标准 WAV。
+    /// 从嵌入的 WAV 资源读 PCM 数据。转码时已固定为 44.1kHz / 单声道 / 16bit（与合成音同一格式）；
+    /// 这里遍历 RIFF chunk 取 data 段，兼容带 LIST 等附加块的标准 WAV。
     /// </summary>
     private static byte[] LoadPcmResource(string name)
     {

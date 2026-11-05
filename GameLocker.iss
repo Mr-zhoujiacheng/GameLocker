@@ -5,7 +5,7 @@
 ;       故打包统一取 build 产物，并排除 publish 与 *.pdb
 
 #define AppName "Game Locker"
-#define AppVersion "2.9.3"
+#define AppVersion "2.9.4"
 #define AppPublisher "Mr-zhoujiacheng"
 #define AppUrl "https://github.com/Mr-zhoujiacheng/GameLocker"
 #ifndef SrcDir

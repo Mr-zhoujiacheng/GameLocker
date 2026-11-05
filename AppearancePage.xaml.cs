@@ -273,6 +273,7 @@ public sealed partial class AppearancePage : Page, ISettingsGamepad
     {
         if (_themeExpanded) CollapseThemeList(true);
         else ExpandThemeList();
+        if (_ready && SettingsService.Current.UiSoundEnabled) UiSound.Play(UiSoundKind.Confirm);
     }
 
     private void ExpandThemeList()
@@ -318,6 +319,7 @@ public sealed partial class AppearancePage : Page, ISettingsGamepad
         ApplyThemeSelection(theme);
         if (_ready) SettingsService.Update(s => s.TileTheme = theme);
         CollapseThemeList(true);
+        if (_ready && SettingsService.Current.UiSoundEnabled) UiSound.Play(UiSoundKind.Select);
     }
 
     /// <summary>选项行 → 主题</summary>
@@ -538,6 +540,7 @@ public sealed partial class AppearancePage : Page, ISettingsGamepad
         if (!_ready) return;
         SettingsService.Update(s => s.GlassEffect = GlassToggle.IsOn);
         App.Main?.ApplyBackground();
+        if (SettingsService.Current.UiSoundEnabled) UiSound.Play(UiSoundKind.Select);
     }
 
     /// <summary>鼠标/触屏点击标题行展开/收起主题列表（手柄走 A 键）；点击选项行不冒泡到这里</summary>
@@ -593,6 +596,7 @@ public sealed partial class AppearancePage : Page, ISettingsGamepad
         SettingsService.Update(s => s.BackgroundColor = hex);
         App.Main?.ApplyBackground();
         UpdateCursor(_controls.Count > _index ? _controls[_index] : null);
+        if (_ready && SettingsService.Current.UiSoundEnabled) UiSound.Play(UiSoundKind.Select);
     }
 
     /// <summary>按主题表生成展开列表的卡片（大预览块 + 名称 + 说明 + 选中勾）</summary>
@@ -730,6 +734,7 @@ public sealed partial class AppearancePage : Page, ISettingsGamepad
     {
         if (!_ready) return;
         SettingsService.Update(s => s.ShowTileName = TileNameToggle.IsOn);
+        if (SettingsService.Current.UiSoundEnabled) UiSound.Play(UiSoundKind.Select);
     }
 
     /// <summary>方形/圆角开关 → 立即保存为显式设置（之后不再随主题默认变化）</summary>
@@ -738,6 +743,7 @@ public sealed partial class AppearancePage : Page, ISettingsGamepad
         if (!_ready) return;
         SettingsService.Update(s => s.TileCornerShape =
             TileCornerToggle.IsOn ? TileCorner.Square : TileCorner.Rounded);
+        if (SettingsService.Current.UiSoundEnabled) UiSound.Play(UiSoundKind.Select);
     }
 
     /// <summary>磁贴组展开动画开关 → 立即保存；主页展开/收起时动态读取</summary>
@@ -745,12 +751,14 @@ public sealed partial class AppearancePage : Page, ISettingsGamepad
     {
         if (!_ready) return;
         SettingsService.Update(s => s.GroupExpandAnimation = GroupAnimToggle.IsOn);
+        if (SettingsService.Current.UiSoundEnabled) UiSound.Play(UiSoundKind.Select);
     }
 
     private void OnRandomColorChanged(object sender, Microsoft.UI.Xaml.RoutedEventArgs e)
     {
         if (!_ready) return;
         SettingsService.Update(s => s.RandomTileColor = RandomColorToggle.IsOn);
+        if (SettingsService.Current.UiSoundEnabled) UiSound.Play(UiSoundKind.Select);
     }
 
     /// <summary>透明度 ±0.1（范围 0.3~1.0）</summary>

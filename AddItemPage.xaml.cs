@@ -353,7 +353,11 @@ public sealed partial class AddItemPage : Page, ISettingsGamepad
 
         // 排版自适应：窗口宽度变化（侧边栏 ↔ 全屏/居中）时重算表单宽度并居中，三种模式排版一致
         FormScroll.SizeChanged += (_, _) => LayoutForm();
-        Loaded += (_, _) => LayoutForm();
+        Loaded += (_, _) =>
+        {
+            LayoutForm();
+            WireComboSounds(this);
+        };
     }
 
     /// <summary>表单最大宽度：宽窗口（全屏/居中）下不铺满，保持与侧边栏下一致的阅读宽度</summary>
@@ -385,6 +389,37 @@ public sealed partial class AddItemPage : Page, ISettingsGamepad
 
     /// <summary>展开下拉前的已选索引（B 取消时回滚）</summary>
     private int _comboBackupIndex;
+
+    private readonly HashSet<ComboBox> _soundWiredCombos = [];
+    private readonly Dictionary<ComboBox, object?> _mouseComboSelections = [];
+
+    private void WireComboSounds(DependencyObject root)
+    {
+        if (root is ComboBox cb && _soundWiredCombos.Add(cb))
+        {
+            cb.DropDownOpened += OnComboDropDownOpened;
+            cb.DropDownClosed += OnComboDropDownClosed;
+        }
+        for (var i = 0; i < Microsoft.UI.Xaml.Media.VisualTreeHelper.GetChildrenCount(root); i++)
+            WireComboSounds(Microsoft.UI.Xaml.Media.VisualTreeHelper.GetChild(root, i));
+    }
+
+    private void OnComboDropDownOpened(object? sender, object e)
+    {
+        if (sender is not ComboBox cb) return;
+        if (ReferenceEquals(_openCombo, cb)) return;
+        _mouseComboSelections[cb] = cb.SelectedItem;
+        if (SettingsService.Current.UiSoundEnabled) UiSound.Play(UiSoundKind.Confirm);
+    }
+
+    private void OnComboDropDownClosed(object? sender, object e)
+    {
+        if (sender is not ComboBox cb) return;
+        if (!_mouseComboSelections.Remove(cb, out var original)) return;
+        if (!ReferenceEquals(_openCombo, cb) && !Equals(original, cb.SelectedItem)
+            && SettingsService.Current.UiSoundEnabled)
+            UiSound.Play(UiSoundKind.Select);
+    }
 
     /// <summary>程序内回填"具体版本 / FSR4 版本"下拉时，抑制 SelectionChanged 触发的后台下载</summary>
     private bool _suppressOptiTagEvent;
@@ -1341,6 +1376,7 @@ public sealed partial class AddItemPage : Page, ISettingsGamepad
     private void OpenCombo(ComboBox cb)
     {
         _comboBackupIndex = cb.SelectedIndex;
+        _mouseComboSelections.Remove(cb);
         _openCombo = cb;
         cb.IsDropDownOpen = true;
     }
@@ -1368,6 +1404,7 @@ public sealed partial class AddItemPage : Page, ISettingsGamepad
         if (rollback) cb.SelectedIndex = _comboBackupIndex;
         cb.IsDropDownOpen = false;
         _openCombo = null;
+        if (!rollback && SettingsService.Current.UiSoundEnabled) UiSound.Play(UiSoundKind.Select);
     }
 
     /// <summary>OptiScaler：当前选中的注入 DLL 名（null=自动，按 wiki 建议/默认 dxgi.dll）</summary>
@@ -1461,21 +1498,35 @@ public sealed partial class AddItemPage : Page, ISettingsGamepad
             case RadioButton rb0 when ReferenceEquals(rb0, GamepadMapKeyRadio)
                 || ReferenceEquals(rb0, GamepadMapMouseRadio)
                 || ReferenceEquals(rb0, GamepadMapPadRadio):
+                var wasChecked = rb0.IsChecked;
                 ApplyGamepadMapKind(rb0);
+                if (wasChecked != rb0.IsChecked && SettingsService.Current.UiSoundEnabled)
+                    UiSound.Play(UiSoundKind.Select);
                 break;
             // 手柄映射：手柄图上的按键热区（A 键即选中该键并展开其编辑面板）
             case Button btn0 when _mapZones.Any(z => ReferenceEquals(z.Hit, btn0)):
                 SelectGamepadMapSource(_mapZones.First(z => ReferenceEquals(z.Hit, btn0)).Button);
                 break;
             case RadioButton rb:
-                rb.IsChecked = true;
+                if (rb.IsChecked != true)
+                {
+                    rb.IsChecked = true;
+                    if (rb.IsChecked == true && SettingsService.Current.UiSoundEnabled)
+                        UiSound.Play(UiSoundKind.Select);
+                }
                 break;
             // 系统小组件：显示项目胶囊（A = 勾选/取消勾选）
             case ToggleButton tb:
+                var wasToggled = tb.IsChecked;
                 tb.IsChecked = !(tb.IsChecked ?? false);
+                if (wasToggled != tb.IsChecked && SettingsService.Current.UiSoundEnabled)
+                    UiSound.Play(UiSoundKind.Select);
                 break;
             case ToggleSwitch ts:
+                var wasOn = ts.IsOn;
                 ts.IsOn = !ts.IsOn;
+                if (wasOn != ts.IsOn && SettingsService.Current.UiSoundEnabled)
+                    UiSound.Play(UiSoundKind.Select);
                 break;
             case Button btn when ReferenceEquals(btn, BrowseButton):
                 // 按当前类型进入对应浏览：文件夹→选目录，其余→选 exe

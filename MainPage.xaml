@@ -216,7 +216,7 @@
              抽屉展开时由代码给抽屉面板留出这条提示条的高度，抽屉在上、提示条在最下面，两者不重叠 -->
         <Border x:Name="HintBarShell" Grid.Row="0" Grid.RowSpan="3"
                 HorizontalAlignment="Center" VerticalAlignment="Bottom"
-                Margin="0,0,0,18" Padding="18,8" CornerRadius="18"
+                Margin="0,0,0,18" Padding="18,8" CornerRadius="0"
                 Background="#73121018" BorderBrush="#26FFFFFF" BorderThickness="1"
                 Visibility="{x:Bind HintBar.Visibility, Mode=OneWay}">
             <ctl:GamepadHintBar x:Name="HintBar" BadgeScale="1"/>

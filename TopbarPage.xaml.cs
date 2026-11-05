@@ -275,7 +275,7 @@ public sealed partial class TopbarPage : Page, ISettingsGamepad
     {
         if (sender is not Button row) return;
         var i = Array.IndexOf(_controls, row);
-        if (i >= 0) FocusIndex(i);
+        if (i >= 0) { _index = i; FocusIndex(i); }
         ActivateCurrent();
     }
 
@@ -296,6 +296,7 @@ public sealed partial class TopbarPage : Page, ISettingsGamepad
         // 即时应用到主页顶栏（若已创建），并刷新本页预览
         App.Main?.ApplyTopbarVisibility();
         UpdatePreview();
+        if (SettingsService.Current.UiSoundEnabled) UiSound.Play(UiSoundKind.Select);
     }
 
     public bool IsCapturing => false;

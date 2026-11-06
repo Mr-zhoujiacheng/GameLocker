@@ -129,14 +129,8 @@
             </Border>
         </Grid>
 
-        <!-- 磁贴区（上）+ 抽屉面板（下）：两行 Grid —— 抽屉固定在主页下方独立区域，
-             宽度铺满软件界面；无抽屉时第二行折叠为 0，不占高度 -->
+        <!-- 磁贴区：滚动画布铺满整页；抽屉面板悬浮在磁贴区底部，不再单独占一行、不挤压磁贴布局 -->
         <Grid x:Name="TileArea" Grid.Row="1">
-            <Grid.RowDefinitions>
-                <RowDefinition Height="*"/>
-                <!-- 抽屉行：自动隐藏收起时由代码把高度置 0，让磁贴区铺满整屏 -->
-                <RowDefinition x:Name="DrawerRow" Height="Auto"/>
-            </Grid.RowDefinitions>
 
             <!-- 磁贴画布：ScrollViewer + Canvas 手动布局（靠上排布，从上往下）。
                  副页切换：LT/RT 时整块画布沿切换方向滑出、换页后反向滑入（TranslateTransform 由 SwitchPage 驱动） -->
@@ -194,7 +188,8 @@
                  渐变与描边是"玻璃"的骨架，投影由 ThemeShadow + Translation.Z 生成（见 MainPage 构造）。
                  注意：背景不能省略（Transparent 也参与命中测试），否则点空白无法进入抽屉区域。
                  DrawerSlide：开启"自动隐藏"时向下平移整块面板，滑出窗口下缘即不可见 -->
-            <Border x:Name="DrawerHost" Grid.Row="1" Margin="12,6,12,8"
+            <Border x:Name="DrawerHost" Grid.Row="0" Margin="12,6,12,8"
+                    VerticalAlignment="Bottom"
                     CornerRadius="12" BorderBrush="#33FFFFFF" BorderThickness="1"
                     HorizontalAlignment="Stretch" Visibility="Collapsed">
                 <Border.Background>
@@ -216,8 +211,8 @@
              抽屉展开时由代码给抽屉面板留出这条提示条的高度，抽屉在上、提示条在最下面，两者不重叠 -->
         <Border x:Name="HintBarShell" Grid.Row="0" Grid.RowSpan="3"
                 HorizontalAlignment="Center" VerticalAlignment="Bottom"
-                Margin="0,0,0,18" Padding="18,8" CornerRadius="0"
-                Background="#73121018" BorderBrush="#26FFFFFF" BorderThickness="1"
+                Margin="0,0,0,18" Padding="14,6" CornerRadius="0"
+                Background="#1F0A0C10"
                 Visibility="{x:Bind HintBar.Visibility, Mode=OneWay}">
             <ctl:GamepadHintBar x:Name="HintBar" BadgeScale="1"/>
         </Border>

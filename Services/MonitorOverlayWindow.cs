@@ -750,11 +750,12 @@ internal sealed class MonitorOverlayWindow : IDisposable
 
         DrawAccentBar(hdc, x, accent);
         var left = x + Scaled(15);
+        var offsetY = -Scaled(2);
 
         SelectObject(hdc, _fontFps);
         SetTextColor(hdc, accent);
         var fps = FormatFps(snap);
-        TextOutW(hdc, left, Scaled(0), fps, fps.Length);
+        TextOutW(hdc, left, offsetY, fps, fps.Length);
 
         // 原始帧率使用小号字体，与主帧率底部对齐。
         var extent = new SIZE();
@@ -766,13 +767,13 @@ internal sealed class MonitorOverlayWindow : IDisposable
             {
                 SelectObject(hdc, _fontValue);
                 SetTextColor(hdc, DimColor(accent, 0.86));
-                TextOutW(hdc, suffixX, Scaled(9), original, original.Length);
+                TextOutW(hdc, suffixX, Scaled(9) + offsetY, original, original.Length);
                 if (GetTextExtentPoint32W(hdc, original, original.Length, out var originalExtent))
                     suffixX += originalExtent.CX;
             }
             SelectObject(hdc, _fontLabel);
             SetTextColor(hdc, DimColor(accent, 0.78));
-            TextOutW(hdc, suffixX + Scaled(3), Scaled(8), "FPS", 3);
+            TextOutW(hdc, suffixX + Scaled(3), Scaled(8) + offsetY, "FPS", 3);
         }
 
         if (Has(MonitorMetric.FrameTime))
@@ -780,7 +781,7 @@ internal sealed class MonitorOverlayWindow : IDisposable
             SelectObject(hdc, _fontLabel);
             SetTextColor(hdc, DimColor(accent, 0.86));
             var delay = FormatFrameDelay(snap);
-            TextOutW(hdc, left, Scaled(26), delay, delay.Length);
+            TextOutW(hdc, left, Scaled(26) + offsetY, delay, delay.Length);
         }
         return x + width;
     }
@@ -868,7 +869,7 @@ internal sealed class MonitorOverlayWindow : IDisposable
 
     private static string FormatFps(MonitorSnapshot s)
     {
-        var fps = s.FrameGenerationDetected ? s.OutputFps : s.Fps;
+        var fps = s.OutputFps;
         return double.IsFinite(fps) && fps > 0 ? fps.ToString("0") : "—";
     }
 

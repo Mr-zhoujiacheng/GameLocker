@@ -986,7 +986,8 @@ public sealed partial class MainPage : Page
         SettingsService.Current.DrawerEnabled && SettingsService.Current.DrawerAutoHide;
 
     /// <summary>呼出/收起抽屉（自动隐藏）：show=true 向上滑回原位，false 向下滑出窗口。
-    /// 由右摇杆↑/↓ 与软件底部上划/下划调用。收起时若焦点正在抽屉内则退回磁贴区。</summary>
+    /// 呼出由右摇杆↑持续 1 秒（GamepadService 判定）或软件底部上划触发；收起由右摇杆↓/下划即时触发。
+    /// 收起时若焦点正在抽屉内则退回磁贴区。</summary>
     public void SetDrawerSummoned(bool show)
     {
         if (!DrawerAutoHideActive) return;
@@ -1052,18 +1053,16 @@ public sealed partial class MainPage : Page
         sb.Begin();
     }
 
-    /// <summary>收起抽屉：撤销行占位并折叠面板（不参与布局与命中测试）</summary>
+    /// <summary>收起抽屉：折叠悬浮面板（不参与布局与命中测试）</summary>
     private void CollapseDrawerRow()
     {
-        DrawerRow.Height = new GridLength(0);
         DrawerHost.Visibility = Visibility.Collapsed;
         UpdateToastOffset(); // 底部提示条随磁贴区一起落到底部
     }
 
-    /// <summary>展开抽屉：恢复 Auto 行高并显示面板</summary>
+    /// <summary>展开抽屉：显示悬浮面板</summary>
     private void ExpandDrawerRow()
     {
-        DrawerRow.Height = GridLength.Auto;
         DrawerHost.Visibility = Visibility.Visible;
     }
 
@@ -1085,12 +1084,14 @@ public sealed partial class MainPage : Page
     }
 
     /// <summary>底部布局随提示条高度同步：提示条钉在窗口最底部，toast 落在它上方；
-    /// 抽屉面板底边也让到提示条上方（抽屉在上、提示条在最下面），两者不再互相遮挡。</summary>
+    /// 抽屉为悬浮面板，展开时 toast 再让到面板上方，避免被面板盖住。</summary>
     private void UpdateToastOffset()
     {
         var barHeight = HintBarShell.Visibility == Visibility.Visible ? HintBarShell.ActualHeight : 0;
         var bar = barHeight > 0 ? barHeight + 26 : 20;
-        MoveHintBar.Margin = new Thickness(0, 0, 0, bar);
+        var drawerHeight = DrawerHost.Visibility == Visibility.Visible && !_drawerHidden
+            ? DrawerHost.ActualHeight : 0;
+        MoveHintBar.Margin = new Thickness(0, 0, 0, bar + (drawerHeight > 0 ? drawerHeight + 8 : 0));
         // 提示条底边距 18 + 自身高度 + 8 间距，正好等于 barHeight + 26
         DrawerHost.Margin = new Thickness(12, 6, 12, barHeight > 0 ? bar : 8);
     }
@@ -1448,10 +1449,11 @@ public sealed partial class MainPage : Page
         if (buttons.HasFlag(GamepadButtons.LeftTrigger)) { SwitchPage(-1); return true; }
         if (buttons.HasFlag(GamepadButtons.RightTrigger)) { SwitchPage(1); return true; }
 
-        // 右摇杆↑/↓：抽屉"自动隐藏"的呼出/收起（仅在 抽屉 + 自动隐藏 都开启时接管）
+        // 右摇杆↑/↓：抽屉"自动隐藏"的呼出/收起（仅在 抽屉 + 自动隐藏 都开启时接管）。
+        // 呼出由 GamepadService 判定"持续上推 1 秒"（防误触）；这里上推只消费、不触发，收起仍即时生效
         if (SettingsService.Current.DrawerAutoHide && SettingsService.Current.DrawerEnabled)
         {
-            if (buttons.HasFlag(GamepadButtons.RightStickUp)) { SetDrawerSummoned(true); return true; }
+            if (buttons.HasFlag(GamepadButtons.RightStickUp)) return true;
             if (buttons.HasFlag(GamepadButtons.RightStickDown)) { SetDrawerSummoned(false); return true; }
         }
 

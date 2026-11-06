@@ -54,6 +54,9 @@ public sealed class GamepadService : IDisposable
     /// <summary>呼出组合键需持续按住的时长</summary>
     public const int SummonHoldMs = 1000;
 
+    /// <summary>右摇杆上推呼出抽屉需持续按住的时长（防止轻碰摇杆误触）</summary>
+    public const int DrawerSummonHoldMs = 1000;
+
     private System.Timers.Timer? _timer;
     private int _polling;
     private GamepadButtons _last;
@@ -65,6 +68,8 @@ public sealed class GamepadService : IDisposable
     private bool _comboFired;
     private long _fsStartMs;
     private bool _fsFired;
+    private long _drawerHoldStartMs;
+    private bool _drawerHoldFired;
     private static bool _useLegacyDll;
 
     /// <summary>按键是否派发给页面：窗口隐藏到托盘/被其他应用（正在玩的游戏）盖住时置 false。
@@ -105,6 +110,8 @@ public sealed class GamepadService : IDisposable
     public event Action? SummonTriggered;
     /// <summary>全屏组合键长按达到 SummonHoldMs 触发（松开前只触发一次）</summary>
     public event Action? FullscreenTriggered;
+    /// <summary>右摇杆持续上推达到 DrawerSummonHoldMs 触发（松开前只触发一次）</summary>
+    public event Action? DrawerSummonHeld;
 
     public bool HasGamepad => _hasGamepad;
     /// <summary>当前帧完整按键状态（供按键捕获等场景查询）</summary>
@@ -284,6 +291,23 @@ public sealed class GamepadService : IDisposable
         {
             _fsStartMs = 0;
             _fsFired = false;
+        }
+
+        // 右摇杆上推呼出抽屉：需持续按住 1 秒，轻碰不会触发
+        if (_routingEnabled && (current & GamepadButtons.RightStickUp) != 0)
+        {
+            var now = Environment.TickCount64;
+            if (_drawerHoldStartMs == 0) _drawerHoldStartMs = now;
+            else if (!_drawerHoldFired && now - _drawerHoldStartMs >= DrawerSummonHoldMs)
+            {
+                _drawerHoldFired = true;
+                DrawerSummonHeld?.Invoke();
+            }
+        }
+        else
+        {
+            _drawerHoldStartMs = 0;
+            _drawerHoldFired = false;
         }
 
         _last = current;

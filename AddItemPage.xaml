@@ -1682,6 +1682,7 @@
 
         <!-- 文件浏览状态：圆角玻璃卡片（文件夹图标 + 当前目录 + 统计 + 文件列表 + 过滤提示） -->
         <Grid x:Name="BrowsePanel" Grid.Row="1" Padding="20,4,20,8" Visibility="Collapsed"
+              AllowDrop="True" DragOver="OnBrowseDragOver" Drop="OnBrowseDrop"
               MaxWidth="860" HorizontalAlignment="Stretch" VerticalAlignment="Center">
             <Border CornerRadius="16" BorderThickness="1" BorderBrush="#1FFFFFFF" Padding="16,14,16,8">
                 <Border.Background>
@@ -1722,6 +1723,7 @@
 
                     <Grid Grid.Row="2">
                         <ListView x:Name="FileList" SelectionMode="Single" MaxHeight="520"
+                                  IsItemClickEnabled="True" ItemClick="OnFileListItemClick"
                                   IsTabStop="False" ScrollViewer.VerticalScrollMode="Enabled">
                             <ListView.Resources>
                                 <!-- 行底色/选中色：与全局卡片语言一致的淡白悬停 + 强调蓝选中 -->
@@ -1770,6 +1772,8 @@
                     <StackPanel Grid.Row="3" Margin="2,8,2,2">
                         <Border Height="1" Background="#12FFFFFF" Margin="0,0,0,7"/>
                         <TextBlock x:Name="BrowseFilter" FontSize="11.5" Opacity="0.4"/>
+                        <TextBlock Text="支持从资源管理器拖入文件夹或程序，自动跳转到对应位置"
+                                   FontSize="11.5" Opacity="0.3" Margin="0,4,0,0"/>
                     </StackPanel>
                 </Grid>
             </Border>
@@ -1789,11 +1793,12 @@
             </Button>
         </Border>
 
-        <!-- 悬浮放大的按键提示：浮在内容之上，不占布局行（与主页一致） -->
+        <!-- 悬浮按键提示：浮在内容之上，不占布局行（与主页一致）。
+             极简半透明：不加描边，只留一层很淡的暗色底，避免压住浏览列表的观感 -->
         <Border Grid.Row="0" Grid.RowSpan="99"
                 HorizontalAlignment="Right" VerticalAlignment="Top"
-                Margin="0,14,20,0" Padding="16,6" CornerRadius="0"
-                Background="#73121018" BorderBrush="#26FFFFFF" BorderThickness="1">
+                Margin="0,14,20,0" Padding="14,6" CornerRadius="0"
+                Background="#1F0A0C10">
             <ctl:GamepadHintBar x:Name="HintBar" BadgeScale="1"/>
         </Border>
     </Grid>

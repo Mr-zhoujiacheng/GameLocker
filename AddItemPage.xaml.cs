@@ -6,16 +6,19 @@ using Microsoft.UI.Xaml.Controls.Primitives;
 using Microsoft.UI.Xaml.Input;
 using Microsoft.UI.Xaml.Media.Imaging;
 using Microsoft.UI.Xaml.Navigation;
+using Windows.ApplicationModel.DataTransfer;
 
 namespace GameLocker;
 
 /// <summary>文件浏览列表项（顶层 public：供 x:Bind 的 x:DataType 引用）</summary>
-public sealed record FileEntry(string Name, string Path, bool IsFolder, bool IsParent, bool IsSelectCurrent = false)
+public sealed record FileEntry(string Name, string Path, bool IsFolder, bool IsParent, bool IsSelectCurrent = false, bool IsDrive = false)
 {
-    public string Glyph => IsSelectCurrent ? "\uE73E" : IsParent ? "\uE74A" : IsFolder ? "\uE8B7" : "\uE7F8";
+    public string Glyph => IsDrive ? "\uEDA2"
+        : IsSelectCurrent ? "\uE73E" : IsParent ? "\uE74A" : IsFolder ? "\uE8B7" : "\uE7F8";
 
-    /// <summary>列表右侧的类型标签：上级目录 / 当前文件夹 / 文件夹 / 扩展名</summary>
-    public string Kind => IsSelectCurrent ? "当前文件夹"
+    /// <summary>列表右侧的类型标签：磁盘 / 上级目录 / 当前文件夹 / 文件夹 / 扩展名</summary>
+    public string Kind => IsDrive ? "磁盘"
+        : IsSelectCurrent ? "当前文件夹"
         : IsParent ? "上级目录"
         : IsFolder ? "文件夹"
         : System.IO.Path.GetExtension(Path).TrimStart('.').ToUpperInvariant() is { Length: > 0 } ext ? ext : "文件";
@@ -3215,7 +3218,48 @@ public sealed partial class AddItemPage : Page, ISettingsGamepad
             BrowseMode.Folder => "A 进入文件夹，选择列表中的“选择当前文件夹”后按 A 确认",
             _ => "只列出可执行程序（.exe），进入文件夹继续浏览"
         };
-        NavigateTo(GetStartDir());
+        ShowDrives();
+    }
+
+    /// <summary>浏览起点：磁盘列表（选择磁盘后进入）</summary>
+    private void ShowDrives()
+    {
+        _currentDir = "";
+        BrowseTitle.Text = "此电脑";
+        PathText.Text = "选择磁盘后进入";
+        FileList.ItemsSource = null;
+
+        var drives = new List<FileEntry>();
+        try
+        {
+            foreach (var d in DriveInfo.GetDrives().OrderBy(d => d.Name))
+            {
+                try { if (!d.IsReady) continue; } catch { continue; }
+                drives.Add(new FileEntry(DriveLabel(d), d.RootDirectory.FullName, true, false, IsDrive: true));
+            }
+        }
+        catch { /* 枚举失败的磁盘跳过 */ }
+
+        FileList.ItemsSource = drives;
+        BrowseSummary.Text = drives.Count == 0 ? "" : $"{drives.Count} 个磁盘";
+        BrowseEmpty.Visibility = drives.Count == 0
+            ? Microsoft.UI.Xaml.Visibility.Visible
+            : Microsoft.UI.Xaml.Visibility.Collapsed;
+        try { if (drives.Count > 0) FileList.SelectedIndex = 0; } catch { }
+    }
+
+    private static string DriveLabel(DriveInfo d)
+    {
+        var type = d.DriveType switch
+        {
+            DriveType.Removable => "可移动磁盘",
+            DriveType.Network => "网络驱动器",
+            DriveType.CDRom => "光驱",
+            _ => "本地磁盘"
+        };
+        var label = d.VolumeLabel?.Trim();
+        var root = d.Name.TrimEnd('\\');
+        return string.IsNullOrEmpty(label) ? $"{type} ({root})" : $"{label} ({root})";
     }
 
     private void ExitBrowse()
@@ -3235,11 +3279,52 @@ public sealed partial class AddItemPage : Page, ISettingsGamepad
         FocusForm(_formIndex);
     }
 
-    private static string GetStartDir()
+    private void ActivateEntry(FileEntry entry)
     {
-        var desktop = Environment.GetFolderPath(Environment.SpecialFolder.DesktopDirectory);
-        if (Directory.Exists(desktop)) return desktop;
-        return Environment.GetFolderPath(Environment.SpecialFolder.UserProfile);
+        if (entry.IsSelectCurrent) SelectFolder(_currentDir);
+        else if (entry.IsParent) GoParent();
+        else if (entry.IsFolder) NavigateTo(entry.Path);
+        else if (_browseMode == BrowseMode.Cover) _ = SelectCover(entry);
+        else if (_browseMode == BrowseMode.Icon) SelectIcon(entry);
+        else if (_pickingLosslessPath) SelectLosslessExe(entry);
+        else SelectExe(entry);
+    }
+
+    /// <summary>触屏点击列表项：与手柄 A 键行为一致</summary>
+    private void OnFileListItemClick(object sender, ItemClickEventArgs e)
+    {
+        if (!_browsing || e.ClickedItem is not FileEntry entry) return;
+        ActivateEntry(entry);
+    }
+
+    /// <summary>拖入项悬停在浏览面板：接受文件系统拖拽</summary>
+    private void OnBrowseDragOver(object sender, DragEventArgs e)
+    {
+        if (!e.DataView.Contains(StandardDataFormats.StorageItems)) return;
+        e.AcceptedOperation = DataPackageOperation.Copy;
+        e.DragUIOverride.Caption = "跳转到拖入的位置";
+        e.DragUIOverride.IsCaptionVisible = true;
+    }
+
+    /// <summary>拖入文件夹 → 直接进入；拖入文件 → 进入所在目录并选中该文件</summary>
+    private async void OnBrowseDrop(object sender, DragEventArgs e)
+    {
+        if (!_browsing || !e.DataView.Contains(StandardDataFormats.StorageItems)) return;
+        try
+        {
+            var items = await e.DataView.GetStorageItemsAsync();
+            var path = items.FirstOrDefault()?.Path;
+            if (string.IsNullOrEmpty(path)) return;
+            if (Directory.Exists(path))
+            {
+                NavigateTo(path);
+                return;
+            }
+            var parent = System.IO.Path.GetDirectoryName(path);
+            if (!string.IsNullOrEmpty(parent) && Directory.Exists(parent))
+                NavigateTo(parent, path);
+        }
+        catch { /* 拖入项不可读（虚拟项目等）时忽略 */ }
     }
 
     private void HandleBrowse(GamepadButtons b)
@@ -3263,26 +3348,11 @@ public sealed partial class AddItemPage : Page, ISettingsGamepad
         if (FileList.SelectedItem != null)
             FileList.ScrollIntoView(FileList.SelectedItem);
 
-        if (b.HasFlag(GamepadButtons.A))
-        {
-            if (FileList.SelectedItem is FileEntry entry)
-            {
-                if (entry.IsSelectCurrent) SelectFolder(_currentDir);
-                else if (entry.IsParent) GoParent();
-                else if (entry.IsFolder)
-                {
-                    // 文件夹浏览模式：进入目录；其他模式：文件夹仅用于进入
-                    NavigateTo(entry.Path);
-                }
-                else if (_browseMode == BrowseMode.Cover) _ = SelectCover(entry);
-                else if (_browseMode == BrowseMode.Icon) SelectIcon(entry);
-                else if (_pickingLosslessPath) SelectLosslessExe(entry);
-                else SelectExe(entry);
-            }
-        }
+        if (b.HasFlag(GamepadButtons.A) && FileList.SelectedItem is FileEntry entry)
+            ActivateEntry(entry);
     }
 
-    private async void NavigateTo(string dir)
+    private async void NavigateTo(string dir, string? selectPath = null)
     {
         _currentDir = dir;
         var folderName = System.IO.Path.GetFileName(dir.TrimEnd('\\', '/'));
@@ -3349,8 +3419,12 @@ public sealed partial class AddItemPage : Page, ISettingsGamepad
         // Items 可能尚未同步到控件，设置失败不影响浏览
         try
         {
-            if (entries.Count > 0)
+            var dropped = selectPath == null ? -1
+                : entries.FindIndex(e => string.Equals(e.Path, selectPath, StringComparison.OrdinalIgnoreCase));
+            if (dropped >= 0) FileList.SelectedIndex = dropped;
+            else if (entries.Count > 0)
                 FileList.SelectedIndex = entries[0].IsParent && entries.Count > 1 ? 1 : 0;
+            if (FileList.SelectedItem != null) FileList.ScrollIntoView(FileList.SelectedItem);
         }
         catch { }
     }
@@ -3365,8 +3439,9 @@ public sealed partial class AddItemPage : Page, ISettingsGamepad
     private void GoParent()
     {
         var parent = Directory.GetParent(_currentDir);
-        if (parent == null) return;
-        NavigateTo(parent.FullName);
+        // 位于磁盘根目录时"上一级"回到磁盘列表
+        if (parent == null) ShowDrives();
+        else NavigateTo(parent.FullName);
     }
 
     private void SelectExe(FileEntry entry)

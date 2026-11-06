@@ -200,11 +200,20 @@ public sealed partial class MainWindow : Window
         _sunkWindows.Add((hwnd, (GetWindowLongPtr(hwnd, GWL_EXSTYLE).ToInt64() & 0x8) != 0));
     }
 
-    /// <summary>
-    /// 前台切到游戏窗口时，把其他所有程序的窗口最小化（含 Steam 等启动器页面）：
-    /// 游戏上方不再残留页面，呼出启动器时游戏画面不会被遮挡。
-    /// 同一个游戏窗口只整理一次，离开再切回来时重新整理。
-    /// </summary>
+    [DllImport("user32.dll")]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    private static extern bool IsZoomed(IntPtr hwnd);
+
+    private void HideForMaximizedForeground()
+    {
+        if (!_shown || _exiting || _summonPending || _animating) return;
+        var foreground = GetForegroundWindow();
+        if (foreground == IntPtr.Zero || foreground == _hwnd || !IsZoomed(foreground)) return;
+        GetWindowThreadProcessId(foreground, out var pid);
+        if ((int)pid == OwnProcessId) return;
+        HideToTray();
+    }
+
     private void MinimizeOthersOnGameForeground()
     {
         var fg = GetForegroundWindow();
@@ -484,6 +493,11 @@ public sealed partial class MainWindow : Window
             }
             else ToggleFullscreen();
         });
+        // 右摇杆持续上推 1 秒才呼出抽屉（防误触）；收起仍由页面按键/触屏立即处理
+        Gamepad.DrawerSummonHeld += () => DispatcherQueue.TryEnqueue(() =>
+        {
+            if (Root.Content is MainPage page) page.SetDrawerSummoned(true);
+        });
         Gamepad.Start();
         GamepadRemapService.Init(); // 手柄映射：订阅原始手柄按下（不经路由门控，隐藏到托盘时也生效）
 
@@ -541,7 +555,11 @@ public sealed partial class MainWindow : Window
         _trainerTracker.Start();
         // 进入游戏窗口后整理后台：把其他程序（含 Steam 等启动器页面）最小化，
         // 这样游戏上方不再残留页面，之后呼出启动器时游戏画面不会被遮挡。
-        _gameEnterWatch.Tick += (_, _) => MinimizeOthersOnGameForeground();
+        _gameEnterWatch.Tick += (_, _) =>
+        {
+            HideForMaximizedForeground();
+            MinimizeOthersOnGameForeground();
+        };
         _gameEnterWatch.Start();
 
         // 修改器无精确匹配时，弹窗让用户从相似结果里挑一个

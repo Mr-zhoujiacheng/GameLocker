@@ -1,4 +1,5 @@
 using System.Diagnostics;
+using System.Net;
 using System.Net.Http;
 using System.Net.Sockets;
 using System.Text;
@@ -14,7 +15,71 @@ namespace GameLocker.Services;
 /// </summary>
 public static class TranslateService
 {
-    private static readonly HttpClient Http = new() { Timeout = TimeSpan.FromSeconds(8) };
+    private static readonly HttpClient Http = CreateHttpClient();
+
+    /// <summary>
+    /// 系统代理可用时照常使用；若系统代理指向本机回环地址而该端口没有程序监听
+    /// （Clash 等代理软件退出后常残留这类设置），自动改为直连，避免所有接口连接被拒。
+    /// </summary>
+    private sealed class SystemProxyWithFallback : IWebProxy
+    {
+        private static readonly object Gate = new();
+        private static readonly TimeSpan RetryAfter = TimeSpan.FromMinutes(2);
+        private static DateTime _directUntil = DateTime.MinValue;
+
+        public ICredentials? Credentials { get; set; }
+
+        public Uri? GetProxy(Uri destination)
+        {
+            lock (Gate)
+            {
+                if (DateTime.UtcNow < _directUntil) return null;
+                Uri? proxy;
+                try { proxy = HttpClient.DefaultProxy.GetProxy(destination); }
+                catch { return null; }
+                // 返回与目标相同的地址表示系统设置为直连
+                if (proxy is null || proxy == destination || !proxy.IsLoopback) return proxy;
+                if (CanConnect(proxy))
+                {
+                    _directUntil = DateTime.MinValue;
+                    return proxy;
+                }
+                _directUntil = DateTime.UtcNow + RetryAfter;
+                DebugLog.Write($"翻译: 系统代理 {proxy.Authority} 无程序监听，已改为直连");
+                return null;
+            }
+        }
+
+        public bool IsBypassed(Uri host)
+        {
+            try { return HttpClient.DefaultProxy.IsBypassed(host); }
+            catch { return true; }
+        }
+
+        private static bool CanConnect(Uri proxy)
+        {
+            try
+            {
+                using var client = new TcpClient();
+                return client.ConnectAsync(proxy.Host, proxy.Port)
+                    .Wait(TimeSpan.FromMilliseconds(400)) && client.Connected;
+            }
+            catch { return false; }
+        }
+    }
+
+    private static HttpClient CreateHttpClient()
+    {
+        var handler = new SocketsHttpHandler
+        {
+            UseProxy = true,
+            Proxy = new SystemProxyWithFallback { Credentials = HttpClient.DefaultProxy.Credentials },
+            ConnectTimeout = TimeSpan.FromSeconds(5),
+            PooledConnectionLifetime = TimeSpan.FromMinutes(5)
+        };
+        return new HttpClient(handler) { Timeout = TimeSpan.FromSeconds(8) };
+    }
+
 
     private static string _freeToken = "";
     private static DateTime _freeTokenAt = DateTime.MinValue;

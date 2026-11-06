@@ -72,6 +72,7 @@ internal sealed class MonitorOverlayWindow : IDisposable
     private IntPtr _fontFps;
 
     private MonitorSnapshot? _snapshot;
+    private double _lastOutputFps = double.NaN;
     private bool _visible = true;
 
     private static WndProcDelegate? _wndProc; // 防止回调被 GC
@@ -174,6 +175,8 @@ internal sealed class MonitorOverlayWindow : IDisposable
         {
             lock (_renderGate)
             {
+                if (double.IsFinite(snapshot.OutputFps) && snapshot.OutputFps > 0)
+                    _lastOutputFps = snapshot.OutputFps;
                 _snapshot = snapshot;
                 if (_hwnd == IntPtr.Zero || !_visible) return;
                 if (AdjustDynamicWidths())
@@ -867,9 +870,9 @@ internal sealed class MonitorOverlayWindow : IDisposable
 
     private bool ShowFpsBlock() => Has(MonitorMetric.Fps) || Has(MonitorMetric.FrameTime);
 
-    private static string FormatFps(MonitorSnapshot s)
+    private string FormatFps(MonitorSnapshot s)
     {
-        var fps = s.OutputFps;
+        var fps = double.IsFinite(s.OutputFps) && s.OutputFps > 0 ? s.OutputFps : _lastOutputFps;
         return double.IsFinite(fps) && fps > 0 ? fps.ToString("0") : "—";
     }
 
@@ -877,9 +880,14 @@ internal sealed class MonitorOverlayWindow : IDisposable
         s.FrameGenerationDetected && double.IsFinite(s.OriginalFps) && s.OriginalFps > 0
             ? $" / {s.OriginalFps:0.#}" : "";
 
-    /// <summary>帧时间：放在 FPS 数字脚下的小字；FPS 取不到时说明权限原因</summary>
-    private static string FormatFrameDelay(MonitorSnapshot s)
+    /// <summary>有任一帧率数据时仅显示帧时间，无数据时显示采集说明。</summary>
+    private string FormatFrameDelay(MonitorSnapshot s)
     {
+        if ((double.IsFinite(s.OutputFps) && s.OutputFps > 0)
+            || (double.IsFinite(_lastOutputFps) && _lastOutputFps > 0)
+            || (double.IsFinite(s.OriginalFps) && s.OriginalFps > 0))
+            return double.IsFinite(s.FrameMs) && s.FrameMs > 0 ? $"{s.FrameMs:0.0}ms" : "";
+
         if (s.CaptureState != FrameCaptureState.ValidData)
             return s.CaptureReason switch
             {

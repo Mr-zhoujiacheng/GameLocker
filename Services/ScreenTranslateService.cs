@@ -242,8 +242,8 @@ public static class ScreenTranslateService
         _stage = StageShowing;
         _watchTicks = 0;
         Hud.HideOverlay();
-        Hud.SetActivity("等待文字识别，尚未请求");
-        Hud.SetStatus("正在识别文字…", "请稍候");
+        Hud.SetActivity("仅发送固定测试短句，不发送屏幕内容");
+        Hud.SetStatus("正在检查翻译接口…", "请稍候，可停止后重试");
         _ = RunTranslationAsync(seq, cancellation);
     }
 
@@ -281,6 +281,30 @@ public static class ScreenTranslateService
             return;
         }
 
+        var engine = EffectiveEngine;
+        var apiKey = item.TranslateApiKey;
+        var region = item.TranslateRegion;
+        var source = item.TranslateSource;
+        var target = item.TranslateTarget;
+        var preflight = await TranslateService.PreflightAsync(engine, apiKey, region, token,
+            result => OnUi(seq, () => Hud.SetActivity(
+                $"检查 {TranslateService.EngineName(result.Engine)}：{result.Reason}")));
+        token.ThrowIfCancellationRequested();
+        if (seq != _seq || !_running) return;
+        if (!preflight.Success)
+        {
+            var reasons = string.Join("；", preflight.Sources.Select(s =>
+                $"{TranslateService.EngineName(s.Engine)}：{s.Reason}"));
+            OnUi(seq, () => Hud.SetActivity(reasons));
+            Retry(seq, "翻译接口检查失败", preflight.Sources.First().Reason + "，可点「开始翻译」重试");
+            return;
+        }
+        OnUi(seq, () =>
+        {
+            Hud.SetStatus("正在识别文字…", "接口检查通过");
+            Hud.SetActivity("可用：" + string.Join("、", preflight.AvailableSources.Select(TranslateService.EngineName)));
+        });
+
         RECT rect;
         if (!GetWindowRect(hwnd, out rect))
         {
@@ -307,7 +331,7 @@ public static class ScreenTranslateService
         }
 
         token.ThrowIfCancellationRequested();
-        var lines = await OcrAsync(cap, w, h, item.TranslateSource, token);
+        var lines = await OcrAsync(cap, w, h, source, token);
         if (seq != _seq || !_running) return;
         if (lines.Count == 0)
         {
@@ -321,7 +345,7 @@ public static class ScreenTranslateService
         var payload = new List<string>(lines.Count);
         foreach (var l in lines)
         {
-            if (item.TranslateTarget == "zh" && !NeedsTranslation(l.Text)) continue;
+            if (target == "zh" && !NeedsTranslation(l.Text)) continue;
             candidates.Add(l);
             payload.Add(l.Text);
         }
@@ -335,11 +359,10 @@ public static class ScreenTranslateService
         token.ThrowIfCancellationRequested();
         if (seq != _seq || !_running) return;
 
-        var engine = EffectiveEngine;
         var translated = await TranslateService.TranslateLinesAsync(
-            payload, engine, item.TranslateApiKey, item.TranslateRegion,
-            item.TranslateSource, item.TranslateTarget, token,
-            activity => OnUi(seq, () => Hud.SetActivity(activity)));
+            payload, engine, apiKey, region,
+            source, target, token,
+            activity => OnUi(seq, () => Hud.SetActivity(activity)), preflight.AvailableSources);
         if (seq != _seq || !_running) return;
 
         var ok = translated.Count(t => !string.IsNullOrWhiteSpace(t));

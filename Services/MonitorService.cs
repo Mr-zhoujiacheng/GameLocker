@@ -72,7 +72,7 @@ public static class MonitorService
     private static int _frameTargetPid;
     private static int _lastOutputPid;
     private static double _lastOutputFps = double.NaN;
-    private static long _lastOutputTick;
+    private static double _lastOriginalFps = double.NaN;
     private static bool _lastOutputGenerated;
     private static int _ticking;
     private static int _tickCount;
@@ -148,8 +148,7 @@ public static class MonitorService
         IsRunning = true;
         _tickCount = 0;
         _frameTargetPid = _lastOutputPid = 0;
-        _lastOutputFps = double.NaN;
-        _lastOutputTick = 0;
+        _lastOutputFps = _lastOriginalFps = double.NaN;
         _lastOutputGenerated = false;
         _lastIdle = _lastKernel = _lastUser = 0;
         LastError = "";
@@ -249,8 +248,7 @@ public static class MonitorService
         _losslessOutput?.Dispose();
         _losslessOutput = null;
         _frameTargetPid = _lastOutputPid = 0;
-        _lastOutputFps = double.NaN;
-        _lastOutputTick = 0;
+        _lastOutputFps = _lastOriginalFps = double.NaN;
         _lastOutputGenerated = false;
 
         try { _stopEvent?.Set(); } catch { }
@@ -508,31 +506,30 @@ public static class MonitorService
             if (_shared is not null)
                 _shared.TryReadCapture(targetPid, outputPid, out s.CaptureState, out s.CaptureReason);
         }
-        var outputTick = Environment.TickCount64;
-        if (frameTargetChanged || _lastOutputPid != outputPid || outputPid <= 0)
-        {
-            _lastOutputPid = outputPid;
-            _lastOutputFps = double.NaN;
-            _lastOutputTick = 0;
-            _lastOutputGenerated = false;
-        }
-        if (double.IsFinite(s.OutputFps) && s.OutputFps > 0)
-        {
-            _lastOutputFps = s.OutputFps;
-            _lastOutputTick = outputTick;
-            _lastOutputGenerated = s.FrameGenerationDetected;
-        }
-        else if (outputPid > 0 && !frameTargetChanged && outputTick - _lastOutputTick <= 5000
-            && double.IsFinite(_lastOutputFps))
-        {
-            // 仅跨越短暂采集空窗；不能跨进程沿用，也不能用缓存续期。
-            s.OutputFps = _lastOutputFps;
-            s.FrameGenerationDetected |= _lastOutputGenerated;
-        }
         if (losslessPid > 0)
         {
             // 外部插帧输入是游戏的 ETW 原始帧率；内置插帧则保留 ETW 的原始帧分类结果。
             s.OriginalFps = targetPid != losslessPid && s.Fps > 0 ? s.Fps : double.NaN;
+        }
+        if (frameTargetChanged || _lastOutputPid != outputPid || targetPid <= 0 || outputPid <= 0)
+        {
+            _lastOutputPid = outputPid;
+            _lastOutputFps = _lastOriginalFps = double.NaN;
+            _lastOutputGenerated = false;
+        }
+        if (targetPid > 0 && outputPid > 0 && !frameTargetChanged)
+        {
+            // 两个指标独立保留最后一次有效采样，只在同一采集目标内沿用。
+            if (double.IsFinite(s.OutputFps) && s.OutputFps > 0)
+                _lastOutputFps = s.OutputFps;
+            else
+                s.OutputFps = _lastOutputFps;
+            if (double.IsFinite(s.OriginalFps) && s.OriginalFps > 0)
+                _lastOriginalFps = s.OriginalFps;
+            else
+                s.OriginalFps = _lastOriginalFps;
+            _lastOutputGenerated |= s.FrameGenerationDetected;
+            s.FrameGenerationDetected |= _lastOutputGenerated;
         }
         return s;
     }

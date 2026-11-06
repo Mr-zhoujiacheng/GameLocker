@@ -267,9 +267,6 @@ public sealed partial class TopbarPage : Page, ISettingsGamepad
         catch { }
     }
 
-    private void OnBackClick(object sender, Microsoft.UI.Xaml.RoutedEventArgs e) =>
-        App.Main?.ShowSettingsHub();
-
     /// <summary>点击卡片：选中并把焦点光标移过来，同时切换开关</summary>
     private void OnRowClick(object sender, Microsoft.UI.Xaml.RoutedEventArgs e)
     {

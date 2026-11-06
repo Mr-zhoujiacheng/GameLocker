@@ -126,6 +126,15 @@ public static class DebugLog
             var vendor = ReadText(Path.Combine(Dir, "monitor-vendor.txt"));
             sb.AppendLine(vendor.Length > 0 ? vendor : "（没有采集状态：本次启动没有开启性能监控）");
 
+            sb.AppendLine();
+            sb.AppendLine("=========== 实际显示帧采集诊断 ===========");
+            foreach (var name in new[] { "monitor-frames-local.log", "monitor-frames-helper.log", "monitor-helper.log" })
+            {
+                sb.AppendLine($"---- {name} ----");
+                var frames = ReadText(Path.Combine(Dir, name));
+                sb.AppendLine(frames.Length > 0 ? frames : "（没有采集记录）");
+            }
+
             var path = Path.Combine(desktop, $"GameLocker日志_{DateTime.Now:yyyyMMdd_HHmmss}.txt");
             File.WriteAllText(path, sb.ToString(), Utf8);
             return path;

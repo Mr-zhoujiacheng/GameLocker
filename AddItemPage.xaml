@@ -1793,8 +1793,7 @@
             </Button>
         </Border>
 
-        <!-- 悬浮按键提示：浮在内容之上，不占布局行（与主页一致）。
-             极简半透明：不加描边，只留一层很淡的暗色底，避免压住浏览列表的观感 -->
+        <!-- 悬浮按键提示：浮在内容之上，不占布局行（与主页一致的极简样式） -->
         <Border Grid.Row="0" Grid.RowSpan="99"
                 HorizontalAlignment="Right" VerticalAlignment="Top"
                 Margin="0,14,20,0" Padding="14,6" CornerRadius="0"

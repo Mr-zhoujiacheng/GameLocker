@@ -69,7 +69,7 @@ public static class UpdateService
     /// <summary>
     /// 下载并静默启动安装。下载任务全局唯一：切出关于页再回来不会重置已下载的部分，
     /// 也不会并发写同一个安装包（并发写会因文件被占用而报错）。
-    /// 返回的任务在安装程序启动后完成（随后安装程序会关闭并重启本程序）。
+    /// 安装程序成功启动后在主线程正常退出旧实例，安装完成后由安装程序启动新版。
     /// </summary>
     public static Task<string> StartDownloadAsync(UpdateInfo info)
     {
@@ -90,7 +90,7 @@ public static class UpdateService
         {
             var path = await DownloadAsync(info, new ProgressReporter());
             lock (DownloadGate) _downloadProgress = 1;
-            RunInstaller(path);
+            await InstallAndExitAsync(path);
             return path;
         }
         catch (Exception ex)
@@ -221,13 +221,40 @@ public static class UpdateService
         return path;
     }
 
-    /// <summary>静默启动安装包；Inno Setup 会关闭正在运行的本程序，安装完成后自动重新启动</summary>
-    public static void RunInstaller(string path) =>
-        Process.Start(new ProcessStartInfo(
-            path, "/VERYSILENT /SUPPRESSMSGBOXES /NORESTART /FORCECLOSEAPPLICATIONS")
+    private static Task InstallAndExitAsync(string path)
+    {
+        var window = App.Main;
+        if (window == null) throw new InvalidOperationException("主窗口不可用，无法退出并安装更新");
+        var completion = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        if (!window.DispatcherQueue.TryEnqueue(() =>
+        {
+            try
+            {
+                RunInstaller(path);
+                // 不能只依赖安装器的 Restart Manager：当前实例可能运行在开发目录或其他位置。
+                window.ExitApp();
+                completion.TrySetResult();
+            }
+            catch (Exception ex)
+            {
+                completion.TrySetException(ex);
+            }
+        }))
+            completion.TrySetException(new InvalidOperationException("无法切换到主线程，请稍后重试更新"));
+        return completion.Task;
+    }
+
+    /// <summary>静默启动安装包并记录安装日志；成功启动后由调用方主动退出旧实例。</summary>
+    public static void RunInstaller(string path)
+    {
+        var logPath = Path.Combine(Path.GetDirectoryName(path)!, "install.log");
+        using var installer = Process.Start(new ProcessStartInfo(
+            path, $"/VERYSILENT /SUPPRESSMSGBOXES /NORESTART /FORCECLOSEAPPLICATIONS /LOG=\"{logPath}\"")
         {
             UseShellExecute = true
         });
+        if (installer == null) throw new IOException("未能启动更新安装程序");
+    }
 
     private static Version Normalize(Version v) =>
         new(v.Major, v.Minor, Math.Max(v.Build, 0), Math.Max(v.Revision, 0));

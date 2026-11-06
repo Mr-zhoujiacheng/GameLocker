@@ -315,9 +315,6 @@ public sealed partial class DrawerSettingsPage : Page, ISettingsGamepad
         catch { }
     }
 
-    private void OnBackClick(object sender, Microsoft.UI.Xaml.RoutedEventArgs e) =>
-        App.Main?.ShowSettingsHub();
-
     /// <summary>点击开关卡片：光标移过来并切换开关</summary>
     private void OnRowClick(object sender, Microsoft.UI.Xaml.RoutedEventArgs e)
     {

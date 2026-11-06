@@ -72,6 +72,21 @@ public sealed partial class GamepadHintBar : UserControl
         set => SetValue(TouchModeProperty, value);
     }
 
+    /// <summary>触屏徽章样式：true=可点按的胶囊底座（弹窗内使用），false=极简单行（页面使用）</summary>
+    public static readonly DependencyProperty CapsuleChipsProperty = DependencyProperty.Register(
+        nameof(CapsuleChips), typeof(bool), typeof(GamepadHintBar),
+        new PropertyMetadata(false, (d, e) =>
+        {
+            var bar = (GamepadHintBar)d;
+            bar.SetHints(bar.Hints);
+        }));
+
+    public bool CapsuleChips
+    {
+        get => (bool)GetValue(CapsuleChipsProperty);
+        set => SetValue(CapsuleChipsProperty, value);
+    }
+
     /// <summary>触屏点按某个图标（参数为按键标识 A/B/X/Y/DPAD/VIEW/MENU/LB/RB/L3/R3），
     /// 弹窗据此执行与手柄按键完全相同的指令</summary>
     public event Action<string>? HintTapped;
@@ -99,8 +114,7 @@ public sealed partial class GamepadHintBar : UserControl
         RootPanel.Children.Clear();
         if (TouchMode)
         {
-            // 触屏/浏览页与主页提示条同款排版：图标 + 右侧说明单行排列，不加单独的胶囊底色
-            RootPanel.Spacing = 7;
+            RootPanel.Spacing = CapsuleChips ? 12 : 7;
             foreach (var part in spec.Split('|'))
             {
                 var kv = part.Split(':', 2);
@@ -128,16 +142,18 @@ public sealed partial class GamepadHintBar : UserControl
         }
     }
 
-    /// <summary>触屏徽章：与主页提示条相同的"图标 + 右侧说明"单行样式，整行可点按</summary>
+    /// <summary>触屏徽章：弹窗用"放大图标 + 下方说明"的可点按胶囊；页面用与主页一致的极简单行</summary>
     private FrameworkElement BuildTouchChip(string key, string label)
     {
+        if (CapsuleChips)
+            return BuildCapsuleChip(key, label);
+
         var row = new StackPanel
         {
             Orientation = Orientation.Horizontal,
             Spacing = 7,
             VerticalAlignment = VerticalAlignment.Center
         };
-        // 图标与主页提示条完全一致（同尺寸徽章、不加触屏放大版）
         row.Children.Add(BuildBadge(key, 1.0));
         if (label.Length > 0)
             row.Children.Add(new TextBlock
@@ -149,6 +165,31 @@ public sealed partial class GamepadHintBar : UserControl
             });
         row.Tapped += (_, _) => HintTapped?.Invoke(key);
         return row;
+    }
+
+    /// <summary>弹窗内的胶囊徽章：放大的按键图标 + 下方说明，整个区域（含内边距）都是点按热区</summary>
+    private FrameworkElement BuildCapsuleChip(string key, string label)
+    {
+        var stack = new StackPanel { Spacing = 2, VerticalAlignment = VerticalAlignment.Center };
+        stack.Children.Add(BuildBadge(key, 1.9));
+        if (label.Length > 0)
+            stack.Children.Add(new TextBlock
+            {
+                Text = label,
+                FontSize = 11.5,
+                Opacity = 0.75,
+                HorizontalAlignment = HorizontalAlignment.Center
+            });
+        var chip = new Border
+        {
+            // 贴着弹窗底边的两组底角改为直角，让徽章背景融进窗口下边缘
+            CornerRadius = new CornerRadius(14, 14, 0, 0),
+            Background = new SolidColorBrush(Color.FromArgb(0x14, 0xFF, 0xFF, 0xFF)),
+            Padding = new Thickness(10, 6, 10, 2),
+            Child = stack
+        };
+        chip.Tapped += (_, _) => HintTapped?.Invoke(key);
+        return chip;
     }
 
     /// <summary>按按键标识生成对应徽章；无对应按键图标的中文词渲染为文字胶囊</summary>

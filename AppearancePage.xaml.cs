@@ -531,9 +531,6 @@ public sealed partial class AppearancePage : Page, ISettingsGamepad
         catch { }
     }
 
-    private void OnBackClick(object sender, Microsoft.UI.Xaml.RoutedEventArgs e) =>
-        App.Main?.ShowSettingsHub();
-
     /// <summary>玻璃效果开关 → 立即保存并应用</summary>
     private void OnGlassChanged(object sender, Microsoft.UI.Xaml.RoutedEventArgs e)
     {

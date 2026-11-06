@@ -880,8 +880,25 @@ internal sealed class MonitorOverlayWindow : IDisposable
     /// <summary>帧时间：放在 FPS 数字脚下的小字；FPS 取不到时说明权限原因</summary>
     private static string FormatFrameDelay(MonitorSnapshot s)
     {
-        if (s.FrameMs > 0) return $"{s.FrameMs:0.0}ms";
-        return MonitorService.FpsAvailable ? "—" : "需管理员";
+        if (s.CaptureState != FrameCaptureState.ValidData)
+            return s.CaptureReason switch
+            {
+                FrameCaptureReason.NoTarget => "无前台目标",
+                FrameCaptureReason.Starting => "启动采集中",
+                FrameCaptureReason.AwaitingHeader => "等待采集表头",
+                FrameCaptureReason.NoTargetRecords => "无目标显示记录",
+                FrameCaptureReason.InvalidRecords => "显示记录无效",
+                FrameCaptureReason.UnsupportedPresentMode => "非独立显示链",
+                FrameCaptureReason.MultipleChains => "多显示链无法确认",
+                FrameCaptureReason.InsufficientSamples => "显示样本不足",
+                FrameCaptureReason.InsufficientDuration => "显示时长不足",
+                FrameCaptureReason.ProcessExited => "采集进程已退出",
+                FrameCaptureReason.CollectorError => "显示采集异常",
+                FrameCaptureReason.HelperUnavailable => "采集助手未就绪",
+                _ => "等待显示数据"
+            };
+        var time = s.FrameMs > 0 ? $"{s.FrameMs:0.0}ms · " : "";
+        return time + (s.FrameGenerationDetected ? "已检测插帧" : "插帧无法确认");
     }
 
     /// <summary>CPU 块标题：只保留勾选的项，例如只勾"使用/温度"时显示 "CPU 使用 · 温度"</summary>

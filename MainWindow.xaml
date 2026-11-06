@@ -41,7 +41,7 @@
                     </ScrollViewer>
 
                     <!-- 触屏：图标行贴住面板底边，图标放大后可点按（A=下载，B=取消） -->
-                    <ctl:GamepadHintBar x:Name="TrainerChoiceHintBar" TouchMode="True"
+                    <ctl:GamepadHintBar x:Name="TrainerChoiceHintBar" TouchMode="True" CapsuleChips="True"
                                         HorizontalAlignment="Center" Margin="0,8,0,0"
                                         Hints="DPAD:选择|A:下载|B:取消"/>
                 </StackPanel>
@@ -121,7 +121,7 @@
                                Text="选择注入将关闭游戏、写入 OptiScaler 后重新打开游戏；注入前会自动备份被覆盖的同名文件。"/>
 
                     <!-- 触屏：图标行贴住面板底边，图标放大后可点按（A=注入，B=取消） -->
-                    <ctl:GamepadHintBar x:Name="OptiHintBar" TouchMode="True"
+                    <ctl:GamepadHintBar x:Name="OptiHintBar" TouchMode="True" CapsuleChips="True"
                                         HorizontalAlignment="Center" Margin="0,8,0,0" Hints="A:注入|B:取消"/>
                 </StackPanel>
             </Border>
@@ -208,7 +208,7 @@
                     <TextBlock x:Name="OptiManualHint" FontSize="12" Opacity="0.6" TextWrapping="Wrap"
                                Text="拖入后会检查适配性。A 注入（覆盖前自动备份，可用「一键还原」恢复）。"/>
 
-                    <ctl:GamepadHintBar x:Name="OptiManualHintBar" TouchMode="True"
+                    <ctl:GamepadHintBar x:Name="OptiManualHintBar" TouchMode="True" CapsuleChips="True"
                                         HorizontalAlignment="Center" Margin="0,8,0,0" Hints="A:注入|B:取消"/>
                 </StackPanel>
             </Border>
@@ -256,7 +256,7 @@
                             <StackPanel x:Name="SaveRestoreList" Spacing="6"/>
                         </StackPanel>
                     </ScrollViewer>
-                    <ctl:GamepadHintBar x:Name="SaveRestoreHintBar" Grid.Row="2" TouchMode="True"
+                    <ctl:GamepadHintBar x:Name="SaveRestoreHintBar" Grid.Row="2" TouchMode="True" CapsuleChips="True"
                                         HorizontalAlignment="Center" Margin="0,8,0,0"
                                         Hints="DPAD:选择|A:恢复|X:同步|B:取消"/>
                 </Grid>

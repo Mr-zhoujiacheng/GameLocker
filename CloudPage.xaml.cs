@@ -85,7 +85,6 @@ public sealed partial class CloudPage : Page, ISettingsGamepad
         catch { }
     }
 
-    private void OnBackClick(object sender, RoutedEventArgs e) => App.Main?.ShowSettingsHub();
     private void OnSaveClick(object sender, RoutedEventArgs e) => SaveConfig();
     private void OnTestClick(object sender, RoutedEventArgs e) => _ = TestAsync();
     private void OnLoginClick(object sender, RoutedEventArgs e) => _ = LoginAsync();

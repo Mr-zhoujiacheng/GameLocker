@@ -290,9 +290,6 @@ public sealed partial class KeybindPage : Page, ISettingsGamepad
         catch { /* 未连接视觉树时忽略 */ }
     }
 
-    private void OnBackClick(object sender, RoutedEventArgs e) =>
-        App.Main?.ShowSettingsHub();
-
     /// <summary>鼠标点击呼出键位按钮</summary>
     private void OnCaptureClick(object sender, RoutedEventArgs e) => StartCapture(CaptureTarget.Summon);
 

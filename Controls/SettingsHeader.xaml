@@ -1,0 +1,62 @@
+<?xml version="1.0" encoding="utf-8"?>
+<UserControl x:Class="GameLocker.Controls.SettingsHeader"
+    xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+    xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+    Background="Transparent">
+    <!-- 设置子页统一标题：极简线条返回箭头 + 白色大标题 + 紫色英文标签 -->
+    <Grid Padding="18,14,20,14">
+        <Grid ColumnSpacing="10">
+            <Grid.ColumnDefinitions>
+                <ColumnDefinition Width="Auto"/>
+                <ColumnDefinition Width="*"/>
+            </Grid.ColumnDefinitions>
+
+            <!-- 返回按钮：圆角白色描边徽章，无彩色，悬停提亮 -->
+            <Button x:Name="BackButton" Width="36" Height="36" Padding="0"
+                    Click="OnBackClick" IsTabStop="False" VerticalAlignment="Center">
+                <Button.Template>
+                    <ControlTemplate TargetType="Button">
+                        <Grid>
+                            <Border x:Name="Ring" CornerRadius="11" Padding="1.5">
+                                <Border.Background>
+                                    <SolidColorBrush Color="#4DFFFFFF"/>
+                                </Border.Background>
+                                <Border x:Name="Inner" CornerRadius="9.5" Background="#1A1A1C">
+                                    <FontIcon x:Name="BackArrow" Glyph="&#xE72B;" FontSize="15"
+                                              Foreground="#FFFFFFFF"/>
+                                </Border>
+                            </Border>
+
+                            <VisualStateManager.VisualStateGroups>
+                                <VisualStateGroup x:Name="CommonStates">
+                                    <VisualState x:Name="Normal"/>
+                                    <VisualState x:Name="PointerOver">
+                                        <VisualState.Setters>
+                                            <Setter Target="Ring.Background" Value="#8CFFFFFF"/>
+                                            <Setter Target="Inner.Background" Value="#2A2A2E"/>
+                                        </VisualState.Setters>
+                                    </VisualState>
+                                    <VisualState x:Name="Pressed">
+                                        <VisualState.Setters>
+                                            <Setter Target="Ring.Background" Value="#33FFFFFF"/>
+                                            <Setter Target="Inner.Background" Value="#121214"/>
+                                        </VisualState.Setters>
+                                    </VisualState>
+                                    <VisualState x:Name="Disabled"/>
+                                </VisualStateGroup>
+                            </VisualStateManager.VisualStateGroups>
+                        </Grid>
+                    </ControlTemplate>
+                </Button.Template>
+            </Button>
+
+            <StackPanel Grid.Column="1" VerticalAlignment="Center" Spacing="2">
+                <TextBlock x:Name="TitleText" FontSize="23" FontWeight="Bold"
+                           Foreground="#F7F5FF" CharacterSpacing="60"
+                           TextTrimming="CharacterEllipsis"/>
+                <TextBlock x:Name="SubtitleText" FontSize="9" Foreground="#9C8FD0"
+                           CharacterSpacing="240" TextTrimming="CharacterEllipsis"/>
+            </StackPanel>
+        </Grid>
+    </Grid>
+</UserControl>

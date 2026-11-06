@@ -81,14 +81,7 @@
             <RowDefinition Height="Auto"/>
         </Grid.RowDefinitions>
 
-        <Grid Grid.Row="0" Padding="20,16">
-            <StackPanel Orientation="Horizontal" Spacing="10" VerticalAlignment="Center">
-                <Button x:Name="BackButton" Background="Transparent" BorderThickness="0" Click="OnBackClick" IsTabStop="False">
-                    <FontIcon Glyph="&#xE72B;" FontSize="16"/>
-                </Button>
-                <TextBlock Text="常规" FontSize="22" FontWeight="SemiBold" VerticalAlignment="Center"/>
-            </StackPanel>
-        </Grid>
+        <ctl:SettingsHeader Grid.Row="0" Title="常规" Subtitle="GENERAL"/>
 
         <!-- 内容区可滚动：窄窗口下控件不被遮盖 -->
         <ScrollViewer x:Name="ContentScroll" Grid.Row="1" Padding="20,8,20,10" VerticalScrollBarVisibility="Hidden">

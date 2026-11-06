@@ -280,7 +280,7 @@
                     </Border>
 
                     <!-- 触屏：图标行贴住面板底边，图标放大后可点按（DPAD=切换，A=确认，B=取消） -->
-                    <ctl:GamepadHintBar x:Name="ChoiceHintBar" TouchMode="True"
+                    <ctl:GamepadHintBar x:Name="ChoiceHintBar" TouchMode="True" CapsuleChips="True"
                                         HorizontalAlignment="Center" Margin="0,8,0,0"
                                         Hints="DPAD:选择|A:确认|B:取消"/>
                 </StackPanel>
@@ -304,7 +304,7 @@
                     <TextBox x:Name="RenameBox" FontSize="16" Padding="10,8"
                              PlaceholderText="抽屉名称" KeyDown="OnRenameBoxKeyDown"/>
                     <!-- 触屏：图标行贴住面板底边，放大后的 A/B 图标可直接点按确认/取消 -->
-                    <ctl:GamepadHintBar x:Name="RenameHintBar" TouchMode="True"
+                    <ctl:GamepadHintBar x:Name="RenameHintBar" TouchMode="True" CapsuleChips="True"
                                         HorizontalAlignment="Center" Margin="0,8,0,0" Hints="A:确认|B:取消"/>
                 </StackPanel>
             </Border>
@@ -417,7 +417,7 @@
                     </Border>
 
                     <!-- 触屏：图标行贴住面板底边，图标放大后可点按（DPAD=切换，A=执行，B=取消） -->
-                    <ctl:GamepadHintBar x:Name="PowerHintBar" TouchMode="True"
+                    <ctl:GamepadHintBar x:Name="PowerHintBar" TouchMode="True" CapsuleChips="True"
                                         HorizontalAlignment="Center" Margin="0,8,0,0"
                                         Hints="DPAD:选择|A:执行|B:取消"/>
                 </StackPanel>
@@ -485,7 +485,7 @@
                         </Grid>
                     </Border>
 
-                    <ctl:GamepadHintBar x:Name="WallpaperHintBar" TouchMode="True"
+                    <ctl:GamepadHintBar x:Name="WallpaperHintBar" TouchMode="True" CapsuleChips="True"
                                         HorizontalAlignment="Center" Margin="0,8,0,0"
                                         Hints="DPAD:选择|A:执行|B:取消"/>
                 </StackPanel>
@@ -557,7 +557,7 @@
                     </StackPanel>
 
                     <!-- 触屏：图标行贴住面板底边，图标放大后可点按（连接/发送/清空/关闭） -->
-                    <ctl:GamepadHintBar x:Name="FileTransferHintBar" TouchMode="True"
+                    <ctl:GamepadHintBar x:Name="FileTransferHintBar" TouchMode="True" CapsuleChips="True"
                                         HorizontalAlignment="Center" Margin="0,8,0,0"
                                         Hints="DPAD:选择|A:连接|X:发送|Y:清空|B:关闭"/>
                 </StackPanel>

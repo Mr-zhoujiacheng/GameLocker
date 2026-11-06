@@ -383,9 +383,9 @@ public sealed partial class AboutPage : Page, ISettingsGamepad
             if (_update is { } info) ShowDownloadFailed(info, error);
             return;
         }
-        // 下载完成、安装程序已启动（安装结束后程序会自动重启），保持 busy 防止重复触发
+        // 安装程序已启动，旧实例正在退出；保持 busy 防止重复触发。
         UpdateProgress.Value = 100;
-        UpdateSub.Text = "下载完成，正在启动安装程序…";
+        UpdateSub.Text = "安装程序已启动，正在退出以完成更新…";
     }
 
     private void ShowDownloadFailed(UpdateInfo info, string error)
@@ -477,9 +477,6 @@ public sealed partial class AboutPage : Page, ISettingsGamepad
         try { await Windows.System.Launcher.LaunchUriAsync(new Uri(url)); }
         catch { }
     }
-
-    private void OnBackClick(object sender, Microsoft.UI.Xaml.RoutedEventArgs e) =>
-        App.Main?.ShowSettingsHub();
 
     public bool IsCapturing => false;
     public void CaptureButtons(GamepadButtons pressed) { }

@@ -31,7 +31,9 @@ internal sealed class MonitorShared : IDisposable
     private const int OffOutputTargetPid = 1520;
     private const int OffOutputSamplePid = 1524;
     private const int OffOutputFps = 1528;
-    private const int Magic = 0x4D4F4E34; // "MON4"
+    private const int OffCaptureState = 1536;
+    private const int OffCaptureReason = 1540;
+    private const int Magic = 0x4D4F4E35; // "MON5"
 
     private const long FreshMs = 3000;
 
@@ -56,6 +58,14 @@ internal sealed class MonitorShared : IDisposable
             view.Write(OffSeq, 0);
             view.Write(OffTargetPid, 0);
             view.Write(OffOriginalFps, double.NaN);
+            view.Write(OffTick, 0L);
+            view.Write(OffSamplePid, 0);
+            view.Write(OffOutputTargetPid, 0);
+            view.Write(OffOutputSamplePid, 0);
+            view.Write(OffOutputFps, double.NaN);
+            view.Write(OffFrameGeneration, 0);
+            view.Write(OffCaptureState, (int)FrameCaptureState.NoTarget);
+            view.Write(OffCaptureReason, (int)FrameCaptureReason.NoTarget);
             return shared;
         }
         catch
@@ -104,6 +114,24 @@ internal sealed class MonitorShared : IDisposable
             ? fps : double.NaN;
     }
 
+    public bool TryReadCapture(int targetPid, int outputPid, out FrameCaptureState state, out FrameCaptureReason reason)
+    {
+        state = FrameCaptureState.WaitingForData;
+        reason = FrameCaptureReason.HelperUnavailable;
+        var seq = _view.ReadInt32(OffSeq);
+        if (seq == 0 || (seq & 1) != 0 || Environment.TickCount64 - _view.ReadInt64(OffTick) > FreshMs)
+            return false;
+        var target = _view.ReadInt32(OffSamplePid);
+        var output = _view.ReadInt32(OffOutputSamplePid);
+        var captureState = (FrameCaptureState)_view.ReadInt32(OffCaptureState);
+        var captureReason = (FrameCaptureReason)_view.ReadInt32(OffCaptureReason);
+        if (_view.ReadInt32(OffSeq) != seq || target != targetPid || output != outputPid
+            || ReadTargetPid() != targetPid || ReadOutputTargetPid() != outputPid) return false;
+        state = captureState;
+        reason = captureReason;
+        return true;
+    }
+
     /// <summary>助手：读取目标进程号</summary>
     public int ReadTargetPid()
     {
@@ -111,7 +139,7 @@ internal sealed class MonitorShared : IDisposable
     }
 
     /// <summary>助手：发布一帧统计数据（含心跳时间，主进程据此判断助手是否存活）</summary>
-    public void Publish(double fps, double frameMs, double[] history, double cpuTemp, double gpuTemp, int targetPid, double originalFps, bool frameGenerationDetected, int outputPid = 0, double outputFps = double.NaN)
+    public void Publish(double fps, double frameMs, double[] history, double cpuTemp, double gpuTemp, int targetPid, double originalFps, bool frameGenerationDetected, int outputPid = 0, double outputFps = double.NaN, FrameCaptureState captureState = FrameCaptureState.NoTarget, FrameCaptureReason captureReason = FrameCaptureReason.NoTarget)
     {
         try
         {
@@ -120,6 +148,8 @@ internal sealed class MonitorShared : IDisposable
             _view.Write(OffSamplePid, targetPid);
             _view.Write(OffOutputSamplePid, outputPid);
             _view.Write(OffOutputFps, outputFps);
+            _view.Write(OffCaptureState, (int)captureState);
+            _view.Write(OffCaptureReason, (int)captureReason);
             _view.Write(OffFps, fps);
             _view.Write(OffOriginalFps, originalFps);
             _view.Write(OffFrameGeneration, frameGenerationDetected ? 1 : 0);

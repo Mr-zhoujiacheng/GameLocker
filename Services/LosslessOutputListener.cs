@@ -4,6 +4,13 @@ using System.Text;
 
 namespace GameLocker.Services;
 
+internal enum FrameCaptureState { NoTarget, WaitingForData, CaptureError, ValidData }
+internal enum FrameCaptureReason { NoTarget, Starting, AwaitingHeader, NoTargetRecords, InvalidRecords, UnsupportedPresentMode, MultipleChains, InsufficientSamples, InsufficientDuration, ProcessExited, CollectorError, Valid, HelperUnavailable }
+internal sealed record FrameCaptureDiagnostic(FrameCaptureState State, FrameCaptureReason Reason,
+    int TargetPid, int OutputPid, string Columns, IReadOnlyDictionary<string, long> FrameTypes,
+    IReadOnlyDictionary<string, long> Rejections, long ValidRecords, int ChainCount, int SampleCount,
+    string Chains, string? Error, bool ProcessExited, int? ExitCode);
+
 /// <summary>监听目标进程的实际显示时长；Lossless Scaling 仅接受独立显示链。</summary>
 internal sealed class LosslessOutputListener : IDisposable
 {
@@ -22,6 +29,76 @@ internal sealed class LosslessOutputListener : IDisposable
     private int[]? _columns;
     private string? _lastError;
 
+    private string _columnNames = "";
+    private readonly Dictionary<string, long> _frameTypes = new();
+    private readonly Dictionary<string, long> _rejections = new();
+    private long _validRecords;
+    private long _lastDiagnosticTick;
+    private bool _outputEnded;
+    private bool _readFailed;
+    private FrameCaptureReason _lastRejection = FrameCaptureReason.NoTargetRecords;
+    internal static string DiagnosticPath => Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData),
+        "GameLocker", Environment.GetCommandLineArgs().Contains("--monitor-helper") ? "monitor-frames-helper.log" : "monitor-frames-local.log");
+
+    private void Reject(string reason, FrameCaptureReason status = FrameCaptureReason.InvalidRecords)
+    {
+        _rejections[reason] = _rejections.GetValueOrDefault(reason) + 1;
+        _lastRejection = status;
+    }
+
+    internal FrameCaptureDiagnostic GetDiagnostic()
+    {
+        lock (_gate)
+        {
+            Prune(Stopwatch.GetTimestamp());
+            var exited = _process?.HasExited ?? false;
+            var chains = _chains.Where(pair => pair.Key.Pid == _outputPid).ToArray();
+            var samples = chains.Sum(pair => pair.Value.Count);
+            var state = FrameCaptureState.WaitingForData;
+            var reason = FrameCaptureReason.NoTargetRecords;
+            if (_targetPid <= 0 || _outputPid <= 0) { state = FrameCaptureState.NoTarget; reason = FrameCaptureReason.NoTarget; }
+            else if (exited || _outputEnded) { state = FrameCaptureState.CaptureError; reason = FrameCaptureReason.ProcessExited; }
+            else if (_readFailed || (_startAttempted && _process == null) || (_columns == null && _columnNames.Length > 0))
+            { state = FrameCaptureState.CaptureError; reason = FrameCaptureReason.CollectorError; }
+            else if (!_startAttempted) reason = FrameCaptureReason.Starting;
+            else if (_columns == null) reason = FrameCaptureReason.AwaitingHeader;
+            else if (chains.Length > 1) reason = FrameCaptureReason.MultipleChains;
+            else if (samples == 0) reason = _lastRejection;
+            else if (samples < 10) reason = FrameCaptureReason.InsufficientSamples;
+            else if (chains[0].Value.Sum(sample => sample.Interval) < 500) reason = FrameCaptureReason.InsufficientDuration;
+            else { state = FrameCaptureState.ValidData; reason = FrameCaptureReason.Valid; }
+            return new(state, reason, _targetPid, _outputPid, _columnNames,
+                new Dictionary<string, long>(_frameTypes), new Dictionary<string, long>(_rejections),
+                _validRecords, chains.Length, samples,
+                string.Join(";", _chains.Select(pair => $"{pair.Key.Pid}:0x{pair.Key.Chain:X}={pair.Value.Count}")),
+                _lastError, exited, exited ? _process!.ExitCode : null);
+        }
+    }
+
+    // Called by both sampling hosts, never by the per-frame CSV reader.
+    internal FrameCaptureDiagnostic SampleDiagnostic()
+    {
+        var snapshot = GetDiagnostic();
+        var now = Environment.TickCount64;
+        lock (_gate)
+        {
+            if (_lastDiagnosticTick != 0 && now - _lastDiagnosticTick < 5000) return snapshot;
+            _lastDiagnosticTick = now;
+        }
+        try
+        {
+            var path = DiagnosticPath;
+            Directory.CreateDirectory(Path.GetDirectoryName(path)!);
+            var text = $"[{DateTime.Now:O}] host={Environment.ProcessId} state={snapshot.State}/{snapshot.Reason} target={snapshot.TargetPid} output={snapshot.OutputPid} columns={snapshot.Columns} types={string.Join(';', snapshot.FrameTypes.Select(p => $"{p.Key}={p.Value}"))} rejected={string.Join(';', snapshot.Rejections.Select(p => $"{p.Key}={p.Value}"))} accepted={snapshot.ValidRecords} chains={snapshot.Chains} outputChains={snapshot.ChainCount} samples={snapshot.SampleCount} exited={snapshot.ProcessExited} exitCode={snapshot.ExitCode} error={snapshot.Error}\n";
+            if (text.Length > 16384) text = text[..16384] + "\n";
+            if (File.Exists(path) && new FileInfo(path).Length + Encoding.UTF8.GetByteCount(text) > 512 * 1024)
+                File.WriteAllText(path, "");
+            File.AppendAllText(path, text, Encoding.UTF8);
+        }
+        catch { }
+        return snapshot;
+    }
+
     private int _targetPid;
     private int _outputPid;
 
@@ -36,6 +113,10 @@ internal sealed class LosslessOutputListener : IDisposable
             _targetPid = targetPid;
             _outputPid = outputPid;
             _chains.Clear();
+            _frameTypes.Clear();
+            _rejections.Clear();
+            _validRecords = 0;
+            _lastRejection = FrameCaptureReason.NoTargetRecords;
         }
     }
 
@@ -118,11 +199,11 @@ internal sealed class LosslessOutputListener : IDisposable
         catch (Exception ex)
         {
             lock (_gate)
-                if (!_disposed) _lastError = ex.Message;
+                if (!_disposed) { _lastError = ex.Message; _readFailed = true; }
         }
         finally
         {
-            lock (_gate) _chains.Clear();
+            lock (_gate) { _chains.Clear(); _outputEnded = true; }
         }
     }
 
@@ -141,7 +222,7 @@ internal sealed class LosslessOutputListener : IDisposable
         catch (Exception ex)
         {
             lock (_gate)
-                if (!_disposed) _lastError = ex.Message;
+                if (!_disposed) { _lastError = ex.Message; _readFailed = true; }
         }
     }
 
@@ -153,9 +234,11 @@ internal sealed class LosslessOutputListener : IDisposable
             var now = Stopwatch.GetTimestamp();
             Prune(now);
             var fields = SplitCsv(line);
-            if (fields == null || fields.Count == 0) return;
+            if (fields == null || fields.Count == 0) { Reject("MalformedCsv"); return; }
             if (fields[0].Equals("Application", StringComparison.OrdinalIgnoreCase))
             {
+                _columnNames = string.Join(',', fields);
+                if (_columnNames.Length > 4096) _columnNames = _columnNames[..4096];
                 string[] names = { "Application", "ProcessID", "SwapChainAddress", "FrameType",
                     "DisplayedTime", "PresentMode" };
                 var columns = new int[names.Length];
@@ -174,20 +257,31 @@ internal sealed class LosslessOutputListener : IDisposable
                 _chains.Clear();
                 return;
             }
-            if (_columns == null || _columns.Any(column => column >= fields.Count)) return;
+            if (_columns == null) { Reject("NoHeader"); return; }
+            if (_columns.Any(column => column >= fields.Count)) { Reject("ShortRow"); return; }
             var c = _columns;
-            if (!int.TryParse(fields[c[1]], NumberStyles.None, CultureInfo.InvariantCulture, out var pid)
-                || pid <= 0 || (pid != _targetPid && pid != _outputPid)
-                || !TryParseChain(fields[c[2]], out var chain)
-                || !double.TryParse(fields[c[4]], NumberStyles.Float, CultureInfo.InvariantCulture, out var interval)
-                || !double.IsFinite(interval) || interval <= 0)
+            if (!int.TryParse(fields[c[1]], NumberStyles.None, CultureInfo.InvariantCulture, out var pid) || pid <= 0)
+            { Reject("InvalidPid"); return; }
+            if (pid != _targetPid && pid != _outputPid)
+            {
+                _rejections["OtherPid"] = _rejections.GetValueOrDefault("OtherPid") + 1;
                 return;
+            }
+            var frameType = fields[c[3]];
+            if (frameType.Length > 128) frameType = frameType[..128];
+            if (!_frameTypes.ContainsKey(frameType) && _frameTypes.Count >= 32) frameType = "(other)";
+            _frameTypes[frameType] = _frameTypes.GetValueOrDefault(frameType) + 1;
+            if (!TryParseChain(fields[c[2]], out var chain)) { Reject("InvalidChain"); return; }
+            if (!double.TryParse(fields[c[4]], NumberStyles.Float, CultureInfo.InvariantCulture, out var interval)
+                || !double.IsFinite(interval) || interval <= 0)
+            { Reject("InvalidDisplayedTime"); return; }
             var mode = fields[c[5]];
             var lossless = pid == _outputPid && (pid != _targetPid
                 || fields[c[0]].Equals("LosslessScaling.exe", StringComparison.OrdinalIgnoreCase));
             if (lossless && !mode.Contains("Independent Flip", StringComparison.OrdinalIgnoreCase)
                 && !mode.Equals("Hardware: Legacy Flip", StringComparison.OrdinalIgnoreCase))
-                return;
+            { Reject("UnsupportedPresentMode", FrameCaptureReason.UnsupportedPresentMode); return; }
+            _validRecords++;
 
             var key = (pid, chain);
             if (!_chains.TryGetValue(key, out var samples))

@@ -330,9 +330,6 @@ public sealed partial class GeneralPage : Page, ISettingsGamepad
         catch { }
     }
 
-    private void OnBackClick(object sender, Microsoft.UI.Xaml.RoutedEventArgs e) =>
-        App.Main?.ShowSettingsHub();
-
     private void OnToggleChanged(object sender, Microsoft.UI.Xaml.RoutedEventArgs e)
     {
         if (!_ready) return;

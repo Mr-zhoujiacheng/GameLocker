@@ -13,8 +13,10 @@ public sealed class MonitorSnapshot
     public double Fps;
     /// <summary>有明确原生帧标记时的 FPS；NaN 表示无法识别。</summary>
     public double OriginalFps = double.NaN;
-    /// <summary>观察到生成帧或活动的外部缩放输出，不能再把提交率当作输出率。</summary>
+    /// <summary>观察到受支持的生成帧标记；false 仅表示无法确认，不代表未开启。</summary>
     public bool FrameGenerationDetected;
+    internal FrameCaptureState CaptureState = FrameCaptureState.NoTarget;
+    internal FrameCaptureReason CaptureReason = FrameCaptureReason.NoTarget;
     /// <summary>经过呈现链路确认的输出 FPS；尚无可靠来源时为 NaN。</summary>
     public double OutputFps = double.NaN;
     /// <summary>平均帧时间（毫秒，0=不可用）</summary>
@@ -404,9 +406,8 @@ public static class MonitorService
         var n = ++_tickCount;
         var s = new MonitorSnapshot();
         var targetPid = NeedsFrameStats() ? ForegroundPid() : 0;
-        var losslessPid = NeedsFrameStats() ? LosslessScalingService.ActiveOutputPid() : 0;
+        var losslessPid = targetPid > 0 ? LosslessScalingService.ActiveOutputPid() : 0;
         var outputPid = losslessPid > 0 ? losslessPid : targetPid;
-        s.FrameGenerationDetected = losslessPid > 0;
         if (outputPid > 0 && IsElevated() && _losslessOutput is null)
         {
             _losslessOutput = new LosslessOutputListener();
@@ -494,6 +495,19 @@ public static class MonitorService
             s.OutputFps = _losslessOutput?.GetFps(outputPid)
                 ?? _shared?.ReadOutputFps(outputPid) ?? double.NaN;
         }
+        if (_losslessOutput is not null)
+        {
+            var diagnostic = _losslessOutput.SampleDiagnostic();
+            s.CaptureState = diagnostic.State;
+            s.CaptureReason = diagnostic.Reason;
+        }
+        else if (targetPid > 0)
+        {
+            s.CaptureState = FrameCaptureState.WaitingForData;
+            s.CaptureReason = FrameCaptureReason.HelperUnavailable;
+            if (_shared is not null)
+                _shared.TryReadCapture(targetPid, outputPid, out s.CaptureState, out s.CaptureReason);
+        }
         var outputTick = Environment.TickCount64;
         if (frameTargetChanged || _lastOutputPid != outputPid || outputPid <= 0)
         {
@@ -531,12 +545,24 @@ public static class MonitorService
     [DllImport("user32.dll")]
     private static extern uint GetWindowThreadProcessId(IntPtr hWnd, out uint processId);
 
+    [DllImport("user32.dll")]
+    private static extern IntPtr GetShellWindow();
+
+    [DllImport("user32.dll")]
+    private static extern IntPtr GetDesktopWindow();
+
+    [DllImport("user32.dll", CharSet = CharSet.Unicode)]
+    private static extern int GetClassName(IntPtr hwnd, System.Text.StringBuilder className, int maxCount);
+
     private static int ForegroundPid()
     {
         try
         {
             var hwnd = GetForegroundWindow();
-            if (hwnd == IntPtr.Zero) return 0;
+            if (hwnd == IntPtr.Zero || hwnd == GetShellWindow() || hwnd == GetDesktopWindow()) return 0;
+            var className = new System.Text.StringBuilder(256);
+            GetClassName(hwnd, className, className.Capacity);
+            if (className.ToString() is "Progman" or "WorkerW") return 0;
             GetWindowThreadProcessId(hwnd, out var pid);
             var v = (int)pid;
             // 启动器自身/桌面不算游戏

@@ -1022,6 +1022,8 @@ public sealed partial class AddItemPage : Page, ISettingsGamepad
     {
         base.OnNavigatedTo(e);
         _formIndex = 0;
+        // 弹窗提示条始终使用可点按的胶囊样式（表单、浏览两种模式保持一致）
+        HintBar.TouchMode = true;
         HintBar.SetHints("DPAD:选择|A:确认/切换|X:保存|B:返回");
 
         if (e.Parameter is LaunchItem item)
@@ -3274,7 +3276,8 @@ public sealed partial class AddItemPage : Page, ISettingsGamepad
         FormScroll.Visibility = Microsoft.UI.Xaml.Visibility.Visible;
         FooterBar.Visibility = Microsoft.UI.Xaml.Visibility.Visible;
         PageTitle.Text = _isGroup ? "编辑磁贴组" : _editing != null ? "编辑快捷项" : "添加快捷项";
-        HintBar.TouchMode = false;
+        // 弹窗提示条始终使用可点按的胶囊样式（表单、浏览两种模式保持一致）
+        HintBar.TouchMode = true;
         HintBar.SetHints("DPAD:选择|A:确认/切换|X:保存|B:返回");
         FocusForm(_formIndex);
     }

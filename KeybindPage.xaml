@@ -152,15 +152,7 @@
             <RowDefinition Height="Auto"/>
         </Grid.RowDefinitions>
 
-        <!-- 顶栏：标题 -->
-        <Grid Grid.Row="0" Padding="20,16,20,10">
-            <StackPanel Orientation="Horizontal" Spacing="10" VerticalAlignment="Center">
-                <Button x:Name="BackButton" Background="Transparent" BorderThickness="0" Click="OnBackClick" IsTabStop="False">
-                    <FontIcon Glyph="&#xE72B;" FontSize="16"/>
-                </Button>
-                <TextBlock Text="控制" FontSize="22" FontWeight="SemiBold" VerticalAlignment="Center"/>
-            </StackPanel>
-        </Grid>
+        <ctl:SettingsHeader Grid.Row="0" Title="控制" Subtitle="CONTROLS"/>
 
         <!-- 内容区：每张卡片就是一个手柄选中框，方向键整卡上下切换 -->
         <ScrollViewer x:Name="PageScroller" Grid.Row="1" Padding="20,4,20,18" VerticalScrollBarVisibility="Auto">

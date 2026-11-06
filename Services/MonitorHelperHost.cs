@@ -111,12 +111,10 @@ internal static class MonitorHelperHost
                 if (tick % 2 == 1 && PawnIoMsr.Available) cpuTemp = PawnIoMsr.ReadTemperature();
                 // 兼容旧版的 MSI 固件参考温度，不代表已确认的独立 GT 温度。
                 if (tick % 2 == 1) gpuTemp = MsiWmiProbe.ReadGpuTemperature();
-                var diagnostic = output?.SampleDiagnostic();
                 shared.Publish(fps, frameMs, history, cpuTemp, gpuTemp, targetPid,
                     etw?.GetOriginalFps() ?? double.NaN,
                     (etw?.FrameGenerationDetected ?? false) || (output?.HasGeneratedFrames(targetPid) ?? false),
-                    outputPid, output?.GetFps(outputPid) ?? double.NaN,
-                    diagnostic?.State ?? FrameCaptureState.NoTarget, diagnostic?.Reason ?? FrameCaptureReason.NoTarget);
+                    outputPid, output?.GetFps(outputPid) ?? double.NaN);
             }
         }
         finally

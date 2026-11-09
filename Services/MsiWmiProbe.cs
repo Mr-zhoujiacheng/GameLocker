@@ -163,8 +163,25 @@ internal static class MsiWmiProbe
         if (!EnsureReady() || !_methods.Contains("Get_Thermal")) return double.NaN;
         var (bytes, _) = Invoke("Get_Thermal", 3);
         // 第 0 字节 = 固件成败标志（0=失败），第 7 字节 = 摄氏度
-        if (bytes is not { Length: >= 8 } || bytes[0] == 0) return double.NaN;
-        return bytes[7] is > 0 and < 130 ? bytes[7] : double.NaN;
+        if (bytes is { Length: >= 8 } && bytes[0] != 0 && bytes[7] is > 0 and < 130) return bytes[7];
+
+        // 退路：部分固件（如掌机新 BIOS）把热区读数换到别的子功能，扫一遍取第一个合理值。
+        // 这些热区未经确认是独立 GT 核心温度，只作参考。
+        for (byte sub = 0; sub < SubfeatureCount; sub++)
+        {
+            var (probe, _) = Invoke("Get_Thermal", sub);
+            if (probe is { Length: >= 8 } && probe[0] != 0 && probe[7] is > 20 and < 110) return probe[7];
+        }
+        // 再退一步：部分机型的 Get_Temperature 输出包第 2 字节就是温度
+        if (_methods.Contains("Get_Temperature"))
+        {
+            for (byte sub = 0; sub < SubfeatureCount; sub++)
+            {
+                var (probe, _) = Invoke("Get_Temperature", sub);
+                if (probe is { Length: >= 2 } && probe[0] != 0 && probe[1] is > 20 and < 110) return probe[1];
+            }
+        }
+        return double.NaN;
     }
 
     /// <summary>调用一个 WMI 方法，参数为 32 字节包（第 1 字节 = 子功能号），返回输出包</summary>

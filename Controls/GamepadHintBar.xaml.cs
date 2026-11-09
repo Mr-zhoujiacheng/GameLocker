@@ -87,6 +87,17 @@ public sealed partial class GamepadHintBar : UserControl
         set => SetValue(CapsuleChipsProperty, value);
     }
 
+    /// <summary>高亮键帽：键帽加彩色光晕、胶囊加亮边，说明文字提亮（主页悬浮提示条使用）</summary>
+    public static readonly DependencyProperty HighlightProperty = DependencyProperty.Register(
+        nameof(Highlight), typeof(bool), typeof(GamepadHintBar),
+        new PropertyMetadata(false, (d, e) => ((GamepadHintBar)d).SetHints(((GamepadHintBar)d).Hints)));
+
+    public bool Highlight
+    {
+        get => (bool)GetValue(HighlightProperty);
+        set => SetValue(HighlightProperty, value);
+    }
+
     /// <summary>触屏点按某个图标（参数为按键标识 A/B/X/Y/DPAD/VIEW/MENU/LB/RB/L3/R3），
     /// 弹窗据此执行与手柄按键完全相同的指令</summary>
     public event Action<string>? HintTapped;
@@ -124,19 +135,20 @@ public sealed partial class GamepadHintBar : UserControl
             }
             return;
         }
-        RootPanel.Spacing = 7 * _scale;
+        RootPanel.Spacing = (Highlight ? 9 : 7) * _scale;
         foreach (var part in spec.Split('|'))
         {
             var kv = part.Split(':', 2);
             var key = kv[0].Trim();
             var label = kv.Length > 1 ? kv[1].Trim() : "";
-            RootPanel.Children.Add(BuildBadge(key, _scale));
+            RootPanel.Children.Add(BuildBadge(key, _scale, Highlight));
             if (label.Length > 0)
                 RootPanel.Children.Add(new TextBlock
                 {
                     Text = label,
-                    FontSize = 11 * _scale,
-                    Opacity = 0.75,
+                    FontSize = (Highlight ? 12.5 : 11) * _scale,
+                    FontWeight = Highlight ? FontWeights.SemiBold : FontWeights.Normal,
+                    Opacity = Highlight ? 0.95 : 0.75,
                     VerticalAlignment = VerticalAlignment.Center
                 });
         }
@@ -193,32 +205,70 @@ public sealed partial class GamepadHintBar : UserControl
     }
 
     /// <summary>按按键标识生成对应徽章；无对应按键图标的中文词渲染为文字胶囊</summary>
-    private static FrameworkElement BuildBadge(string key, double scale = DefaultScale) => key.ToUpperInvariant() switch
+    private static FrameworkElement BuildBadge(string key, double scale = DefaultScale, bool highlight = false) => key.ToUpperInvariant() switch
     {
-        "A" => Circle("A", ColorFromRgb(0x10, 0x7C, 0x10), scale),   // 绿
-        "B" => Circle("B", ColorFromRgb(0xD8, 0x3B, 0x01), scale),   // 红
-        "X" => Circle("X", ColorFromRgb(0x00, 0x78, 0xD4), scale),   // 蓝
-        "Y" => Circle("Y", ColorFromRgb(0xFF, 0xB9, 0x00), scale, darkText: true), // 黄
-        "DPAD" => Pill("\u271A", scale: scale),                              // ✚ 十字方向键
-        "VIEW" => Pill("\uE713", icon: true, scale: scale),                  // 齿轮（View=进入设置）
-        "MENU" => Pill("\uE700", icon: true, scale: scale),                  // ≡ 菜单（Menu/Start）
-        "L3" => Pill("L3", scale: scale),
-        "R3" => Pill("R3", scale: scale),
-        "LB" => Pill("LB", scale: scale),
-        "RB" => Pill("RB", scale: scale),
-        _ => Pill(key, scale: scale)
+        "A" => Circle("A", ColorFromRgb(0x10, 0x7C, 0x10), scale, highlight: highlight),   // 绿
+        "B" => Circle("B", ColorFromRgb(0xD8, 0x3B, 0x01), scale, highlight: highlight),   // 红
+        "X" => Circle("X", ColorFromRgb(0x00, 0x78, 0xD4), scale, highlight: highlight),   // 蓝
+        "Y" => Circle("Y", ColorFromRgb(0xFF, 0xB9, 0x00), scale, darkText: true, highlight: highlight), // 黄
+        "DPAD" => Pill("\u271A", scale: scale, highlight: highlight),                              // ✚ 十字方向键
+        "VIEW" => Pill("\uE713", icon: true, scale: scale, highlight: highlight),                  // 齿轮（View=进入设置）
+        "MENU" => Pill("\uE700", icon: true, scale: scale, highlight: highlight),                  // ≡ 菜单（Menu/Start）
+        "L3" => Pill("L3", scale: scale, highlight: highlight),
+        "R3" => Pill("R3", scale: scale, highlight: highlight),
+        "LB" => Pill("LB", scale: scale, highlight: highlight),
+        "RB" => Pill("RB", scale: scale, highlight: highlight),
+        "UD" => Pill("\u2195", scale: scale, fontScale: 1.2, highlight: highlight),   // ↕ 十字键上下
+        "LR" => Pill("\u2194", scale: scale, fontScale: 1.2, highlight: highlight),   // ↔ 十字键左右
+        "RS" => Stick(scale, highlight),                   // 右摇杆
+        _ => Pill(key, scale: scale, highlight: highlight)
     };
+
+    /// <summary>右摇杆徽章：圆环 + 中心圆点，纯图形表示摇杆</summary>
+    private static FrameworkElement Stick(double scale = DefaultScale, bool highlight = false)
+    {
+        var d = 12 * scale;
+        var ring = new Border
+        {
+            Width = d,
+            Height = d,
+            CornerRadius = new CornerRadius(d / 2),
+            BorderBrush = new SolidColorBrush(White),
+            BorderThickness = new Thickness((highlight ? 1.6 : 1.4) * scale),
+            Child = new Border
+            {
+                Width = 4 * scale,
+                Height = 4 * scale,
+                CornerRadius = new CornerRadius(2 * scale),
+                Background = new SolidColorBrush(White),
+                HorizontalAlignment = HorizontalAlignment.Center,
+                VerticalAlignment = VerticalAlignment.Center
+            }
+        };
+        return new Border
+        {
+            Padding = new Thickness(4 * scale, 2 * scale, 4 * scale, 2 * scale),
+            CornerRadius = new CornerRadius(9 * scale),
+            Background = new SolidColorBrush(Color.FromArgb(highlight ? (byte)0x1F : (byte)0x33, 0xFF, 0xFF, 0xFF)),
+            BorderBrush = null,
+            BorderThickness = new Thickness(0),
+            VerticalAlignment = VerticalAlignment.Center,
+            HorizontalAlignment = HorizontalAlignment.Center,
+            Child = ring
+        };
+    }
 
     private static Color ColorFromRgb(byte r, byte g, byte b) => Color.FromArgb(0xFF, r, g, b);
 
     /// <summary>白色（Windows.UI/Microsoft.UI 两个 Colors 类同名，避免歧义直接构造）</summary>
     private static readonly Color White = Color.FromArgb(0xFF, 0xFF, 0xFF, 0xFF);
 
-    /// <summary>圆形按键徽章（A/B/X/Y）：彩色圆 + 居中字母</summary>
-    private static Border Circle(string text, Color fill, double scale = DefaultScale, bool darkText = false)
+    /// <summary>圆形按键徽章（A/B/X/Y）：彩色圆 + 居中字母；highlight 时外面套一圈同色光晕</summary>
+    private static FrameworkElement Circle(string text, Color fill, double scale = DefaultScale,
+        bool darkText = false, bool highlight = false)
     {
         var d = 18 * scale;
-        return new Border
+        var circle = new Border
         {
             Width = d,
             Height = d,
@@ -237,22 +287,28 @@ public sealed partial class GamepadHintBar : UserControl
                 VerticalAlignment = VerticalAlignment.Center
             }
         };
+        // 简约：键帽只用实色圆，不加光晕/外圈
+        return circle;
     }
 
     /// <summary>胶囊徽章（LB/RB/L3/R3/方向/View/Menu）：半透明底 + 居中文字或图形</summary>
-    private static Border Pill(string content, bool icon = false, double scale = DefaultScale)
+    private static Border Pill(string content, bool icon = false, double scale = DefaultScale,
+        double fontScale = 1, bool highlight = false)
     {
         return new Border
         {
             Padding = new Thickness(5 * scale, 0.5 * scale, 5 * scale, 1.5 * scale),
             CornerRadius = new CornerRadius(9 * scale),
-            Background = new SolidColorBrush(Color.FromArgb(0x33, 0xFF, 0xFF, 0xFF)),
+            // 主页提示条（highlight）：极淡底、无描边，靠文字本身醒目
+            Background = new SolidColorBrush(Color.FromArgb(highlight ? (byte)0x1F : (byte)0x33, 0xFF, 0xFF, 0xFF)),
+            BorderBrush = null,
+            BorderThickness = new Thickness(0),
             VerticalAlignment = VerticalAlignment.Center,
             HorizontalAlignment = HorizontalAlignment.Center,
             Child = new TextBlock
             {
                 Text = content,
-                FontSize = (icon ? 11 : 10) * scale,
+                FontSize = (icon ? 11 : 10) * scale * fontScale,
                 FontWeight = FontWeights.SemiBold,
                 FontFamily = new FontFamily(icon ? "Segoe MDL2 Assets" : "Segoe UI"),
                 Foreground = new SolidColorBrush(White),

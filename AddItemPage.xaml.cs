@@ -159,6 +159,9 @@ public sealed partial class AddItemPage : Page, ISettingsGamepad
     /// <summary>性能监控：胶囊右侧的勾/叉状态图标（与 _monOptBoxes 同下标）</summary>
     private FontIcon[] _monOptMarks = [];
 
+    /// <summary>性能控制：快捷项胶囊按钮（电源模式 / 锁帧 / 功耗 / 频率 / 睿频）</summary>
+    private ToggleButton[] _perfOptBoxes = [];
+
     /// <summary>正在按配置回填监控胶囊：此时不触发"至少保留一项"的自动勾回</summary>
     private bool _fillingMonitorMetrics;
 
@@ -300,6 +303,18 @@ public sealed partial class AddItemPage : Page, ISettingsGamepad
             chip.Checked += (_, _) => ApplySysChipVisual(chip, mark, true);
             chip.Unchecked += (_, _) => ApplySysChipVisual(chip, mark, false);
         }
+        // 性能控制快捷项：电源模式 / 全局锁帧（与系统小组件同一套选中胶囊视觉）
+        _perfOptBoxes = [PerfOptPowerMode, PerfOptFrameLimit, PerfOptPowerLimit, PerfOptCpuFrequency, PerfOptCpuBoost];
+        PerfOptPowerMode.Checked += (_, _) => ApplySysChipVisual(PerfOptPowerMode, PerfOptPowerModeMark, true);
+        PerfOptPowerMode.Unchecked += (_, _) => ApplySysChipVisual(PerfOptPowerMode, PerfOptPowerModeMark, false);
+        PerfOptFrameLimit.Checked += (_, _) => ApplySysChipVisual(PerfOptFrameLimit, PerfOptFrameLimitMark, true);
+        PerfOptFrameLimit.Unchecked += (_, _) => ApplySysChipVisual(PerfOptFrameLimit, PerfOptFrameLimitMark, false);
+        PerfOptPowerLimit.Checked += (_, _) => ApplySysChipVisual(PerfOptPowerLimit, PerfOptPowerLimitMark, true);
+        PerfOptPowerLimit.Unchecked += (_, _) => ApplySysChipVisual(PerfOptPowerLimit, PerfOptPowerLimitMark, false);
+        PerfOptCpuFrequency.Checked += (_, _) => ApplySysChipVisual(PerfOptCpuFrequency, PerfOptCpuFrequencyMark, true);
+        PerfOptCpuFrequency.Unchecked += (_, _) => ApplySysChipVisual(PerfOptCpuFrequency, PerfOptCpuFrequencyMark, false);
+        PerfOptCpuBoost.Checked += (_, _) => ApplySysChipVisual(PerfOptCpuBoost, PerfOptCpuBoostMark, true);
+        PerfOptCpuBoost.Unchecked += (_, _) => ApplySysChipVisual(PerfOptCpuBoost, PerfOptCpuBoostMark, false);
         _monOptBoxes = [MonOptFps, MonOptFrameTime, MonOptGraph, MonOptMemory,
             MonOptCpuUsage, MonOptCpuFreq, MonOptCpuTemp, MonOptCpuPower,
             MonOptGpuUsage, MonOptGpuFreq, MonOptGpuPower, MonOptGpuTemp,
@@ -643,6 +658,7 @@ public sealed partial class AddItemPage : Page, ISettingsGamepad
         // 组件标题（仅手柄映射，位于类型/大小/颜色行上方）/ 系统小组件的启用项 / 类型 / 磁贴大小 / 磁贴颜色（各自容器隐藏时跳过）
         if (TitleColumn.Visibility == vis) list.Add(WidgetTitleBox);
         if (SystemOptionsPanel.Visibility == vis) list.AddRange(_sysOptBoxes);
+        if (PerformanceOptionsPanel.Visibility == vis) list.AddRange(_perfOptBoxes);
         if (KindColumn.Visibility == vis) { list.Add(AppRadio); list.Add(UrlRadio); list.Add(FolderRadio); }
         if (SizeColumn.Visibility == vis) { list.Add(SmallSizeRadio); list.Add(WideSizeRadio); list.Add(LargeSizeRadio); }
         if (ColorColumn.Visibility == vis) list.AddRange(ColorRadios);
@@ -733,7 +749,7 @@ public sealed partial class AddItemPage : Page, ISettingsGamepad
         AppRadio.IsChecked = item.Kind == LaunchKind.App;
         UrlRadio.IsChecked = item.Kind == LaunchKind.Url;
         FolderRadio.IsChecked = item.Kind == LaunchKind.Folder;
-        CheckSize(item.Size);
+        CheckSize(_isWidget && item.WidgetKind == WidgetKind.Performance ? TileSize.Large : item.Size);
         CheckColor(item.TileColor);
         ShowPreview(item.IconFile);
         ShowCoverPreview(item.CoverFile);
@@ -758,7 +774,7 @@ public sealed partial class AddItemPage : Page, ISettingsGamepad
             CoverRow.Visibility = w;
             // 音乐固定 2×2、系统固定"长"不可改大小；其余小组件（图片组/设置/电源/天气/映射/修改器/游戏存档/手柄映射）可编辑大小。
             // 颜色：图片组不需要（整块铺图）
-            SizeColumn.Visibility = isPhoto || item.WidgetKind is WidgetKind.Settings or WidgetKind.Power or WidgetKind.Weather or WidgetKind.Mapping or WidgetKind.Trainer or WidgetKind.Backup or WidgetKind.GamepadMap or WidgetKind.OptiScaler or WidgetKind.RecycleBin or WidgetKind.Foreground or WidgetKind.Monitor or WidgetKind.LosslessScaling or WidgetKind.Keyboard or WidgetKind.Clash or WidgetKind.ScreenTranslate
+            SizeColumn.Visibility = isPhoto || item.WidgetKind is WidgetKind.Settings or WidgetKind.Power or WidgetKind.Weather or WidgetKind.Mapping or WidgetKind.Trainer or WidgetKind.Backup or WidgetKind.GamepadMap or WidgetKind.OptiScaler or WidgetKind.RecycleBin or WidgetKind.Foreground or WidgetKind.Monitor or WidgetKind.DownloadMode or WidgetKind.LosslessScaling or WidgetKind.Keyboard or WidgetKind.Clash or WidgetKind.ScreenTranslate
                 ? Microsoft.UI.Xaml.Visibility.Visible : w;
             ColorColumn.Visibility = isPhoto || isWallpaper || TileStyle.HidesTileColor
                 ? w : Microsoft.UI.Xaml.Visibility.Visible;
@@ -801,6 +817,12 @@ public sealed partial class AddItemPage : Page, ISettingsGamepad
                 CheckMonitorColor(item.MonitorColor);
                 MonAlwaysOnToggle.IsOn = item.MonitorAlwaysOn;
                 CheckMonitorMetrics(item.MonitorMetrics);
+            }
+            // 下载模式：名称固定为「下载模式」，不参与编辑（时长与完成动作在磁贴 A 进入时选择）
+            if (item.WidgetKind == WidgetKind.DownloadMode)
+            {
+                if (string.IsNullOrWhiteSpace(NameBox.Text)) NameBox.Text = "下载模式";
+                NameBox.Visibility = w;
             }
             // 屏幕键盘：大小、颜色 + 输入方式、贴边方向、字母排列（磁贴固定显示"屏幕键盘"，无需自定义名称）
             var isKeyboard = item.WidgetKind == WidgetKind.Keyboard;
@@ -960,6 +982,24 @@ public sealed partial class AddItemPage : Page, ISettingsGamepad
                 SystemOptionsPanel.Visibility = Microsoft.UI.Xaml.Visibility.Visible;
                 CheckSystemOptions(SystemPanelService.NormalizeMask(item.SystemOptionMask));
             }
+            // 性能控制：磁贴按当前查看项显示名称/读数（不展示自定义名称）→ 隐藏顶部"显示名称"输入框；
+            // 大小固定 2×2 大磁贴（SizeColumn 已隐藏），仅颜色可改
+            if (item.WidgetKind == WidgetKind.Performance)
+            {
+                if (string.IsNullOrWhiteSpace(NameBox.Text)) NameBox.Text = "性能控制";
+                NameBox.Visibility = w;
+                PerformanceOptionsPanel.Visibility = Microsoft.UI.Xaml.Visibility.Visible;
+                PerfOptPowerMode.IsChecked = item.PerformancePowerMode;
+                ApplySysChipVisual(PerfOptPowerMode, PerfOptPowerModeMark, item.PerformancePowerMode);
+                PerfOptFrameLimit.IsChecked = item.PerformanceFrameLimit;
+                ApplySysChipVisual(PerfOptFrameLimit, PerfOptFrameLimitMark, item.PerformanceFrameLimit);
+                PerfOptPowerLimit.IsChecked = item.PerformancePowerLimit;
+                ApplySysChipVisual(PerfOptPowerLimit, PerfOptPowerLimitMark, item.PerformancePowerLimit);
+                PerfOptCpuFrequency.IsChecked = item.PerformanceCpuFrequency;
+                ApplySysChipVisual(PerfOptCpuFrequency, PerfOptCpuFrequencyMark, item.PerformanceCpuFrequency);
+                PerfOptCpuBoost.IsChecked = item.PerformanceCpuBoost;
+                ApplySysChipVisual(PerfOptCpuBoost, PerfOptCpuBoostMark, item.PerformanceCpuBoost);
+            }
             if (isMapping)
             {
                 _pendingPad = (int)item.MappingPad;
@@ -995,6 +1035,7 @@ public sealed partial class AddItemPage : Page, ISettingsGamepad
         {
             TitleColumn.Visibility = Microsoft.UI.Xaml.Visibility.Collapsed;
             SystemOptionsPanel.Visibility = Microsoft.UI.Xaml.Visibility.Collapsed;
+            PerformanceOptionsPanel.Visibility = Microsoft.UI.Xaml.Visibility.Collapsed;
             SizeColumn.Visibility = Microsoft.UI.Xaml.Visibility.Visible;
             ColorColumn.Visibility = TileStyle.HidesTileColor
                 ? Microsoft.UI.Xaml.Visibility.Collapsed : Microsoft.UI.Xaml.Visibility.Visible;
@@ -1029,28 +1070,7 @@ public sealed partial class AddItemPage : Page, ISettingsGamepad
         if (e.Parameter is LaunchItem item)
         {
             InitForEdit(item);
-            PageTitle.Text = _isWidget
-                ? (item.WidgetKind == WidgetKind.Photos ? "编辑图片组"
-                    : item.WidgetKind == WidgetKind.Settings ? "编辑设置磁贴"
-                    : item.WidgetKind == WidgetKind.Power ? "编辑电源磁贴"
-                    : item.WidgetKind == WidgetKind.Weather ? "编辑天气小组件"
-                    : item.WidgetKind == WidgetKind.Mapping ? "编辑映射小组件"
-                    : item.WidgetKind == WidgetKind.Trainer ? "编辑修改器小组件"
-                    : item.WidgetKind == WidgetKind.Backup ? "编辑游戏存档小组件"
-                    : item.WidgetKind == WidgetKind.GamepadMap ? "编辑手柄映射小组件"
-                    : item.WidgetKind == WidgetKind.OptiScaler ? "编辑 OptiScaler 小组件"
-                    : item.WidgetKind == WidgetKind.RecycleBin ? "编辑回收站小组件"
-                    : item.WidgetKind == WidgetKind.Foreground ? "编辑前台应用小组件"
-                    : item.WidgetKind == WidgetKind.System ? "编辑系统小组件"
-                    : item.WidgetKind == WidgetKind.Monitor ? "编辑性能监控小组件"
-                    : item.WidgetKind == WidgetKind.FileTransfer ? "编辑文件传输小组件"
-                    : item.WidgetKind == WidgetKind.LosslessScaling ? "编辑小黄鸭小组件"
-                    : item.WidgetKind == WidgetKind.Keyboard ? "编辑屏幕键盘小组件"
-                    : item.WidgetKind == WidgetKind.Clash ? "编辑 Clash 小组件"
-                    : item.WidgetKind == WidgetKind.ScreenTranslate ? "编辑屏幕翻译小组件"
-                    : item.WidgetKind == WidgetKind.Wallpaper ? "编辑壁纸小组件"
-                    : item.WidgetKind == WidgetKind.Drawer ? "编辑磁贴抽屉" : "编辑音乐小组件")
-                : _isGroup ? "编辑磁贴组" : "编辑快捷项";
+            ApplyEditPageTitle();
         }
         else
         {
@@ -1090,10 +1110,12 @@ public sealed partial class AddItemPage : Page, ISettingsGamepad
             _drawerCursor = 0;
             TitleColumn.Visibility = Microsoft.UI.Xaml.Visibility.Collapsed;
             SystemOptionsPanel.Visibility = Microsoft.UI.Xaml.Visibility.Collapsed;
+            PerformanceOptionsPanel.Visibility = Microsoft.UI.Xaml.Visibility.Collapsed;
             WidgetTitleBox.Text = "";
             _pendingIcon = null;
             _pendingCover = null;
             PageTitle.Text = "添加快捷项";
+            PageSubtitle.Text = "NEW SHORTCUT";
             NameBox.Visibility = Microsoft.UI.Xaml.Visibility.Visible;
             NameBox.Header = "显示名称";
             NameBox.PlaceholderText = "例如：Steam";
@@ -1750,6 +1772,11 @@ public sealed partial class AddItemPage : Page, ISettingsGamepad
             if (ReferenceEquals(b, cursor)) b.BorderBrush = CursorBrush;
             else b.ClearValue(ToggleButton.BorderBrushProperty);
         }
+        foreach (var b in _perfOptBoxes)
+        {
+            if (ReferenceEquals(b, cursor)) b.BorderBrush = CursorBrush;
+            else b.ClearValue(ToggleButton.BorderBrushProperty);
+        }
     }
 
     /// <summary>高亮光标所在的手柄图热区（白框），其余热区收起描边</summary>
@@ -1788,6 +1815,13 @@ public sealed partial class AddItemPage : Page, ISettingsGamepad
             FormScroll.ChangeView(null, Math.Clamp(target.Value, 0, FormScroll.ScrollableHeight), null, true);
         }
         catch { }
+    }
+
+    /// <summary>顶栏返回：挑选中先退出挑选，否则放弃本次编辑回到主页（与 B 键一致）</summary>
+    private void OnPageBackClick(object sender, RoutedEventArgs e)
+    {
+        if (_browsing) ExitBrowse();
+        else Cancel();
     }
 
     private void Cancel()
@@ -1950,6 +1984,12 @@ public sealed partial class AddItemPage : Page, ISettingsGamepad
                     it.LosslessProfile = string.IsNullOrWhiteSpace(profile) ? null : profile;
                     LosslessScalingService.InvalidateCache(); // 路径变化后让磁贴状态立即重新检测
                 }
+                else if (it.WidgetKind == WidgetKind.DownloadMode)
+                {
+                    // 下载模式：只改名称、大小与颜色（下载时长与完成动作在磁贴 A 进入时选择）
+                    it.Size = SelectedSize();
+                    it.TileColor = SelectedColor();
+                }
                 else if (it.WidgetKind == WidgetKind.Clash)
                 {
                     // 小猫咪：改大小、颜色与订阅链接 / 代理模式 / 本地代理端口 / 指定节点；名称固定为 "Clash"
@@ -2081,6 +2121,17 @@ public sealed partial class AddItemPage : Page, ISettingsGamepad
                     it.SystemOptionMask = mask;
                     // 当前停留的项被去掉了：回落到第一个勾选项，避免磁贴停在不可切换的项上
                     it.SystemOption = SystemPanelService.NormalizeOption(mask, it.SystemOption);
+                }
+                else if (it.WidgetKind == WidgetKind.Performance)
+                {
+                    // 性能控制：大小固定"大"（2×2）；改颜色与快捷项开关（电源模式 / 全局锁帧）
+                    it.Size = TileSize.Large;
+                    it.TileColor = SelectedColor();
+                    it.PerformancePowerMode = PerfOptPowerMode.IsChecked == true;
+                    it.PerformanceFrameLimit = PerfOptFrameLimit.IsChecked == true;
+                    it.PerformancePowerLimit = PerfOptPowerLimit.IsChecked == true;
+                    it.PerformanceCpuFrequency = PerfOptCpuFrequency.IsChecked == true;
+                    it.PerformanceCpuBoost = PerfOptCpuBoost.IsChecked == true;
                 }
                 else if (it.WidgetKind == WidgetKind.Drawer)
                 {
@@ -3264,6 +3315,18 @@ public sealed partial class AddItemPage : Page, ISettingsGamepad
         return string.IsNullOrEmpty(label) ? $"{type} ({root})" : $"{label} ({root})";
     }
 
+    /// <summary>编辑页标题：小组件统一显示“小组件设置”，其余保持各自标题；副标题为对应英文标签</summary>
+    private void ApplyEditPageTitle()
+    {
+        var (title, subtitle) = _editing is null ? ("添加快捷项", "NEW SHORTCUT")
+            : _isGroup ? ("编辑磁贴组", "TILE GROUP")
+            : _isWidget && _editing.WidgetKind == WidgetKind.Drawer ? ("编辑磁贴抽屉", "DRAWER")
+            : _isWidget ? ("编辑", "WIDGET")
+            : ("编辑快捷项", "SHORTCUT");
+        PageTitle.Text = title;
+        PageSubtitle.Text = subtitle;
+    }
+
     private void ExitBrowse()
     {
         _browsing = false;
@@ -3275,7 +3338,7 @@ public sealed partial class AddItemPage : Page, ISettingsGamepad
         BrowsePanel.Visibility = Microsoft.UI.Xaml.Visibility.Collapsed;
         FormScroll.Visibility = Microsoft.UI.Xaml.Visibility.Visible;
         FooterBar.Visibility = Microsoft.UI.Xaml.Visibility.Visible;
-        PageTitle.Text = _isGroup ? "编辑磁贴组" : _editing != null ? "编辑快捷项" : "添加快捷项";
+        ApplyEditPageTitle();
         // 弹窗提示条始终使用可点按的胶囊样式（表单、浏览两种模式保持一致）
         HintBar.TouchMode = true;
         HintBar.SetHints("DPAD:选择|A:确认/切换|X:保存|B:返回");

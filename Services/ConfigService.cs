@@ -29,6 +29,10 @@ public static class ConfigService
                 {
                     MigrateTileSets(items);
                     MigrateClashName(items);
+                    var performanceTiles = AllItems(items).Where(it => it.Kind == LaunchKind.Widget
+                        && it.WidgetKind == WidgetKind.Performance && it.Size != TileSize.Large).ToList();
+                    foreach (var tile in performanceTiles) tile.Size = TileSize.Large;
+                    if (performanceTiles.Count > 0) Save(items);
                     EnsureSettingsTile(items);
                     return items;
                 }

@@ -250,6 +250,40 @@
                     </StackPanel>
                 </Button>
 
+                <!-- 性能控制：橙 -->
+                <Button x:Name="PerformanceWidgetCard" Tag="performance" Style="{StaticResource WidgetCardStyle}" Click="OnAddClick"
+                        ToolTipService.ToolTip="默认大组件 · 右摇杆←→切换查看 · Y 打开性能设置">
+                    <Button.Background>
+                        <LinearGradientBrush StartPoint="0,0" EndPoint="0,1">
+                            <GradientStop Color="#12FFFFFF" Offset="0"/>
+                            <GradientStop Color="#38FF9A4D" Offset="1"/>
+                        </LinearGradientBrush>
+                    </Button.Background>
+                    <StackPanel Spacing="10">
+                        <Viewbox MaxHeight="126" Stretch="Uniform" HorizontalAlignment="Center">
+                            <ContentPresenter x:Name="PerformancePreviewHost"/>
+                        </Viewbox>
+                        <TextBlock Text="性能控制" FontSize="14" HorizontalAlignment="Center"/>
+                    </StackPanel>
+                </Button>
+
+                <!-- 下载模式：紫 -->
+                <Button x:Name="DownloadModeWidgetCard" Tag="downloadmode" Style="{StaticResource WidgetCardStyle}" Click="OnAddClick"
+                        ToolTipService.ToolTip="A 进入：设定下载时长与完成动作，熄屏静音只留剩余时间、网速与时钟">
+                    <Button.Background>
+                        <LinearGradientBrush StartPoint="0,0" EndPoint="0,1">
+                            <GradientStop Color="#12FFFFFF" Offset="0"/>
+                            <GradientStop Color="#38A98BFF" Offset="1"/>
+                        </LinearGradientBrush>
+                    </Button.Background>
+                    <StackPanel Spacing="10">
+                        <Viewbox MaxHeight="126" Stretch="Uniform" HorizontalAlignment="Center">
+                            <ContentPresenter x:Name="DownloadPreviewHost"/>
+                        </Viewbox>
+                        <TextBlock Text="下载模式" FontSize="14" HorizontalAlignment="Center"/>
+                    </StackPanel>
+                </Button>
+
                 <!-- 性能监控：黄绿 -->
                 <Button x:Name="MonitorWidgetCard" Tag="monitor" Style="{StaticResource WidgetCardStyle}" Click="OnAddClick"
                         ToolTipService.ToolTip="A 开启置顶监控条：帧率、CPU、GPU、电池、内存与当前时间">

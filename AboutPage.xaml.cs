@@ -78,8 +78,10 @@ public sealed partial class AboutPage : Page, ISettingsGamepad
         };
 
         // 卡片网格：宽窗口两列并整块居中，侧边栏窄窗口回成一列
-        ContentScroll.SizeChanged += (_, _) => LayoutCards();
-        Loaded += (_, _) => { LayoutCards(); UpdateCursor(_index); };
+        ContentScroll.SizeChanged += (_, _) => { LayoutCards(); CenterSlogan(); };
+        ContentStack.SizeChanged += (_, _) => CenterSlogan();
+        SloganText.SizeChanged += (_, _) => CenterSlogan();
+        Loaded += (_, _) => { LayoutCards(); CenterSlogan(); UpdateCursor(_index); };
 
         ShowKnownUpdate();
         RestoreDownloadState();
@@ -105,6 +107,25 @@ public sealed partial class AboutPage : Page, ISettingsGamepad
             Grid.SetRow(_cards[i], two ? i / 2 : i);
             Grid.SetColumn(_cards[i], two ? i % 2 : 0);
         }
+    }
+
+    /// <summary>像素标语在「内容下方的空白带」里垂直居中；空间不足时退回固定间距，随内容滚动</summary>
+    private void CenterSlogan()
+    {
+        if (ContentScroll is null || ContentStack is null || SloganText is null) return;
+        var viewport = ContentScroll.ViewportHeight;
+        if (viewport <= 0) return;
+
+        var sloganHeight = SloganText.ActualHeight;
+        // 内容本体高度 = 整栈高度 - 标语自身高度 - 标语上边距 - 其上一项与标语的间距
+        var body = ContentStack.ActualHeight - sloganHeight
+                   - SloganText.Margin.Top - ContentStack.Spacing;
+        var band = viewport - body;
+        var gap = Math.Clamp((band - sloganHeight) / 2, 16, 260);
+
+        if (Math.Abs(gap - SloganText.Margin.Top) < 1) return;
+        SloganText.Margin = new Thickness(
+            SloganText.Margin.Left, gap, SloganText.Margin.Right, SloganText.Margin.Bottom);
     }
 
     /// <summary>未配置的入口显示为提示文字，避免空行</summary>

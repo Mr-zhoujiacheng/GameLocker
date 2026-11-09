@@ -114,8 +114,14 @@ public sealed partial class MainPage : Page
     /// <summary>当前显示的系统小组件磁贴引用（重排时重建；右摇杆切换面板项/读数变化时只改内容）</summary>
     private readonly Dictionary<TileStyle.SystemTileRefs, LaunchItem> _sysRefs = [];
 
+    /// <summary>当前显示的性能控制磁贴引用（重排时重建；右摇杆切换查看项/读数变化时只改内容）</summary>
+    private readonly Dictionary<TileStyle.PerformanceTileRefs, LaunchItem> _perfRefs = [];
+
     /// <summary>当前显示的性能监控磁贴引用（重排时重建；开关或读数变化时只改文字）</summary>
     private readonly Dictionary<TileStyle.MonitorTileRefs, LaunchItem> _monRefs = [];
+
+    /// <summary>当前显示的下载模式磁贴引用（重排时重建；剩余时间每秒刷新）</summary>
+    private readonly Dictionary<TileStyle.DownloadModeTileRefs, LaunchItem> _dlRefs = [];
 
     /// <summary>当前显示的小黄鸭磁贴引用（重排时重建；安装/运行状态变化时只改文字与圆点）</summary>
     private readonly Dictionary<TileStyle.LosslessTileRefs, LaunchItem> _lossRefs = [];
@@ -152,12 +158,22 @@ public sealed partial class MainPage : Page
             ApplyDrawerWidth(); // 全屏/居中模式下抽屉按窗口宽度比例收窄并居中（须在首次重排之前生效）
             LayoutTiles();
             UpdateSelection();
+            RefreshPerformanceCacheAsync(); // 磁贴建好后立即补读性能缓存（含 CPU 频率/睿频），避免显示“不可用”
             await UpgradeIconCacheAsync();
         };
 
         // 顶栏时钟：每秒刷新（页面离开时停止，避免后台空转）
         _clockTimer = new DispatcherTimer { Interval = TimeSpan.FromSeconds(1) };
-        _clockTimer.Tick += (_, _) => UpdateClock();
+        _clockTimer.Tick += (_, _) =>
+        {
+            UpdateClock();
+            if (_perfOpen)
+            {
+                UpdatePerformanceCursor();
+                _ = RefreshDeviceStatusAsync();
+                if (_perfHelpRow != null) ShowPerformanceHelp(_perfHelpRow);
+            }
+        };
 
         // 系统小组件读数刷新：音量/亮度/射频被外部改动（系统音量键、设置页、硬件开关）时同步磁贴
         _sysTimer = new DispatcherTimer { Interval = TimeSpan.FromMilliseconds(1500) };
@@ -212,6 +228,16 @@ public sealed partial class MainPage : Page
         ChoiceHintBar.HintTapped += key => HandleChoice(GamepadHintBar.ToGamepadButtons(key));
         RenameHintBar.HintTapped += key => HandleRename(GamepadHintBar.ToGamepadButtons(key));
         PowerHintBar.HintTapped += key => HandlePower(GamepadHintBar.ToGamepadButtons(key));
+        PerformanceMask.Tapped += (_, _) => ClosePerformanceMenu();
+        _perfCards = [PerfEco, PerfBalanced, PerfPerformance];
+        for (var i = 0; i < _perfCards.Length; i++)
+        {
+            var index = i;
+            // 点一次选中，再点一次应用（与添加磁贴卡片一致）；手柄 A 才是主要入口
+            _perfCards[i].Tapped += (_, e) => { e.Handled = true; ChoosePerformanceCard(index); };
+        }
+        BuildPerformanceSettingsUi();
+        PerformanceHintBar.HintTapped += key => HandlePerformance(GamepadHintBar.ToGamepadButtons(key));
         WallpaperHintBar.HintTapped += key => HandleWallpaper(GamepadHintBar.ToGamepadButtons(key));
         FileTransferHintBar.HintTapped += key => HandleFileTransfer(GamepadHintBar.ToGamepadButtons(key));
         // 文件传输浮层：点空白处关闭
@@ -240,6 +266,8 @@ public sealed partial class MainPage : Page
     private readonly DispatcherTimer _sysTimer;
     private bool _pageWorkActive;
     private bool _sysRefreshBusy;
+    private bool _perfRefreshBusy;
+    private bool _perfRefreshAgain;   // 刷新进行中又被请求：本轮结束后再补一次
     private bool _imagesReleased;
     private int _backgroundVersion;
 
@@ -296,6 +324,12 @@ public sealed partial class MainPage : Page
         if (_musicRefs.Count > 0) RefreshMusicTiles();
         // 性能监控磁贴读数秒级刷新
         if (_monRefs.Count > 0) RefreshMonitorTiles();
+        // 下载模式：磁贴剩余时间与遮罩读数秒级刷新
+        if (_dlRefs.Count > 0 || _dlRunning) RefreshDownloadTiles();
+        if (_dlRunning) UpdateDownloadRunningTexts();
+        // 面板打开时每秒同步系统模式；关闭时磁贴每 10 秒刷新缓存。
+        if (_perfOpen) _ = RefreshPerformanceStateAsync();
+        else if (_perfRefs.Count > 0 && _tickCount % 10 == 0) RefreshPerformanceCacheAsync();
         // 小黄鸭磁贴安装/运行状态秒级刷新
         if (_lossRefs.Count > 0) RefreshLosslessTiles();
         // 小猫咪磁贴连接状态/节点：每 3 秒探测一次内核（异步，不阻塞 UI）
@@ -879,6 +913,10 @@ public sealed partial class MainPage : Page
         _sysTimer.Start();
         _ = InitSystemReadingsAsync();
         RefreshSystemTiles();
+        // 性能控制小组件：后台读一次当前电源方案（磁贴"档位"读数先显示缓存）
+        RefreshPerformanceCacheAsync();
+        // 全局锁帧：启动时后台读一次，读完刷新磁贴（磁贴可直接显示当前锁帧值）
+        _ = FrameLimitService.RefreshCacheAsync().ContinueWith(_ => QueuePageRefresh(RefreshPerformanceTiles));
     }
 
     /// <summary>系统小组件首次读数：射频 + 亮度都在后台线程读，读完刷新磁贴（避免 UI 线程做 WMI 调用）</summary>
@@ -1132,6 +1170,7 @@ public sealed partial class MainPage : Page
     {
         if (!_pageWorkActive) return;
         _pageWorkActive = false;
+        if (_perfOpen) ClosePerformanceMenu();
         CancelPendingTap();
         _pageDotsTimer.Stop();
         // 双保险：任何导航离开都取消未决长按，避免计时器在后台触发
@@ -1442,8 +1481,16 @@ public sealed partial class MainPage : Page
         if (_choiceOpen) return HandleChoice(buttons);
         if (_renaming) return HandleRename(buttons);
         if (_powerOpen) return HandlePower(buttons);
+        if (_perfOpen) return HandlePerformance(buttons);
+        if (_dlOpen) return HandleDownloadMode(buttons);
         if (_wallpaperOpen) return HandleWallpaper(buttons);
         if (_fileTransferOpen) return HandleFileTransfer(buttons);
+
+        if (!_moving && buttons.HasFlag(GamepadButtons.Y) && PerformanceItemInFocus() is not null)
+        {
+            OpenPerformanceMenu();
+            return true;
+        }
 
         // LT/RT：左右循环切换主页（副页），带滑动动画；本身不参与其它语义
         if (buttons.HasFlag(GamepadButtons.LeftTrigger)) { SwitchPage(-1); return true; }
@@ -1458,14 +1505,16 @@ public sealed partial class MainPage : Page
         }
 
         // 右摇杆←/→：系统小组件在焦点内时循环切换面板项（设置/我的电脑/资源管理器/音量/亮度/WiFi/蓝牙）；
-        // 与 ↑/↓（抽屉呼出/收起）互不冲突，编辑模式不响应
+        // 性能控制磁贴在焦点内时在已开启的快捷项之间切换（电源模式 ⇄ 全局锁帧）；编辑模式不响应
         if (!_moving && (buttons.HasFlag(GamepadButtons.RightStickLeft) || buttons.HasFlag(GamepadButtons.RightStickRight)))
         {
+            var stickDir = buttons.HasFlag(GamepadButtons.RightStickRight) ? 1 : -1;
             if (SystemItemInFocus() is { } sysItem)
             {
-                CycleSystemPanel(sysItem, buttons.HasFlag(GamepadButtons.RightStickRight) ? 1 : -1);
+                CycleSystemPanel(sysItem, stickDir);
                 return true;
             }
+            if (TryCyclePerformanceQuick(stickDir)) return true;
         }
 
         // 磁贴抽屉分两层：
@@ -1505,8 +1554,8 @@ public sealed partial class MainPage : Page
             if (buttons.HasFlag(GamepadButtons.DPadLeft)) { MoveInDrawer(-1, 0); return true; }
             if (buttons.HasFlag(GamepadButtons.DPadRight)) { MoveInDrawer(1, 0); return true; }
             // LB/RB：内层焦点是系统小组件时做调整（音量/亮度），否则按原语义切抽屉
-            if (buttons.HasFlag(GamepadButtons.LeftShoulder)) { if (!TryAdjustSystem(-1)) CycleDrawer(-1); return true; }
-            if (buttons.HasFlag(GamepadButtons.RightShoulder)) { if (!TryAdjustSystem(1)) CycleDrawer(1); return true; }
+            if (buttons.HasFlag(GamepadButtons.LeftShoulder)) { if (!TryAdjustPerformancePower(-1) && !TryAdjustSystem(-1)) CycleDrawer(-1); return true; }
+            if (buttons.HasFlag(GamepadButtons.RightShoulder)) { if (!TryAdjustPerformancePower(1) && !TryAdjustSystem(1)) CycleDrawer(1); return true; }
             // A：编辑模式=焦点在"添加磁贴"上则走添加流程、否则把已标记的磁贴移入当前抽屉；常规模式=启动内层磁贴
             if (buttons.HasFlag(GamepadButtons.A))
             {
@@ -1576,7 +1625,9 @@ public sealed partial class MainPage : Page
         // 普通模式不响应其他键（防误删）：仅 L3 编辑/移动模式内 Y=删除
         if (buttons.HasFlag(GamepadButtons.LeftShoulder))
         {
-            // 选中系统小组件：LB=调整（音量/亮度减小）；选中音乐小组件：LB=上一曲；选中图片组：LB=上一张；否则翻页
+            // 选中性能控制（电源模式查看项）：LB=上一档；选中系统小组件：LB=调整（音量/亮度减小）；
+            // 选中音乐小组件：LB=上一曲；选中图片组：LB=上一张；否则翻页
+            if (TryAdjustPerformancePower(-1)) return true;
             if (TryAdjustSystem(-1)) return true;
             if (IsMusicSelected()) { SystemMediaService.Prev(); return true; }
             if (IsPhotoSelected()) { SlideshowService.Skip(SelectedFolder(), -1); return true; }
@@ -1584,6 +1635,7 @@ public sealed partial class MainPage : Page
         }
         if (buttons.HasFlag(GamepadButtons.RightShoulder))
         {
+            if (TryAdjustPerformancePower(1)) return true;
             if (TryAdjustSystem(1)) return true;
             if (IsMusicSelected()) { SystemMediaService.Next(); return true; }
             if (IsPhotoSelected()) { SlideshowService.Skip(SelectedFolder(), 1); return true; }
@@ -1752,7 +1804,9 @@ public sealed partial class MainPage : Page
         _remapRefs.Clear();
         _fgRefs.Clear();
         _sysRefs.Clear();
+        _perfRefs.Clear();
         _monRefs.Clear();
+        _dlRefs.Clear();
         _lossRefs.Clear();
         _proxyRefs.Clear();
         _translateRefs.Clear();
@@ -2112,6 +2166,32 @@ public sealed partial class MainPage : Page
             AttachEditGestures(sysTile, item, group, index, false);
             TileStyle.FillSystemTile(sysRefs, item); // 建好即显示当前面板项
             return sysTile;
+        }
+
+        // 性能控制小组件磁贴：右摇杆←→切换查看档位/CPU 功耗/CPU 温度/GPU 温度，A=打开性能调节弹窗
+        if (item.Kind == LaunchKind.Widget && item.WidgetKind == WidgetKind.Performance)
+        {
+            var (perfTile, perfRefs) = TileStyle.BuildPerformanceTile(item, width, height, accent, noColor);
+            perfTile.Tag = index;
+            _perfRefs[perfRefs] = item;
+            perfTile.Tapped += (_, _) => OnTileTapped(index, () => ActivateAt(index));
+            perfTile.DoubleTapped += (_, _) => HandleDoubleTap(index);
+            AttachEditGestures(perfTile, item, group, index, false);
+            TileStyle.FillPerformanceTile(perfRefs, item); // 建好即显示当前查看项（档位先显示缓存）
+            return perfTile;
+        }
+
+        // 下载模式小组件磁贴：A/点击 = 先设时长与完成动作，再进入熄屏静音的黑色遮罩
+        if (item.Kind == LaunchKind.Widget && item.WidgetKind == WidgetKind.DownloadMode)
+        {
+            var (dlTile, dlRefs) = TileStyle.BuildDownloadTile(item, width, height, accent, noColor);
+            dlTile.Tag = index;
+            _dlRefs[dlRefs] = item;
+            dlTile.Tapped += (_, _) => OnTileTapped(index, () => ActivateAt(index));
+            dlTile.DoubleTapped += (_, _) => HandleDoubleTap(index);
+            AttachEditGestures(dlTile, item, group, index, false);
+            TileStyle.FillDownloadState(dlRefs, item);
+            return dlTile;
         }
 
         // 性能监控小组件磁贴：A/点击 = 开启/关闭置顶监控条，磁贴显示运行状态与读数摘要
@@ -2549,6 +2629,15 @@ public sealed partial class MainPage : Page
                 TileStyle.FillSystemTile(sysRefs, b.Sub);
                 _sysRefs[sysRefs] = b.Sub;
                 tile = sysTile;
+            }
+            // 性能控制同样用专属磁贴，登记到 _perfRefs 才能响应右摇杆切换 / A 打开调节
+            else if (b.Sub.Kind == LaunchKind.Widget && b.Sub.WidgetKind == WidgetKind.Performance)
+            {
+                var (perfTile, perfRefs) = TileStyle.BuildPerformanceTile(
+                    b.Sub, w, h, TileStyle.AccentFor(b.Sub), TileStyle.IsNoColor(b.Sub));
+                TileStyle.FillPerformanceTile(perfRefs, b.Sub);
+                _perfRefs[perfRefs] = b.Sub;
+                tile = perfTile;
             }
             else
             {
@@ -3076,6 +3165,7 @@ public sealed partial class MainPage : Page
                     : Windows.UI.Color.FromArgb(0x40, 0xFF, 0xFF, 0xFF));
             Microsoft.UI.Xaml.Controls.Canvas.SetZIndex(t, focused ? 2 : 0);
         }
+        SyncPerformanceFocus(); // 抽屉内移动光标同样要还原性能磁贴的待应用档位
         // 抽屉层（焦点停在抽屉本身、未进内层磁贴）：整个抽屉面板画白色粗描边，
         // 内层时框落在内层磁贴上，面板恢复默认（拖拽悬停高亮期间不覆盖）
         if (_dragOverDrawer || _drawerRegion is not { } shell) return;
@@ -3705,10 +3795,20 @@ public sealed partial class MainPage : Page
             // 系统小组件：A/点击 = 打开入口（设置/我的电脑/资源管理器）或切换开关（静音/熄屏/WiFi/蓝牙）
             ActivateSystemPanel(item);
         }
+        else if (item.WidgetKind == WidgetKind.Performance)
+        {
+            // 性能控制小组件：A/点击 = 应用所选快捷键项（睿频为直接开关并保存）；性能面板统一由 Y 打开
+            ApplyPerformancePowerMode(item);
+        }
         else if (item.WidgetKind == WidgetKind.Power)
         {
             // 电源磁贴：A/点击 = 弹出电源菜单（注销/睡眠/休眠/重启/关机）
             OpenPowerMenu();
+        }
+        else if (item.WidgetKind == WidgetKind.DownloadMode)
+        {
+            // 下载模式小组件：A/点击 = 打开进入前设置（下载时长 + 完成后动作）
+            OpenDownloadSetup();
         }
         else if (item.WidgetKind == WidgetKind.Monitor)
         {
@@ -4056,6 +4156,7 @@ public sealed partial class MainPage : Page
         if (item.Kind == LaunchKind.Widget && item.WidgetKind == WidgetKind.RecycleBin) { EmptyRecycleBin(); return; }
         if (item.Kind == LaunchKind.Widget && item.WidgetKind == WidgetKind.Foreground) { CloseForegroundApp(); return; }
         if (item.Kind == LaunchKind.Widget && item.WidgetKind == WidgetKind.System) { ShowToast("系统小组件：右摇杆←→切换 · A 开关 · LB/RB 调整"); return; }
+        if (item.Kind == LaunchKind.Widget && item.WidgetKind == WidgetKind.Performance) { OpenPerformanceMenu(); return; } // 性能控制：Y=打开性能面板
         if (item.Kind == LaunchKind.Widget && item.WidgetKind == WidgetKind.Clash) { _ = RefreshFastestProxyAsync(item); return; }
         if (item.Kind == LaunchKind.Widget && item.WidgetKind == WidgetKind.Wallpaper) { LikeWallpaper(item); return; }
         if (item.Kind == LaunchKind.Widget && item.WidgetKind == WidgetKind.GamepadMap)
@@ -4147,6 +4248,30 @@ public sealed partial class MainPage : Page
         if (_selected < 0 || _selected >= _display.Count) return false;
         var (item, group) = _display[_selected];
         return group is null && item.Kind == LaunchKind.Widget && item.WidgetKind == WidgetKind.System;
+    }
+
+    /// <summary>当前选中的是否为顶层性能控制磁贴（决定提示条显示应用/性能设置）</summary>
+    private bool IsPerformanceSelected()
+    {
+        if (_selected < 0 || _selected >= _display.Count) return false;
+        var (item, group) = _display[_selected];
+        return group is null && item.Kind == LaunchKind.Widget && item.WidgetKind == WidgetKind.Performance;
+    }
+
+    /// <summary>性能磁贴底部提示：按已开启的快捷项动态生成（右摇杆切换项 / LB/RB 动作）</summary>
+    private static string PerformanceHintText(LaunchItem item, string head, string tail)
+    {
+        var enabled = TileStyle.EnabledQuickItems(item);
+        var quick = TileStyle.CurrentQuickItem(item);
+        var switchText = enabled.Length > 1 ? "←→:切换项|" : "";
+        var adjustText = enabled.Length == 0 ? ""
+            : quick is TileStyle.PerformanceQuickItem.FrameLimit or TileStyle.PerformanceQuickItem.PowerLimit
+                or TileStyle.PerformanceQuickItem.CpuFrequency ? "LB/RB:调整|"
+            : quick == TileStyle.PerformanceQuickItem.CpuBoost ? "A:开关|"
+            : "LB/RB:选择模式|";
+        // 睿频是开关型：A 直接开关并保存，不再显示“A:应用”
+        var applyText = quick == TileStyle.PerformanceQuickItem.CpuBoost && enabled.Length > 0 ? "" : "A:应用|";
+        return head + switchText + adjustText + applyText + "Y:打开面板|" + tail;
     }
 
     /// <summary>当前选中的是否为顶层手柄映射小组件磁贴（决定 A 键是开/关映射还是启动）</summary>
@@ -4364,6 +4489,1192 @@ public sealed partial class MainPage : Page
         _powerIn?.Stop();
         _powerIn = sb;
         sb.Begin();
+    }
+
+    // ---- 性能控制遮罩（Windows 三档电源模式及 CPU 设置） ----
+
+    private bool _perfOpen;
+    private bool _perfBusy;      // 正在应用设置，防止重复触发
+    private bool _perfTouched;   // 用户已操作面板：后台刷新不覆盖待应用选择和焦点
+    private int _perfIndex;      // 0=最佳能效 1=平衡 2=最佳性能
+    private bool _perfStateRefreshBusy;
+    private int _perfSessionVersion;
+    private PerformanceService.PerformanceState _perfSystemState = PerformanceService.PerformanceState.Unknown;
+    private Storyboard? _perfIn;
+    private Border[] _perfCards = [];
+    private readonly List<Border> _perfSettingRows = [];
+    private readonly List<Border> _perfPowerRows = [];
+    private readonly List<Border> _perfCpuRows = [];
+    private int _perfFocus;
+    private int _perfLastColumn;       // 0=功耗列 1=CPU 列，用于从锁帧行向下进入上次停留的列
+    private static string? _gpuName;   // 主显卡名称（WMI 查询一次后缓存）
+    private PerformanceService.CpuSettingsState _perfCpuState = new(false, 0, false, 0);
+    private bool _perfCpuSyncing;
+    private bool _perfCpuLoading;
+    private FrameLimitService.State _perfFrameState = new(false, "", 0, "正在检测锁帧后端…");
+    private bool _perfFrameLoading, _perfFrameSyncing;
+    private Slider? _perfFrameSlider;
+    private TextBlock? _perfFrameRead;
+    private TextBlock? _perfFrameBrand;   // 全局锁帧卡片右上角的限帧后端标识（NVIDIA / AMD / intel / RTSS）
+    private Border? _perfFrameRow;
+    private CpuPowerService.State _perfPowerState = new(false, false, "尚未启用", []);
+    private bool _perfPowerLoading, _perfPowerSyncing;
+    private Border? _perfPowerPill, _perfPowerDot, _perfPowerRow;
+    private readonly List<(Border Row, Slider Slider, TextBlock Read)> _perfPowerControls = [];
+    private int _perfFrequencyMhz;
+    private Slider? _perfFrequencySlider;
+    private TextBlock? _perfFrequencyRead;
+    private Border? _perfBoostPill;
+    private Border? _perfBoostDot;
+    private bool? _perfBoostPending;   // null=未改动；true/false=待应用的睿频开关
+    private bool _perfSaving;          // 正在执行 X 保存，防止重复提交
+    private ComboBox? _perfCoreSelection;
+    private ComboBox? _perfCoreMode;
+    private bool _perfCoreSyncing;     // 打开面板时回填核心选项，避免误标“待应用”
+    private Border? _perfCoreRow;
+    private Border? _perfModeRow;
+    private const string PerfCoreHint = "仅对本启动器新启动的进程生效，保留所选核的超线程";
+    private const string PerfModeHint = "按性能或能效排序选核；全部核心时仅选对应类别";
+    private readonly Dictionary<Border, Action> _perfActions = [];
+    /// <summary>当前用手柄展开了下拉框的 ComboBox（展开期间方向键上下选、A/B 收起）</summary>
+    private ComboBox? _perfOpenCombo;
+    private readonly Dictionary<Border, Action<int>> _perfAdjusters = [];
+    private readonly Dictionary<Border, TextBlock> _perfRowHints = [];
+    private Border? _perfBoostRow;
+    private Border? _perfFrequencyRow;
+    private Border? _perfHelpRow;
+    private int _perfHelpFocus = -1;
+    private Microsoft.UI.Xaml.DispatcherTimer? _perfStatusTimer;   // 面板内状态提示的自动恢复计时
+    private bool _perfTelemetryLoading;
+    private int _perfTelemetryVersion;
+
+    /// <summary>设备状态数值按数据类型着色：CPU 系暖色、GPU 系冷色、电池绿色、核心数中性；无数据弱化</summary>
+    private static void Stamp(TextBlock target, double value, string unit, Brush color)
+    {
+        var ok = double.IsFinite(value) && value >= 0;
+        target.Text = ok ? $"{value:0.0} {unit}" : "—";
+        target.Foreground = ok ? color : TelemetryDimBrush;
+    }
+
+    private static readonly SolidColorBrush TelemetryCpuPowerBrush =
+        new(Windows.UI.Color.FromArgb(0xFF, 0xFF, 0x9A, 0x4D));
+    private static readonly SolidColorBrush TelemetryCpuTempBrush =
+        new(Windows.UI.Color.FromArgb(0xFF, 0xFF, 0xB3, 0x66));
+    private static readonly SolidColorBrush TelemetryCpuFreqBrush =
+        new(Windows.UI.Color.FromArgb(0xFF, 0xF2, 0xC1, 0x4E));
+    private static readonly SolidColorBrush TelemetryGpuPowerBrush =
+        new(Windows.UI.Color.FromArgb(0xFF, 0x8E, 0x7B, 0xFF));
+    private static readonly SolidColorBrush TelemetryGpuTempBrush =
+        new(Windows.UI.Color.FromArgb(0xFF, 0xB9, 0xA2, 0xFF));
+    private static readonly SolidColorBrush TelemetryGpuFreqBrush =
+        new(Windows.UI.Color.FromArgb(0xFF, 0x7A, 0xB8, 0xFF));
+    private static readonly SolidColorBrush TelemetryBatteryBrush =
+        new(Windows.UI.Color.FromArgb(0xFF, 0x66, 0xE0, 0x8A));
+    private static readonly SolidColorBrush TelemetryCoresBrush =
+        new(Windows.UI.Color.FromArgb(0xFF, 0xC9, 0xCF, 0xD8));
+    private static readonly SolidColorBrush TelemetryDimBrush =
+        new(Windows.UI.Color.FromArgb(0x66, 0xFF, 0xFF, 0xFF));
+
+    /// <summary>未读取 / 读取失败：数值统一回到「—」并用弱化色，避免残留上一次颜色</summary>
+    private void ClearTelemetryValues()
+    {
+        foreach (var block in new[]
+                 {
+                     PerfTelemetryPower, PerfTelemetryCpuTemp, PerfTelemetryGpuTemp,
+                     PerfTelemetryCpuFreq, PerfTelemetryGpuPower, PerfTelemetryGpuFreq,
+                     PerfTelemetryBatteryPower, PerfTelemetryCores
+                 })
+        {
+            block.Text = "—";
+            block.Foreground = TelemetryDimBrush;
+        }
+        PerfTelemetryBatteryLabel.Text = "电池功耗";
+    }
+
+    private async Task RefreshDeviceStatusAsync()
+    {
+        if (!_perfOpen || _perfTelemetryLoading) return;
+        var version = _perfTelemetryVersion;
+        _perfTelemetryLoading = true;
+        try
+        {
+            var sample = await Task.Run(MonitorService.ReadDeviceStatus);
+            if (!_perfOpen || version != _perfTelemetryVersion || sample is null) return;
+            Stamp(PerfTelemetryPower, sample.CpuPower, "W", TelemetryCpuPowerBrush);
+            Stamp(PerfTelemetryCpuTemp, sample.CpuTemp, "°C", TelemetryCpuTempBrush);
+            Stamp(PerfTelemetryGpuTemp, sample.GpuTemp, "°C", TelemetryGpuTempBrush);
+            Stamp(PerfTelemetryCpuFreq, sample.CpuMhz / 1000, "GHz", TelemetryCpuFreqBrush);
+            Stamp(PerfTelemetryGpuPower, sample.GpuPower, "W", TelemetryGpuPowerBrush);
+            Stamp(PerfTelemetryGpuFreq, sample.GpuMhz, "MHz", TelemetryGpuFreqBrush);
+            PerfTelemetryBatteryLabel.Text = sample.Charging ? "电池充电功率" : "电池功耗";
+            Stamp(PerfTelemetryBatteryPower, sample.BatteryPower, "W", TelemetryBatteryBrush);
+            var topology = GameCpuService.Topology;
+            if (topology.CoreCount > 0)
+            {
+                PerfTelemetryCores.Text = $"{topology.CoreCount} 核";
+                PerfTelemetryCores.Foreground = TelemetryCoresBrush;
+            }
+            else
+            {
+                PerfTelemetryCores.Text = "—";
+                PerfTelemetryCores.Foreground = TelemetryDimBrush;
+            }
+            var missing = new List<string>();
+            if (!double.IsFinite(sample.CpuPower)) missing.Add("CPU 功耗计数器不可用");
+            if (!double.IsFinite(sample.CpuTemp)) missing.Add("CPU 温度需管理员权限及受支持的传感器");
+            if (!double.IsFinite(sample.GpuTemp)) missing.Add("GPU 温度传感器不可用");
+            if (!double.IsFinite(sample.CpuMhz)) missing.Add("CPU 频率不可用");
+            if (!double.IsFinite(sample.GpuPower)) missing.Add("GPU 功耗传感器不可用");
+            if (!double.IsFinite(sample.GpuMhz)) missing.Add("GPU 频率传感器不可用");
+            if (!double.IsFinite(sample.BatteryPower)) missing.Add(sample.OnAc && !sample.Charging
+                ? "电池未充放电或功率不可用" : "电池功率不可用");
+            PerfTelemetryHint.Text = missing.Count == 0
+                ? $"更新于 {DateTime.Now:HH:mm:ss} · 每秒刷新"
+                : $"更新于 {DateTime.Now:HH:mm:ss} · {missing.Count} 项传感器不可用";
+            ToolTipService.SetToolTip(PerfTelemetryHint,
+                missing.Count == 0 ? null : string.Join("；", missing));
+        }
+        catch
+        {
+            if (_perfOpen && version == _perfTelemetryVersion)
+            {
+                ClearTelemetryValues();
+                PerfTelemetryHint.Text = "设备传感器读取失败，将自动刷新";
+                ToolTipService.SetToolTip(PerfTelemetryHint, null);
+            }
+        }
+        finally { _perfTelemetryLoading = false; }
+    }
+
+    private void ShowPerformanceHelp(Border row)
+    {
+        _perfHelpRow = row;
+        if (_perfRowHints.TryGetValue(row, out var hint))
+            PerfControlHelp.Text = $"{hint.Tag}：{hint.Text}";
+        else if (ReferenceEquals(row, PerfEco))
+            PerfControlHelp.Text = "最佳能效：省电优先的 Windows 电源模式。";
+        else if (ReferenceEquals(row, PerfBalanced))
+            PerfControlHelp.Text = "平衡：兼顾性能与功耗的 Windows 电源模式。";
+        else if (ReferenceEquals(row, PerfPerformance))
+            PerfControlHelp.Text = "最佳性能：性能优先的 Windows 电源模式。";
+    }
+
+    /// <summary>面板内可见的状态提示：主页 toast 会被性能浮层遮住，保存结果必须写在面板里</summary>
+    private void ShowPerformanceStatus(string text, bool warn)
+    {
+        PerfControlHelp.Visibility = Visibility.Collapsed;
+        PerfStatusText.Text = text;
+        PerfStatusText.Foreground = new SolidColorBrush(warn
+            ? Windows.UI.Color.FromArgb(0xFF, 0xFF, 0xB9, 0x00)
+            : Windows.UI.Color.FromArgb(0xFF, 0x4C, 0xC2, 0xFF));
+        PerfStatusText.Visibility = Visibility.Visible;
+        if (_perfStatusTimer is null)
+        {
+            _perfStatusTimer = new Microsoft.UI.Xaml.DispatcherTimer { Interval = TimeSpan.FromSeconds(5) };
+            _perfStatusTimer.Tick += (_, _) =>
+            {
+                _perfStatusTimer!.Stop();
+                PerfStatusText.Visibility = Visibility.Collapsed;
+                PerfControlHelp.Visibility = Visibility.Visible;
+            };
+        }
+        _perfStatusTimer.Stop();
+        _perfStatusTimer.Start();
+    }
+
+    private void ClearPerformanceStatus()
+    {
+        _perfStatusTimer?.Stop();
+        PerfStatusText.Visibility = Visibility.Collapsed;
+        PerfControlHelp.Visibility = Visibility.Visible;
+    }
+
+    /// <summary>读取主显卡名称：取显存最大的一块，失败时返回"—"</summary>
+    private static string ReadGpuName()
+    {
+        try
+        {
+            using var searcher = new System.Management.ManagementObjectSearcher(
+                "SELECT Name, AdapterRAM FROM Win32_VideoController");
+            var best = "";
+            long bestRam = -1;
+            foreach (var o in searcher.Get())
+            {
+                using var mo = (System.Management.ManagementObject)o;
+                var name = mo["Name"]?.ToString();
+                if (string.IsNullOrWhiteSpace(name)) continue;
+                long ram = 0;
+                try { if (mo["AdapterRAM"] is { } r) ram = Convert.ToInt64(r); } catch { }
+                if (ram > bestRam) { bestRam = ram; best = name; }
+            }
+            return string.IsNullOrWhiteSpace(best) ? "—" : ShortGpuName(best);
+        }
+        catch { return "—"; }
+    }
+
+    /// <summary>显卡名称简称：去掉 NVIDIA/AMD/Intel 等冗余前缀与 (R)/(TM) 标记，保留型号核心信息</summary>
+    private static string ShortGpuName(string name)
+    {
+        var s = name.Replace("(R)", "", StringComparison.OrdinalIgnoreCase)
+                    .Replace("(TM)", "", StringComparison.OrdinalIgnoreCase);
+        s = System.Text.RegularExpressions.Regex.Replace(s, @"\s+", " ").Trim();
+        // 前缀按长到短匹配，避免 "NVIDIA GeForce" 只剥掉 "NVIDIA"
+        string[] prefixes =
+        [
+            "NVIDIA GeForce ", "NVIDIA ", "GeForce ",
+            "AMD Radeon ", "AMD ", "Radeon ",
+            "Intel Arc ", "Intel "
+        ];
+        foreach (var p in prefixes)
+        {
+            if (s.StartsWith(p, StringComparison.OrdinalIgnoreCase)) { s = s[p.Length..]; break; }
+        }
+        // 尾部 "Graphics" 属于冗余描述（如 Arc A770 Graphics），去掉后为空则保留
+        var trimmed = s.EndsWith(" Graphics", StringComparison.OrdinalIgnoreCase)
+            ? s[..^" Graphics".Length].TrimEnd() : s;
+        return string.IsNullOrWhiteSpace(trimmed) ? s : trimmed;
+    }
+
+    private void BuildPerformanceSettingsUi()
+    {
+        _perfSettingRows.AddRange(_perfCards);
+        foreach (var card in _perfCards)
+        {
+            var helpRow = card;
+            card.PointerEntered += (_, _) => ShowPerformanceHelp(helpRow);
+            card.GotFocus += (_, _) => ShowPerformanceHelp(helpRow);
+        }
+
+        // 小节标题：左侧橙色短竖条 + 字距略放宽的小标题，增强层级感
+        void Section(StackPanel host, string title)
+        {
+            var accent = new SolidColorBrush(Windows.UI.Color.FromArgb(0xFF, 0xFF, 0x9A, 0x4D));
+            host.Children.Add(new StackPanel
+            {
+                Orientation = Orientation.Horizontal,
+                Spacing = 6,
+                Margin = new Thickness(4, 4, 0, 0),
+                Children =
+                {
+                    new Border
+                    {
+                        Width = 3, Height = 12, CornerRadius = new CornerRadius(1.5),
+                        Background = accent, VerticalAlignment = VerticalAlignment.Center
+                    },
+                    new TextBlock
+                    {
+                        Text = title, FontSize = 11.5, Opacity = 0.6,
+                        FontWeight = Microsoft.UI.Text.FontWeights.SemiBold, CharacterSpacing = 40,
+                        VerticalAlignment = VerticalAlignment.Center
+                    }
+                }
+            });
+        }
+
+        // 滑块统一橙色主题：细轨、橙色进度与圆形手柄
+        void StyleSlider(Slider slider)
+        {
+            slider.Resources["SliderTrackFill"] = new SolidColorBrush(Windows.UI.Color.FromArgb(0x26, 0xFF, 0xFF, 0xFF));
+            slider.Resources["SliderTrackValueFill"] = new SolidColorBrush(Windows.UI.Color.FromArgb(0xFF, 0xFF, 0x9A, 0x4D));
+            slider.Resources["SliderThumbBackground"] = new SolidColorBrush(Windows.UI.Color.FromArgb(0xFF, 0xFF, 0xB3, 0x66));
+            slider.Resources["SliderTrackFillDisabled"] = new SolidColorBrush(Windows.UI.Color.FromArgb(0x1A, 0xFF, 0xFF, 0xFF));
+            slider.Resources["SliderTrackValueFillDisabled"] = new SolidColorBrush(Windows.UI.Color.FromArgb(0x59, 0xFF, 0x9A, 0x4D));
+        }
+
+        // 保留原有紧凑布局，未接入后端的控件明确说明依赖。
+        Border Row(StackPanel host, string title, string hint, FrameworkElement control, bool inline = false, bool supported = false)
+        {
+            var head = new StackPanel { Spacing = 1 };
+            head.Children.Add(new TextBlock
+            {
+                Text = title, FontSize = 14, FontWeight = Microsoft.UI.Text.FontWeights.SemiBold
+            });
+            var hintText = new TextBlock
+            {
+                Text = hint, FontSize = 10, Opacity = 0.4, TextWrapping = TextWrapping.Wrap
+            };
+            hintText.Tag = title;
+            if (control is Control ctl) ctl.IsEnabled = supported;
+            control.Opacity = supported ? 1 : 0.5;
+
+            var line = new Grid { ColumnSpacing = 8 };
+            line.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
+            line.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
+            line.Children.Add(head);
+            if (inline)
+            {
+                control.VerticalAlignment = VerticalAlignment.Center;
+                Grid.SetColumn(control, 1);
+                line.Children.Add(control);
+            }
+
+            var content = new StackPanel { Spacing = 4 };
+            content.Children.Add(line);
+            if (!inline) content.Children.Add(control);
+
+            var row = new Border
+            {
+                Padding = new Thickness(12, 9, 12, 9), CornerRadius = new CornerRadius(13),
+                BorderThickness = new Thickness(1.5), Child = content
+            };
+            row.Tapped += (_, e) => { e.Handled = true; FocusPerformanceRow(row); };
+            row.PointerEntered += (_, _) => ShowPerformanceHelp(row);
+            row.GotFocus += (_, _) => ShowPerformanceHelp(row);
+            _perfSettingRows.Add(row);
+            if (ReferenceEquals(host, PerfPowerSettings)) _perfPowerRows.Add(row);
+            else if (ReferenceEquals(host, PerfCpuSettings)) _perfCpuRows.Add(row);
+            host.Children.Add(row);
+            _perfRowHints[row] = hintText;
+            if (!supported) _perfActions[row] = () => ShowToast(title + "：" + hint, ToastKind.Warning);
+            return row;
+        }
+
+        // 统一样式的下拉框：磨砂胶囊 + 细描边，与开关、卡片保持一致的视觉语言
+        ComboBox Options(params string[] values)
+        {
+            var combo = new ComboBox
+            {
+                Width = 158, MinHeight = 30,
+                Padding = new Thickness(10, 3, 6, 3),
+                CornerRadius = new CornerRadius(8),
+                BorderThickness = new Thickness(1),
+                Background = new LinearGradientBrush
+                {
+                    StartPoint = new Windows.Foundation.Point(0, 0),
+                    EndPoint = new Windows.Foundation.Point(0, 1),
+                    GradientStops =
+                    {
+                        new GradientStop { Color = Windows.UI.Color.FromArgb(0x1F, 0xFF, 0xFF, 0xFF), Offset = 0 },
+                        new GradientStop { Color = Windows.UI.Color.FromArgb(0x0A, 0xFF, 0xFF, 0xFF), Offset = 1 }
+                    }
+                },
+                BorderBrush = new SolidColorBrush(Windows.UI.Color.FromArgb(0x2E, 0xFF, 0xFF, 0xFF)),
+                FontSize = 12,
+                IsTabStop = false, UseSystemFocusVisuals = false,
+                VerticalAlignment = VerticalAlignment.Center
+            };
+            foreach (var value in values) combo.Items.Add(value);
+            combo.SelectedIndex = 0;
+            return combo;
+        }
+        // 紧凑开关：34×18 胶囊 + 12px 圆点，替代默认的大号 ToggleSwitch
+        FrameworkElement Toggle()
+        {
+            var pill = new Border
+            {
+                Width = 34, Height = 18, CornerRadius = new CornerRadius(9),
+                Background = new SolidColorBrush(Windows.UI.Color.FromArgb(0x1F, 0xFF, 0xFF, 0xFF)),
+                BorderBrush = new SolidColorBrush(Windows.UI.Color.FromArgb(0x2E, 0xFF, 0xFF, 0xFF)),
+                BorderThickness = new Thickness(1),
+                VerticalAlignment = VerticalAlignment.Center
+            };
+            pill.Child = new Border
+            {
+                Width = 12, Height = 12, CornerRadius = new CornerRadius(6),
+                Background = new SolidColorBrush(Windows.UI.Color.FromArgb(0xCC, 0xFF, 0xFF, 0xFF)),
+                Margin = new Thickness(2, 0, 0, 0),
+                HorizontalAlignment = HorizontalAlignment.Left,
+                VerticalAlignment = VerticalAlignment.Center
+            };
+            return pill;
+        }
+
+        _perfFrameSlider = new Slider { Minimum = 29, Maximum = 144, Value = 29, StepFrequency = 1, IsTabStop = false, UseSystemFocusVisuals = false, IsEnabled = false };
+        StyleSlider(_perfFrameSlider);
+        _perfFrameRead = new TextBlock { Text = "检测中…", FontSize = 11, Opacity = 0.7, HorizontalAlignment = HorizontalAlignment.Right };
+        var frameBody = new StackPanel { Spacing = 2 };
+        frameBody.Children.Add(_perfFrameRead);
+        frameBody.Children.Add(_perfFrameSlider);
+        _perfFrameRow = Row(PerfGlobalSettings, "全局锁帧", "驱动限帧优先，其次 RTSS", frameBody, supported: true);
+        // 卡片右上角：显示当前实际使用的限帧后端标识（与磁贴同一套品牌标识）
+        _perfFrameBrand = new TextBlock
+        {
+            FontSize = 12,
+            FontWeight = Microsoft.UI.Text.FontWeights.Bold,
+            CharacterSpacing = 20,
+            HorizontalAlignment = HorizontalAlignment.Right,
+            VerticalAlignment = VerticalAlignment.Top,
+            Visibility = Visibility.Collapsed
+        };
+        Grid.SetColumn(_perfFrameBrand, 1);
+        var frameHeaderLine = (Grid)((StackPanel)_perfFrameRow.Child).Children[0];
+        frameHeaderLine.Children.Add(_perfFrameBrand);
+        _perfFrameSlider.ValueChanged += (_, _) =>
+        {
+            if (_perfFrameSyncing) return;
+            _perfFrameRead.Text = (_perfFrameSlider.Value < _perfFrameState.Minimum ? "关闭" : $"{_perfFrameSlider.Value:0} FPS") + " · 待应用";
+        };
+        _perfAdjusters[_perfFrameRow] = dir =>
+        {
+            if (_perfFrameSlider.IsEnabled && !_perfBusy && !_perfFrameLoading)
+                _perfFrameSlider.Value = Math.Clamp(_perfFrameSlider.Value + dir * _perfFrameState.Step, _perfFrameSlider.Minimum, _perfFrameSlider.Maximum);
+        };
+
+        Section(PerfPowerSettings, "功耗控制");
+        _perfPowerPill = (Border)Toggle();
+        _perfPowerDot = (Border)_perfPowerPill.Child;
+        _perfPowerRow = Row(PerfPowerSettings, "设备功耗", "启用后授权管理员读取，不自动改写", _perfPowerPill, inline: true, supported: true);
+        _perfActions[_perfPowerRow] = ToggleCpuPower;
+        _perfPowerPill.Tapped += (_, e) => { e.Handled = true; FocusPerformanceRow(_perfPowerRow); ToggleCpuPower(); };
+        foreach (var title in new[] { "持续功耗 TDP / PL1", "短时功耗 SPPT / PL2", "瞬时功耗 FPPT" })
+        {
+            int index = _perfPowerControls.Count;
+            var slider = new Slider { Minimum = 1, Maximum = 100, Value = 15, StepFrequency = 1, IsEnabled = false, IsTabStop = false, UseSystemFocusVisuals = false };
+            StyleSlider(slider);
+            var read = new TextBlock { Text = "未启用", FontSize = 11, Opacity = 0.7, HorizontalAlignment = HorizontalAlignment.Right };
+            var body = new StackPanel { Spacing = 2 };
+            body.Children.Add(read);
+            body.Children.Add(slider);
+            var row = Row(PerfPowerSettings, title, "CPU 原生限制，不代表整机功耗", body, supported: true);
+            _perfPowerControls.Add((row, slider, read));
+            slider.ValueChanged += (_, _) => { if (!_perfPowerSyncing) read.Text = $"{slider.Value:0} W · 待应用"; };
+            _perfAdjusters[row] = dir => { if (slider.IsEnabled && !_perfBusy && !_perfPowerLoading) slider.Value = Math.Clamp(slider.Value + dir, slider.Minimum, slider.Maximum); };
+        }
+
+        Section(PerfCpuSettings, "CPU");
+        _perfBoostPill = (Border)Toggle();
+        _perfBoostDot = (Border)_perfBoostPill.Child;
+        _perfBoostRow = Row(PerfCpuSettings, "CPU 睿频", "正在读取系统设置…", _perfBoostPill, inline: true, supported: true);
+        _perfActions[_perfBoostRow] = ToggleBoost;
+        _perfBoostPill.Tapped += (_, e) =>
+        {
+            e.Handled = true;
+            FocusPerformanceRow(_perfBoostRow);
+            ToggleBoost();
+        };
+        _perfFrequencySlider = new Slider
+        {
+            Minimum = 0.9, Maximum = 5, Value = 0.9, StepFrequency = 0.1,
+            IsTabStop = false, UseSystemFocusVisuals = false, IsEnabled = false
+        };
+        StyleSlider(_perfFrequencySlider);
+        _perfFrequencyRead = new TextBlock { Text = "—", FontSize = 11, Opacity = 0.7, HorizontalAlignment = HorizontalAlignment.Right };
+        var frequencyBody = new StackPanel { Spacing = 2 };
+        frequencyBody.Children.Add(_perfFrequencyRead);
+        frequencyBody.Children.Add(_perfFrequencySlider);
+        _perfFrequencyRow = Row(PerfCpuSettings, "CPU 最高频率", "正在读取系统设置…", frequencyBody, supported: true);
+        _perfFrequencySlider.ValueChanged += (_, e) =>
+        {
+            if (_perfCpuSyncing) return;
+            _perfFrequencyMhz = e.NewValue < 0.95 ? 0 : (int)Math.Round(e.NewValue * 10) * 100;
+            _perfFrequencyRead.Text = _perfFrequencyMhz == 0 ? "不限制 · 待应用" : $"{_perfFrequencyMhz / 1000.0:0.0} GHz · 待应用";
+        };
+        _perfAdjusters[_perfFrequencyRow] = dir =>
+        {
+            if (_perfFrequencySlider.IsEnabled)
+                _perfFrequencySlider.Value = Math.Clamp(_perfFrequencySlider.Value + dir * 0.1, 0.9, 5);
+        };
+        var topology = GameCpuService.Topology;
+        var settings = SettingsService.Current;
+        var coreSelection = Options(Enumerable.Range(0, topology.CoreCount + 1)
+            .Select(n => n == 0 ? "全部核心" : $"{n} 个物理核").ToArray());
+        coreSelection.SelectedIndex = Math.Clamp(settings.GameCoreCount, 0, topology.CoreCount);
+        var coreMode = Options("自动", "性能优先", "效率优先");
+        coreMode.SelectedIndex = topology.Hybrid && Enum.IsDefined(settings.GameCoreMode) ? (int)settings.GameCoreMode : 0;
+        var coreRow = Row(PerfCpuSettings, "游戏可用核心", topology.Supported ? PerfCoreHint : topology.Message, coreSelection, supported: topology.Supported);
+        var modeRow = Row(PerfCpuSettings, "核心调度模式", topology.Hybrid ? PerfModeHint : "未检测到异构核心，仅支持自动模式", coreMode, supported: topology.Supported && topology.Hybrid);
+        _perfCoreSelection = coreSelection;
+        _perfCoreMode = coreMode;
+        _perfCoreRow = coreRow;
+        _perfModeRow = modeRow;
+        _perfAdjusters[coreRow] = dir =>
+        {
+            if (coreSelection.IsEnabled && !_perfBusy && !_perfCpuLoading)
+                coreSelection.SelectedIndex = Math.Clamp(coreSelection.SelectedIndex + dir, 0, topology.CoreCount);
+        };
+        _perfAdjusters[modeRow] = dir =>
+        {
+            if (coreMode.IsEnabled && !_perfBusy && !_perfCpuLoading)
+                coreMode.SelectedIndex = Math.Clamp(coreMode.SelectedIndex + dir, 0, 2);
+        };
+        // A 键打开下拉框（展开后方向键上下选、A/B 收起）
+        if (topology.Supported) _perfActions[coreRow] = () => OpenPerformanceCombo(coreSelection);
+        if (topology.Supported && topology.Hybrid) _perfActions[modeRow] = () => OpenPerformanceCombo(coreMode);
+        coreSelection.SelectionChanged += (_, _) =>
+        {
+            if (_perfBusy || _perfCoreSyncing) return;
+            _perfRowHints[coreRow].Text = $"待应用 {coreSelection.SelectedItem} · {PerfCoreHint}";
+            ShowPerformanceHelp(coreRow);
+        };
+        coreMode.SelectionChanged += (_, _) =>
+        {
+            if (_perfBusy || _perfCoreSyncing) return;
+            _perfRowHints[modeRow].Text = $"待应用 {coreMode.SelectedItem} · {PerfModeHint}";
+            ShowPerformanceHelp(modeRow);
+        };
+
+        PerfSaveButton.Click += (_, _) => _ = SavePerformanceAsync();
+        PerfSaveButton.PointerEntered += (_, _) => PerfControlHelp.Text =
+            "保存所有待应用的修改。";
+    }
+
+    private void RenderCpuPower()
+    {
+        _perfPowerSyncing = true;
+        try
+        {
+            bool on = _perfPowerState.Enabled;
+            _perfPowerPill!.Opacity = _perfPowerLoading ? 0.5 : 1;
+            _perfPowerPill.Background = new SolidColorBrush(on ? Windows.UI.Color.FromArgb(0xFF, 0xFF, 0x9A, 0x4D) : Windows.UI.Color.FromArgb(0x1F, 0xFF, 0xFF, 0xFF));
+            _perfPowerDot!.HorizontalAlignment = on ? HorizontalAlignment.Right : HorizontalAlignment.Left;
+            _perfPowerDot.Margin = on ? new Thickness(0, 0, 2, 0) : new Thickness(2, 0, 0, 0);
+            _perfRowHints[_perfPowerRow!].Text = _perfPowerState.Message;
+            for (int i = 0; i < _perfPowerControls.Count; i++)
+            {
+                var c = _perfPowerControls[i];
+                var limit = i < _perfPowerState.Limits.Length ? _perfPowerState.Limits[i] : null;
+                c.Slider.IsEnabled = limit is { Writable: true } && !_perfBusy && !_perfPowerLoading;
+                if (limit != null)
+                {
+                    c.Slider.Minimum = limit.Minimum;
+                    c.Slider.Maximum = Math.Max(limit.Minimum, limit.Maximum);
+                    c.Slider.Value = Math.Clamp(limit.Watts, c.Slider.Minimum, c.Slider.Maximum);
+                    c.Read.Text = $"{limit.Name} · {limit.Watts:0.#} W";
+                    _perfRowHints[c.Row].Text = limit.Writable ? $"{limit.Minimum:0}–{limit.Maximum:0} W · 保存后写入并读回" : "固件锁定或接口不支持写入";
+                }
+                else
+                {
+                    c.Read.Text = on ? "不支持" : "未启用";
+                    _perfRowHints[c.Row].Text = on ? "CPU 或后端不支持此限制" : "请先开启设备功耗并授权";
+                }
+            }
+            if (_perfHelpRow != null && _perfPowerRows.Contains(_perfHelpRow)) ShowPerformanceHelp(_perfHelpRow);
+        }
+        finally { _perfPowerSyncing = false; }
+    }
+
+    private async Task RefreshCpuPowerAsync()
+    {
+        if (_perfPowerLoading) return;
+        _perfPowerLoading = true;
+        try { _perfPowerState = await Task.Run(CpuPowerService.Read); }
+        finally { _perfPowerLoading = false; RenderCpuPower(); }
+    }
+
+    private async void ToggleCpuPower()
+    {
+        if (!_perfOpen || _perfBusy || _perfSaving || _perfPowerLoading) return;
+        _perfPowerLoading = true;
+        RenderCpuPower();
+        try
+        {
+            var result = await Task.Run(() => _perfPowerState.Enabled ? CpuPowerService.Disable() : CpuPowerService.Enable());
+            _perfPowerState = await Task.Run(CpuPowerService.Read);
+            ShowToast(result.Message, result.Ok ? ToastKind.Success : ToastKind.Warning);
+        }
+        finally { _perfPowerLoading = false; RenderCpuPower(); }
+    }
+
+    private async void ApplyCpuPower(int index)
+    {
+        if (!_perfOpen || _perfBusy || _perfPowerLoading) return;
+        if (index >= _perfPowerState.Limits.Length || !_perfPowerState.Limits[index].Writable)
+        { ShowToast("当前 CPU 功耗接口不可写，请先启用或检查固件限制", ToastKind.Warning); return; }
+        double watts = _perfPowerControls[index].Slider.Value;
+        _perfBusy = true;
+        RenderCpuPower();
+        try
+        {
+            var result = await Task.Run(() => CpuPowerService.Apply(index, watts));
+            _perfPowerState = await Task.Run(CpuPowerService.Read);
+            bool confirmed = result.Ok && index < _perfPowerState.Limits.Length
+                && Math.Abs(_perfPowerState.Limits[index].Watts - watts) <= 0.25;
+            ShowToast(confirmed || !result.Ok ? result.Message : "写入后再次读取未能确认目标值，请检查固件覆盖或助手状态", confirmed ? ToastKind.Success : ToastKind.Warning);
+        }
+        finally { _perfBusy = false; RenderCpuPower(); }
+    }
+
+    private async Task RefreshFrameLimitAsync()
+    {
+        if (_perfFrameLoading) return;
+        _perfFrameLoading = true;
+        _perfFrameSlider!.IsEnabled = false;
+        try
+        {
+            _perfFrameState = await Task.Run(FrameLimitService.Read);
+            _perfFrameSyncing = true;
+            int min = _perfFrameState.Minimum, max = _perfFrameState.Maximum, step = _perfFrameState.Step;
+            _perfFrameSlider.Minimum = min - step;
+            _perfFrameSlider.Maximum = max;
+            _perfFrameSlider.StepFrequency = step;
+            _perfFrameSlider.Value = _perfFrameState.Fps == 0 ? min - step : Math.Clamp(_perfFrameState.Fps, min, max);
+            _perfFrameRead!.Text = !_perfFrameState.Supported ? "不可用" :
+                $"{_perfFrameState.Backend} · " + (_perfFrameState.Fps == 0 ? "关闭" : $"{_perfFrameState.Fps} FPS");
+            // 卡片右上角同步当前限帧后端标识（与磁贴一致，字号按卡片缩小）
+            if (_perfFrameBrand != null)
+            {
+                var (brandText, brandColor, brandSize) = TileStyle.BackendBrand(_perfFrameState.Backend);
+                _perfFrameBrand.Text = brandText;
+                _perfFrameBrand.Foreground = new SolidColorBrush(brandColor);
+                _perfFrameBrand.FontSize = Math.Round(brandSize * 0.55);
+                _perfFrameBrand.Visibility = _perfFrameState.Supported && brandText.Length > 0
+                    ? Visibility.Visible : Visibility.Collapsed;
+            }
+            _perfRowHints[_perfFrameRow!].Text = _perfFrameState.Message + $"；最左端关闭；{min}–{max} FPS · 步长 {step}";
+            if (_perfHelpRow == _perfFrameRow) ShowPerformanceHelp(_perfFrameRow!);
+        }
+        finally
+        {
+            _perfFrameSyncing = _perfFrameLoading = false;
+            _perfFrameSlider.IsEnabled = _perfFrameState.Supported && !_perfBusy;
+        }
+    }
+
+    private async Task RefreshCpuControlsAsync()
+    {
+        if (_perfCpuLoading) return;
+        _perfCpuLoading = true;
+        if (_perfFrequencySlider != null) _perfFrequencySlider.IsEnabled = false;
+        try
+        {
+            _perfCpuState = await Task.Run(PerformanceService.GetCpuSettings);
+            _perfFrequencyMhz = _perfCpuState.MaxFrequencyMhz;
+            _perfCpuSyncing = true;
+            if (_perfFrequencySlider != null)
+                _perfFrequencySlider.Value = _perfFrequencyMhz == 0 ? 0.9 : Math.Clamp(_perfFrequencyMhz / 1000.0, 1, 5);
+            if (_perfFrequencyRead != null)
+                _perfFrequencyRead.Text = !_perfCpuState.FrequencySupported ? "—" : _perfFrequencyMhz == 0 ? "不限制" : $"{_perfFrequencyMhz / 1000.0:0.0} GHz";
+            RenderBoostToggle();
+            if (_perfBoostRow != null)
+                _perfRowHints[_perfBoostRow].Text = _perfCpuState.BoostSupported
+                    ? "保存后写入当前电源方案" : "系统不支持睿频设置";
+            if (_perfFrequencyRow != null)
+                _perfRowHints[_perfFrequencyRow].Text = _perfCpuState.FrequencySupported
+                    ? "最左端不限制 · 1–5 GHz" : "系统不支持频率设置";
+        }
+        finally
+        {
+            _perfCpuSyncing = false;
+            _perfCpuLoading = false;
+            if (_perfFrequencySlider != null) _perfFrequencySlider.IsEnabled = _perfCpuState.FrequencySupported && !_perfBusy;
+        }
+    }
+
+    /// <summary>睿频开关视觉：优先显示待应用值，未改动时显示系统当前值</summary>
+    private void RenderBoostToggle()
+    {
+        if (_perfBoostPill is null || _perfBoostDot is null) return;
+        var on = _perfBoostPending ?? (_perfCpuState.BoostSupported && _perfCpuState.BoostMode != 0);
+        _perfBoostPill.Opacity = _perfCpuState.BoostSupported ? 1 : 0.5;
+        _perfBoostPill.Background = new SolidColorBrush(on
+            ? Windows.UI.Color.FromArgb(0xFF, 0xFF, 0x9A, 0x4D)
+            : Windows.UI.Color.FromArgb(0x1F, 0xFF, 0xFF, 0xFF));
+        _perfBoostDot.HorizontalAlignment = on ? HorizontalAlignment.Right : HorizontalAlignment.Left;
+        _perfBoostDot.Margin = on ? new Thickness(0, 0, 2, 0) : new Thickness(2, 0, 0, 0);
+    }
+
+    /// <summary>睿频开关只改待应用状态，按 X 保存时才写入</summary>
+    private void ToggleBoost()
+    {
+        if (!_perfOpen || _perfBusy || _perfSaving || _perfCpuLoading) return;
+        if (!_perfCpuState.BoostSupported)
+        {
+            ShowToast("当前系统未提供睿频设置", ToastKind.Warning);
+            return;
+        }
+        _perfBoostPending = !(_perfBoostPending ?? (_perfCpuState.BoostMode != 0));
+        RenderBoostToggle();
+        if (_perfBoostRow != null) _perfRowHints[_perfBoostRow].Text = "已切换，待保存";
+        if (_perfBoostRow != null) ShowPerformanceHelp(_perfBoostRow);
+    }
+
+    /// <summary>X：一次保存所有待应用修改；全部成功后关闭面板，失败项留在面板提示</summary>
+    private async Task SavePerformanceAsync()
+    {
+        if (!_perfOpen || _perfBusy || _perfSaving || _perfCpuLoading || _perfPowerLoading || _perfFrameLoading) return;
+        _perfSaving = true;
+        PerfSettingsScroll.IsHitTestVisible = false;
+        PerfSaveButton.IsEnabled = false;
+        var failures = new List<string>();
+        var changed = 0;
+        var boostFailed = false;
+        try
+        {
+            // 1) Windows 电源模式
+            if (_perfSystemState.Available && _perfIndex is >= 0 and <= 2 && (int)_perfSystemState.Level != _perfIndex)
+            {
+                changed++;
+                var (ok, message) = await Task.Run(() => PerformanceService.ApplyLevel((PerformanceLevel)_perfIndex));
+                if (!ok) failures.Add(message);
+            }
+
+            // 2) 全局锁帧
+            if (_perfFrameState.Supported && _perfFrameSlider is not null)
+            {
+                var fps = _perfFrameSlider.Value < _perfFrameState.Minimum ? 0 : (int)Math.Round(_perfFrameSlider.Value);
+                if (fps != _perfFrameState.Fps)
+                {
+                    changed++;
+                    var (ok, message) = await Task.Run(() => FrameLimitService.Apply(_perfFrameState, fps));
+                    if (!ok) failures.Add(message);
+                }
+            }
+
+            // 3) CPU 功耗限制：持续功耗变化时，短时 / 瞬时按当前比例自动跟随，
+            //    并始终保证 PL1 ≤ PL2 ≤ FPPT；写入顺序先升后降，避免中间状态被固件拒绝
+            if (_perfPowerState.Enabled && _perfPowerState.Limits.Length > 0)
+            {
+                var limits = _perfPowerState.Limits;
+                var values = new double[limits.Length];
+                var touched = new bool[limits.Length];
+                for (var i = 0; i < limits.Length; i++)
+                {
+                    var hasSlider = i < _perfPowerControls.Count;
+                    values[i] = hasSlider ? _perfPowerControls[i].Slider.Value : limits[i].Watts;
+                    touched[i] = hasSlider && limits[i].Writable && Math.Abs(values[i] - limits[i].Watts) > 0.05;
+                }
+                // 持续功耗改了而短时没手动改：短时按当前比例跟着抬高（至少不低于持续功耗）
+                if (touched[0] && limits.Length > 1 && limits[1].Writable && !touched[1])
+                {
+                    var ratio = limits[0].Watts > 0.5 ? limits[1].Watts / limits[0].Watts : 1.25;
+                    values[1] = Math.Clamp(Math.Round(values[0] * Math.Max(1, ratio)),
+                        limits[1].Minimum, limits[1].Maximum);
+                }
+                // 瞬时同理：跟随新的短时功耗
+                if (limits.Length > 2 && limits[2].Writable && !touched[2] && (touched[0] || touched[1]))
+                {
+                    var ratio = limits[1].Watts > 0.5 ? limits[2].Watts / limits[1].Watts : 1.5;
+                    values[2] = Math.Clamp(Math.Round(values[1] * Math.Max(1, ratio)),
+                        limits[2].Minimum, limits[2].Maximum);
+                }
+                // 兜底排序：保持 PL1 ≤ PL2 ≤ FPPT
+                for (var i = 1; i < limits.Length; i++) values[i] = Math.Max(values[i], values[i - 1]);
+
+                var targets = Enumerable.Range(0, limits.Length)
+                    .Where(i => limits[i].Writable && Math.Abs(values[i] - limits[i].Watts) > 0.05)
+                    .Select(i => (Index: i, Watts: values[i]))
+                    .ToArray();
+                changed += targets.Length;
+                var (powerOk, powerMessage) = await ApplyPowerLimitsAsync(
+                    targets, limits.Select(l => l.Watts).ToArray());
+                if (!powerOk) failures.Add(powerMessage);
+            }
+
+            // 4) CPU 睿频 / 最高频率
+            if (_perfBoostPending is bool boostWanted && (boostWanted ? 2 : 0) != _perfCpuState.BoostMode)
+            {
+                changed++;
+                var (ok, message) = await Task.Run(() => PerformanceService.ApplyCpuSetting(true, boostWanted ? 2 : 0));
+                boostFailed = !ok;
+                if (!ok) failures.Add(message);
+            }
+            if (_perfCpuState.FrequencySupported && _perfFrequencyMhz != _perfCpuState.MaxFrequencyMhz)
+            {
+                changed++;
+                var (ok, message) = await Task.Run(() => PerformanceService.ApplyCpuSetting(false, _perfFrequencyMhz));
+                if (!ok) failures.Add(message);
+            }
+
+            // 5) 游戏可用核心
+            var topology = GameCpuService.Topology;
+            if (topology.Supported && _perfCoreSelection is { SelectedIndex: >= 0 } core && _perfCoreMode is not null)
+            {
+                var count = core.SelectedIndex;
+                var mode = (GameCoreMode)_perfCoreMode.SelectedIndex;
+                var settings = SettingsService.Current;
+                if (count != settings.GameCoreCount || (topology.Hybrid && mode != settings.GameCoreMode))
+                {
+                    changed++;
+                    SettingsService.Update(s => { s.GameCoreCount = count; s.GameCoreMode = mode; });
+                    var result = await Task.Run(() => GameCpuService.Configure(count, mode));
+                    if (!result.Ok) failures.Add(result.Message);
+                }
+            }
+        }
+        catch (Exception ex) { failures.Add(ex.Message); }
+        finally
+        {
+            _perfSaving = false;
+            if (!boostFailed) _perfBoostPending = null;
+            PerfSettingsScroll.IsHitTestVisible = true;
+            PerfSaveButton.IsEnabled = true;
+        }
+
+        // 读回真实值；失败项保持失败提示，不伪造成功状态
+        if (_perfOpen)
+        {
+            await RefreshPerformanceStateAsync();
+            await RefreshFrameLimitAsync();
+            await RefreshCpuPowerAsync();
+            await RefreshCpuControlsAsync();
+        }
+
+        if (changed == 0)
+        {
+            // 没有改动：什么都不写入，同样按保存成功处理并关闭面板
+            ShowToast("已保存并生效", ToastKind.Success);
+            ClosePerformanceMenu();
+            return;
+        }
+        if (failures.Count > 0)
+        {
+            ShowToast("部分设置未生效：" + string.Join("；", failures), ToastKind.Warning);
+            ShowPerformanceStatus("部分设置未生效：" + string.Join("；", failures), true);
+            return;
+        }
+        RefreshPerformanceTiles();
+        ShowToast("已保存并生效", ToastKind.Success);
+        ClosePerformanceMenu();
+    }
+
+    /// <summary>
+    /// 写入多个功耗限制（持续/短时/瞬时）。先抬高的项按索引从大到小写、再降低的项按索引从小到大写，
+    /// 保证任何中间状态都满足 PL1 ≤ PL2 ≤ FPPT，不会被固件/后端以“顺序颠倒”为由拒绝。
+    /// </summary>
+    private static async Task<(bool Ok, string Message)> ApplyPowerLimitsAsync(
+        (int Index, double Watts)[] targets, double[] current)
+    {
+        if (targets.Length == 0) return (true, "");
+        var raises = targets.Where(t => t.Watts > current[t.Index] + 0.05).OrderByDescending(t => t.Index).ToArray();
+        var lowers = targets.Where(t => t.Watts < current[t.Index] - 0.05).OrderBy(t => t.Index).ToArray();
+        foreach (var (index, watts) in raises.Concat(lowers))
+        {
+            var result = await Task.Run(() => CpuPowerService.Apply(index, watts));
+            if (!result.Ok) return (false, result.Message);
+        }
+        return (true, "");
+    }
+
+    /// <summary>把焦点移到指定行：同步档位索引、高亮并滚动到可见区域</summary>
+    private void FocusPerformanceRow(Border row)
+    {
+        _perfFocus = _perfSettingRows.IndexOf(row);
+        _perfLastColumn = _perfPowerRows.Contains(row) ? 0 : _perfCpuRows.Contains(row) ? 1 : _perfLastColumn;
+        ShowPerformanceHelp(row);
+        if (_perfFocus is >= 0 and < 3) _perfIndex = _perfFocus;
+        _perfTouched = true;
+        UpdatePerformanceCursor();
+        row.StartBringIntoView();
+        // 回到模式卡片时滚到最上，确保上方的设备状态完整显示
+        if (_perfFocus is >= 0 and < 3) PerfSettingsScroll.ChangeView(null, 0, null, true);
+    }
+
+    /// <summary>按视觉行上下移动：卡片 → 锁帧 → 两列内逐行升降，不再跨列跳到另一列底部</summary>
+    private void MovePerformanceFocus(int delta)
+    {
+        if (_perfFocus < 3)
+        {
+            if (delta > 0) FocusPerformanceRow(_perfSettingRows[3]);
+            else PerfSettingsScroll.ChangeView(null, 0, null, true);   // 已在顶部：滚到最上，露出设备状态
+            return;
+        }
+        var current = _perfSettingRows[_perfFocus];
+        var inPower = _perfPowerRows.Contains(current);
+        var inCpu = _perfCpuRows.Contains(current);
+        if (!inPower && !inCpu)
+        {
+            // 全局锁帧行
+            if (delta > 0) FocusPerformanceRow((_perfLastColumn == 0 ? _perfPowerRows : _perfCpuRows)[0]);
+            else FocusPerformanceRow(_perfCards[_perfIndex]);
+            return;
+        }
+        var list = inPower ? _perfPowerRows : _perfCpuRows;
+        var index = list.IndexOf(current) + delta;
+        if (index < 0) FocusPerformanceRow(_perfSettingRows[3]);   // 列顶再上：回到锁帧行
+        else if (index < list.Count) FocusPerformanceRow(list[index]);
+        // 列底再下：保持不动，避免跳到另一列造成“上下乱跳”
+    }
+
+    /// <summary>右列两列之间左右切换（功耗列 ⇄ CPU/GPU 列）；焦点不在右列时返回 false</summary>
+    private bool MovePerformanceColumn(int dir)
+    {
+        if (_perfFocus < 3) return false;
+        var current = _perfSettingRows[_perfFocus];
+        var inPower = _perfPowerRows.Contains(current);
+        var inCpu = _perfCpuRows.Contains(current);
+        if (!inPower && !inCpu) return false;   // 不在两列内（如全局锁帧）：返回 false，交给调值
+        if (dir > 0 && inPower)
+            FocusPerformanceRow(_perfCpuRows[Math.Min(_perfPowerRows.IndexOf(current), _perfCpuRows.Count - 1)]);
+        else if (dir < 0 && inCpu)
+            FocusPerformanceRow(_perfPowerRows[Math.Min(_perfCpuRows.IndexOf(current), _perfPowerRows.Count - 1)]);
+        return true;   // 已在最左/最右列：不跨列，也不调值
+    }
+
+    /// <summary>打开性能调节：默认停在当前 Windows 电源模式对应的档位</summary>
+    private void OpenPerformanceMenu()
+    {
+        if (_perfOpen || _perfBusy) return;
+        _perfOpen = true;
+        ++_perfSessionVersion;
+        ++_perfTelemetryVersion;
+        ClearTelemetryValues();
+        PerfTelemetryHint.Text = "正在读取设备传感器…";
+        _ = RefreshDeviceStatusAsync();
+        _perfTouched = false;
+        _perfBoostPending = null;   // 关闭时未保存的改动全部丢弃
+        ClearPerformanceStatus();
+        var state = PerformanceService.Cached;
+        _perfSystemState = state;
+        _perfIndex = Math.Clamp((int)state.Level, 0, 2);
+        _perfFocus = _perfIndex;
+        _perfHelpFocus = -1;
+        // 核心选项回到已保存值，避免上次未保存的选择残留
+        var saved = SettingsService.Current;
+        _perfCoreSyncing = true;
+        try
+        {
+            if (_perfCoreSelection is not null && _perfCoreSelection.Items.Count > 0)
+                _perfCoreSelection.SelectedIndex = Math.Clamp(saved.GameCoreCount, 0, _perfCoreSelection.Items.Count - 1);
+            if (_perfCoreMode is not null && _perfCoreMode.Items.Count > 0)
+                _perfCoreMode.SelectedIndex = GameCpuService.Topology.Hybrid && Enum.IsDefined(saved.GameCoreMode)
+                    ? Math.Clamp((int)saved.GameCoreMode, 0, _perfCoreMode.Items.Count - 1) : 0;
+        }
+        finally { _perfCoreSyncing = false; }
+        PerfSettingsScroll.MaxHeight = Math.Max(200, Math.Min(780, ActualHeight - 230));
+        PerformancePanel.Width = Math.Min(640, Math.Max(320, ActualWidth - 48));
+        PerfSettingsScroll.ChangeView(null, 0, null, true);
+        PerformanceOverlay.Visibility = Visibility.Visible;
+        UpdatePerformanceCursor();
+        PlayPerformanceIn();
+        if (_gpuName is null) _ = LoadGpuNameAsync();
+        _ = RefreshPerformanceStateAsync(); // 弹窗打开时后台刷新一次真实状态
+        _ = RefreshCpuControlsAsync();
+        _ = RefreshFrameLimitAsync();
+        _ = RefreshCpuPowerAsync();
+    }
+
+    /// <summary>显卡名称 WMI 查询较慢，放到后台，查完再回填“当前设备”</summary>
+    private async Task LoadGpuNameAsync()
+    {
+        var name = await Task.Run(ReadGpuName);
+        _gpuName = name;
+        PerfDeviceText.Text = name;
+    }
+
+    private void ClosePerformanceMenu()
+    {
+        ClosePerformanceCombo();
+        ClearPerformanceStatus();
+        _perfIn?.Stop();
+        PerformancePanel.Opacity = 1;
+        PerformanceOverlay.Visibility = Visibility.Collapsed;
+        _perfOpen = false;
+        ++_perfSessionVersion;
+        ++_perfTelemetryVersion;
+    }
+
+    /// <summary>入场：遮罩淡入 + 面板淡入、轻微放大并自下而上归位（与电源菜单一致）</summary>
+    private void PlayPerformanceIn()
+    {
+        var maskFade = new DoubleAnimation { From = 0, To = 1, Duration = TimeSpan.FromMilliseconds(150) };
+        Storyboard.SetTarget(maskFade, PerformanceMask);
+        Storyboard.SetTargetProperty(maskFade, "Opacity");
+
+        var panelFade = new DoubleAnimation { From = 0, To = 1, Duration = TimeSpan.FromMilliseconds(180) };
+        Storyboard.SetTarget(panelFade, PerformancePanel);
+        Storyboard.SetTargetProperty(panelFade, "Opacity");
+
+        var ease = new CubicEase { EasingMode = EasingMode.EaseOut };
+        var scaleX = new DoubleAnimation { From = 0.92, To = 1, Duration = TimeSpan.FromMilliseconds(230), EasingFunction = ease };
+        Storyboard.SetTarget(scaleX, PerformancePanelTransform);
+        Storyboard.SetTargetProperty(scaleX, "ScaleX");
+        var scaleY = new DoubleAnimation { From = 0.92, To = 1, Duration = TimeSpan.FromMilliseconds(230), EasingFunction = ease };
+        Storyboard.SetTarget(scaleY, PerformancePanelTransform);
+        Storyboard.SetTargetProperty(scaleY, "ScaleY");
+        var rise = new DoubleAnimation { From = 26, To = 0, Duration = TimeSpan.FromMilliseconds(260), EasingFunction = ease };
+        Storyboard.SetTarget(rise, PerformancePanelTransform);
+        Storyboard.SetTargetProperty(rise, "TranslateY");
+
+        var sb = new Storyboard();
+        sb.Children.Add(maskFade);
+        sb.Children.Add(panelFade);
+        sb.Children.Add(scaleX);
+        sb.Children.Add(scaleY);
+        sb.Children.Add(rise);
+        _perfIn?.Stop();
+        _perfIn = sb;
+        sb.Begin();
+    }
+
+    /// <summary>手柄 A 展开下拉框：展开后方向键上下切选项、A/B 收起</summary>
+    private void OpenPerformanceCombo(ComboBox combo)
+    {
+        if (!combo.IsEnabled) return;
+        _perfOpenCombo = combo;
+        combo.DropDownClosed -= OnPerformanceComboClosed;
+        combo.DropDownClosed += OnPerformanceComboClosed;
+        combo.IsDropDownOpen = true;
+    }
+
+    private void OnPerformanceComboClosed(object? sender, object e)
+    {
+        if (ReferenceEquals(_perfOpenCombo, sender)) _perfOpenCombo = null;
+    }
+
+    private void ClosePerformanceCombo()
+    {
+        var combo = _perfOpenCombo;
+        _perfOpenCombo = null;
+        if (combo is not null) combo.IsDropDownOpen = false;
+    }
+
+    /// <summary>性能弹窗内手柄按键：三档选模式、设置行调值并标记待应用，X 保存，B/View/Y 关闭</summary>
+    private bool HandlePerformance(GamepadButtons b)
+    {
+        if (_perfBusy || _perfSaving) return true;
+        // 下拉框已展开：上下选择，A/B 收起（其余按键吞掉，避免误改其它行）
+        if (_perfOpenCombo is not null)
+        {
+            if (b.HasFlag(GamepadButtons.DPadUp) || b.HasFlag(GamepadButtons.DPadDown))
+            {
+                var step = b.HasFlag(GamepadButtons.DPadDown) ? 1 : -1;
+                var combo = _perfOpenCombo;
+                combo.SelectedIndex = Math.Clamp(combo.SelectedIndex + step, 0, combo.Items.Count - 1);
+                return true;
+            }
+            if (b.HasFlag(GamepadButtons.A) || b.HasFlag(GamepadButtons.B))
+            {
+                ClosePerformanceCombo();
+                return true;
+            }
+            return true;
+        }
+        // 右摇杆左右 = 调值（滑杆 / 下拉框 / 档位），不参与列切换
+        if (b.HasFlag(GamepadButtons.RightStickLeft) || b.HasFlag(GamepadButtons.RightStickRight))
+        {
+            var dir = b.HasFlag(GamepadButtons.RightStickRight) ? 1 : -1;
+            if (_perfFocus < 3) FocusPerformanceRow(_perfCards[(_perfFocus + (dir > 0 ? 1 : 2)) % 3]);
+            else if (_perfAdjusters.TryGetValue(_perfSettingRows[_perfFocus], out var adjust)) adjust(dir);
+            return true;
+        }
+        if (b.HasFlag(GamepadButtons.DPadUp) || b.HasFlag(GamepadButtons.DPadDown))
+        {
+            MovePerformanceFocus(b.HasFlag(GamepadButtons.DPadDown) ? 1 : -1);
+            return true;
+        }
+        // 模式卡片左右循环选档；设置行左右在“功耗 ⇄ CPU”两列间切换
+        if (b.HasFlag(GamepadButtons.DPadLeft) || b.HasFlag(GamepadButtons.DPadRight))
+        {
+            var dir = b.HasFlag(GamepadButtons.DPadRight) ? 1 : -1;
+            if (_perfFocus < 3) FocusPerformanceRow(_perfCards[(_perfFocus + (dir > 0 ? 1 : 2)) % 3]);
+            else if (!MovePerformanceColumn(dir) && _perfAdjusters.TryGetValue(_perfSettingRows[_perfFocus], out var adjust))
+                adjust(dir);   // 仅两列之外的行（如全局锁帧）用左右调值
+            return true;
+        }
+        if (b.HasFlag(GamepadButtons.A))
+        {
+            // 模式卡片：A = 立即切换并应用该档电源模式；开关类行照旧切换；其余行不做写入
+            if (_perfFocus is >= 0 and < 3) _ = ApplyPerformanceLevelAtAsync(_perfFocus);
+            else if (_perfActions.TryGetValue(_perfSettingRows[_perfFocus], out var action)) action();
+            return true;
+        }
+        if (b.HasFlag(GamepadButtons.X))
+        {
+            _ = SavePerformanceAsync();
+            return true;
+        }
+        if (b.HasFlag(GamepadButtons.B) || b.HasFlag(GamepadButtons.View) || b.HasFlag(GamepadButtons.Y))
+        { ClosePerformanceMenu(); return true; }
+        return true; // 弹窗打开时吞掉其余按键，避免误触发主页操作
+    }
+
+    private void UpdatePerformanceCursor()
+    {
+        var accentBr = new SolidColorBrush(Windows.UI.Color.FromArgb(0xE6, 0xFF, 0xB3, 0x66));
+        var idleBr = new SolidColorBrush(Windows.UI.Color.FromArgb(0x1A, 0xFF, 0xFF, 0xFF));
+        // 焦点用橙色斜向渐变，未选中用极淡白光渐变，比纯色更有层次
+        var accentBg = new LinearGradientBrush
+        {
+            StartPoint = new Windows.Foundation.Point(0, 0), EndPoint = new Windows.Foundation.Point(1, 1),
+            GradientStops =
+            {
+                new GradientStop { Color = Windows.UI.Color.FromArgb(0x3D, 0xFF, 0x9A, 0x4D), Offset = 0 },
+                new GradientStop { Color = Windows.UI.Color.FromArgb(0x12, 0xFF, 0x9A, 0x4D), Offset = 1 }
+            }
+        };
+        var idleBg = new LinearGradientBrush
+        {
+            StartPoint = new Windows.Foundation.Point(0, 0), EndPoint = new Windows.Foundation.Point(1, 1),
+            GradientStops =
+            {
+                new GradientStop { Color = Windows.UI.Color.FromArgb(0x14, 0xFF, 0xFF, 0xFF), Offset = 0 },
+                new GradientStop { Color = Windows.UI.Color.FromArgb(0x08, 0xFF, 0xFF, 0xFF), Offset = 1 }
+            }
+        };
+        for (var i = 0; i < _perfSettingRows.Count; i++)
+        {
+            var on = i == _perfFocus;
+            _perfSettingRows[i].BorderBrush = on ? accentBr : idleBr;
+            _perfSettingRows[i].BorderThickness = new Thickness(on ? 2 : 1.5);
+            _perfSettingRows[i].Background = on ? accentBg : idleBg;
+        }
+        var state = _perfSystemState;
+        var available = state.Available;
+        PerfSystemMode.Text = available
+            ? $"当前系统模式：{state.Display}"
+            : "当前系统模式：不可用（系统不支持、返回未知模式或读取失败）；无法应用电源模式";
+
+        // 圆点=系统当前生效；待应用=已选中但尚未应用；不可用时三张卡禁用
+        var active = available ? (int)state.Level : -1;
+        PerfEcoActive.Visibility = active == 0 ? Visibility.Visible : Visibility.Collapsed;
+        PerfBalancedActive.Visibility = active == 1 ? Visibility.Visible : Visibility.Collapsed;
+        PerfPerformanceActive.Visibility = active == 2 ? Visibility.Visible : Visibility.Collapsed;
+        PerfEcoPending.Visibility = available && _perfIndex == 0 && active != 0 ? Visibility.Visible : Visibility.Collapsed;
+        PerfBalancedPending.Visibility = available && _perfIndex == 1 && active != 1 ? Visibility.Visible : Visibility.Collapsed;
+        PerfPerformancePending.Visibility = available && _perfIndex == 2 && active != 2 ? Visibility.Visible : Visibility.Collapsed;
+        for (var i = 0; i < _perfCards.Length; i++)
+        {
+            _perfCards[i].IsHitTestVisible = available;
+            _perfCards[i].Opacity = available ? 1 : 0.5;
+        }
+        PerfDeviceText.Text = _gpuName ?? "…";
+        if (_perfHelpFocus != _perfFocus)
+        {
+            _perfHelpFocus = _perfFocus;
+            ShowPerformanceHelp(_perfSettingRows[_perfFocus]);
+        }
+    }
+
+    /// <summary>鼠标/手柄点卡片：只切换待应用档位，统一由 X 保存</summary>
+    private void ChoosePerformanceCard(int index)
+    {
+        if (!_perfOpen || _perfBusy || _perfSaving) return;
+        if (!_perfSystemState.Available)
+        {
+            ShowToast("当前系统不支持电源模式，未修改设置", ToastKind.Warning);
+            return;
+        }
+        FocusPerformanceRow(_perfCards[index]);
+    }
+
+    /// <summary>A 键在模式卡片上直接切换并应用该档 Windows 电源模式（立即生效）</summary>
+    private async Task ApplyPerformanceLevelAtAsync(int index)
+    {
+        if (_perfBusy || _perfSaving) return;
+        if (_perfSystemState.Available && (int)_perfSystemState.Level == index)
+        {
+            ShowToast("已是当前电源模式");
+            return;
+        }
+        _perfTouched = true; // 期间不被后台同步改写选择
+        var (ok, message) = await Task.Run(() => PerformanceService.ApplyLevel((PerformanceLevel)index));
+        ShowToast(message, ok ? ToastKind.Success : ToastKind.Warning);
+        if (!ok) return;
+        await PerformanceService.RefreshCacheAsync();
+        _perfTouched = false;
+        await RefreshPerformanceStateAsync();
+    }
+
+    /// <summary>后台同步系统模式；保留待应用选择，忽略关闭或重开之前的读取结果</summary>
+    private async Task RefreshPerformanceStateAsync()
+    {
+        if (!_perfOpen || _perfBusy || _perfStateRefreshBusy) return;
+        var version = _perfSessionVersion;
+        _perfStateRefreshBusy = true;
+        try
+        {
+            var state = await PerformanceService.RefreshCacheAsync();
+            if (!_perfOpen || version != _perfSessionVersion || _perfBusy) return;
+            _perfSystemState = state;
+            if (!_perfTouched && state.Available)
+            {
+                _perfIndex = Math.Clamp((int)state.Level, 0, 2);
+                _perfFocus = _perfIndex;
+            }
+            UpdatePerformanceCursor();
+            RefreshPerformanceTiles();
+        }
+        finally { _perfStateRefreshBusy = false; }
     }
 
     // ---- 壁纸浮层（壁纸磁贴 A/点击打开：设为桌面壁纸 / 设为锁屏壁纸） ----
@@ -4898,10 +6209,354 @@ public sealed partial class MainPage : Page
         foreach (var (refs, item) in _sysRefs) TileStyle.FillSystemTile(refs, item);
     }
 
+    /// <summary>刷新所有性能控制磁贴的查看项与读数（切换查看项、功耗/温度采样、电源状态刷新后调用）</summary>
+    private void RefreshPerformanceTiles()
+    {
+        foreach (var (refs, item) in _perfRefs)
+        {
+            refs.PendingPower = PerfPowerPending(item);
+            refs.PendingFrame = PerfFramePending(item);
+            refs.PendingPowerLimit = PerfPowerLimitPending(item);
+            refs.PendingCpuMhz = PerfCpuMhzPending(item);
+            refs.PendingBoost = PerfBoostTilePending(item);
+            TileStyle.FillPerformanceTile(refs, item);
+        }
+    }
+
+    /// <summary>后台读一次当前电源方案/锁帧状态并写进缓存，完成后回 UI 线程刷新磁贴</summary>
+    private void RefreshPerformanceCacheAsync()
+    {
+        if (_perfRefreshBusy) { _perfRefreshAgain = true; return; } // 本轮结束后自动补一次（首次布局刚建好磁贴时会遇到）
+        _perfRefreshBusy = true;
+        var needFrame = _perfRefs.Values.Any(i => i.PerformanceFrameLimit);
+        var needPowerLimit = _perfRefs.Values.Any(i => i.PerformancePowerLimit);
+        var needCpu = _perfRefs.Values.Any(i => i.PerformanceCpuFrequency || i.PerformanceCpuBoost);
+        _ = Task.Run(async () =>
+        {
+            // 每项独立兜底：某一项刷新失败不能阻断后面的缓存（尤其是 CPU 睿频/频率）
+            try { await PerformanceService.RefreshCacheAsync(); } catch { }
+            if (needFrame) { try { await FrameLimitService.RefreshCacheAsync(); } catch { } }
+            if (needPowerLimit) { try { await CpuPowerService.RefreshCacheAsync(); } catch { } }
+            if (needCpu) { try { await PerformanceService.RefreshCpuCacheAsync(); } catch { } }
+        }).ContinueWith(_ =>
+        {
+            DispatcherQueue.TryEnqueue(() =>
+            {
+                _perfRefreshBusy = false;
+                if (_pageWorkActive) RefreshPerformanceTiles();
+                if (_perfRefreshAgain)
+                {
+                    _perfRefreshAgain = false;
+                    RefreshPerformanceCacheAsync();
+                }
+            });
+        });
+    }
+
     /// <summary>刷新所有性能监控磁贴的开关状态与读数摘要</summary>
     private void RefreshMonitorTiles()
     {
         foreach (var (refs, item) in _monRefs) TileStyle.FillMonitorState(refs, item);
+    }
+
+    // ---- 下载模式 ----
+
+    private bool _dlOpen;              // 遮罩已打开（设置页或运行页）
+    private bool _dlRunning;           // 遮罩当前显示"运行中"
+    private bool _dlBusy;              // 正在进入/退出（熄屏、静音在后台线程）
+    private int _dlFocus;              // 当前焦点行
+    private int _dlMinutes = 60;       // 设置页的下载时长（分钟）
+    private PowerAction _dlAfter = PowerAction.Sleep; // 完成后动作
+    private double _dlSpeed;           // 最近一次采样到的网速（字节/秒）
+    private DispatcherTimer? _dlPeekBack; // "查看下载进度"3 秒后自动回到遮罩
+
+    private static readonly SolidColorBrush DownloadAccentBrush =
+        new(Windows.UI.Color.FromArgb(0xFF, 0xFF, 0xB3, 0x66));
+    private static readonly SolidColorBrush DownloadIdleBrush =
+        new(Windows.UI.Color.FromArgb(0, 0, 0, 0));
+
+    /// <summary>下载模式磁贴 A/点击：打开进入前设置（此时不熄屏）</summary>
+    private void OpenDownloadSetup()
+    {
+        if (_dlOpen || DownloadModeService.IsActive) return;
+        _dlOpen = true;
+        _dlRunning = false;
+        _dlBusy = false;
+        _dlFocus = 0;
+        DownloadOverlay.Visibility = Visibility.Visible;
+        DownloadSetupPanel.Visibility = Visibility.Visible;
+        DownloadRunningPanel.Visibility = Visibility.Collapsed;
+        UpdateDownloadSetupVisuals();
+    }
+
+    /// <summary>关闭设置页（未进入下载模式，屏幕保持正常）</summary>
+    private void CloseDownloadSetup()
+    {
+        if (!_dlOpen || _dlRunning) return;
+        _dlOpen = false;
+        DownloadOverlay.Visibility = Visibility.Collapsed;
+        DownloadSetupPanel.Visibility = Visibility.Collapsed;
+    }
+
+    /// <summary>设置页的行高亮与数值文字</summary>
+    private void UpdateDownloadSetupVisuals()
+    {
+        Border[] rows = [DlDurationRow, DlActionRow, DlStartRow, DlCancelRow];
+        for (var i = 0; i < rows.Length; i++)
+            rows[i].BorderBrush = i == _dlFocus ? DownloadAccentBrush : DownloadIdleBrush;
+        DlDurationText.Text = _dlMinutes + " 分钟";
+        DlActionText.Text = DownloadActionLabel(_dlAfter);
+    }
+
+    private void UpdateDownloadRunningVisuals()
+    {
+        DlPeekRow.BorderBrush = _dlFocus == 0 ? DownloadAccentBrush : DownloadIdleBrush;
+        DlCloseRow.BorderBrush = _dlFocus == 1 ? DownloadAccentBrush : DownloadIdleBrush;
+    }
+
+    private static string DownloadActionLabel(PowerAction action) => action switch
+    {
+        PowerAction.Sleep => "睡眠",
+        PowerAction.Hibernate => "休眠",
+        PowerAction.Shutdown => "关机",
+        _ => "不操作"
+    };
+
+    /// <summary>开始：记录亮度/音量并熄屏静音，窗口全屏置顶，切到运行页</summary>
+    private async Task StartDownloadModeAsync()
+    {
+        if (_dlBusy) return;
+        _dlBusy = true;
+        try
+        {
+            App.Main?.BeginDownloadOverlay();
+            var minutes = _dlMinutes;
+            var after = _dlAfter;
+            await Task.Run(() => DownloadModeService.Enter(minutes, after));
+
+            _dlRunning = true;
+            _dlFocus = 0;
+            DownloadSetupPanel.Visibility = Visibility.Collapsed;
+            DownloadRunningPanel.Visibility = Visibility.Visible;
+            UpdateDownloadRunningVisuals();
+            _dlSpeed = 0;
+            UpdateDownloadRunningTexts();
+            RefreshDownloadTiles();
+        }
+        finally
+        {
+            _dlBusy = false;
+        }
+    }
+
+    /// <summary>运行页读数：当前时间、剩余时间、网速、完成后动作</summary>
+    private void UpdateDownloadRunningTexts()
+    {
+        if (!_dlRunning) return;
+        if (!DownloadModeService.IsActive)
+        {
+            // 已在别处退出（例如到点执行了电源操作）
+            _dlRunning = false;
+            return;
+        }
+
+        var now = DateTime.Now;
+        DlClockText.Text = now.ToString("HH:mm");
+        DlClockDate.Text = now.ToString("M月d日 dddd");
+
+        var remain = DownloadModeService.Remaining;
+        if (remain <= TimeSpan.Zero)
+        {
+            _ = FinishDownloadModeAsync();
+            return;
+        }
+        DlRemainText.Text = remain.TotalHours >= 1
+            ? $"{(int)remain.TotalHours:00}:{remain.Minutes:00}:{remain.Seconds:00}"
+            : $"{remain.Minutes:00}:{remain.Seconds:00}";
+
+        _dlSpeed = DownloadModeService.SampleBytesPerSecond();
+        DlSpeedText.Text = DownloadModeService.FormatSpeed(_dlSpeed);
+        DlAfterText.Text = DownloadActionLabel(DownloadModeService.AfterAction);
+    }
+
+    /// <summary>倒计时结束：恢复屏幕与声音、关掉遮罩，再执行用户选择的睡眠/休眠/关机</summary>
+    private async Task FinishDownloadModeAsync()
+    {
+        if (_dlBusy) return;
+        var after = DownloadModeService.AfterAction;
+        await ExitDownloadModeAsync(showToast: false);
+        if (after is PowerAction.Sleep or PowerAction.Hibernate or PowerAction.Shutdown)
+            _ = Task.Run(() => PowerService.Execute(after));
+    }
+
+    /// <summary>退出下载模式：恢复亮度与声音、还原窗口状态、关闭遮罩</summary>
+    private async Task ExitDownloadModeAsync(bool showToast = true)
+    {
+        if (_dlBusy) return;
+        _dlBusy = true;
+        try
+        {
+            _dlPeekBack?.Stop();
+            _dlPeekBack = null;
+            await Task.Run(DownloadModeService.Exit);
+            App.Main?.ShowWindowAfterPeek();  // 若正处在"查看进度"的最小化状态，先还原窗口
+            App.Main?.EndDownloadOverlay();
+            _dlOpen = false;
+            _dlRunning = false;
+            DownloadOverlay.Visibility = Visibility.Collapsed;
+            DownloadSetupPanel.Visibility = Visibility.Collapsed;
+            DownloadRunningPanel.Visibility = Visibility.Collapsed;
+            RefreshDownloadTiles();
+            if (showToast) ShowToast("已关闭下载模式", ToastKind.Success);
+        }
+        finally
+        {
+            _dlBusy = false;
+        }
+    }
+
+    /// <summary>查看下载进度：先还原屏幕、最小化本窗口并切回下载页，5 秒后自动回来重新熄屏</summary>
+    private void PeekDownloadPage()
+    {
+        if (!DownloadModeService.IsActive || _dlPeekBack is not null) return;
+        App.Main?.HideWindowForPeek();
+        _ = Task.Run(DownloadModeService.PeekBegin);
+
+        _dlPeekBack = new DispatcherTimer { Interval = TimeSpan.FromSeconds(5) };
+        _dlPeekBack.Tick += (_, _) =>
+        {
+            _dlPeekBack?.Stop();
+            _dlPeekBack = null;
+            _ = Task.Run(() =>
+            {
+                DownloadModeService.PeekEnd();
+                DispatcherQueue.TryEnqueue(() => App.Main?.ShowWindowAfterPeek());
+            });
+        };
+        _dlPeekBack.Start();
+    }
+
+    /// <summary>下载模式遮罩的手柄输入：设置页 UD 选行 / LB·RB 调值 / A 确认；运行页 LR 选按钮 / A 执行</summary>
+    private bool HandleDownloadMode(GamepadButtons b)
+    {
+        if (!_dlOpen || _dlBusy) return true;
+
+        if (!_dlRunning)
+        {
+            if (b.HasFlag(GamepadButtons.DPadUp))
+            {
+                _dlFocus = (_dlFocus + 3) % 4;
+                UpdateDownloadSetupVisuals();
+                PlayDownloadCue(UiSoundKind.Move);
+            }
+            else if (b.HasFlag(GamepadButtons.DPadDown))
+            {
+                _dlFocus = (_dlFocus + 1) % 4;
+                UpdateDownloadSetupVisuals();
+                PlayDownloadCue(UiSoundKind.Move);
+            }
+            else if (b.HasFlag(GamepadButtons.LeftShoulder) || b.HasFlag(GamepadButtons.RightShoulder))
+            {
+                var delta = b.HasFlag(GamepadButtons.RightShoulder) ? 1 : -1;
+                if (_dlFocus == 0)
+                {
+                    _dlMinutes = Math.Clamp(_dlMinutes + delta * 5, 5, 24 * 60);
+                    UpdateDownloadSetupVisuals();
+                    PlayDownloadCue(UiSoundKind.Select);
+                }
+                else if (_dlFocus == 1)
+                {
+                    var actions = new[] { PowerAction.Sleep, PowerAction.Hibernate, PowerAction.Shutdown };
+                    var at = Array.IndexOf(actions, _dlAfter);
+                    _dlAfter = actions[(at + delta + actions.Length) % actions.Length];
+                    UpdateDownloadSetupVisuals();
+                    PlayDownloadCue(UiSoundKind.Select);
+                }
+            }
+            else if (b.HasFlag(GamepadButtons.A))
+            {
+                if (_dlFocus == 2)
+                {
+                    PlayDownloadCue(UiSoundKind.Confirm);
+                    _ = StartDownloadModeAsync();
+                }
+                else if (_dlFocus == 3)
+                {
+                    PlayDownloadCue(UiSoundKind.Back);
+                    CloseDownloadSetup();
+                }
+            }
+            else if (b.HasFlag(GamepadButtons.B))
+            {
+                PlayDownloadCue(UiSoundKind.Back);
+                CloseDownloadSetup();
+            }
+            return true;
+        }
+
+        // 运行页：只看两个按钮
+        if (b.HasFlag(GamepadButtons.DPadLeft) || b.HasFlag(GamepadButtons.DPadRight))
+        {
+            _dlFocus = 1 - _dlFocus;
+            UpdateDownloadRunningVisuals();
+            PlayDownloadCue(UiSoundKind.Move);
+        }
+        else if (b.HasFlag(GamepadButtons.A))
+        {
+            if (_dlFocus == 0)
+            {
+                PlayDownloadCue(UiSoundKind.Confirm);
+                PeekDownloadPage();
+            }
+            else
+            {
+                PlayDownloadCue(UiSoundKind.Back);
+                _ = ExitDownloadModeAsync();
+            }
+        }
+        else if (b.HasFlag(GamepadButtons.B))
+        {
+            PlayDownloadCue(UiSoundKind.Back);
+            _ = ExitDownloadModeAsync();
+        }
+        return true;
+    }
+
+    /// <summary>下载模式沿用主页音效：移动/切换/确认/返回各有不同音色，受"界面音效"开关控制</summary>
+    private static void PlayDownloadCue(UiSoundKind kind)
+    {
+        if (SettingsService.Current.UiSoundEnabled) UiSound.Play(kind);
+    }
+
+    /// <summary>刷新下载模式磁贴（剩余时间秒级变化）</summary>
+    private void RefreshDownloadTiles()
+    {
+        foreach (var (refs, item) in _dlRefs) TileStyle.FillDownloadState(refs, item);
+    }
+
+    // 下载模式遮罩的鼠标/触摸入口（手柄走 HandleDownloadMode）
+    private void OnDownloadStartTapped(object sender, TappedRoutedEventArgs e)
+    {
+        PlayDownloadCue(UiSoundKind.Confirm);
+        _ = StartDownloadModeAsync();
+    }
+
+    private void OnDownloadCancelTapped(object sender, TappedRoutedEventArgs e)
+    {
+        PlayDownloadCue(UiSoundKind.Back);
+        CloseDownloadSetup();
+    }
+
+    private void OnDownloadPeekTapped(object sender, TappedRoutedEventArgs e)
+    {
+        PlayDownloadCue(UiSoundKind.Confirm);
+        PeekDownloadPage();
+    }
+
+    private void OnDownloadCloseTapped(object sender, TappedRoutedEventArgs e)
+    {
+        PlayDownloadCue(UiSoundKind.Back);
+        _ = ExitDownloadModeAsync();
     }
 
     /// <summary>刷新小黄鸭磁贴的安装/运行状态（每秒轮询或操作后调用）</summary>
@@ -5030,6 +6685,386 @@ public sealed partial class MainPage : Page
         }
     }
 
+    /// <summary>当前焦点所在的性能控制磁贴项（磁贴区选中 或 抽屉内层焦点）；不是性能控制返回 null</summary>
+    private LaunchItem? PerformanceItemInFocus()
+    {
+        if (_display.Count == 0) return null;
+        if (_inDrawer)
+        {
+            if (FocusedDrawerItem() is not { Kind: LaunchKind.Widget, WidgetKind: WidgetKind.Performance } inner) return null;
+            return inner;
+        }
+        if (_selected < 0 || _selected >= _display.Count) return null;
+        var (item, group) = _display[_selected];
+        return group is null && item.Kind == LaunchKind.Widget && item.WidgetKind == WidgetKind.Performance ? item : null;
+    }
+
+    /// <summary>电源模式待应用档位（按磁贴项记录；-1=未选择，LB/RB 选择后写入）</summary>
+    private readonly Dictionary<LaunchItem, int> _perfPowerPending = new();
+
+    /// <summary>该磁贴的待应用电源档位；未选择时取当前生效档位（不可用返回 -1）</summary>
+    private int PerfPowerPending(LaunchItem item)
+    {
+        if (_perfPowerPending.TryGetValue(item, out var pending) && pending >= 0) return pending;
+        var state = PerformanceService.Cached;
+        return state.Available ? (int)state.Level : -1;
+    }
+
+    /// <summary>全局锁帧待应用值（按磁贴项记录，FPS；-1=未选择，LB/RB 调整后写入）</summary>
+    private readonly Dictionary<LaunchItem, int> _perfFramePending = new();
+
+    /// <summary>持续功耗待应用值（按磁贴项记录，W；-1=未选择，LB/RB 按 1W 调整后写入）</summary>
+    private readonly Dictionary<LaunchItem, int> _perfPowerLimitPending = new();
+
+    /// <summary>该磁贴的待应用持续功耗；未选择返回 -1（磁贴显示当前生效值）</summary>
+    private int PerfPowerLimitPending(LaunchItem item)
+        => _perfPowerLimitPending.TryGetValue(item, out var pending) && pending >= 0 ? pending : -1;
+
+    /// <summary>CPU 最高频率待应用值（MHz；-1=未选择，0=不限制）</summary>
+    private readonly Dictionary<LaunchItem, int> _perfCpuMhzPending = new();
+
+    /// <summary>该磁贴的待应用 CPU 频率；未选择返回 -1（磁贴显示当前生效值）</summary>
+    private int PerfCpuMhzPending(LaunchItem item)
+        => _perfCpuMhzPending.TryGetValue(item, out var pending) && pending >= 0 ? pending : -1;
+
+    /// <summary>CPU 睿频待应用状态（-1=未选择，0=关闭，2=开启）</summary>
+    private readonly Dictionary<LaunchItem, int> _perfBoostTilePending = new();
+
+    /// <summary>该磁贴的待应用睿频状态；未选择返回 -1（磁贴显示当前生效值）</summary>
+    private int PerfBoostTilePending(LaunchItem item)
+        => _perfBoostTilePending.TryGetValue(item, out var pending) && pending >= 0 ? pending : -1;
+
+    /// <summary>该磁贴的待应用锁帧值；未选择返回 -1（磁贴显示当前生效值）</summary>
+    private int PerfFramePending(LaunchItem item)
+        => _perfFramePending.TryGetValue(item, out var pending) && pending >= 0 ? pending : -1;
+
+    /// <summary>LB/RB：按磁贴当前显示的快捷项调节（电源模式循环选档 / 全局锁帧按 5 帧步进）。返回是否消费按键。</summary>
+    private bool TryAdjustPerformancePower(int dir)
+    {
+        if (PerformanceItemInFocus() is not { } item) return false;
+        var enabled = TileStyle.EnabledQuickItems(item);
+        if (enabled.Length == 0) return false;
+        var quick = TileStyle.CurrentQuickItem(item);
+        if (quick == TileStyle.PerformanceQuickItem.FrameLimit)
+            return AdjustPerformanceFrame(item, dir);
+        if (quick == TileStyle.PerformanceQuickItem.PowerLimit)
+            return AdjustPerformancePowerLimit(item, dir);
+        if (quick == TileStyle.PerformanceQuickItem.CpuFrequency)
+            return AdjustPerformanceCpuFrequency(item, dir);
+        if (quick == TileStyle.PerformanceQuickItem.CpuBoost)
+            return true; // 睿频是开关型：不走 LB/RB 调整，直接按 A 开关并保存
+        if (!item.PerformancePowerMode) return false;
+
+        var state = PerformanceService.GetState();
+        if (!state.Available) { ShowToast("当前系统不支持电源模式", ToastKind.Warning); return true; }
+        var start = PerfPowerPending(item);
+        if (start < 0) start = (int)state.Level;
+        _perfPowerPending[item] = ((start + dir) % 3 + 3) % 3;
+        AnimatePerformanceSwitch(dir);
+        return true;
+    }
+
+    /// <summary>全局锁帧按 5 帧步进调整（限制在后端支持范围内）；结果只记为待应用，A 才写入</summary>
+    private bool AdjustPerformanceFrame(LaunchItem item, int dir)
+    {
+        const int step = 5;
+        var state = FrameLimitService.Cached;
+        if (!state.Supported) { ShowToast("没有可用的限帧后端", ToastKind.Warning); return true; }
+
+        var max = state.Maximum - (state.Maximum - state.Minimum) % step;
+        var slots = Math.Max(0, (max - state.Minimum) / step);
+        var start = _perfFramePending.TryGetValue(item, out var pending) && pending >= 0 ? pending : state.Fps;
+        if (start <= 0) start = state.Minimum;
+        var slot = (int)Math.Round((start - state.Minimum) / (double)step) + dir;
+        _perfFramePending[item] = state.Minimum + Math.Clamp(slot, 0, slots) * step;
+        RefreshPerformanceTile(item); // 只改数值，不做滑动动画
+        return true;
+    }
+
+    /// <summary>功耗控制按 1W 调整持续功耗；短时/瞬时功耗在应用时按比例自动跟随</summary>
+    private bool AdjustPerformancePowerLimit(LaunchItem item, int dir)
+    {
+        var state = CpuPowerService.Cached;
+        if (!state.Enabled) { ShowToast("按 A 启用功耗控制（需要管理员授权）", ToastKind.Warning); return true; }
+        if (!state.Supported || state.Limits.Length == 0 || !state.Limits[0].Writable)
+        { ShowToast("当前 CPU 功耗接口不可写", ToastKind.Warning); return true; }
+
+        var limit = state.Limits[0];
+        var start = _perfPowerLimitPending.TryGetValue(item, out var pending) && pending >= 0
+            ? pending : (int)Math.Round(limit.Watts);
+        var min = (int)Math.Round(limit.Minimum);
+        var max = (int)Math.Round(limit.Maximum);
+        _perfPowerLimitPending[item] = Math.Clamp(start + dir, min, max);
+        RefreshPerformanceTile(item); // 只改数值，不做滑动动画
+        return true;
+    }
+
+    /// <summary>CPU 频率按 100MHz 调整最高频率（0=不限制）；右/上为加，左/下为减</summary>
+    private bool AdjustPerformanceCpuFrequency(LaunchItem item, int dir)
+    {
+        var cpu = PerformanceService.CachedCpu;
+        // 缓存尚未读到（首次进入/读取失败）时也允许先调整，同时后台补读真实值
+        if (!cpu.FrequencySupported) _ = Task.Run(PerformanceService.RefreshCpuCacheAsync);
+        var start = _perfCpuMhzPending.TryGetValue(item, out var pending) && pending >= 0
+            ? pending : cpu.MaxFrequencyMhz;
+        var next = dir > 0
+            ? (start < 1000 ? 1000 : Math.Min(start + 100, 5000))
+            : (start <= 0 ? 5000 : start <= 1000 ? 0 : start - 100);
+        _perfCpuMhzPending[item] = next;
+        RefreshPerformanceTile(item); // 只改数值，不做滑动动画
+        return true;
+    }
+
+    /// <summary>只刷新指定性能磁贴的内容（不重建、不做切换动画）</summary>
+    private void RefreshPerformanceTile(LaunchItem item)
+    {
+        foreach (var (refs, it) in _perfRefs)
+        {
+            if (!ReferenceEquals(it, item)) continue;
+            refs.PendingPower = PerfPowerPending(it);
+            refs.PendingFrame = PerfFramePending(it);
+            refs.PendingPowerLimit = PerfPowerLimitPending(it);
+            refs.PendingCpuMhz = PerfCpuMhzPending(it);
+            refs.PendingBoost = PerfBoostTilePending(it);
+            TileStyle.FillPerformanceTile(refs, it);
+        }
+    }
+
+    /// <summary>右摇杆←/→：在已开启的快捷项之间切换（电源模式 → 全局锁帧 → 功耗控制 → CPU 频率 → CPU 睿频）。返回是否消费按键。</summary>
+    private bool TryCyclePerformanceQuick(int dir)
+    {
+        if (PerformanceItemInFocus() is not { } item) return false;
+        var enabled = TileStyle.EnabledQuickItems(item);
+        if (enabled.Length < 2) return false;
+
+        var index = Array.IndexOf(enabled, TileStyle.CurrentQuickItem(item));
+        item.PerformanceOption = (int)enabled[((index + dir) % enabled.Length + enabled.Length) % enabled.Length];
+        ConfigService.Save(_items.ToList());
+        AnimatePerformanceSwitch(dir);
+        UpdateHintForSelection();
+        return true;
+    }
+
+    /// <summary>上一次光标所在的性能控制磁贴（光标移开时用来还原待应用档位）</summary>
+    private LaunchItem? _perfFocusPrev;
+
+    /// <summary>光标移开性能控制磁贴后，丢弃待应用档位并恢复为当前已生效的图标和选项</summary>
+    private void SyncPerformanceFocus()
+    {
+        var current = PerformanceItemInFocus();
+        var prev = _perfFocusPrev;
+        _perfFocusPrev = current;
+        if (prev is null || ReferenceEquals(prev, current)) return;
+        var hadPower = _perfPowerPending.Remove(prev);
+        var hadFrame = _perfFramePending.Remove(prev);
+        var hadLimit = _perfPowerLimitPending.Remove(prev);
+        var hadCpuMhz = _perfCpuMhzPending.Remove(prev);
+        var hadBoost = _perfBoostTilePending.Remove(prev);
+        if (!hadPower && !hadFrame && !hadLimit && !hadCpuMhz && !hadBoost) return;
+        // 回到当前实际生效值（待应用置空后由 FillPerformanceTile 读服务缓存）
+        foreach (var (refs, item) in _perfRefs)
+        {
+            if (!ReferenceEquals(item, prev)) continue;
+            refs.PendingPower = -1;
+            refs.PendingFrame = -1;
+            refs.PendingPowerLimit = -1;
+            refs.PendingCpuMhz = -1;
+            refs.PendingBoost = -1;
+            TileStyle.FillPerformanceTile(refs, item);
+        }
+    }
+
+    /// <summary>应用 CPU 最高频率（0=不限制）；写入当前电源方案的交流/直流值</summary>
+    private async Task ApplyPerformanceCpuFrequencyAsync(LaunchItem item)
+    {
+        var cpu = PerformanceService.CachedCpu;
+        // 缓存未就绪时先补读一次，避免误判“不可用”
+        if (!cpu.FrequencySupported) cpu = await PerformanceService.RefreshCpuCacheAsync();
+        if (!cpu.FrequencySupported) { ShowToast("当前系统未提供 CPU 频率设置", ToastKind.Warning); return; }
+        var mhz = _perfCpuMhzPending.TryGetValue(item, out var pending) && pending >= 0
+            ? pending : cpu.MaxFrequencyMhz;
+        var (ok, message) = await Task.Run(() => PerformanceService.ApplyCpuSetting(false, mhz));
+        ShowToast(message, ok ? ToastKind.Success : ToastKind.Warning);
+        if (ok)
+        {
+            await PerformanceService.RefreshCpuCacheAsync();
+            RefreshPerformanceTiles();
+        }
+    }
+
+    /// <summary>应用 CPU 睿频：A 键直接取反并保存（当前开启→关闭，当前关闭→开启）</summary>
+    private async Task ApplyPerformanceCpuBoostAsync(LaunchItem item)
+    {
+        var cpu = PerformanceService.CachedCpu;
+        if (!cpu.BoostSupported) cpu = await PerformanceService.RefreshCpuCacheAsync();
+        if (!cpu.BoostSupported) { ShowToast("当前系统未提供睿频设置", ToastKind.Warning); return; }
+        var mode = cpu.BoostMode == 0 ? 2 : 0; // 取反：0=关闭，2=开启
+        _perfBoostTilePending[item] = mode;
+        RefreshPerformanceTile(item);          // 先给出即时反馈，再写入系统
+        var (ok, message) = await Task.Run(() => PerformanceService.ApplyCpuSetting(true, mode));
+        ShowToast(message, ok ? ToastKind.Success : ToastKind.Warning);
+        if (ok)
+        {
+            await PerformanceService.RefreshCpuCacheAsync();
+            RefreshPerformanceTiles();
+        }
+        else
+        {
+            _perfBoostTilePending.Remove(item);
+            RefreshPerformanceTile(item);
+        }
+    }
+
+    /// <summary>应用持续功耗；短时（SPPT/PL2）与瞬时（FPPT）按 1.25 / 1.5 倍自动跟随，
+    /// 并各自限制在硬件可写范围内（与面板里只调持续功耗的语义一致）</summary>
+    private async Task ApplyPerformancePowerLimitAsync(LaunchItem item)
+    {
+        var state = CpuPowerService.Cached;
+        if (!state.Enabled)
+        {
+            // 首次使用：拉起管理员助手授权（写入 MSR 需要）
+            var enable = await Task.Run(CpuPowerService.Enable);
+            ShowToast(enable.Message, enable.Ok ? ToastKind.Success : ToastKind.Warning);
+            if (!enable.Ok) return;
+            await CpuPowerService.RefreshCacheAsync();
+            RefreshPerformanceTiles();
+            return;
+        }
+        if (!state.Supported || state.Limits.Length == 0) { ShowToast("当前 CPU 功耗接口不可用", ToastKind.Warning); return; }
+
+        var burst = state.Limits.Length > 1 ? state.Limits[1] : null;
+        var peak = state.Limits.Length > 2 ? state.Limits[2] : null;
+        var pl1 = _perfPowerLimitPending.TryGetValue(item, out var pending) && pending >= 0
+            ? pending : (int)Math.Round(state.Limits[0].Watts);
+        int Follow(CpuPowerService.Limit? limit, double ratio)
+            => limit is null ? 0 : (int)Math.Clamp(Math.Round(pl1 * ratio), limit.Minimum, limit.Maximum);
+
+        var pl2 = Follow(burst, 1.25);
+        var fppt = Follow(peak, 1.5);
+
+        var targets = new List<(int Index, double Watts)> { (0, pl1) };
+        if (burst is not null) targets.Add((1, Math.Max(pl2, pl1)));
+        if (peak is not null) targets.Add((2, Math.Max(fppt, burst is null ? pl1 : Math.Max(pl2, pl1))));
+        var current = state.Limits.Select(l => l.Watts).ToArray();
+        var (ok, message) = await ApplyPowerLimitsAsync(targets.ToArray(), current);
+        if (ok)
+        {
+            await CpuPowerService.RefreshCacheAsync();
+            RefreshPerformanceTiles();
+            ShowToast($"持续功耗 {pl1} W（短时 {pl2} W / 瞬时 {fppt} W）", ToastKind.Success);
+        }
+        else
+        {
+            ShowToast(message, ToastKind.Warning);
+        }
+    }
+
+    /// <summary>A：应用磁贴上选好的快捷项（电源模式写入 Windows / 全局锁帧写入限帧后端 / 功耗控制写入持续功耗 / CPU 频率与睿频写入当前方案）</summary>
+    private async void ApplyPerformancePowerMode(LaunchItem item)
+    {
+        if (TileStyle.CurrentQuickItem(item) == TileStyle.PerformanceQuickItem.CpuBoost && item.PerformanceCpuBoost)
+        {
+            await ApplyPerformanceCpuBoostAsync(item);
+            return;
+        }
+        if (TileStyle.CurrentQuickItem(item) == TileStyle.PerformanceQuickItem.CpuFrequency && item.PerformanceCpuFrequency)
+        {
+            await ApplyPerformanceCpuFrequencyAsync(item);
+            return;
+        }
+        if (TileStyle.CurrentQuickItem(item) == TileStyle.PerformanceQuickItem.PowerLimit && item.PerformancePowerLimit)
+        {
+            await ApplyPerformancePowerLimitAsync(item);
+            return;
+        }
+        if (TileStyle.CurrentQuickItem(item) == TileStyle.PerformanceQuickItem.FrameLimit && item.PerformanceFrameLimit)
+        {
+            var frameState = FrameLimitService.Cached;
+            if (!frameState.Supported) { ShowToast("没有可用的限帧后端", ToastKind.Warning); return; }
+            var fps = _perfFramePending.TryGetValue(item, out var pendingFrame) && pendingFrame >= 0
+                ? pendingFrame : frameState.Fps;
+            var (frameOk, frameMessage) = await Task.Run(() => FrameLimitService.Apply(frameState, fps));
+            ShowToast(frameMessage, frameOk ? ToastKind.Success : ToastKind.Warning);
+            if (frameOk) await FrameLimitService.RefreshCacheAsync();
+            RefreshPerformanceTiles();
+            return;
+        }
+
+        var state = PerformanceService.GetState();
+        if (!state.Available) { ShowToast("当前系统不支持电源模式", ToastKind.Warning); return; }
+        var pending = PerfPowerPending(item);
+        if (pending < 0) { ShowToast("先用 LB/RB 选择电源模式", ToastKind.Warning); return; }
+
+        var (ok, message) = await Task.Run(() => PerformanceService.ApplyLevel((PerformanceLevel)pending));
+        ShowToast(message, ok ? ToastKind.Success : ToastKind.Warning);
+        RefreshPerformanceTiles();
+    }
+
+    /// <summary>电源模式切换动画：旧档位反向滑出淡出，换内容后从另一侧滑入淡入（与系统小组件同手感）</summary>
+    private void AnimatePerformanceSwitch(int delta)
+    {
+        var dir = delta >= 0 ? 1 : -1;
+        foreach (var (refs, item) in _perfRefs.ToList())
+        {
+            var slide = refs.SlideRow;
+            if (slide.RenderTransform is not TranslateTransform t)
+            {
+                t = new TranslateTransform();
+                slide.RenderTransform = t;
+            }
+            var outAnim = new DoubleAnimation
+            {
+                To = -dir * 26,
+                Duration = TimeSpan.FromMilliseconds(80),
+                EasingFunction = new CubicEase { EasingMode = EasingMode.EaseIn }
+            };
+            Storyboard.SetTarget(outAnim, t);
+            Storyboard.SetTargetProperty(outAnim, "X");
+            var opacityOut = new DoubleAnimation
+            {
+                To = 0,
+                Duration = TimeSpan.FromMilliseconds(80),
+                EasingFunction = new CubicEase { EasingMode = EasingMode.EaseIn }
+            };
+            Storyboard.SetTarget(opacityOut, slide);
+            Storyboard.SetTargetProperty(opacityOut, "Opacity");
+            var sbOut = new Storyboard();
+            sbOut.Children.Add(outAnim);
+            sbOut.Children.Add(opacityOut);
+            sbOut.Completed += (_, _) =>
+            {
+                refs.PendingPower = PerfPowerPending(item);
+                refs.PendingFrame = PerfFramePending(item);
+                refs.PendingPowerLimit = PerfPowerLimitPending(item);
+                refs.PendingCpuMhz = PerfCpuMhzPending(item);
+                refs.PendingBoost = PerfBoostTilePending(item);
+                TileStyle.FillPerformanceTile(refs, item);
+                t.X = dir * 26;
+                var inAnim = new DoubleAnimation
+                {
+                    To = 0,
+                    Duration = TimeSpan.FromMilliseconds(150),
+                    EasingFunction = new CubicEase { EasingMode = EasingMode.EaseOut }
+                };
+                Storyboard.SetTarget(inAnim, t);
+                Storyboard.SetTargetProperty(inAnim, "X");
+                var opacityIn = new DoubleAnimation
+                {
+                    To = 1,
+                    Duration = TimeSpan.FromMilliseconds(150),
+                    EasingFunction = new CubicEase { EasingMode = EasingMode.EaseOut }
+                };
+                Storyboard.SetTarget(opacityIn, slide);
+                Storyboard.SetTargetProperty(opacityIn, "Opacity");
+                var sbIn = new Storyboard();
+                sbIn.Children.Add(inAnim);
+                sbIn.Children.Add(opacityIn);
+                sbIn.Begin();
+            };
+            sbOut.Begin();
+        }
+    }
+
     /// <summary>LB/RB：调整当前系统小组件（音量/亮度 ±）；不是系统小组件或当前项不支持调整时返回 false（交回原语义）</summary>
     private bool TryAdjustSystem(int delta)
     {
@@ -5130,6 +7165,7 @@ public sealed partial class MainPage : Page
         UpdateDrawerSelection(); // 区域内部焦点描边 / 面板"在区域内"强调色
         UpdateWallpaperInfo();   // 壁纸磁贴：选中时显示标题与壁纸信息，光标移开即隐藏
         UpdateHintForSelection();
+        SyncPerformanceFocus();  // 性能磁贴：光标移开后恢复当前已生效的电源模式
     }
 
     /// <summary>壁纸磁贴信息条：只有当前选中的壁纸磁贴显示，其它一律隐藏</summary>
@@ -5189,7 +7225,9 @@ public sealed partial class MainPage : Page
                 ? "DPAD:切抽屉|A:进入|X:添加磁贴|Y:添加抽屉|B:退出" // 抽屉层：按键只作用于抽屉
                 : FocusedDrawerItem() is { Kind: LaunchKind.Widget, WidgetKind: WidgetKind.System }
                     ? "DPAD:选择内层|←→:切换项|A:开关/打开|LB/RB:调整|B:返回抽屉" // 内层系统小组件
-                    : "DPAD:选择内层|A:启动|X:添加|Y:最小化|B:返回抽屉"); // 内层：按键作用于内层磁贴
+                    : FocusedDrawerItem() is { Kind: LaunchKind.Widget, WidgetKind: WidgetKind.Performance } perfInner
+                        ? PerformanceHintText(perfInner, "DPAD:选择内层|", "B:返回抽屉") // 内层性能控制（按已开启的快捷项生成）
+                        : "DPAD:选择内层|A:启动|X:添加|Y:最小化|B:返回抽屉"); // 内层：按键作用于内层磁贴
         else if (IsMusicSelected())
             HintBar.SetHints("DPAD:切换选择|A:播放/暂停|LB:上一曲|RB:下一曲");
         else if (IsPhotoSelected())
@@ -5208,6 +7246,8 @@ public sealed partial class MainPage : Page
             HintBar.SetHints("DPAD:切换选择|A:冻结/解冻|Y:结束进程|R3:编辑|L3:排列|B:隐藏");
         else if (IsSystemSelected())
             HintBar.SetHints("DPAD:切换选择|←→:切换项|A:开关/打开|LB/RB:调整|R3:编辑|L3:排列|B:隐藏");
+        else if (IsPerformanceSelected())
+            HintBar.SetHints(PerformanceHintText(_display[_selected].item, "DPAD:切换选择|", "B:隐藏"));
         else if (IsGamepadMapSelected())
             HintBar.SetHints("DPAD:切换选择|A:开启/关闭映射|R3:编辑|L3:排列|B:隐藏");
         else if (IsOptiSelected())
@@ -5659,10 +7699,13 @@ public sealed partial class MainPage : Page
             or WidgetKind.LosslessScaling or WidgetKind.Keyboard or WidgetKind.Clash or WidgetKind.ScreenTranslate;
     }
 
-    public bool IsToggleSelected => !_moving && !_choiceOpen && !_renaming && !_powerOpen &&
+    public bool IsToggleSelected => !_moving && !_choiceOpen && !_renaming && !_powerOpen && !_perfOpen && !_dlOpen &&
         !_wallpaperOpen && !_fileTransferOpen && !_searchOpen &&
         IsToggleItem(_inDrawer ? FocusedDrawerItem() :
             (_selected >= 0 && _selected < _display.Count ? _display[_selected].item : null));
+
+    /// <summary>性能面板是否展开：面板内的操作音效与主页磁贴开关保持一致（用 success 音而非 A 键确认音）</summary>
+    public bool IsPerformancePanelOpen => _perfOpen;
 
     public bool IsToggleTileSource(object? source)
     {

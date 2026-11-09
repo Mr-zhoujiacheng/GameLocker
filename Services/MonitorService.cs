@@ -105,6 +105,9 @@ public static class MonitorService
     private static bool _gpuSensorsAligned;
     private static double _cpuPower = double.NaN;
     private static double _cpuMhzFallback;
+    private static double _acpiCpuTemp = double.NaN;
+    private static long _acpiCpuTempTick;
+    private static bool _statusHelperTried;
 
     private static (double Discharge, double Charge) _batteryRate = (double.NaN, double.NaN);
 
@@ -130,6 +133,105 @@ public static class MonitorService
     public static MonitorSnapshot Current
     {
         get { lock (Gate) return _snapshot; }
+    }
+
+    /// <summary>性能面板独立读取设备状态；与监控采样互斥。</summary>
+    public static MonitorSnapshot? ReadDeviceStatus()
+    {
+        if (Interlocked.Exchange(ref _ticking, 1) == 1) return null;
+        try
+        {
+            var s = new MonitorSnapshot { CpuPower = ReadCpuPower(), CpuMhz = ReadCpuMhz() };
+            if (!double.IsFinite(s.CpuMhz)) s.CpuMhz = ReadCpuMhzWmi();
+            _batteryRate = ReadBatteryRate();
+            ReadBattery(s);
+            if (IsElevated())
+            {
+                PawnIoMsr.EnsureReady();
+                s.CpuTemp = PawnIoMsr.ReadTemperature();
+            }
+            else
+            {
+                // 和性能监控同源：未提权时用提权助手回传的 MSR 温度；首次进面板时补拉起助手
+                EnsureStatusHelper();
+                if (_shared is not null && TryReadHelperTemps())
+                {
+                    s.CpuTemp = _helperCpuTemp;
+                    if (IsRunning) s.CpuTemp = Current.CpuTemp;
+                }
+                else if (IsRunning)
+                {
+                    s.CpuTemp = Current.CpuTemp;
+                }
+            }
+            // 仍拿不到（未授权/助手未就绪）时退回 ACPI 热区，至少给出可参考的 CPU 温度
+            if (!double.IsFinite(s.CpuTemp)) s.CpuTemp = ReadAcpiCpuTemp();
+            ReadGpuUsage(); // 先确认适配器身份，再读对应厂商传感器。
+            s.GpuTemp = ReadGpuTemp();
+            s.GpuPower = ReadGpuPower();
+            s.GpuMhz = ReadGpuClock();
+            return s;
+        }
+        finally { Interlocked.Exchange(ref _ticking, 0); }
+    }
+
+    /// <summary>性能面板首次需要真实温度时，若未提权且助手未运行，拉起一次提权助手（与监控同一通道）</summary>
+    private static void EnsureStatusHelper()
+    {
+        if (_statusHelperTried) return;
+        _statusHelperTried = true;
+        if (IsElevated() || _helper is not null || _shared is not null) return;
+        StartHelper();
+    }
+
+    /// <summary>更新助手回传的 CPU/GPU 温度，返回是否读到有效通道数据</summary>
+    private static bool TryReadHelperTemps()
+    {
+        if (_shared is null) return false;
+        _shared.SetTargetPid(ForegroundPid());
+        _shared.SetOutputTargetPid(0);
+        if (!_shared.TryRead(out _, out _, out _, out var helperTemp, out var helperGpuTemp, out _, out _))
+        {
+            _helperAlive = false;
+            _helperCpuTemp = _helperGpuTemp = double.NaN;
+            return false;
+        }
+        _helperAlive = true;
+        _helperCpuTemp = helperTemp is > 0 and < 130 ? helperTemp : double.NaN;
+        _helperGpuTemp = helperGpuTemp is > 0 and < 130 ? helperGpuTemp : double.NaN;
+        return double.IsFinite(_helperCpuTemp);
+    }
+
+    /// <summary>ACPI 热区温度（℃）：无管理员权限时 CPU 温度的兜底来源，缓存 3 秒</summary>
+    private static double ReadAcpiCpuTemp()
+    {
+        var now = Environment.TickCount64;
+        if (now - _acpiCpuTempTick < 3000) return _acpiCpuTemp;
+        _acpiCpuTempTick = now;
+        var result = double.NaN;
+        try
+        {
+            using var searcher = new ManagementObjectSearcher(@"root\CIMV2",
+                "SELECT Name, Temperature FROM Win32_PerfFormattedData_Counters_ThermalZoneInformation");
+            foreach (var o in searcher.Get())
+            {
+                if (o["Temperature"] is not { } v) continue;
+                var celsius = Convert.ToDouble(v) - 273.15;
+                if (celsius is < 20 or > 120) continue;
+                var name = o["Name"]?.ToString() ?? "";
+                // 优先 CPU 热区（THRM/TZ00），其余热区只在没有更好来源时保留第一个合理值
+                if (name.Contains("THRM", StringComparison.OrdinalIgnoreCase)
+                    || name.Contains("TZ00", StringComparison.OrdinalIgnoreCase))
+                {
+                    result = celsius;
+                    break;
+                }
+                if (!double.IsFinite(result)) result = celsius;
+            }
+        }
+        catch { }
+        _acpiCpuTemp = result;
+        return result;
     }
 
     /// <summary>A/点击：开启或关闭监控（必须在 UI 线程调用）</summary>
@@ -1110,7 +1212,11 @@ public static class MonitorService
         // 驱动偶发返回异常值（部分 AMD APU 的 ADL 功耗接口会给出 590 W 这类数字），
         // 统一在这里做合理性过滤，任何来源超过 500 W 都视为不可用
         var watts = ReadGpuPowerRaw();
-        return watts is > 0 and < 500 ? watts : double.NaN;
+        if (!double.IsFinite(watts) || watts is < 0 or > 500) return double.NaN;
+        // Intel 核显空闲时可能真的接近 0 W（四舍五入到 0.0），保留 0 而不是当成读取失败
+        var intelIntegrated = _gpuAdapterKey is not null && _gpuAdapterKey == IntelGpuTemp.AdapterKey;
+        if (watts > 0 || intelIntegrated) return watts;
+        return double.NaN;
     }
 
     private static double ReadGpuPowerRaw()
@@ -1482,6 +1588,15 @@ public static class MonitorService
             foreach (var line in ThermalZoneDetails()) sb.AppendLine("  " + line);
             sb.AppendLine($"CPU 功耗(RAPL): {ReadCpuPower()} W");
             sb.AppendLine($"GPU 匹配后即时探测（非浮层快照）: clock={ReadGpuClock()} MHz, power={ReadGpuPower()} W, temp={ReadGpuTemp()} ℃");
+            try
+            {
+                var frame = FrameLimitService.Read();
+                sb.AppendLine($"锁帧: backend={frame.Backend} supported={frame.Supported} fps={frame.Fps}"
+                    + $" range={frame.Minimum}-{frame.Maximum}/{frame.Step} msg={frame.Message}");
+                sb.AppendLine($"Intel 限帧能力: {IntelGpuTemp.FrameLimitDetail}");
+                sb.AppendLine($"锁帧最近应用: {FrameLimitService.LastApply}");
+            }
+            catch (Exception ex) { sb.AppendLine("锁帧诊断失败: " + ex.Message); }
             sb.AppendLine("[GPU 最近采样身份与匹配状态：未采样时保持未采样，不在诊断线程重置采样]");
             sb.AppendLine($"所选 GPU: {_gpuAdapterKey ?? "无"} / 单卡传感器对齐={_gpuSensorsAligned}");
             sb.AppendLine($"引擎 WMI: {_gpuEngineStatus}");

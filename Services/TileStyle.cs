@@ -1,6 +1,7 @@
 using GameLocker.Models;
 using Microsoft.UI.Xaml;
 using Microsoft.UI.Xaml.Controls;
+using Microsoft.UI.Xaml.Documents;
 using Microsoft.UI.Xaml.Media;
 using Microsoft.UI.Xaml.Shapes;
 
@@ -350,8 +351,8 @@ public static class TileStyle
                 };
             else if (isClash)
             {
-                // 小猫咪用白色猫头剪影（矢量，与磁贴图标同色）
-                var cat = MakeCatIcon(small ? 30 : 40, new SolidColorBrush(Microsoft.UI.Colors.White));
+                // 小猫咪用白色线条图标（矢量，与磁贴图标同色）
+                var cat = MakeCatIcon(small ? 34 : 46, new SolidColorBrush(Microsoft.UI.Colors.White));
                 cat.VerticalAlignment = iconAlign;
                 cat.Margin = iconMargin;
                 icon = cat;
@@ -1711,6 +1712,195 @@ public static class TileStyle
         return (tile, refs);
     }
 
+    /// <summary>下载模式磁贴引用：状态行与摘要行（小/长/大三种尺寸按需显示）</summary>
+    public sealed class DownloadModeTileRefs
+    {
+        public Border Tile = null!;
+        public TextBlock Status = null!;
+        public TextBlock Summary = null!;
+    }
+
+    /// <summary>
+    /// 构建下载模式小组件磁贴：小=图标+状态；长=图标+名称+状态；大=再补一行"完成后：睡眠/休眠/关机"。
+    /// 状态文字由 FillDownloadState 写入（未进入时隐藏，进入后显示剩余时间）。
+    /// </summary>
+    public static (Border Tile, DownloadModeTileRefs Refs) BuildDownloadTile(
+        LaunchItem item, double width, double height, Windows.UI.Color accent, bool noColor)
+    {
+        var white = new SolidColorBrush(Microsoft.UI.Colors.White);
+        var label = string.IsNullOrWhiteSpace(item.Name) ? "下载模式" : item.Name;
+        const string glyph = "\uE896"; // 下载箭头
+
+        var refs = new DownloadModeTileRefs();
+        var grid = new Grid();
+
+        TextBlock Status(double fontSize) => new()
+        {
+            Text = "",
+            Visibility = Visibility.Collapsed,
+            FontSize = fontSize,
+            Opacity = 0.85,
+            Foreground = white,
+            HorizontalAlignment = HorizontalAlignment.Center,
+            TextTrimming = TextTrimming.CharacterEllipsis,
+            IsHitTestVisible = false
+        };
+
+        if (item.Size == TileSize.Small)
+        {
+            refs.Summary = new TextBlock { Visibility = Visibility.Collapsed };
+            var stack = new StackPanel
+            {
+                Spacing = 4,
+                HorizontalAlignment = HorizontalAlignment.Center,
+                VerticalAlignment = VerticalAlignment.Center
+            };
+            stack.Children.Add(new FontIcon
+            {
+                Glyph = glyph,
+                FontSize = 24,
+                Foreground = white,
+                HorizontalAlignment = HorizontalAlignment.Center,
+                IsHitTestVisible = false
+            });
+            refs.Status = Status(10);
+            refs.Status.MaxWidth = width - 12;
+            stack.Children.Add(refs.Status);
+            grid.Children.Add(stack);
+        }
+        else if (item.Size == TileSize.Wide)
+        {
+            refs.Summary = new TextBlock { Visibility = Visibility.Collapsed };
+            var row = new StackPanel
+            {
+                Orientation = Orientation.Horizontal,
+                Spacing = 10,
+                HorizontalAlignment = HorizontalAlignment.Center,
+                VerticalAlignment = VerticalAlignment.Center
+            };
+            row.Children.Add(new FontIcon
+            {
+                Glyph = glyph,
+                FontSize = 30,
+                Foreground = white,
+                VerticalAlignment = VerticalAlignment.Center,
+                IsHitTestVisible = false
+            });
+            var col = new StackPanel { Spacing = 4, VerticalAlignment = VerticalAlignment.Center };
+            col.Children.Add(new TextBlock
+            {
+                Text = label,
+                FontSize = 16,
+                FontWeight = Microsoft.UI.Text.FontWeights.SemiBold,
+                Foreground = white,
+                TextTrimming = TextTrimming.CharacterEllipsis,
+                MaxWidth = width - 96,
+                IsHitTestVisible = false
+            });
+            refs.Status = Status(12);
+            refs.Status.HorizontalAlignment = HorizontalAlignment.Left;
+            col.Children.Add(refs.Status);
+            row.Children.Add(col);
+            grid.Children.Add(row);
+        }
+        else
+        {
+            var stack = new StackPanel
+            {
+                Spacing = 5,
+                Margin = new Thickness(12, 10, 12, 10),
+                HorizontalAlignment = HorizontalAlignment.Center,
+                VerticalAlignment = VerticalAlignment.Center
+            };
+            stack.Children.Add(new FontIcon
+            {
+                Glyph = glyph,
+                FontSize = 36,
+                Foreground = white,
+                HorizontalAlignment = HorizontalAlignment.Center,
+                IsHitTestVisible = false
+            });
+            stack.Children.Add(new TextBlock
+            {
+                Text = label,
+                FontSize = 20,
+                FontWeight = Microsoft.UI.Text.FontWeights.SemiBold,
+                Foreground = white,
+                HorizontalAlignment = HorizontalAlignment.Center,
+                TextTrimming = TextTrimming.CharacterEllipsis,
+                MaxWidth = width - 28,
+                IsHitTestVisible = false
+            });
+            refs.Status = Status(13);
+            refs.Status.MaxWidth = width - 28;
+            stack.Children.Add(refs.Status);
+            refs.Summary = new TextBlock
+            {
+                Text = "A:设置并进入下载模式",
+                FontSize = 12,
+                Opacity = 0.72,
+                Foreground = white,
+                HorizontalAlignment = HorizontalAlignment.Center,
+                TextTrimming = TextTrimming.CharacterEllipsis,
+                MaxWidth = width - 28,
+                IsHitTestVisible = false
+            };
+            stack.Children.Add(refs.Summary);
+            grid.Children.Add(stack);
+        }
+
+        var tile = new Border
+        {
+            Width = width,
+            Height = height,
+            CornerRadius = new CornerRadius(Radius),
+            Background = noColor ? new SolidColorBrush(Windows.UI.Color.FromArgb(0, 0, 0, 0)) : TileFill(accent),
+            BorderBrush = new SolidColorBrush(TileBorderColorFor(accent)),
+            BorderThickness = new Thickness(TileBorderThickness),
+            Child = grid
+        };
+        tile.Opacity = Opacity;
+        refs.Tile = tile;
+        return (tile, refs);
+    }
+
+    /// <summary>把下载模式状态写入磁贴：未进入时只显示标题（状态行隐藏），进入后显示剩余 h:mm:ss
+    /// 与完成后动作</summary>
+    public static void FillDownloadState(DownloadModeTileRefs refs, LaunchItem item)
+    {
+        if (!DownloadModeService.IsActive)
+        {
+            refs.Status.Visibility = Visibility.Collapsed;
+            refs.Status.Text = "";
+            if (refs.Summary.Visibility != Visibility.Collapsed) refs.Summary.Text = "A:设置并进入下载模式";
+            return;
+        }
+
+        refs.Status.Visibility = Visibility.Visible;
+        var remain = DownloadModeService.Remaining;
+        if (remain <= TimeSpan.Zero)
+        {
+            refs.Status.Text = "已完成";
+        }
+        else
+        {
+            refs.Status.Text = remain.TotalHours >= 1
+                ? $"剩余 {(int)remain.TotalHours}:{remain.Minutes:D2}:{remain.Seconds:D2}"
+                : $"剩余 {remain.Minutes}:{remain.Seconds:D2}";
+        }
+
+        if (refs.Summary.Visibility != Visibility.Collapsed)
+        {
+            refs.Summary.Text = "完成后：" + DownloadModeService.AfterAction switch
+            {
+                PowerAction.Sleep => "睡眠",
+                PowerAction.Hibernate => "休眠",
+                PowerAction.Shutdown => "关机",
+                _ => "无操作"
+            };
+        }
+    }
+
     /// <summary>把监控开关状态与读数摘要写入磁贴引用</summary>
     public static void FillMonitorState(MonitorTileRefs refs, LaunchItem item)
     {
@@ -1759,7 +1949,51 @@ public static class TileStyle
     {
         var white = new SolidColorBrush(Microsoft.UI.Colors.White);
         var label = string.IsNullOrWhiteSpace(item.Name) ? "小黄鸭" : item.Name;
-        const string glyph = "\uE945"; // 闪电（补帧）
+        // 小黄鸭图标：简约线条风格（白描边），与界面整体一致
+        static Viewbox Duck(double size)
+        {
+            var pen = new SolidColorBrush(Microsoft.UI.Colors.White);
+
+            Microsoft.UI.Xaml.Shapes.Path Line(string data) => new()
+            {
+                Data = (Geometry)Microsoft.UI.Xaml.Markup.XamlBindingHelper.ConvertValue(typeof(Geometry), data),
+                Stroke = pen,
+                StrokeThickness = 1.7,
+                StrokeStartLineCap = PenLineCap.Round,
+                StrokeEndLineCap = PenLineCap.Round,
+                StrokeLineJoin = PenLineJoin.Round
+            };
+
+            var eye = new Ellipse
+            {
+                Width = 1.5,
+                Height = 1.5,
+                Fill = pen
+            };
+            Canvas.SetLeft(eye, 6.25);
+            Canvas.SetTop(eye, 5.65);
+
+            var canvas = new Canvas { Width = 24, Height = 24 };
+            // 身体：胸部 → 腹部 → 上翘的尾巴 → 背部，一笔闭合（朝左的橡皮鸭）
+            canvas.Children.Add(Line("M5.4,9.9 C3.2,11.0 2.4,13.2 2.6,15.2 C2.9,18.4 5.8,20.6 9.8,20.6 C13.4,20.6 16.6,19.3 18.9,16.9 C20.3,15.5 21.6,13.8 21.7,12.0 C21.8,10.6 20.7,9.8 19.6,10.2 C17.8,10.8 15.2,10.6 12.8,10.5 C10.4,10.4 7.6,10.0 5.4,9.9 Z"));
+            // 翅膀
+            canvas.Children.Add(Line("M7.8,12.8 C10.0,12.4 12.6,13.0 14.4,14.4 C15.7,15.5 16.3,16.6 15.9,17.4 C15.5,18.1 14.3,18.0 13.3,17.5 C11.3,16.5 9.2,14.7 7.8,12.8 Z"));
+            // 头部（下缘开口，与身体自然衔接）
+            canvas.Children.Add(Line("M5.7,9.8 A3.4,3.4 0 1,1 10.7,9.8"));
+            // 嘴
+            canvas.Children.Add(Line("M5.2,6.2 L2.4,6.8 L5.2,7.4"));
+            canvas.Children.Add(eye);
+
+            return new Viewbox
+            {
+                Width = size,
+                Height = size,
+                HorizontalAlignment = HorizontalAlignment.Center,
+                VerticalAlignment = VerticalAlignment.Center,
+                IsHitTestVisible = false,
+                Child = canvas
+            };
+        }
 
         var refs = new LosslessTileRefs();
 
@@ -1804,14 +2038,7 @@ public static class TileStyle
                 HorizontalAlignment = HorizontalAlignment.Center,
                 VerticalAlignment = VerticalAlignment.Center
             };
-            stack.Children.Add(new FontIcon
-            {
-                Glyph = glyph,
-                FontSize = 24,
-                Foreground = white,
-                HorizontalAlignment = HorizontalAlignment.Center,
-                IsHitTestVisible = false
-            });
+            stack.Children.Add(Duck(34));
             stack.Children.Add(StatusRow(refs, 10));
             grid.Children.Add(stack);
         }
@@ -1824,14 +2051,7 @@ public static class TileStyle
                 HorizontalAlignment = HorizontalAlignment.Center,
                 VerticalAlignment = VerticalAlignment.Center
             };
-            row.Children.Add(new FontIcon
-            {
-                Glyph = glyph,
-                FontSize = 30,
-                Foreground = white,
-                VerticalAlignment = VerticalAlignment.Center,
-                IsHitTestVisible = false
-            });
+            row.Children.Add(Duck(42));
             var col = new StackPanel { Spacing = 4, VerticalAlignment = VerticalAlignment.Center };
             col.Children.Add(new TextBlock
             {
@@ -1857,14 +2077,7 @@ public static class TileStyle
                 HorizontalAlignment = HorizontalAlignment.Center,
                 VerticalAlignment = VerticalAlignment.Center
             };
-            stack.Children.Add(new FontIcon
-            {
-                Glyph = glyph,
-                FontSize = 38,
-                Foreground = white,
-                HorizontalAlignment = HorizontalAlignment.Center,
-                IsHitTestVisible = false
-            });
+            stack.Children.Add(Duck(54));
             stack.Children.Add(new TextBlock
             {
                 Text = label,
@@ -2458,6 +2671,573 @@ public static class TileStyle
         refs.Reading.Text = SystemPanelService.Reading(panel);
     }
 
+    // ==================== 性能控制 ====================
+
+    /// <summary>性能磁贴上的快捷项（磁贴一次显示一项，右摇杆←→在已开启项间切换）</summary>
+    public enum PerformanceQuickItem
+    {
+        /// <summary>电源模式（LB/RB 选择档位）</summary>
+        PowerMode = 0,
+        /// <summary>全局锁帧（LB/RB 按 5 帧步进调整）</summary>
+        FrameLimit = 1,
+        /// <summary>功耗控制（LB/RB 按 1W 调整持续功耗，其余两项自动跟随）</summary>
+        PowerLimit = 2,
+        /// <summary>CPU 频率（LB/RB 按 100MHz 调整最高频率）</summary>
+        CpuFrequency = 3,
+        /// <summary>CPU 睿频（LB/RB 切换开关）</summary>
+        CpuBoost = 4
+    }
+
+    /// <summary>该磁贴已开启的快捷项（固定顺序：电源模式 → 全局锁帧 → 功耗控制 → CPU 频率 → CPU 睿频）；都没开启时为空</summary>
+    public static PerformanceQuickItem[] EnabledQuickItems(LaunchItem item)
+    {
+        var list = new List<PerformanceQuickItem>(5);
+        if (item.PerformancePowerMode) list.Add(PerformanceQuickItem.PowerMode);
+        if (item.PerformanceFrameLimit) list.Add(PerformanceQuickItem.FrameLimit);
+        if (item.PerformancePowerLimit) list.Add(PerformanceQuickItem.PowerLimit);
+        if (item.PerformanceCpuFrequency) list.Add(PerformanceQuickItem.CpuFrequency);
+        if (item.PerformanceCpuBoost) list.Add(PerformanceQuickItem.CpuBoost);
+        return [.. list];
+    }
+
+    /// <summary>磁贴当前显示的快捷项：记录项已关闭时回落到第一个启用项；都未开启时按电源模式只读展示</summary>
+    public static PerformanceQuickItem CurrentQuickItem(LaunchItem item)
+    {
+        var enabled = EnabledQuickItems(item);
+        if (enabled.Length == 0) return PerformanceQuickItem.PowerMode;
+        var option = (PerformanceQuickItem)item.PerformanceOption;
+        return enabled.Contains(option) ? option : enabled[0];
+    }
+
+    /// <summary>性能控制磁贴的可刷新元素引用（右摇杆切换查看项 / 读数变化时只改内容，不重建磁贴）</summary>
+    public sealed class PerformanceTileRefs
+    {
+        public Border Tile = null!;       // 磁贴外壳
+        public FontIcon Icon = null!;     // 当前查看项图标
+        public TextBlock Name = null!;    // 查看项名称（电源模式 / 全局锁帧）
+        public TextBlock Reading = null!; // 当前读数（档位名 / 锁帧 FPS）
+        public Grid SlideRow = null!;     // 内容整体（切换查看项时左右滑动 + 淡入的动画载体）
+        public TextBlock Hint = null!;    // 底部状态（当前生效 / 待应用）
+        public Microsoft.UI.Xaml.Shapes.Path ModeIcon = null!; // 当前快捷项的图形
+        /// <summary>限帧后端的品牌标识（NVIDIA / AMD / intel / RTSS），与 ModeIcon 互斥显示</summary>
+        public TextBlock Brand = null!;
+        /// <summary>电源模式待应用档位（0=最佳能效 1=平衡 2=最佳性能；-1=未选择）</summary>
+        public int PendingPower = -1;
+        /// <summary>全局锁帧待应用值（FPS；-1=未选择）</summary>
+        public int PendingFrame = -1;
+        /// <summary>持续功耗待应用值（W；-1=未选择）</summary>
+        public int PendingPowerLimit = -1;
+        /// <summary>CPU 最高频率待应用值（MHz；-1=未选择，0=不限制）</summary>
+        public int PendingCpuMhz = -1;
+        /// <summary>CPU 睿频待应用状态（-1=未选择，0=关闭，2=开启）</summary>
+        public int PendingBoost = -1;
+        /// <summary>睿频开关胶囊（仅睿频快捷项显示，代替数值读数）</summary>
+        public Border BoostPill = null!;
+        public Border BoostDot = null!;
+    }
+
+    /// <summary>三档电源模式的显示文案、强调色与图形（与性能面板卡片一致：叶片/滑杆/闪电）</summary>
+    private static readonly (string Label, Windows.UI.Color Color, string Data, bool Stroke)[] PerfPowerModes =
+    [
+        ("最佳能效", Windows.UI.Color.FromArgb(0xFF, 0x66, 0xE0, 0x8A),
+            "M20,4 C10.5,4 4.5,9.5 4.5,16.5 C4.5,17.7 4.7,18.7 5,19.5 C12.2,19.5 20,14 20,4 Z", false),
+        ("平衡", Windows.UI.Color.FromArgb(0xFF, 0x7A, 0xB8, 0xFF),
+            "M3.5,8.5 H20.5 M3.5,15.5 H20.5 " +
+            "M9,6.2 A2.3,2.3 0 1,1 9,10.8 A2.3,2.3 0 1,1 9,6.2 Z " +
+            "M15,13.2 A2.3,2.3 0 1,1 15,17.8 A2.3,2.3 0 1,1 15,13.2 Z", true),
+        ("最佳性能", Windows.UI.Color.FromArgb(0xFF, 0xFF, 0xB3, 0x66),
+            "M13.4,2 L5.6,13.4 H11.2 L10.4,21.8 L18.2,10.4 H12.6 Z", false)
+    ];
+
+    /// <summary>
+    /// 构建性能控制小组件磁贴：固定"大"尺寸（2×2），垂直展示标题、大读数与底部设置提示。
+    /// 内容装在一个可整体平移的容器里，切换查看项时由 MainPage 播左右滑入动画。
+    /// 内容由 FillPerformanceTile 按当前查看项写入。
+    /// </summary>
+    public static (Border Tile, PerformanceTileRefs Refs) BuildPerformanceTile(
+        LaunchItem item, double width, double height, Windows.UI.Color accent, bool noColor)
+    {
+        var white = new SolidColorBrush(Microsoft.UI.Colors.White);
+        var refs = new PerformanceTileRefs
+        {
+            Icon = new FontIcon
+            {
+                Glyph = "\uE850",
+                FontSize = 20,
+                Foreground = white,
+                IsHitTestVisible = false,
+                Visibility = Visibility.Collapsed // 标题只留文字
+            },
+            Name = new TextBlock
+            {
+                FontSize = 19,
+                FontWeight = Microsoft.UI.Text.FontWeights.Bold,
+                Foreground = white,
+                TextTrimming = TextTrimming.CharacterEllipsis,
+                IsHitTestVisible = false
+            },
+            Reading = new TextBlock
+            {
+                FontSize = 15,
+                FontWeight = Microsoft.UI.Text.FontWeights.SemiBold,
+                Foreground = white,
+                TextWrapping = TextWrapping.Wrap,
+                TextAlignment = TextAlignment.Center,
+                TextTrimming = TextTrimming.CharacterEllipsis,
+                MaxLines = 2,
+                HorizontalAlignment = HorizontalAlignment.Center,
+                VerticalAlignment = VerticalAlignment.Top,
+                Margin = new Thickness(0),
+                IsHitTestVisible = false
+            }
+        };
+
+        var grid = new Grid { Padding = new Thickness(16) };
+        grid.RowDefinitions.Add(new RowDefinition { Height = new GridLength(1, GridUnitType.Star) });
+        grid.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });
+        refs.Name.MaxWidth = width - 64;
+        refs.Reading.MaxWidth = width - 32;
+
+        var title = new StackPanel
+        {
+            Orientation = Orientation.Horizontal,
+            Spacing = 8,
+            HorizontalAlignment = HorizontalAlignment.Center
+        };
+        title.Children.Add(refs.Icon);
+        title.Children.Add(refs.Name);
+
+        // 标题固定不动；只有下方档位内容在 LB/RB 切换时左右滑动
+        var content = new Grid();
+        content.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });
+        content.RowDefinitions.Add(new RowDefinition { Height = new GridLength(1, GridUnitType.Star) });
+        content.Children.Add(title);
+
+        var slide = new Grid
+        {
+            RenderTransform = new TranslateTransform(),
+            IsHitTestVisible = false
+        };
+        refs.ModeIcon = new Microsoft.UI.Xaml.Shapes.Path
+        {
+            Width = 34,
+            Height = 34,
+            Margin = new Thickness(0),
+            Stretch = Stretch.Uniform,
+            HorizontalAlignment = HorizontalAlignment.Center,
+            VerticalAlignment = VerticalAlignment.Center,
+            IsHitTestVisible = false,
+            Visibility = Visibility.Collapsed
+        };
+        refs.Brand = new TextBlock
+        {
+            FontSize = 20,
+            FontWeight = Microsoft.UI.Text.FontWeights.Bold,
+            Foreground = white,
+            CharacterSpacing = 20,
+            Margin = new Thickness(0),
+            HorizontalAlignment = HorizontalAlignment.Center,
+            VerticalAlignment = VerticalAlignment.Center,
+            IsHitTestVisible = false,
+            Visibility = Visibility.Collapsed
+        };
+        // 图标槽：固定 44 高，ModeIcon 与品牌文字都在这里居中；切换查看项/读数变化时图标不再上下串位
+        var iconSlot = new Grid { Height = 44, HorizontalAlignment = HorizontalAlignment.Stretch };
+        iconSlot.Children.Add(refs.ModeIcon);
+        iconSlot.Children.Add(refs.Brand);
+
+        refs.BoostDot = new Border
+        {
+            Width = 16,
+            Height = 16,
+            CornerRadius = new CornerRadius(8),
+            Background = white,
+            HorizontalAlignment = HorizontalAlignment.Left,
+            Margin = new Thickness(3, 0, 0, 0)
+        };
+        refs.BoostPill = new Border
+        {
+            Width = 48,
+            Height = 24,
+            CornerRadius = new CornerRadius(12),
+            BorderThickness = new Thickness(1),
+            BorderBrush = new SolidColorBrush(Windows.UI.Color.FromArgb(0x40, 0xFF, 0xFF, 0xFF)),
+            Child = refs.BoostDot,
+            HorizontalAlignment = HorizontalAlignment.Center,
+            VerticalAlignment = VerticalAlignment.Top,
+            IsHitTestVisible = false,
+            Visibility = Visibility.Collapsed
+        };
+        // 数值槽：固定 44 高、内容顶端对齐；读数与睿频胶囊二选一，同一位置、与上方图标固定间距
+        var valueSlot = new Grid { Height = 44 };
+        valueSlot.Children.Add(refs.Reading);
+        valueSlot.Children.Add(refs.BoostPill);
+        var body = new StackPanel
+        {
+            Spacing = 8,
+            VerticalAlignment = VerticalAlignment.Center,
+            HorizontalAlignment = HorizontalAlignment.Center
+        };
+        body.Children.Add(iconSlot);
+        body.Children.Add(valueSlot);
+        slide.Children.Add(body);
+        Grid.SetRow(slide, 1);
+        content.Children.Add(slide);
+        refs.SlideRow = slide;
+        grid.Children.Add(content);
+
+        var hint = new TextBlock
+        {
+            Text = "",
+            FontSize = 12,
+            Opacity = 0.7,
+            Foreground = white,
+            HorizontalAlignment = HorizontalAlignment.Center,
+            IsHitTestVisible = false
+        };
+        refs.Hint = hint;
+        Grid.SetRow(hint, 1);
+        grid.Children.Add(hint);
+
+        var tile = new Border
+        {
+            Width = width,
+            Height = height,
+            CornerRadius = new CornerRadius(Radius),
+            Background = noColor ? new SolidColorBrush(Windows.UI.Color.FromArgb(0, 0, 0, 0)) : TileFill(accent),
+            BorderBrush = new SolidColorBrush(TileBorderColorFor(accent)),
+            BorderThickness = new Thickness(TileBorderThickness),
+            Child = grid
+        };
+        tile.Opacity = Opacity;
+        refs.Tile = tile;
+        return (tile, refs);
+    }
+
+    /// <summary>全局锁帧图形：仪表盘弧 + 指针 + 圆心（描边线条，与电源模式三档图形同风格）</summary>
+    private static readonly string PerfFrameIconData =
+        "M3.6,17.4 A8.6,8.6 0 1,1 20.4,17.4 M12,16.4 L16.4,9.8 " +
+        "M12,14.9 A1.7,1.7 0 1,1 12,18.3 A1.7,1.7 0 1,1 12,14.9 Z";
+
+    /// <summary>CPU 频率图形：芯片外框 + 内核 + 引脚（描边线条）</summary>
+    private static readonly string PerfCpuIconData =
+        "M7,7 H17 V17 H7 Z M10,10 H14 V14 H10 Z " +
+        "M10,3.6 V7 M14,3.6 V7 M10,17 V20.4 M14,17 V20.4 " +
+        "M3.6,10 H7 M3.6,14 H7 M17,10 H20.4 M17,14 H20.4";
+
+    /// <summary>CPU 睿频图形：闪电（描边线条）</summary>
+    private static readonly string PerfBoostIconData =
+        "M13.6,2.4 L5.9,13.4 H11.2 L10.4,21.6 L18.1,10.6 H12.8 Z";
+
+    /// <summary>把当前快捷项写入性能控制磁贴：开启快捷项时显示待应用值，否则只显示当前生效值</summary>
+    public static void FillPerformanceTile(PerformanceTileRefs refs, LaunchItem item)
+    {
+        var quick = CurrentQuickItem(item);
+        refs.Reading.Visibility = Visibility.Visible;
+        refs.BoostPill.Visibility = Visibility.Collapsed;
+        // 图标与数值都由固定槽位居中排布，不在此处做位移
+        refs.ModeIcon.Width = 34;
+        refs.ModeIcon.Height = 34;
+        if (quick == PerformanceQuickItem.CpuBoost && item.PerformanceCpuBoost)
+        {
+            FillCpuBoostTile(refs);
+            return;
+        }
+        if (quick == PerformanceQuickItem.CpuFrequency && item.PerformanceCpuFrequency)
+        {
+            FillCpuFrequencyTile(refs);
+            return;
+        }
+        if (quick == PerformanceQuickItem.PowerLimit && item.PerformancePowerLimit)
+        {
+            FillPowerLimitTile(refs);
+            return;
+        }
+        if (quick == PerformanceQuickItem.FrameLimit && item.PerformanceFrameLimit)
+        {
+            FillFrameLimitTile(refs);
+            return;
+        }
+
+        refs.Icon.Glyph = "\uE850"; // 电池（电源模式）
+        refs.Name.Text = "电源模式";
+
+        var power = PerformanceService.Cached;
+        var applied = power.Available ? (int)power.Level : -1;
+        if (!item.PerformancePowerMode)
+        {
+            // 未开启快捷项：磁贴只显示当前模式，不带图形
+            refs.ModeIcon.Visibility = Visibility.Collapsed;
+            refs.Brand.Visibility = Visibility.Collapsed;
+            refs.Reading.Text = power.Available ? power.Display : "—";
+            refs.Hint.Text = "";
+            return;
+        }
+
+        // 已开启：大号图形 + 档位名；待应用档位与当前生效档位在底部标注
+        var selected = refs.PendingPower >= 0 ? refs.PendingPower : applied;
+        if (selected < 0) selected = 1;
+        var (label, color, data, stroke) = PerfPowerModes[selected];
+        var brush = new SolidColorBrush(color);
+        refs.ModeIcon.Visibility = Visibility.Visible;
+        refs.ModeIcon.Opacity = 1;
+        refs.Brand.Visibility = Visibility.Collapsed;
+        refs.ModeIcon.Data = (Geometry)Microsoft.UI.Xaml.Markup.XamlBindingHelper.ConvertValue(typeof(Geometry), data);
+        refs.ModeIcon.Fill = brush;
+        refs.ModeIcon.Stroke = stroke ? brush : null;
+        refs.ModeIcon.StrokeThickness = stroke ? 1.8 : 0;
+        refs.Reading.Text = label;
+        SetQuickHint(refs, selected == applied);
+    }
+
+    /// <summary>功耗控制的转速表图标：表盘弧线 + 三根刻度 + 指针 + 中心轴（线条圆头）</summary>
+    private const string PerfThrottleIconData =
+        "M3.4,15 A8.6,8.6 0 0 1 20.6,15 " +
+        "M12,6.4 V8.6 M5.9,8.9 L7.8,10.8 M18.1,8.9 L16.2,10.8 " +
+        "M12,15 L17,10.5 " +
+        "M12,13.4 A1.6,1.6 0 1,1 12,16.6 A1.6,1.6 0 1,1 12,13.4 Z";
+
+    private static void FillPowerLimitTile(PerformanceTileRefs refs)
+    {
+        refs.Icon.Glyph = "\uE9D9"; // 速度表（功耗控制）
+        refs.Name.Text = "功耗控制";
+        refs.Brand.Visibility = Visibility.Collapsed;
+        refs.ModeIcon.Visibility = Visibility.Visible;
+        refs.ModeIcon.Data = (Geometry)Microsoft.UI.Xaml.Markup.XamlBindingHelper.ConvertValue(typeof(Geometry), PerfThrottleIconData);
+        var brush = new SolidColorBrush(Windows.UI.Color.FromArgb(0xFF, 0xFF, 0xB3, 0x66));
+        refs.ModeIcon.Fill = null;
+        refs.ModeIcon.Stroke = brush;
+        refs.ModeIcon.StrokeThickness = 2.2;
+        refs.ModeIcon.StrokeStartLineCap = PenLineCap.Round;
+        refs.ModeIcon.StrokeEndLineCap = PenLineCap.Round;
+        refs.ModeIcon.StrokeLineJoin = PenLineJoin.Round;
+
+        var state = CpuPowerService.Cached;
+        refs.Reading.Inlines.Clear();
+        if (!state.Enabled)
+        {
+            // 尚未授权：磁贴提示按 A 启用（A 会拉起管理员授权助手）
+            refs.ModeIcon.Opacity = 0.5;
+            refs.Reading.Inlines.Add(new Run { Text = "未启用", FontSize = 20 });
+            refs.Hint.Text = "按 A 启用";
+            refs.Hint.Foreground = new SolidColorBrush(Windows.UI.Color.FromArgb(0xFF, 0xFF, 0xB3, 0x66));
+            return;
+        }
+        var writable = state.Supported && state.Limits.Length > 0 && state.Limits[0].Writable;
+        if (!writable)
+        {
+            refs.ModeIcon.Opacity = 0.5;
+            refs.Reading.Inlines.Add(new Run { Text = "不可用", FontSize = 20 });
+            refs.Hint.Text = "";
+            return;
+        }
+
+        refs.ModeIcon.Opacity = 1;
+        var applied = (int)Math.Round(state.Limits[0].Watts);
+        var selected = refs.PendingPowerLimit >= 0 ? refs.PendingPowerLimit : applied;
+        refs.Reading.Inlines.Add(new Run
+        {
+            Text = selected.ToString(),
+            FontSize = 28,
+            FontWeight = Microsoft.UI.Text.FontWeights.Bold
+        });
+        refs.Reading.Inlines.Add(new Run
+        {
+            Text = " W",
+            FontSize = 12,
+            FontWeight = Microsoft.UI.Text.FontWeights.SemiBold,
+            Foreground = new SolidColorBrush(Windows.UI.Color.FromArgb(0xC0, 0xFF, 0xFF, 0xFF))
+        });
+        SetQuickHint(refs, selected == applied);
+    }
+
+    /// <summary>限帧后端品牌标识（文字、品牌色、磁贴用字号）：NVIDIA / AMD / intel / RTSS；未知返回空文字
+    /// （磁贴回退仪表图形，性能面板也不显示标识）</summary>
+    public static (string Text, Windows.UI.Color Color, double Size) BackendBrand(string? backend) => backend switch
+    {
+        "NVIDIA 驱动" => ("NVIDIA", Windows.UI.Color.FromArgb(0xFF, 0x76, 0xB9, 0x00), 22.0),
+        "AMD ADLX" => ("AMD", Windows.UI.Color.FromArgb(0xFF, 0xFF, 0xFF, 0xFF), 28.0),
+        "Intel IGCL" => ("intel", Windows.UI.Color.FromArgb(0xFF, 0x4C, 0x9E, 0xEA), 27.0),
+        "RTSS" => ("RTSS", Windows.UI.Color.FromArgb(0xFF, 0xF5, 0xA6, 0x23), 25.0),
+        _ => ("", Windows.UI.Color.FromArgb(0xFF, 0xFF, 0xFF, 0xFF), 24.0)
+    };
+
+    /// <summary>全局锁帧磁贴：限帧后端品牌标识 + 当前/待应用 FPS</summary>
+    private static void FillFrameLimitTile(PerformanceTileRefs refs)
+    {
+        refs.Icon.Glyph = "\uE916"; // 秒表（全局锁帧）
+        refs.Name.Text = "全局锁帧";
+
+        var state = FrameLimitService.Cached;
+        if (!state.Supported)
+        {
+            refs.ModeIcon.Visibility = Visibility.Collapsed;
+            refs.Brand.Visibility = Visibility.Collapsed;
+            refs.Reading.Text = "不可用";
+            refs.Hint.Text = "";
+            return;
+        }
+
+        // 标识随实际生效的限帧后端切换：NVIDIA / AMD / intel / RTSS（未知后端回退仪表图形）
+        var (brand, brandColor, brandSize) = BackendBrand(state.Backend);
+        if (brand.Length > 0)
+        {
+            refs.Brand.Text = brand;
+            refs.Brand.Foreground = new SolidColorBrush(brandColor);
+            refs.Brand.FontSize = brandSize;
+            refs.Brand.Visibility = Visibility.Visible;
+            refs.ModeIcon.Visibility = Visibility.Collapsed;
+        }
+        else
+        {
+            refs.Brand.Visibility = Visibility.Collapsed;
+            refs.ModeIcon.Visibility = Visibility.Visible;
+            refs.ModeIcon.Opacity = 1;
+            refs.ModeIcon.Data = (Geometry)Microsoft.UI.Xaml.Markup.XamlBindingHelper.ConvertValue(typeof(Geometry), PerfFrameIconData);
+            refs.ModeIcon.Fill = null;
+            refs.ModeIcon.Stroke = new SolidColorBrush(Windows.UI.Color.FromArgb(0xFF, 0x7A, 0xD7, 0xFF));
+            refs.ModeIcon.StrokeThickness = 1.8;
+            refs.ModeIcon.StrokeStartLineCap = PenLineCap.Round;
+            refs.ModeIcon.StrokeEndLineCap = PenLineCap.Round;
+            refs.ModeIcon.StrokeLineJoin = PenLineJoin.Round;
+        }
+
+        var applied = state.Fps;
+        var selected = refs.PendingFrame >= 0 ? refs.PendingFrame : applied;
+        refs.Reading.Inlines.Clear();
+        if (selected <= 0)
+        {
+            refs.Reading.Inlines.Add(new Run { Text = "关闭", FontSize = 20 });
+        }
+        else
+        {
+            // 数值大字，FPS 作单位小字（同一行基线对齐）
+            refs.Reading.Inlines.Add(new Run
+            {
+                Text = selected.ToString(),
+                FontSize = 28,
+                FontWeight = Microsoft.UI.Text.FontWeights.Bold
+            });
+            refs.Reading.Inlines.Add(new Run
+            {
+                Text = " FPS",
+                FontSize = 12,
+                FontWeight = Microsoft.UI.Text.FontWeights.SemiBold,
+                Foreground = new SolidColorBrush(Windows.UI.Color.FromArgb(0xC0, 0xFF, 0xFF, 0xFF))
+            });
+        }
+        SetQuickHint(refs, selected == applied);
+    }
+
+    /// <summary>CPU 频率磁贴：芯片图形 + 最高频率（0=不限制），LB/RB 按 100MHz 调整</summary>
+    private static void FillCpuFrequencyTile(PerformanceTileRefs refs)
+    {
+        refs.Icon.Glyph = "\uE9D9";
+        refs.Name.Text = "CPU 频率";
+        refs.Brand.Visibility = Visibility.Collapsed;
+        refs.ModeIcon.Visibility = Visibility.Visible;
+        refs.ModeIcon.Opacity = 1;
+        refs.ModeIcon.Data = (Geometry)Microsoft.UI.Xaml.Markup.XamlBindingHelper.ConvertValue(typeof(Geometry), PerfCpuIconData);
+        refs.ModeIcon.Fill = null;
+        refs.ModeIcon.Stroke = new SolidColorBrush(Windows.UI.Color.FromArgb(0xFF, 0x7A, 0xD7, 0xFF));
+        refs.ModeIcon.StrokeThickness = 1.8;
+        refs.ModeIcon.StrokeStartLineCap = PenLineCap.Round;
+        refs.ModeIcon.StrokeEndLineCap = PenLineCap.Round;
+        refs.ModeIcon.StrokeLineJoin = PenLineJoin.Round;
+
+        var cpu = PerformanceService.CachedCpu;
+        refs.Reading.Inlines.Clear();
+        if (!cpu.FrequencySupported)
+        {
+            refs.ModeIcon.Opacity = 0.5;
+            refs.Reading.Inlines.Add(new Run { Text = "不可用", FontSize = 20 });
+            refs.Hint.Text = "";
+            return;
+        }
+
+        var applied = cpu.MaxFrequencyMhz;
+        var selected = refs.PendingCpuMhz >= 0 ? refs.PendingCpuMhz : applied;
+        if (selected <= 0)
+        {
+            refs.Reading.Inlines.Add(new Run
+            {
+                Text = "不限制",
+                FontSize = 20,
+                FontWeight = Microsoft.UI.Text.FontWeights.Bold
+            });
+        }
+        else
+        {
+            refs.Reading.Inlines.Add(new Run
+            {
+                Text = selected.ToString(),
+                FontSize = 26,
+                FontWeight = Microsoft.UI.Text.FontWeights.Bold
+            });
+            refs.Reading.Inlines.Add(new Run
+            {
+                Text = " MHz",
+                FontSize = 11,
+                FontWeight = Microsoft.UI.Text.FontWeights.SemiBold,
+                Foreground = new SolidColorBrush(Windows.UI.Color.FromArgb(0xC0, 0xFF, 0xFF, 0xFF))
+            });
+        }
+        SetQuickHint(refs, selected == applied);
+    }
+
+    /// <summary>CPU 睿频磁贴：向上箭头图形 + 开关胶囊（代替数值），LB/RB 切换</summary>
+    private static void FillCpuBoostTile(PerformanceTileRefs refs)
+    {
+        refs.Icon.Glyph = "\uE9D9";
+        refs.Name.Text = "CPU 睿频";
+        refs.Brand.Visibility = Visibility.Collapsed;
+        refs.ModeIcon.Visibility = Visibility.Visible;
+        refs.ModeIcon.Width = 40;
+        refs.ModeIcon.Height = 40;
+        refs.ModeIcon.Opacity = 1;
+        refs.ModeIcon.Data = (Geometry)Microsoft.UI.Xaml.Markup.XamlBindingHelper.ConvertValue(typeof(Geometry), PerfBoostIconData);
+        refs.ModeIcon.Fill = null;
+        refs.ModeIcon.Stroke = new SolidColorBrush(Windows.UI.Color.FromArgb(0xFF, 0xFF, 0x6B, 0x5B));
+        refs.ModeIcon.StrokeThickness = 2;
+        refs.ModeIcon.StrokeStartLineCap = PenLineCap.Round;
+        refs.ModeIcon.StrokeEndLineCap = PenLineCap.Round;
+        refs.ModeIcon.StrokeLineJoin = PenLineJoin.Round;
+
+        var cpu = PerformanceService.CachedCpu;
+        refs.Reading.Visibility = Visibility.Collapsed;
+        refs.BoostPill.Visibility = Visibility.Visible;
+
+        if (!cpu.BoostSupported)
+        {
+            refs.ModeIcon.Opacity = 0.5;
+            refs.BoostPill.Opacity = 0.4;
+            refs.BoostPill.Background = new SolidColorBrush(Windows.UI.Color.FromArgb(0x1F, 0xFF, 0xFF, 0xFF));
+            refs.BoostDot.HorizontalAlignment = HorizontalAlignment.Left;
+            refs.BoostDot.Margin = new Thickness(3, 0, 0, 0);
+            refs.Hint.Text = "";
+            return;
+        }
+
+        refs.BoostPill.Opacity = 1;
+        var appliedOn = cpu.BoostMode != 0;
+        var selectedOn = refs.PendingBoost >= 0 ? refs.PendingBoost != 0 : appliedOn;
+        refs.BoostPill.Background = new SolidColorBrush(selectedOn
+            ? Windows.UI.Color.FromArgb(0xFF, 0x3F, 0xC0, 0x5B)
+            : Windows.UI.Color.FromArgb(0x33, 0xFF, 0xFF, 0xFF));
+        refs.BoostDot.HorizontalAlignment = selectedOn ? HorizontalAlignment.Right : HorizontalAlignment.Left;
+        refs.BoostDot.Margin = selectedOn ? new Thickness(0, 0, 3, 0) : new Thickness(3, 0, 0, 0);
+        SetQuickHint(refs, selectedOn == appliedOn);
+    }
+
+    /// <summary>快捷项底部状态：当前生效 / 待应用</summary>
+    private static void SetQuickHint(PerformanceTileRefs refs, bool applied)
+    {
+        refs.Hint.Text = applied ? "当前生效" : "待应用";
+        refs.Hint.Foreground = new SolidColorBrush(applied
+            ? Windows.UI.Color.FromArgb(0xB3, 0xFF, 0xFF, 0xFF)
+            : Windows.UI.Color.FromArgb(0xFF, 0xFF, 0xB3, 0x66));
+    }
+
     // ==================== 小猫咪（简易代理）====================
 
     /// <summary>小猫咪磁贴的可刷新元素引用（连接状态或服务器变化时只改文字与圆点，不重建磁贴）</summary>
@@ -2470,27 +3250,35 @@ public static class TileStyle
         public TextBlock Summary = null!;                    // 按键摘要（仅大尺寸）
     }
 
-    /// <summary>白色猫头剪影：两只耳朵 + 圆下巴的矢量路径，与磁贴图标同色、可任意缩放不变形</summary>
+    /// <summary>小猫咪线条图标：坐姿剪影描边，与小黄鸭图标同风格、可任意缩放不变形</summary>
     private static Viewbox MakeCatIcon(double size, Brush brush)
     {
-        // WinUI 3 没有 Geometry.Parse，用 XamlBindingHelper 把路径字符串转成几何对象
-        var data = (Geometry)Microsoft.UI.Xaml.Markup.XamlBindingHelper.ConvertValue(
-            typeof(Geometry),
-            "M8,28 L12,4 L28,18 C31,15 33,15 36,18 L52,4 L56,28 " +
-            "C56,46 46,58 32,58 C18,58 8,46 8,28 Z");
-        var path = new Microsoft.UI.Xaml.Shapes.Path
+        // 小猫咪：简约线条风格（坐姿、双耳、前腿、卷尾），与小黄鸭图标一致
+        Microsoft.UI.Xaml.Shapes.Path Line(string data) => new()
         {
-            Data = data,
-            Fill = brush,
-            Stretch = Stretch.Fill,
+            Data = (Geometry)Microsoft.UI.Xaml.Markup.XamlBindingHelper.ConvertValue(typeof(Geometry), data),
+            Stroke = brush,
+            StrokeThickness = 1.7,
+            StrokeStartLineCap = PenLineCap.Round,
+            StrokeEndLineCap = PenLineCap.Round,
+            StrokeLineJoin = PenLineJoin.Round,
             IsHitTestVisible = false
         };
+
+        var canvas = new Canvas { Width = 24, Height = 24 };
+        // 头与身体轮廓（左侧为脸/胸，右侧为背，底边为坐姿）
+        canvas.Children.Add(Line("M9.4,3.1 C7.6,4.8 5.8,6.8 5.4,8.8 C4.8,11.2 4.7,14.6 5.0,17.2 C5.2,19.2 5.5,20.5 5.9,21.2 L10.8,21.2 C13.8,21.2 16.4,21.0 17.6,19.5 C18.9,17.9 19.4,15.6 19.0,13.6 C18.4,11.3 17.0,9.7 15.4,8.9 C15.0,7.0 14.5,5.2 13.9,3.2 L12.1,5.9 C11.5,5.6 10.9,5.6 10.4,6.0 Z"));
+        // 尾巴（贴地向右卷起）
+        canvas.Children.Add(Line("M18.9,17.8 C21.0,18.2 22.4,19.4 22.2,20.5 C22.0,21.5 20.6,21.9 19.2,21.3"));
+        // 前腿分缝
+        canvas.Children.Add(Line("M6.9,14.4 C6.7,17.0 6.7,19.2 6.9,20.9"));
+
         return new Viewbox
         {
             Width = size,
             Height = size,
             Stretch = Stretch.Uniform,
-            Child = path,
+            Child = canvas,
             HorizontalAlignment = HorizontalAlignment.Center,
             VerticalAlignment = VerticalAlignment.Center,
             IsHitTestVisible = false
@@ -2563,7 +3351,7 @@ public static class TileStyle
                 HorizontalAlignment = HorizontalAlignment.Center,
                 VerticalAlignment = VerticalAlignment.Center
             };
-            stack.Children.Add(MakeCatIcon(24, white));
+            stack.Children.Add(MakeCatIcon(30, white));
             stack.Children.Add(StatusRow(10));
             refs.Node = new TextBlock { Visibility = Visibility.Collapsed };
             grid.Children.Add(stack);
@@ -2577,7 +3365,7 @@ public static class TileStyle
                 HorizontalAlignment = HorizontalAlignment.Center,
                 VerticalAlignment = VerticalAlignment.Center
             };
-            row.Children.Add(MakeCatIcon(30, white));
+            row.Children.Add(MakeCatIcon(36, white));
             var col = new StackPanel { Spacing = 3, VerticalAlignment = VerticalAlignment.Center };
             col.Children.Add(new TextBlock
             {
@@ -2606,7 +3394,7 @@ public static class TileStyle
                 HorizontalAlignment = HorizontalAlignment.Center,
                 VerticalAlignment = VerticalAlignment.Center
             };
-            stack.Children.Add(MakeCatIcon(36, white));
+            stack.Children.Add(MakeCatIcon(46, white));
             stack.Children.Add(new TextBlock
             {
                 Text = label,

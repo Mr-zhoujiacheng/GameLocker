@@ -50,6 +50,13 @@ public partial class App : Application
         // 提权监控助手模式（--monitor-helper <父进程PID>）：只跑 ETW 帧率采集并写共享内存，
         // 不创建主窗口，父进程退出或发出停止事件后自行结束。
         var argv = Environment.GetCommandLineArgs();
+        var powerIndex = Array.IndexOf(argv, "--cpu-power-helper");
+        if (powerIndex >= 0 && powerIndex + 2 < argv.Length
+            && int.TryParse(argv[powerIndex + 1], out var powerParent))
+        {
+            CpuPowerService.RunHelper(powerParent, argv[powerIndex + 2]);
+            Environment.Exit(0);
+        }
         var helperIndex = Array.IndexOf(argv, "--monitor-helper");
         if (helperIndex >= 0 && helperIndex + 1 < argv.Length
             && int.TryParse(argv[helperIndex + 1], out var parentPid))
@@ -67,6 +74,9 @@ public partial class App : Application
         DebugLog.Write($"启动：PID={Environment.ProcessId} 程序={Environment.ProcessPath}");
         MigrateLegacyConfig();
         SettingsService.EnsureAutoStartPath(); // 校正开机自启路径（程序移动/改名后 Run 键会失效）
+        var coreResult = GameCpuService.Configure(SettingsService.Current.GameCoreCount, SettingsService.Current.GameCoreMode);
+        if (!coreResult.Ok) LaunchService.Diag(coreResult.Message);
+
         // 接管系统屏幕键盘：关掉触屏键盘自动弹出、收起 osk/TabTip，改用本程序键盘
         SystemKeyboardWatcher.Apply(SettingsService.Current.TakeOverSystemKeyboard);
         Main = new MainWindow();

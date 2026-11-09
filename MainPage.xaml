@@ -207,14 +207,14 @@
             </Border>
         </Grid>
 
-        <!-- 底部按键提示：悬浮玻璃胶囊，钉在窗口最底部（不占布局行）。
+        <!-- 底部按键提示：无底板、无描边，只垫一层极淡暗底保证对比（简约但醒目）。
              抽屉展开时由代码给抽屉面板留出这条提示条的高度，抽屉在上、提示条在最下面，两者不重叠 -->
         <Border x:Name="HintBarShell" Grid.Row="0" Grid.RowSpan="3"
                 HorizontalAlignment="Center" VerticalAlignment="Bottom"
-                Margin="0,0,0,18" Padding="14,6" CornerRadius="0"
-                Background="#1F0A0C10"
+                Margin="0,0,0,20" Padding="14,9" CornerRadius="12" BorderThickness="0"
+                Background="#26000000"
                 Visibility="{x:Bind HintBar.Visibility, Mode=OneWay}">
-            <ctl:GamepadHintBar x:Name="HintBar" BadgeScale="1"/>
+            <ctl:GamepadHintBar x:Name="HintBar" BadgeScale="1" Highlight="True"/>
         </Border>
 
         <!-- 添加方式选择遮罩：X 键 / 编辑模式"添加磁贴"弹出，三选一（自定义 / 小组件 / 副页块），手柄可操作。
@@ -422,6 +422,388 @@
                                         Hints="DPAD:选择|A:执行|B:取消"/>
                 </StackPanel>
             </Border>
+        </Grid>
+
+        <!-- 性能控制遮罩：性能控制磁贴 A/点击打开 —— Windows 电源模式三档 + 锁帧/功耗/CPU/核心设置。
+             上下切换行、左右在功耗/CPU 两列间切换、右摇杆调值，所有改动先标记“待应用”，按 X 或点“保存”统一生效，B/Y 关闭且不保存 -->
+        <Grid x:Name="PerformanceOverlay" Grid.Row="0" Grid.RowSpan="3" Visibility="Collapsed">
+            <Border x:Name="PerformanceMask" Background="#D80A0C10"/>
+
+            <Border x:Name="PerformancePanel" HorizontalAlignment="Center" VerticalAlignment="Center"
+                    XYFocusKeyboardNavigation="Disabled"
+                    CornerRadius="24" Padding="18,20,18,14"
+                    BorderBrush="#2EFFFFFF" BorderThickness="1.2"
+                    RenderTransformOrigin="0.5,0.5">
+                <Border.Background>
+                    <LinearGradientBrush StartPoint="0,0" EndPoint="0.35,1">
+                        <GradientStop Color="#F22A2E36" Offset="0"/>
+                        <GradientStop Color="#F21A1D23" Offset="1"/>
+                    </LinearGradientBrush>
+                </Border.Background>
+                <Border.RenderTransform>
+                    <CompositeTransform x:Name="PerformancePanelTransform" ScaleX="1" ScaleY="1"/>
+                </Border.RenderTransform>
+
+                <Grid x:Name="PerformancePanelContent" MaxWidth="620" RowSpacing="8">
+                    <Grid.RowDefinitions>
+                        <RowDefinition Height="Auto"/>
+                        <RowDefinition Height="*"/>
+                        <RowDefinition Height="Auto"/>
+                        <RowDefinition Height="Auto"/>
+                    </Grid.RowDefinitions>
+
+                    <!-- 标题：性能徽章 + 当前设备 -->
+                    <Grid Grid.Row="0" Margin="2,0,2,2" ColumnSpacing="10">
+                        <Grid.ColumnDefinitions>
+                            <ColumnDefinition Width="Auto"/>
+                            <ColumnDefinition Width="*"/>
+                        </Grid.ColumnDefinitions>
+                        <StackPanel Orientation="Horizontal" Spacing="12">
+                            <Border Width="42" Height="42" CornerRadius="21" Background="#26FF9A4D" VerticalAlignment="Center">
+                                <FontIcon Glyph="&#xE945;" FontSize="19" Foreground="#FFB366"/>
+                            </Border>
+                            <StackPanel VerticalAlignment="Center" Spacing="1">
+                                <TextBlock Text="性能控制" FontSize="21" FontWeight="SemiBold"/>
+                                <TextBlock Text="电源方案与处理器性能设置" FontSize="11.5" Opacity="0.5"/>
+                            </StackPanel>
+                        </StackPanel>
+                        <Border Grid.Column="1" HorizontalAlignment="Right" VerticalAlignment="Center" CornerRadius="10"
+                                Background="#14FFFFFF" BorderBrush="#1FFFFFFF" BorderThickness="1" Padding="8,4">
+                            <TextBlock x:Name="PerfDeviceText" Text="—" FontSize="10.5" FontWeight="SemiBold"
+                                       Foreground="#FFB366" VerticalAlignment="Center"
+                                       MaxWidth="180" TextTrimming="CharacterEllipsis"/>
+                        </Border>
+                    </Grid>
+
+                    <!-- 主体：设备状态 + 电源方案一行四卡 + EPP + 双列设置 -->
+                    <ScrollViewer x:Name="PerfSettingsScroll" Grid.Row="1"
+                                  VerticalScrollBarVisibility="Hidden" HorizontalScrollBarVisibility="Disabled">
+                        <StackPanel Spacing="10" Margin="0,0,10,0">
+                            <Border CornerRadius="12" Background="#1A000000" Padding="12,8"
+                                    BorderBrush="#12FFFFFF" BorderThickness="1">
+                                <StackPanel Spacing="6">
+                                    <TextBlock Text="设备状态" FontSize="12" FontWeight="Bold" Opacity="0.8"/>
+                                    <Grid ColumnSpacing="8" RowSpacing="10">
+                                        <Grid.ColumnDefinitions>
+                                            <ColumnDefinition Width="*"/>
+                                            <ColumnDefinition Width="*"/>
+                                            <ColumnDefinition Width="*"/>
+                                            <ColumnDefinition Width="*"/>
+                                        </Grid.ColumnDefinitions>
+                                        <Grid.RowDefinitions>
+                                            <RowDefinition Height="Auto"/>
+                                            <RowDefinition Height="Auto"/>
+                                        </Grid.RowDefinitions>
+                                        <StackPanel Spacing="3">
+                                            <TextBlock Text="CPU 功耗" FontSize="10.5" FontWeight="SemiBold" Opacity="0.62"/>
+                                            <TextBlock x:Name="PerfTelemetryPower" Text="—" FontSize="14" FontWeight="SemiBold" FontFamily="Consolas"/>
+                                        </StackPanel>
+                                        <StackPanel Grid.Column="1" Spacing="3">
+                                            <TextBlock Text="CPU 温度" FontSize="10.5" FontWeight="SemiBold" Opacity="0.62"/>
+                                            <TextBlock x:Name="PerfTelemetryCpuTemp" Text="—" FontSize="14" FontWeight="SemiBold" FontFamily="Consolas"/>
+                                        </StackPanel>
+                                        <StackPanel Grid.Column="2" Spacing="3">
+                                            <TextBlock Text="CPU 频率" FontSize="10.5" FontWeight="SemiBold" Opacity="0.62"/>
+                                            <TextBlock x:Name="PerfTelemetryCpuFreq" Text="—" FontSize="14" FontWeight="SemiBold" FontFamily="Consolas"/>
+                                        </StackPanel>
+                                        <StackPanel Grid.Column="3" Spacing="3" ToolTipService.ToolTip="系统可用物理核心数，不代表游戏 CPU Sets 限制或瞬时活跃核心数">
+                                            <TextBlock Text="核心数量" FontSize="10.5" FontWeight="SemiBold" Opacity="0.62"/>
+                                            <TextBlock x:Name="PerfTelemetryCores" Text="—" FontSize="14" FontWeight="SemiBold" FontFamily="Consolas"/>
+                                        </StackPanel>
+                                        <StackPanel Grid.Row="1" Spacing="3">
+                                            <TextBlock Text="GPU 功耗" FontSize="10.5" FontWeight="SemiBold" Opacity="0.62"/>
+                                            <TextBlock x:Name="PerfTelemetryGpuPower" Text="—" FontSize="14" FontWeight="SemiBold" FontFamily="Consolas"/>
+                                        </StackPanel>
+                                        <StackPanel Grid.Row="1" Grid.Column="1" Spacing="3">
+                                            <TextBlock Text="GPU 温度" FontSize="10.5" FontWeight="SemiBold" Opacity="0.62"/>
+                                            <TextBlock x:Name="PerfTelemetryGpuTemp" Text="—" FontSize="14" FontWeight="SemiBold" FontFamily="Consolas"/>
+                                        </StackPanel>
+                                        <StackPanel Grid.Row="1" Grid.Column="2" Spacing="3">
+                                            <TextBlock Text="GPU 频率" FontSize="10.5" FontWeight="SemiBold" Opacity="0.62"/>
+                                            <TextBlock x:Name="PerfTelemetryGpuFreq" Text="—" FontSize="14" FontWeight="SemiBold" FontFamily="Consolas"/>
+                                        </StackPanel>
+                                        <StackPanel Grid.Row="1" Grid.Column="3" Spacing="3">
+                                            <TextBlock x:Name="PerfTelemetryBatteryLabel" Text="电池功耗" FontSize="10.5" FontWeight="SemiBold" Opacity="0.62"/>
+                                            <TextBlock x:Name="PerfTelemetryBatteryPower" Text="—" FontSize="14" FontWeight="SemiBold" FontFamily="Consolas"/>
+                                        </StackPanel>
+                                    </Grid>
+                                    <TextBlock x:Name="PerfTelemetryHint" Text="正在读取设备传感器…" FontSize="10" Opacity="0.45" TextWrapping="Wrap"/>
+                                </StackPanel>
+                            </Border>
+
+                            <StackPanel Orientation="Horizontal" Spacing="6" Margin="4,0,0,0">
+                                <Border Width="3" Height="11" CornerRadius="1.5" Background="#FF9A4D" VerticalAlignment="Center"/>
+                                <TextBlock Text="电源模式" FontSize="11.5" Opacity="0.6" FontWeight="SemiBold" CharacterSpacing="40"/>
+                            </StackPanel>
+
+                            <Grid ColumnSpacing="8">
+                                <Grid.ColumnDefinitions>
+                                    <ColumnDefinition Width="*"/>
+                                    <ColumnDefinition Width="*"/>
+                                    <ColumnDefinition Width="*"/>
+                                </Grid.ColumnDefinitions>
+
+                                <!-- 最佳能效：右上圆点=系统当前生效；待应用=已选中但尚未按 A 应用 -->
+                                <Border x:Name="PerfEco" CornerRadius="12" Padding="10,8"
+                                        Background="#14FFFFFF" BorderBrush="#1FFFFFFF" BorderThickness="1.5">
+                                    <Grid>
+                                        <StackPanel Spacing="4">
+                                            <Border Width="24" Height="24" CornerRadius="8" Background="#3366E08A"
+                                                    BorderBrush="#5566E08A" BorderThickness="1" HorizontalAlignment="Left">
+                                                <!-- 叶片：能效 / 省电 -->
+                                                <Path Fill="#66E08A" Stretch="Uniform" Width="13" Height="13"
+                                                      HorizontalAlignment="Center" VerticalAlignment="Center"
+                                                      Data="M20,4 C10.5,4 4.5,9.5 4.5,16.5 C4.5,17.7 4.7,18.7 5,19.5 C12.2,19.5 20,14 20,4 Z"/>
+                                            </Border>
+                                            <TextBlock Text="最佳能效" FontSize="13" FontWeight="SemiBold"/>
+                                            <StackPanel Orientation="Horizontal" Spacing="4">
+                                                <Border Background="#1F66E08A" CornerRadius="5" Padding="6,1" HorizontalAlignment="Left">
+                                                    <TextBlock x:Name="PerfEcoBadge" Text="省电优先" FontSize="9.5" Foreground="#66E08A"/>
+                                                </Border>
+                                                <TextBlock x:Name="PerfEcoPending" Text="待应用" FontSize="9.5"
+                                                           Foreground="#FFB366" VerticalAlignment="Center" Visibility="Collapsed"/>
+                                            </StackPanel>
+                                        </StackPanel>
+                                        <Ellipse x:Name="PerfEcoActive" Width="7" Height="7" Fill="#66E08A"
+                                                 HorizontalAlignment="Right" VerticalAlignment="Top" Visibility="Collapsed"/>
+                                    </Grid>
+                                </Border>
+
+                                <!-- 均衡 -->
+                                <Border x:Name="PerfBalanced" Grid.Column="1" CornerRadius="12" Padding="10,8"
+                                        Background="#14FFFFFF" BorderBrush="#1FFFFFFF" BorderThickness="1.5">
+                                    <Grid>
+                                        <StackPanel Spacing="4">
+                                            <Border Width="24" Height="24" CornerRadius="8" Background="#337AB8FF"
+                                                    BorderBrush="#557AB8FF" BorderThickness="1" HorizontalAlignment="Left">
+                                                <!-- 调节滑杆：均衡 -->
+                                                <Viewbox Width="13" Height="13" HorizontalAlignment="Center" VerticalAlignment="Center">
+                                                    <Canvas Width="24" Height="24">
+                                                        <Path Stroke="#7AB8FF" StrokeThickness="1.8"
+                                                              StrokeStartLineCap="Round" StrokeEndLineCap="Round"
+                                                              Data="M3.5,8.5 H20.5 M3.5,15.5 H20.5"/>
+                                                        <Path Fill="#7AB8FF" Data="M9,6.2 A2.3,2.3 0 1,1 9,10.8 A2.3,2.3 0 1,1 9,6.2 Z"/>
+                                                        <Path Fill="#7AB8FF" Data="M15,13.2 A2.3,2.3 0 1,1 15,17.8 A2.3,2.3 0 1,1 15,13.2 Z"/>
+                                                    </Canvas>
+                                                </Viewbox>
+                                            </Border>
+                                            <TextBlock Text="平衡" FontSize="13" FontWeight="SemiBold"/>
+                                            <StackPanel Orientation="Horizontal" Spacing="4">
+                                                <Border Background="#1F7AB8FF" CornerRadius="5" Padding="6,1" HorizontalAlignment="Left">
+                                                    <TextBlock x:Name="PerfBalancedBadge" Text="均衡运行" FontSize="9.5" Foreground="#7AB8FF"/>
+                                                </Border>
+                                                <TextBlock x:Name="PerfBalancedPending" Text="待应用" FontSize="9.5"
+                                                           Foreground="#FFB366" VerticalAlignment="Center" Visibility="Collapsed"/>
+                                            </StackPanel>
+                                        </StackPanel>
+                                        <Ellipse x:Name="PerfBalancedActive" Width="7" Height="7" Fill="#7AB8FF"
+                                                 HorizontalAlignment="Right" VerticalAlignment="Top" Visibility="Collapsed"/>
+                                    </Grid>
+                                </Border>
+
+                                <!-- 性能 -->
+                                <Border x:Name="PerfPerformance" Grid.Column="2" CornerRadius="12" Padding="10,8"
+                                        Background="#14FFFFFF" BorderBrush="#1FFFFFFF" BorderThickness="1.5">
+                                    <Grid>
+                                        <StackPanel Spacing="4">
+                                            <Border Width="24" Height="24" CornerRadius="8" Background="#33FF9A4D"
+                                                    BorderBrush="#55FF9A4D" BorderThickness="1" HorizontalAlignment="Left">
+                                                <!-- 闪电：性能 -->
+                                                <Path Fill="#FFB366" Stretch="Uniform" Width="13" Height="13"
+                                                      HorizontalAlignment="Center" VerticalAlignment="Center"
+                                                      Data="M13.4,2 L5.6,13.4 H11.2 L10.4,21.8 L18.2,10.4 H12.6 Z"/>
+                                            </Border>
+                                            <TextBlock Text="最佳性能" FontSize="13" FontWeight="SemiBold"/>
+                                            <StackPanel Orientation="Horizontal" Spacing="4">
+                                                <Border Background="#26FF9A4D" CornerRadius="5" Padding="6,1" HorizontalAlignment="Left">
+                                                    <TextBlock x:Name="PerfPerformanceBadge" Text="性能优先" FontSize="9.5" Foreground="#FFB366"/>
+                                                </Border>
+                                                <TextBlock x:Name="PerfPerformancePending" Text="待应用" FontSize="9.5"
+                                                           Foreground="#FFB366" VerticalAlignment="Center" Visibility="Collapsed"/>
+                                            </StackPanel>
+                                        </StackPanel>
+                                        <Ellipse x:Name="PerfPerformanceActive" Width="7" Height="7" Fill="#FFB366"
+                                                 HorizontalAlignment="Right" VerticalAlignment="Top" Visibility="Collapsed"/>
+                                    </Grid>
+                                </Border>
+
+                            </Grid>
+                            <TextBlock x:Name="PerfSystemMode" Text="当前系统模式：正在读取…" FontSize="11" Opacity="0.7" TextWrapping="Wrap" Margin="4,0,0,0"/>
+
+                            <!-- 全局锁帧 -->
+                            <StackPanel x:Name="PerfGlobalSettings" Spacing="8"/>
+
+                            <!-- 功耗控制 / CPU·GPU 两列并排 -->
+                            <Grid x:Name="PerfAdvancedSettings" ColumnSpacing="10">
+                                <Grid.ColumnDefinitions>
+                                    <ColumnDefinition Width="*"/>
+                                    <ColumnDefinition Width="*"/>
+                                </Grid.ColumnDefinitions>
+                                <StackPanel x:Name="PerfPowerSettings" Spacing="8"/>
+                                <StackPanel x:Name="PerfCpuSettings" Grid.Column="1" Spacing="8"/>
+                            </Grid>
+
+                        </StackPanel>
+                    </ScrollViewer>
+
+                    <!-- 说明条：独立占一行，透明底 + 细线框，便于识别 -->
+                    <Border Grid.Row="2" Height="52" CornerRadius="12" Background="Transparent"
+                            BorderBrush="#1FFFFFFF" BorderThickness="1" Padding="12,6">
+                        <Grid ColumnSpacing="14">
+                            <Grid.ColumnDefinitions>
+                                <ColumnDefinition Width="*"/>
+                                <ColumnDefinition Width="Auto"/>
+                            </Grid.ColumnDefinitions>
+                            <TextBlock x:Name="PerfControlHelp" FontSize="12" FontWeight="SemiBold" Opacity="0.9"
+                                       TextWrapping="Wrap" TextTrimming="CharacterEllipsis" VerticalAlignment="Center"/>
+                            <!-- 面板内状态提示：保存结果/失败原因（主页 toast 会被性能浮层遮住，必须在这里显示） -->
+                            <TextBlock x:Name="PerfStatusText" FontSize="12" FontWeight="SemiBold"
+                                       TextWrapping="Wrap" TextTrimming="CharacterEllipsis" VerticalAlignment="Center"
+                                       Visibility="Collapsed"/>
+                            <!-- 鼠标/触屏保存入口：与手柄 X 等价，一次写入所有待应用修改 -->
+                            <Button x:Name="PerfSaveButton" Grid.Column="1" Content="保存"
+                                    FontSize="12" FontWeight="SemiBold" Padding="16,5"
+                                    CornerRadius="8" BorderThickness="1"
+                                    VerticalAlignment="Center"
+                                    IsTabStop="False" AllowFocusOnInteraction="False" UseSystemFocusVisuals="False">
+                                <Button.Background>
+                                    <LinearGradientBrush StartPoint="0,0" EndPoint="1,1">
+                                        <GradientStop Color="#FFFFC98A" Offset="0"/>
+                                        <GradientStop Color="#FFFF9A4D" Offset="1"/>
+                                    </LinearGradientBrush>
+                                </Button.Background>
+                                <Button.Foreground>
+                                    <SolidColorBrush Color="#FF241505"/>
+                                </Button.Foreground>
+                                <Button.BorderBrush>
+                                    <SolidColorBrush Color="#66FFFFFF"/>
+                                </Button.BorderBrush>
+                            </Button>
+                        </Grid>
+                    </Border>
+
+                    <!-- 按键提示：收进面板底部，与内容同宽居中 -->
+                    <Border Grid.Row="3" HorizontalAlignment="Center" Margin="0"
+                            Padding="12,2" CornerRadius="10" Background="#1F0A0C10">
+                        <ctl:GamepadHintBar x:Name="PerformanceHintBar" BadgeScale="0.9"
+                                            Hints="UD:选择|LR:切列/选档|A:切换模式|RS:调值|X:保存|B:关闭"/>
+                    </Border>
+                </Grid>
+            </Border>
+        </Grid>
+
+        <!-- 下载模式遮罩：下载模式磁贴 A/点击打开 —— 先设下载时长与完成动作，进入后熄屏 + 静音 + 整屏纯黑，
+             只保留剩余时间 / 当前网速 / 当前时间与两个按钮；「查看下载进度」临时还原屏幕并切回下载页 5 秒 -->
+        <Grid x:Name="DownloadOverlay" Grid.Row="0" Grid.RowSpan="3" Visibility="Collapsed"
+              Background="#FF000000" XYFocusKeyboardNavigation="Disabled">
+
+            <!-- ① 进入前：设定下载时间与完成后的动作 -->
+            <Grid x:Name="DownloadSetupPanel" Padding="24">
+                <StackPanel Width="430" Spacing="12" HorizontalAlignment="Center" VerticalAlignment="Center">
+                    <StackPanel Spacing="4" Margin="0,0,0,10">
+                        <TextBlock Text="下载模式" FontSize="30" FontWeight="Bold" CharacterSpacing="60"
+                                   HorizontalAlignment="Center"/>
+                        <TextBlock Text="先把下载页面切到前台，进入后屏幕会熄灭并静音"
+                                   FontSize="12" Opacity="0.45" TextAlignment="Center" TextWrapping="Wrap"/>
+                    </StackPanel>
+
+                    <Border x:Name="DlDurationRow" CornerRadius="16" Padding="18,12" Background="#12FFFFFF"
+                            BorderBrush="Transparent" BorderThickness="1.5">
+                        <Grid>
+                            <StackPanel Spacing="2">
+                                <TextBlock Text="下载时间" FontSize="12" Opacity="0.55"/>
+                                <TextBlock x:Name="DlDurationText" Text="60 分钟" FontSize="26" FontWeight="SemiBold"/>
+                            </StackPanel>
+                            <TextBlock Text="LB / RB 调整" FontSize="11" Opacity="0.4"
+                                       HorizontalAlignment="Right" VerticalAlignment="Center"/>
+                        </Grid>
+                    </Border>
+
+                    <Border x:Name="DlActionRow" CornerRadius="16" Padding="18,12" Background="#12FFFFFF"
+                            BorderBrush="Transparent" BorderThickness="1.5">
+                        <Grid>
+                            <StackPanel Spacing="2">
+                                <TextBlock Text="下载完成后" FontSize="12" Opacity="0.55"/>
+                                <TextBlock x:Name="DlActionText" Text="睡眠" FontSize="26" FontWeight="SemiBold"/>
+                            </StackPanel>
+                            <TextBlock Text="LB / RB 切换" FontSize="11" Opacity="0.4"
+                                       HorizontalAlignment="Right" VerticalAlignment="Center"/>
+                        </Grid>
+                    </Border>
+
+                    <Border x:Name="DlStartRow" Height="54" CornerRadius="16" Background="#2EFFB366"
+                            BorderBrush="Transparent" BorderThickness="1.5"
+                            Tapped="OnDownloadStartTapped">
+                        <TextBlock x:Name="DlStartText" Text="开始下载模式" FontSize="15" FontWeight="SemiBold"
+                                   Foreground="#FFFFB366" HorizontalAlignment="Center" VerticalAlignment="Center"/>
+                    </Border>
+
+                    <Border x:Name="DlCancelRow" Height="48" CornerRadius="16" Background="#12FFFFFF"
+                            BorderBrush="Transparent" BorderThickness="1.5"
+                            Tapped="OnDownloadCancelTapped">
+                        <TextBlock x:Name="DlCancelText" Text="取消" FontSize="14.5" Opacity="0.85"
+                                   HorizontalAlignment="Center" VerticalAlignment="Center"/>
+                    </Border>
+
+                    <ctl:GamepadHintBar x:Name="DownloadSetupHint" HorizontalAlignment="Center" BadgeScale="0.9"
+                                        Hints="UD:选择|LR:调整|A:确认|B:取消"/>
+                </StackPanel>
+            </Grid>
+
+            <!-- ② 运行中：时钟 + 剩余时间 + 网速 + 两个按钮 -->
+            <Grid x:Name="DownloadRunningPanel" Visibility="Collapsed">
+                <StackPanel VerticalAlignment="Top" HorizontalAlignment="Center" Margin="0,44,0,0" Spacing="2">
+                    <TextBlock x:Name="DlClockText" Text="00:00" FontSize="44" FontWeight="SemiBold"
+                               CharacterSpacing="40" HorizontalAlignment="Center"/>
+                    <TextBlock x:Name="DlClockDate" Text="" FontSize="12" Opacity="0.4"
+                               CharacterSpacing="60" HorizontalAlignment="Center"/>
+                </StackPanel>
+
+                <StackPanel VerticalAlignment="Center" HorizontalAlignment="Center" Spacing="8">
+                    <TextBlock Text="剩余下载时间" FontSize="13" Opacity="0.45" CharacterSpacing="160"
+                               HorizontalAlignment="Center"/>
+                    <TextBlock x:Name="DlRemainText" Text="60:00" FontSize="86" FontWeight="Light"
+                               CharacterSpacing="20" HorizontalAlignment="Center"/>
+                    <StackPanel Orientation="Horizontal" Spacing="20" HorizontalAlignment="Center" Margin="0,6,0,0">
+                        <StackPanel Spacing="3">
+                            <TextBlock Text="当前网速" FontSize="11.5" Opacity="0.4" HorizontalAlignment="Center"/>
+                            <TextBlock x:Name="DlSpeedText" Text="0 KB/s" FontSize="18" FontWeight="SemiBold"
+                                       HorizontalAlignment="Center"/>
+                        </StackPanel>
+                        <Border Width="1" Background="#1FFFFFFF" Margin="2,2"/>
+                        <StackPanel Spacing="3">
+                            <TextBlock Text="完成后" FontSize="11.5" Opacity="0.4" HorizontalAlignment="Center"/>
+                            <TextBlock x:Name="DlAfterText" Text="睡眠" FontSize="18" FontWeight="SemiBold"
+                                       HorizontalAlignment="Center"/>
+                        </StackPanel>
+                    </StackPanel>
+                </StackPanel>
+
+                <StackPanel VerticalAlignment="Bottom" HorizontalAlignment="Center" Margin="0,0,0,56" Spacing="16">
+                    <StackPanel Orientation="Horizontal" Spacing="14" HorizontalAlignment="Center">
+                        <Border x:Name="DlPeekRow" Width="220" Height="56" CornerRadius="16" Background="#14FFFFFF"
+                                BorderBrush="Transparent" BorderThickness="1.5"
+                                Tapped="OnDownloadPeekTapped">
+                            <StackPanel Orientation="Horizontal" Spacing="8" HorizontalAlignment="Center"
+                                        VerticalAlignment="Center">
+                                <FontIcon Glyph="&#xE8A7;" FontSize="15" Opacity="0.85"/>
+                                <TextBlock Text="查看下载进度" FontSize="14.5"/>
+                            </StackPanel>
+                        </Border>
+                        <Border x:Name="DlCloseRow" Width="220" Height="56" CornerRadius="16" Background="#14FFFFFF"
+                                BorderBrush="Transparent" BorderThickness="1.5"
+                                Tapped="OnDownloadCloseTapped">
+                            <StackPanel Orientation="Horizontal" Spacing="8" HorizontalAlignment="Center"
+                                        VerticalAlignment="Center">
+                                <FontIcon Glyph="&#xE7E8;" FontSize="15" Opacity="0.85"/>
+                                <TextBlock Text="关闭下载模式" FontSize="14.5"/>
+                            </StackPanel>
+                        </Border>
+                    </StackPanel>
+                    <ctl:GamepadHintBar x:Name="DownloadRunningHint" HorizontalAlignment="Center" BadgeScale="0.9"
+                                        Hints="LR:选择|A:确认|B:关闭下载模式"/>
+                </StackPanel>
+            </Grid>
         </Grid>
 
         <!-- 壁纸遮罩：壁纸磁贴 A/点击打开 —— 询问把当前壁纸设为桌面壁纸还是锁屏壁纸。

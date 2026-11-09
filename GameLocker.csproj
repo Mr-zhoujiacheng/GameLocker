@@ -13,7 +13,7 @@
     <EnableMsixTooling>false</EnableMsixTooling>
     <ApplicationManifest>app.manifest</ApplicationManifest>
     <AssemblyName>GameLocker</AssemblyName>
-    <Version>2.9.67</Version>
+    <Version>3.0.0</Version>
     <ApplicationIcon>Assets\GameLocker.ico</ApplicationIcon>
     <NoWarn>$(NoWarn);CA1416</NoWarn>
     <!-- dotnet CLI 构建时指向 VS BuildTools 的 AppxPackage 任务目录（生成 PRI 所需） -->
@@ -41,11 +41,18 @@
     <Content Include="Assets\GameLocker-256.png" CopyToOutputDirectory="PreserveNewest" />
     <!-- 手柄映射编辑器的手柄底图（ms-appx:///Assets/gamepad-base.png） -->
     <Content Include="Assets\gamepad-base.png" CopyToOutputDirectory="PreserveNewest" />
+    <!-- 关于页标语用的像素字体（Fusion Pixel，OFL 授权，许可文本随字体一起分发） -->
+    <Content Include="Assets\Fonts\*.ttf" CopyToOutputDirectory="PreserveNewest" />
+    <Content Include="Assets\Fonts\OFL-fusion-pixel.txt" CopyToOutputDirectory="PreserveNewest" />
     <!-- PawnIO：静默安装器（驱动缺失时由提权助手执行一次）与再分发许可文本，放到程序根目录便于查找 -->
     <Content Include="Resources\PawnIO_setup.exe" Link="PawnIO_setup.exe" CopyToOutputDirectory="PreserveNewest" />
     <Content Include="Resources\COPYING-PawnIO.txt" Link="COPYING-PawnIO.txt" CopyToOutputDirectory="PreserveNewest" />
     <Content Include="Resources\PresentMon.exe" Link="PresentMon.exe" CopyToOutputDirectory="PreserveNewest" />
     <Content Include="Resources\LICENSE-PresentMon.txt" Link="LICENSE-PresentMon.txt" CopyToOutputDirectory="PreserveNewest" />
+    <!-- RyzenAdj 官方 x64 运行库与许可；仅在 AMD 功耗助手显式启用时加载 -->
+    <Content Include="Resources\RyzenAdj\*" Exclude="Resources\RyzenAdj\WinRing0x64.sys" Link="RyzenAdj\%(Filename)%(Extension)" CopyToOutputDirectory="PreserveNewest" />
+    <!-- WinRing0 按 helper EXE 目录寻找驱动文件 -->
+    <Content Include="Resources\RyzenAdj\WinRing0x64.sys" Link="WinRing0x64.sys" CopyToOutputDirectory="PreserveNewest" Condition="Exists('Resources\RyzenAdj\WinRing0x64.sys')" />
     <!-- IntelMSR 签名模块（PawnIO 驱动校验签名后执行） -->
     <EmbeddedResource Include="Resources\IntelMSR.bin" />
     <!-- LpcACPIEC 签名模块：ACPI EC 端口访问，用于探测厂商 EC 里的 GPU 温度 -->

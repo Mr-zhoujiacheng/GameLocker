@@ -154,6 +154,80 @@ internal static class IntelGpuTemp
     [UnmanagedFunctionPointer(CallingConvention.Cdecl)]
     private delegate int PowerTelemetryDelegate(IntPtr device, ref PowerTelemetry telemetry);
 
+    // 官方 igcl_api.h 的 x64 默认对齐：IntType 为 bool + 填充 + 4 个 int，共 20 字节；
+    // EnumType 含 uint64_t，令 property_info 联合体按 8 字节对齐并补齐到 24 字节。
+    [StructLayout(LayoutKind.Explicit, Size = 20)]
+    private struct FrameIntInfo
+    {
+        [FieldOffset(0)] public byte DefaultEnable;
+        [FieldOffset(4)] public int Minimum;
+        [FieldOffset(8)] public int Maximum;
+        [FieldOffset(12)] public int Step;
+        [FieldOffset(16)] public int DefaultValue;
+    }
+
+    [StructLayout(LayoutKind.Explicit, Size = 24)]
+    private struct FramePropertyInfo
+    {
+        [FieldOffset(0)] public FrameIntInfo IntType;
+        [FieldOffset(0)] public ulong SupportedTypes;
+        [FieldOffset(8)] public uint DefaultType;
+    }
+
+    [StructLayout(LayoutKind.Explicit, Size = 72)]
+    private struct FrameFeatureDetails
+    {
+        [FieldOffset(0)] public int FeatureType;
+        [FieldOffset(4)] public int ValueType;
+        [FieldOffset(8)] public FramePropertyInfo Value;
+        [FieldOffset(32)] public int CustomValueSize;
+        [FieldOffset(40)] public IntPtr CustomValue;
+        [FieldOffset(48)] public byte PerAppSupport;
+        [FieldOffset(56)] public long ConflictingFeatures;
+        [FieldOffset(64)] public short FeatureMiscSupport;
+        [FieldOffset(66)] public short Reserved;
+        [FieldOffset(68)] public short Reserved1;
+        [FieldOffset(70)] public short Reserved2;
+    }
+
+    [StructLayout(LayoutKind.Explicit, Size = 24)]
+    private struct FrameCapabilities
+    {
+        [FieldOffset(0)] public uint Size;
+        [FieldOffset(4)] public byte Version;
+        [FieldOffset(8)] public uint Count;
+        [FieldOffset(16)] public IntPtr Details;
+    }
+
+    [StructLayout(LayoutKind.Explicit, Size = 8)]
+    private struct FrameValue
+    {
+        [FieldOffset(0)] public byte Enable;
+        [FieldOffset(4)] public int Value;
+        [FieldOffset(0)] public uint EnumValue;
+    }
+
+    [StructLayout(LayoutKind.Explicit, Size = 56)]
+    private struct FrameGetSet
+    {
+        [FieldOffset(0)] public uint Size;
+        [FieldOffset(4)] public byte Version;
+        [FieldOffset(8)] public int FeatureType;
+        [FieldOffset(16)] public IntPtr ApplicationName;
+        [FieldOffset(24)] public sbyte ApplicationNameLength;
+        [FieldOffset(25)] public byte Set;
+        [FieldOffset(28)] public int ValueType;
+        [FieldOffset(32)] public FrameValue Value;
+        [FieldOffset(40)] public int CustomValueSize;
+        [FieldOffset(48)] public IntPtr CustomValue;
+    }
+
+    [UnmanagedFunctionPointer(CallingConvention.Cdecl)]
+    private delegate int FrameCapabilitiesDelegate(IntPtr device, ref FrameCapabilities capabilities);
+
+    [UnmanagedFunctionPointer(CallingConvention.Cdecl)]
+    private delegate int FrameGetSetDelegate(IntPtr device, ref FrameGetSet feature);
+
     [DllImport("kernel32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
     private static extern IntPtr LoadLibraryW(string path);
 
@@ -168,6 +242,7 @@ internal static class IntelGpuTemp
     private static IntPtr _sensor;
     private static IntPtr _freq;
     private static IntPtr _powerDevice;
+    private static IntPtr _frameDevice;
     private static uint _powerDomainCount;
     private static bool _hasPowerBaseline;
     private static double _lastEnergy;
@@ -187,6 +262,9 @@ internal static class IntelGpuTemp
 
     /// <summary>最近一次能量计数器读数（诊断用：判断是计数器不走还是换算问题）</summary>
     public static string PowerDetail { get; private set; } = "";
+
+    /// <summary>Intel 3D 限帧能力探测结果（功能类型/值类型/范围/应用模式），写入诊断文件</summary>
+    public static string FrameLimitDetail { get; private set; } = "未探测";
 
     /// <summary>读取 GPU 温度（℃）；驱动不提供温度传感器时返回 NaN</summary>
     public static double Read()
@@ -288,6 +366,163 @@ internal static class IntelGpuTemp
         return double.IsFinite(result) && result is >= 0 and < 500 ? Math.Round(result, 1) : double.NaN;
     }
 
+    internal static FrameLimitService.State ReadFrameLimit()
+    {
+        lock (Gate)
+        {
+            try
+            {
+                var (range, getSet, _) = GetFrameLimitSupport();
+                var value = AccessFrameFeature(getSet, 2, 2, false, default).Value;
+                if (value.Enable != 0 && (value.Value < range.Minimum || value.Value > range.Maximum
+                    || ((long)value.Value - range.Minimum) % range.Step != 0))
+                    throw new InvalidOperationException("Intel 驱动返回了超出能力范围的限帧值");
+                return new(true, "Intel IGCL", value.Enable == 0 ? 0 : value.Value,
+                    "Intel 驱动全局限帧 · 仅 Intel 渲染的程序生效，独立游戏配置可覆盖；部分游戏需重启",
+                    range.Minimum, range.Maximum, range.Step);
+            }
+            catch (Exception ex)
+            {
+                return new(false, "Intel IGCL", 0, "Intel 全局限帧不可用：" + ex.Message);
+            }
+        }
+    }
+
+    internal static void WriteFrameLimit(int fps)
+    {
+        lock (Gate)
+        {
+            var (range, getSet, hasMode) = GetFrameLimitSupport();
+            if (fps != 0 && (fps < range.Minimum || fps > range.Maximum
+                || ((long)fps - range.Minimum) % range.Step != 0))
+                throw new ArgumentOutOfRangeException(nameof(fps),
+                    $"Intel 锁帧范围为 {range.Minimum}–{range.Maximum} FPS，步长 {range.Step}，或关闭");
+
+            // 保存原始 Enable 和 Value；关闭时保留原值，不修改其他 3D 设置。
+            var old = AccessFrameFeature(getSet, 2, 2, false, default).Value;
+            // 全局锁帧必须让驱动处于「全局」模式（2）；逐应用模式下写全局值不会生效。
+            // 枚举值：0=NONE、1=PER_APP、2=GLOBAL
+            var modeBefore = -1;
+            if (hasMode && fps != 0)
+            {
+                try
+                {
+                    modeBefore = (int)AccessFrameFeature(getSet, 15, 4, false, default).Value.EnumValue;
+                    if (modeBefore != 2)
+                    {
+                        AccessFrameFeature(getSet, 15, 4, true, new FrameValue { EnumValue = 2 });
+                        var modeAfter = (int)AccessFrameFeature(getSet, 15, 4, false, default).Value.EnumValue;
+                        FrameLimitDetail += $" 应用模式 {modeBefore}→{modeAfter}";
+                        if (modeAfter != 2) modeBefore = -1;
+                    }
+                    else modeBefore = -1;
+                }
+                catch (Exception ex)
+                {
+                    FrameLimitDetail += " 切换全局模式失败：" + ex.Message;
+                    modeBefore = -1;
+                }
+            }
+            var desired = new FrameValue { Enable = fps == 0 ? (byte)0 : (byte)1, Value = fps == 0 ? old.Value : fps };
+            try
+            {
+                AccessFrameFeature(getSet, 2, 2, true, desired);
+                var actual = AccessFrameFeature(getSet, 2, 2, false, default).Value;
+                if ((actual.Enable != 0) != (desired.Enable != 0)
+                    || (desired.Enable != 0 && actual.Value != desired.Value))
+                    throw new InvalidOperationException("Intel 驱动限帧读回值与请求不一致");
+            }
+            catch (Exception ex)
+            {
+                var recovery = "已尝试恢复原始状态";
+                try
+                {
+                    AccessFrameFeature(getSet, 2, 2, true, old);
+                    var restored = AccessFrameFeature(getSet, 2, 2, false, default).Value;
+                    if (restored.Enable != old.Enable || restored.Value != old.Value)
+                        recovery = "已尝试恢复，但原始状态读回不一致";
+                    if (modeBefore >= 0)
+                        AccessFrameFeature(getSet, 15, 4, true, new FrameValue { EnumValue = (uint)modeBefore });
+                }
+                catch (Exception restoreError) { recovery = "恢复原始状态失败：" + restoreError.Message; }
+                throw new InvalidOperationException("Intel 限帧写入失败：" + ex.Message + "；" + recovery, ex);
+            }
+        }
+    }
+
+    private static (FrameIntInfo Range, FrameGetSetDelegate GetSet, bool HasMode) GetFrameLimitSupport()
+    {
+        EnsureReady();
+        if (IntPtr.Size != 8) throw new PlatformNotSupportedException("Intel IGCL 限帧仅支持 64 位进程");
+        if (_frameDevice == IntPtr.Zero) throw new InvalidOperationException("无唯一可用的 Intel 设备：" + Status);
+        var getCaps = GetProc<FrameCapabilitiesDelegate>("ctlGetSupported3DCapabilities")
+            ?? throw new EntryPointNotFoundException("ControlLib.dll 缺少 ctlGetSupported3DCapabilities");
+        var getSet = GetProc<FrameGetSetDelegate>("ctlGetSet3DFeature")
+            ?? throw new EntryPointNotFoundException("ControlLib.dll 缺少 ctlGetSet3DFeature");
+        var caps = new FrameCapabilities { Size = (uint)Marshal.SizeOf<FrameCapabilities>(), Version = 0 };
+        var ret = getCaps(_frameDevice, ref caps);
+        if (ret != 0) throw new InvalidOperationException("Intel 3D 能力计数读取失败：" + Describe(ret));
+        if (caps.Count == 0) throw new NotSupportedException("驱动未提供 3D 功能");
+        var count = caps.Count;
+        var stride = Marshal.SizeOf<FrameFeatureDetails>();
+        var bytes = checked((int)count * stride);
+        var buffer = Marshal.AllocHGlobal(bytes);
+        try
+        {
+            // 第二次调用前清零整个数组，避免把未初始化的自定义指针交给驱动。
+            Marshal.Copy(new byte[bytes], 0, buffer, bytes);
+            caps.Details = buffer;
+            ret = getCaps(_frameDevice, ref caps);
+            if (ret != 0) throw new InvalidOperationException("Intel 3D 能力读取失败：" + Describe(ret));
+            if (caps.Count > count) throw new InvalidOperationException("Intel 3D 能力数量发生变化，请刷新后重试");
+            FrameIntInfo? range = null;
+            var hasMode = false;
+            var entries = new List<string>();
+            for (var i = 0; i < caps.Count; i++)
+            {
+                var feature = Marshal.PtrToStructure<FrameFeatureDetails>(IntPtr.Add(buffer, checked(i * stride)));
+                entries.Add($"f{feature.FeatureType}/v{feature.ValueType}");
+                if (feature.FeatureType == 2 && feature.ValueType == 2) range = feature.Value.IntType;
+                if (feature.FeatureType == 15 && feature.ValueType == 4) hasMode = true;
+            }
+            FrameLimitDetail = $"设备={(_frameDevice == IntPtr.Zero ? "无" : "OK")} 能力=[{string.Join(",", entries)}]"
+                + $" 命中f2/v2={(range is null ? "否" : "是")} 应用模式能力={hasMode}";
+            if (range is { } detailRange)
+                FrameLimitDetail += $" 范围={detailRange.Minimum}-{detailRange.Maximum}/{detailRange.Step}";
+            if (range is not { } supported || supported.Minimum <= 0
+                || supported.Maximum < supported.Minimum || supported.Step <= 0)
+                throw new NotSupportedException("驱动未提供有效的整数限帧范围和正数步长");
+            var appMode = -1;
+            if (hasMode)
+            {
+                try { appMode = (int)AccessFrameFeature(getSet, 15, 4, false, default).Value.EnumValue; }
+                catch (Exception ex) { FrameLimitDetail += " 读应用模式失败：" + ex.Message; }
+            }
+            FrameLimitDetail += $" 应用模式={appMode}";
+            return (supported, getSet, hasMode);
+        }
+        finally { Marshal.FreeHGlobal(buffer); }
+    }
+
+    private static FrameGetSet AccessFrameFeature(FrameGetSetDelegate getSet, int feature, int valueType, bool set, FrameValue value)
+    {
+        // 官方要求空字符串表示全局；必须是非空指针，不能以 null 代替空 ANSI 字符串。
+        var application = Marshal.StringToHGlobalAnsi(string.Empty);
+        try
+        {
+            var request = new FrameGetSet
+            {
+                Size = (uint)Marshal.SizeOf<FrameGetSet>(), Version = 0, FeatureType = feature,
+                ApplicationName = application, ApplicationNameLength = 0, Set = set ? (byte)1 : (byte)0,
+                ValueType = valueType, Value = value
+            };
+            var ret = getSet(_frameDevice, ref request);
+            if (ret != 0) throw new InvalidOperationException($"Intel 功能 {feature} {(set ? "写入" : "读取")}失败：" + Describe(ret));
+            return request;
+        }
+        finally { Marshal.FreeHGlobal(application); }
+    }
+
     private static T? GetProc<T>(string name) where T : Delegate
     {
         var p = GetProcAddress(_module, name);
@@ -300,7 +535,7 @@ internal static class IntelGpuTemp
         _tried = true;
         try
         {
-            _module = LoadLibraryW("ControlLib.dll");
+            _module = LoadLibraryW(System.IO.Path.Combine(Environment.SystemDirectory, "ControlLib.dll"));
             if (_module == IntPtr.Zero)
             {
                 var error = Marshal.GetLastWin32Error();
@@ -383,6 +618,7 @@ internal static class IntelGpuTemp
                 }
 
                 var device = Marshal.ReadIntPtr(devices, 0);
+                _frameDevice = device;
                 var getDeviceProperties = GetProc<DevicePropertiesDelegate>("ctlGetDeviceProperties");
                 if (getDeviceProperties is not null)
                 {

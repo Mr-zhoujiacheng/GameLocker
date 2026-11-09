@@ -164,7 +164,7 @@ internal static class PawnIoMsr
     }
 
     /// <summary>读一个 MSR（EAX 在低 32 位、EDX 在高 32 位）</summary>
-    private static bool ReadMsr(uint index, out ulong value)
+    internal static bool ReadMsr(uint index, out ulong value)
     {
         value = 0;
         if (!Available || _device == new IntPtr(-1)) return false;
@@ -181,6 +181,20 @@ internal static class PawnIoMsr
         }
         value = BitConverter.ToUInt64(output, 0);
         return true;
+    }
+
+    internal static bool WritePackagePowerLimit(ulong value)
+    {
+        lock (Gate)
+        {
+            if (!Available || _device == new IntPtr(-1)) return false;
+            var input = new byte[FnNameLength + 16];
+            Encoding.ASCII.GetBytes("ioctl_write_msr").CopyTo(input, 0);
+            BitConverter.GetBytes(0x610UL).CopyTo(input, FnNameLength);
+            BitConverter.GetBytes(value).CopyTo(input, FnNameLength + 8);
+            return DeviceIoControl(_device, DeviceType | IoctlExecute, input, (uint)input.Length,
+                null, 0, out _, IntPtr.Zero);
+        }
     }
 
     /// <summary>读取 CPU 封装温度（℃）；不可用返回 NaN。调用前需 EnsureReady 完成（初始化在后台跑，避免阻塞采样）</summary>

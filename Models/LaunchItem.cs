@@ -68,7 +68,11 @@ public enum WidgetKind
     /// <summary>壁纸（轮番展示在线壁纸，固定大磁贴；A/点击=询问设为桌面或锁屏壁纸）</summary>
     Wallpaper,
     /// <summary>屏幕翻译（A/点击=开关实时翻译；识别聚焦窗口文字并在窗口下方显示译文悬浮字幕条）</summary>
-    ScreenTranslate
+    ScreenTranslate,
+    /// <summary>性能控制（用 powercfg 真实切换电源方案与处理器性能偏好 EPP；右摇杆←→切换查看档位/CPU 功耗/CPU 温度/GPU 温度，A=打开调节弹窗）</summary>
+    Performance,
+    /// <summary>下载模式（A/点击=先设定下载时长与完成动作，随后熄屏静音进入全屏黑色遮罩，只留剩余时间/网速/时钟与两个按钮）</summary>
+    DownloadMode
 }
 
 /// <summary>手柄映射的目标类型（仅 GamepadMapping 使用）</summary>
@@ -254,6 +258,29 @@ public class LaunchItem
     /// <summary>系统小组件启用项位掩码（仅 WidgetKind.System 使用；bit = 面板项序号，0 = 全部启用）</summary>
     public int SystemOptionMask { get; set; }
 
+    /// <summary>性能控制小组件当前显示的快捷项（仅 WidgetKind.Performance 使用；见 TileStyle.PerformanceQuickItem）</summary>
+    public int PerformanceOption { get; set; }
+
+    /// <summary>性能控制小组件是否启用电源模式快捷项（仅 WidgetKind.Performance 使用）：
+    /// 开启后磁贴上 LB/RB 选择档位、A 应用；关闭时 A 打开性能面板</summary>
+    public bool PerformancePowerMode { get; set; }
+
+    /// <summary>性能控制小组件是否启用全局锁帧快捷项（仅 WidgetKind.Performance 使用）：
+    /// 开启后磁贴上显示当前锁帧值，LB/RB 按 5 帧步进调整、A 应用</summary>
+    public bool PerformanceFrameLimit { get; set; }
+
+    /// <summary>性能控制小组件是否启用功耗控制快捷项（仅 WidgetKind.Performance 使用）：
+    /// 开启后磁贴上显示持续功耗，LB/RB 按 1W 调整、A 应用（短时/瞬时功耗按比例自动跟随）</summary>
+    public bool PerformancePowerLimit { get; set; }
+
+    /// <summary>性能控制小组件是否启用 CPU 频率快捷项（仅 WidgetKind.Performance 使用）：
+    /// 开启后磁贴上显示最高频率，LB/RB 按 100MHz 调整、A 应用（0=不限制）</summary>
+    public bool PerformanceCpuFrequency { get; set; }
+
+    /// <summary>性能控制小组件是否启用 CPU 睿频快捷项（仅 WidgetKind.Performance 使用）：
+    /// 开启后磁贴上显示睿频开关，LB/RB 切换、A 应用</summary>
+    public bool PerformanceCpuBoost { get; set; }
+
     /// <summary>图片组轮播速度档位（仅 WidgetKind.Photos 使用）</summary>
     public PhotoSpeed SlideshowSpeed { get; set; } = PhotoSpeed.Fast;
 
@@ -420,6 +447,12 @@ public class LaunchItem
         WidgetFolder = WidgetFolder,
         SystemOption = SystemOption,
         SystemOptionMask = SystemOptionMask,
+        PerformanceOption = PerformanceOption,
+        PerformancePowerMode = PerformancePowerMode,
+        PerformanceFrameLimit = PerformanceFrameLimit,
+        PerformancePowerLimit = PerformancePowerLimit,
+        PerformanceCpuFrequency = PerformanceCpuFrequency,
+        PerformanceCpuBoost = PerformanceCpuBoost,
         SlideshowSpeed = SlideshowSpeed,
         PhotoAnimation = PhotoAnimation,
         MappingPad = MappingPad,
@@ -499,6 +532,8 @@ public class LaunchItem
             WidgetKind.Keyboard => "\uE765", // 键盘（屏幕键盘）
             WidgetKind.Clash => "\U0001F431", // 猫脸字形（小猫咪磁贴实际绘制白色猫头剪影，此值仅作兜底）
             WidgetKind.Wallpaper => "\uE8B9", // 图片（壁纸磁贴实际铺满当前壁纸）
+            WidgetKind.Performance => "\uE945", // 闪电（性能控制）
+            WidgetKind.DownloadMode => "\uE896", // 下载箭头（下载模式）
             _ => "\uE8D6"                  // 音乐（音乐控制器）
         },
         _ => "\uE7F8"                  // desktop

@@ -314,9 +314,61 @@
             <RowDefinition Height="Auto"/>  <!-- 底部按键提示 -->
         </Grid.RowDefinitions>
 
-        <!-- 顶栏：标题 -->
-        <Grid Grid.Row="0" Padding="20,16">
-            <TextBlock x:Name="PageTitle" Text="添加快捷项" FontSize="22" FontWeight="SemiBold" VerticalAlignment="Center"/>
+        <!-- 顶栏：与设置子页同一套标题样式（返回徽章 + 白色大标题 + 紫色英文标签） -->
+        <Grid Grid.Row="0" Padding="20,14,20,12" ColumnSpacing="12">
+            <Grid.ColumnDefinitions>
+                <ColumnDefinition Width="Auto"/>
+                <ColumnDefinition Width="*"/>
+            </Grid.ColumnDefinitions>
+
+            <!-- 返回按钮：圆角白色描边徽章，悬停提亮（与设置子页返回按钮一致；手柄仍用 B 返回） -->
+            <Button x:Name="PageBackButton" Width="36" Height="36" Padding="0"
+                    Click="OnPageBackClick" IsTabStop="False"
+                    UseSystemFocusVisuals="False" AllowFocusOnInteraction="False"
+                    VerticalAlignment="Center">
+                <Button.Template>
+                    <ControlTemplate TargetType="Button">
+                        <Grid>
+                            <Border x:Name="Ring" CornerRadius="11" Padding="1.5">
+                                <Border.Background>
+                                    <SolidColorBrush Color="#4DFFFFFF"/>
+                                </Border.Background>
+                                <Border x:Name="Inner" CornerRadius="9.5" Background="#1A1A1C">
+                                    <FontIcon x:Name="BackArrow" Glyph="&#xE72B;" FontSize="15"
+                                              Foreground="#FFFFFFFF"/>
+                                </Border>
+                            </Border>
+
+                            <VisualStateManager.VisualStateGroups>
+                                <VisualStateGroup x:Name="CommonStates">
+                                    <VisualState x:Name="Normal"/>
+                                    <VisualState x:Name="PointerOver">
+                                        <VisualState.Setters>
+                                            <Setter Target="Ring.Background" Value="#8CFFFFFF"/>
+                                            <Setter Target="Inner.Background" Value="#2A2A2E"/>
+                                        </VisualState.Setters>
+                                    </VisualState>
+                                    <VisualState x:Name="Pressed">
+                                        <VisualState.Setters>
+                                            <Setter Target="Ring.Background" Value="#33FFFFFF"/>
+                                            <Setter Target="Inner.Background" Value="#121214"/>
+                                        </VisualState.Setters>
+                                    </VisualState>
+                                    <VisualState x:Name="Disabled"/>
+                                </VisualStateGroup>
+                            </VisualStateManager.VisualStateGroups>
+                        </Grid>
+                    </ControlTemplate>
+                </Button.Template>
+            </Button>
+
+            <StackPanel Grid.Column="1" VerticalAlignment="Center" Spacing="2">
+                <TextBlock x:Name="PageTitle" Text="添加快捷项" FontSize="23" FontWeight="Bold"
+                           Foreground="#F7F5FF" CharacterSpacing="60"
+                           TextTrimming="CharacterEllipsis" VerticalAlignment="Center"/>
+                <TextBlock x:Name="PageSubtitle" Text="NEW SHORTCUT" FontSize="9" Foreground="#9C8FD0"
+                           CharacterSpacing="240" TextTrimming="CharacterEllipsis"/>
+            </StackPanel>
         </Grid>
 
         <!-- 表单状态（ScrollViewer 包裹：窄窗口下内容超出可滚动，控件不被遮盖）；
@@ -1566,6 +1618,69 @@
                             </Grid>
                         </ToggleButton>
                     </Grid>
+                </StackPanel>
+
+                <!-- 性能控制：快捷项。开启项会出现在磁贴上，右摇杆←→ 切换、LB/RB 调整、A 应用 -->
+                <StackPanel x:Name="PerformanceOptionsPanel" Spacing="8" Visibility="Collapsed">
+                    <TextBlock Text="快捷项" FontSize="15" Opacity="0.9"/>
+                    <TextBlock Text="开启后磁贴显示所选快捷项：右摇杆←→ 切换项、LB/RB 调整、A 应用"
+                               FontSize="12" Opacity="0.7" TextWrapping="Wrap"/>
+                    <StackPanel Spacing="8">
+                        <StackPanel Orientation="Horizontal" Spacing="8">
+                        <ToggleButton x:Name="PerfOptPowerMode" Style="{StaticResource SysOptionChipStyle}">
+                            <Grid>
+                                <StackPanel Orientation="Horizontal" Spacing="8" VerticalAlignment="Center" Margin="0,0,24,0">
+                                    <FontIcon Glyph="&#xE945;" FontSize="16" Opacity="0.9"/>
+                                    <TextBlock Text="电源模式" FontSize="14"/>
+                                </StackPanel>
+                                <FontIcon x:Name="PerfOptPowerModeMark" Glyph="&#xE711;" FontSize="14"
+                                          Foreground="#59FFFFFF" HorizontalAlignment="Right" VerticalAlignment="Center"/>
+                            </Grid>
+                        </ToggleButton>
+                        <ToggleButton x:Name="PerfOptFrameLimit" Style="{StaticResource SysOptionChipStyle}">
+                            <Grid>
+                                <StackPanel Orientation="Horizontal" Spacing="8" VerticalAlignment="Center" Margin="0,0,24,0">
+                                    <FontIcon Glyph="&#xE916;" FontSize="16" Opacity="0.9"/>
+                                    <TextBlock Text="全局锁帧" FontSize="14"/>
+                                </StackPanel>
+                                <FontIcon x:Name="PerfOptFrameLimitMark" Glyph="&#xE711;" FontSize="14"
+                                          Foreground="#59FFFFFF" HorizontalAlignment="Right" VerticalAlignment="Center"/>
+                            </Grid>
+                        </ToggleButton>
+                        <ToggleButton x:Name="PerfOptPowerLimit" Style="{StaticResource SysOptionChipStyle}">
+                            <Grid>
+                                <StackPanel Orientation="Horizontal" Spacing="8" VerticalAlignment="Center" Margin="0,0,24,0">
+                                    <FontIcon Glyph="&#xE9D9;" FontSize="16" Opacity="0.9"/>
+                                    <TextBlock Text="功耗控制" FontSize="14"/>
+                                </StackPanel>
+                                <FontIcon x:Name="PerfOptPowerLimitMark" Glyph="&#xE711;" FontSize="14"
+                                          Foreground="#59FFFFFF" HorizontalAlignment="Right" VerticalAlignment="Center"/>
+                            </Grid>
+                        </ToggleButton>
+                        </StackPanel>
+                        <StackPanel Orientation="Horizontal" Spacing="8">
+                            <ToggleButton x:Name="PerfOptCpuFrequency" Style="{StaticResource SysOptionChipStyle}">
+                                <Grid>
+                                    <StackPanel Orientation="Horizontal" Spacing="8" VerticalAlignment="Center" Margin="0,0,24,0">
+                                        <FontIcon Glyph="&#xE9D9;" FontSize="16" Opacity="0.9"/>
+                                        <TextBlock Text="CPU 频率" FontSize="14"/>
+                                    </StackPanel>
+                                    <FontIcon x:Name="PerfOptCpuFrequencyMark" Glyph="&#xE711;" FontSize="14"
+                                              Foreground="#59FFFFFF" HorizontalAlignment="Right" VerticalAlignment="Center"/>
+                                </Grid>
+                            </ToggleButton>
+                            <ToggleButton x:Name="PerfOptCpuBoost" Style="{StaticResource SysOptionChipStyle}">
+                                <Grid>
+                                    <StackPanel Orientation="Horizontal" Spacing="8" VerticalAlignment="Center" Margin="0,0,24,0">
+                                        <FontIcon Glyph="&#xE945;" FontSize="16" Opacity="0.9"/>
+                                        <TextBlock Text="CPU 睿频" FontSize="14"/>
+                                    </StackPanel>
+                                    <FontIcon x:Name="PerfOptCpuBoostMark" Glyph="&#xE711;" FontSize="14"
+                                              Foreground="#59FFFFFF" HorizontalAlignment="Right" VerticalAlignment="Center"/>
+                                </Grid>
+                            </ToggleButton>
+                        </StackPanel>
+                    </StackPanel>
                 </StackPanel>
 
                 <!-- 类型 / 磁贴大小 / 磁贴颜色：三列并排，颜色为紧凑色块（无说明文字） -->

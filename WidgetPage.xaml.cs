@@ -127,6 +127,16 @@ public sealed partial class WidgetPage : Page
         Size = TileSize.Wide
     };
 
+    /// <summary>预览用固定下载模式项（待机状态；实际添加时为默认"长"尺寸）</summary>
+    private static readonly LaunchItem DownloadPreviewItem = new()
+    {
+        Name = "下载模式",
+        Target = "widget:downloadmode",
+        Kind = LaunchKind.Widget,
+        WidgetKind = WidgetKind.DownloadMode,
+        Size = TileSize.Wide
+    };
+
     /// <summary>预览用固定性能监控项（状态点 + 已停止；实际添加时为默认"长"尺寸）</summary>
     private static readonly LaunchItem MonitorPreviewItem = new()
     {
@@ -135,6 +145,21 @@ public sealed partial class WidgetPage : Page
         Kind = LaunchKind.Widget,
         WidgetKind = WidgetKind.Monitor,
         Size = TileSize.Wide
+    };
+
+    /// <summary>预览用固定性能控制项（档位读取缓存，未知显示"—"；实际添加时为固定 2×2 大磁贴）</summary>
+    private static readonly LaunchItem PerformancePreviewItem = new()
+    {
+        Name = "性能控制",
+        Target = "widget:performance",
+        Kind = LaunchKind.Widget,
+        WidgetKind = WidgetKind.Performance,
+        PerformancePowerMode = true,
+        PerformanceFrameLimit = true,
+        PerformancePowerLimit = true,
+        PerformanceCpuFrequency = true,
+        PerformanceCpuBoost = true,
+        Size = TileSize.Large
     };
 
     /// <summary>预览用固定文件传输项（发送图标 + 名称；实际添加时为默认"长"尺寸）</summary>
@@ -190,13 +215,16 @@ public sealed partial class WidgetPage : Page
     /// <summary>预览磁贴框架（订阅天气变化时刷新文字）</summary>
     private TileStyle.WeatherTileRefs? _weatherPreviewRefs;
 
+    /// <summary>性能控制预览引用（后台刷新电源状态后更新档位读数）</summary>
+    private TileStyle.PerformanceTileRefs? _perfPreviewRefs;
+
     /// <summary>每张卡片的说明文案：从 XAML 的 ToolTip 读一次后清空 ToolTip（避免选中时弹小提示），说明改为显示在顶栏居中位置</summary>
     private readonly Dictionary<Button, string> _descByCard = [];
 
     public WidgetPage()
     {
         InitializeComponent();
-        _formControls = [MusicWidgetCard, PhotoWidgetCard, WeatherWidgetCard, MappingWidgetCard, TrainerWidgetCard, BackupWidgetCard, GamepadMapWidgetCard, OptiScalerWidgetCard, RecycleBinWidgetCard, ForegroundWidgetCard, SystemWidgetCard, MonitorWidgetCard, FileTransferWidgetCard, LosslessScalWidgetCard, KeyboardWidgetCard, ClashWidgetCard, WallpaperWidgetCard, ScreenTranslateWidgetCard];
+        _formControls = [MusicWidgetCard, PhotoWidgetCard, WeatherWidgetCard, MappingWidgetCard, TrainerWidgetCard, BackupWidgetCard, GamepadMapWidgetCard, OptiScalerWidgetCard, RecycleBinWidgetCard, ForegroundWidgetCard, SystemWidgetCard, PerformanceWidgetCard, DownloadModeWidgetCard, MonitorWidgetCard, FileTransferWidgetCard, LosslessScalWidgetCard, KeyboardWidgetCard, ClashWidgetCard, WallpaperWidgetCard, ScreenTranslateWidgetCard];
 
         // 说明条：有文案才显示（"已在主页"之类的提示也走这里），没文案时不留空条
         SelDescText.RegisterPropertyChangedCallback(TextBlock.TextProperty, (_, _) =>
@@ -400,6 +428,25 @@ public sealed partial class WidgetPage : Page
             TileStyle.IsNoColor(SystemPreviewItem));
         TileStyle.FillSystemTile(sysRefs, SystemPreviewItem);
         SystemPreviewHost.Content = sysTile;
+        // 性能控制预览：与主页同一构建（图标 + 查看项名称 + 读数；档位先读缓存，再后台刷新）
+        var (perfTile, perfRefs) = TileStyle.BuildPerformanceTile(
+            PerformancePreviewItem, w, w, TileStyle.AccentFor(PerformancePreviewItem),
+            TileStyle.IsNoColor(PerformancePreviewItem));
+        TileStyle.FillPerformanceTile(perfRefs, PerformancePreviewItem);
+        PerformancePreviewHost.Content = perfTile;
+        _perfPreviewRefs = perfRefs;
+        _ = PerformanceService.RefreshCacheAsync().ContinueWith(_ =>
+            DispatcherQueue.TryEnqueue(() =>
+            {
+                if (_perfPreviewRefs is not null)
+                    TileStyle.FillPerformanceTile(_perfPreviewRefs, PerformancePreviewItem);
+            }));
+        // 下载模式预览：与主页同一构建（下载图标 + 名称 + 待机状态）
+        var (dlTile, dlRefs) = TileStyle.BuildDownloadTile(
+            DownloadPreviewItem, w, h, TileStyle.AccentFor(DownloadPreviewItem),
+            TileStyle.IsNoColor(DownloadPreviewItem));
+        TileStyle.FillDownloadState(dlRefs, DownloadPreviewItem);
+        DownloadPreviewHost.Content = dlTile;
         // 性能监控预览：与主页同一构建（状态点 + 运行状态，预览显示"已停止"）
         var (monTile, monRefs) = TileStyle.BuildMonitorTile(
             MonitorPreviewItem, w, h, TileStyle.AccentFor(MonitorPreviewItem),
@@ -483,6 +530,8 @@ public sealed partial class WidgetPage : Page
         else if (ReferenceEquals(c, RecycleBinWidgetCard)) AddRecycleBinWidget();
         else if (ReferenceEquals(c, ForegroundWidgetCard)) AddForegroundWidget();
         else if (ReferenceEquals(c, SystemWidgetCard)) AddSystemWidget();
+        else if (ReferenceEquals(c, PerformanceWidgetCard)) AddPerformanceWidget();
+        else if (ReferenceEquals(c, DownloadModeWidgetCard)) AddDownloadModeWidget();
         else if (ReferenceEquals(c, MonitorWidgetCard)) AddMonitorWidget();
         else if (ReferenceEquals(c, FileTransferWidgetCard)) AddFileTransferWidget();
         else if (ReferenceEquals(c, LosslessScalWidgetCard)) AddLosslessWidget();
@@ -869,6 +918,28 @@ public sealed partial class WidgetPage : Page
         });
     }
 
+    /// <summary>性能控制组件：固定 2×2 大磁贴（可后续编辑颜色），只允许一个——
+    /// 一个磁贴即可查看全部档位/功耗/温度，多份只会重复显示。</summary>
+    private void AddPerformanceWidget()
+    {
+        var items = ConfigService.Load();
+        if (ExistsWidget(items, WidgetKind.Performance)) { SelDescText.Text = "性能控制已在主页"; return; }
+        CommitWidget(items, new LaunchItem
+        {
+            Name = "性能控制",
+            Target = "widget:performance",
+            Kind = LaunchKind.Widget,
+            WidgetKind = WidgetKind.Performance,
+            PerformancePowerMode = true,      // 新增时快捷项默认全部开启
+            PerformanceFrameLimit = true,
+            PerformancePowerLimit = true,
+            PerformanceCpuFrequency = true,
+            PerformanceCpuBoost = true,
+            PageIndex = App.Main?.CurrentHomePage ?? 0,   // 新磁贴归到主页当前所在页
+            Size = TileSize.Large
+        });
+    }
+
     /// <summary>性能监控组件：默认"长"尺寸（可后续编辑大小与颜色），只允许一个——
     /// 一个置顶监控条即可覆盖全部指标，多份只会重复显示。</summary>
     private void AddMonitorWidget()
@@ -881,6 +952,22 @@ public sealed partial class WidgetPage : Page
             Target = "widget:monitor",
             Kind = LaunchKind.Widget,
             WidgetKind = WidgetKind.Monitor,
+            PageIndex = App.Main?.CurrentHomePage ?? 0,   // 新磁贴归到主页当前所在页
+            Size = TileSize.Wide
+        });
+    }
+
+    /// <summary>下载模式组件：默认"长"尺寸（可后续编辑大小与颜色），只允许一个</summary>
+    private void AddDownloadModeWidget()
+    {
+        var items = ConfigService.Load();
+        if (ExistsWidget(items, WidgetKind.DownloadMode)) { SelDescText.Text = "下载模式已在主页"; return; }
+        CommitWidget(items, new LaunchItem
+        {
+            Name = "下载模式",
+            Target = "widget:downloadmode",
+            Kind = LaunchKind.Widget,
+            WidgetKind = WidgetKind.DownloadMode,
             PageIndex = App.Main?.CurrentHomePage ?? 0,   // 新磁贴归到主页当前所在页
             Size = TileSize.Wide
         });
@@ -1009,7 +1096,9 @@ public sealed partial class WidgetPage : Page
         else if (sender is Button { Tag: "recyclebin" }) AddRecycleBinWidget();
         else if (sender is Button { Tag: "foreground" }) AddForegroundWidget();
         else if (sender is Button { Tag: "system" }) AddSystemWidget();
+        else if (sender is Button { Tag: "performance" }) AddPerformanceWidget();
         else if (sender is Button { Tag: "monitor" }) AddMonitorWidget();
+        else if (sender is Button { Tag: "downloadmode" }) AddDownloadModeWidget();
         else if (sender is Button { Tag: "filetransfer" }) AddFileTransferWidget();
         else if (sender is Button { Tag: "lossless" }) AddLosslessWidget();
         else if (sender is Button { Tag: "keyboard" }) AddKeyboardWidget();

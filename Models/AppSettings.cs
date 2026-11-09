@@ -53,6 +53,9 @@ public enum CloudProvider
 /// <summary>应用设置（JSON 持久化，见 SettingsService）</summary>
 public class AppSettings
 {
+    public int GameCoreCount { get; set; }
+    public GameCoreMode GameCoreMode { get; set; } = GameCoreMode.Auto;
+
     /// <summary>开机自动启动（写入 HKCU Run 键）</summary>
     public bool AutoStart { get; set; }
 

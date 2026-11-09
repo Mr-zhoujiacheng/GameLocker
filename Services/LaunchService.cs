@@ -143,6 +143,7 @@ public static class LaunchService
         if (process is not null && ReadIdentity(process.Id) is { } identity)
             record.Processes[identity.Pid] = identity;
         Records[item.Target] = record;
+        if (path is not null && process is not null) GameCpuService.Register(process.Id);
         Diag($"启动 {item.Name}: pid={process?.Id} executable={path is not null}");
     }
 

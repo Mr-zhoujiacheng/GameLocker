@@ -46,6 +46,9 @@ public sealed class EdgeGestureService : IDisposable
     private long _lastTrigger;
     private long _lastDismiss;
     private long _lastBack;
+    /// <summary>压制"向下滑=返回"截止时间（TickCount64）：窗口侧发现本次下滑起点在已滚动的内容里时设置，
+    /// 该手势期间原始输入通道不再把它当返回，交给列表正常滚动</summary>
+    public long BackSuppressedUntil { get; set; }
 
     // ---- Raw Input 触摸 sink（屏外 1x1 窗口，仅接收 WM_INPUT）----
     private IntPtr _sink = 0;
@@ -343,7 +346,8 @@ public sealed class EdgeGestureService : IDisposable
             }
             // 向下滑：起点在窗口内部、竖直向下快滑（横向偏移小，避开横向拖拽）→ 返回上一级
             else if (!nearEdge && (_tLastY - _tStartY) >= DismissThreshold && Math.Abs(_tLastX - _tStartX) < 80 &&
-                elapsed < 500 && (Environment.TickCount64 - _lastBack) > 600)
+                elapsed < 500 && (Environment.TickCount64 - _lastBack) > 600 &&
+                Environment.TickCount64 > BackSuppressedUntil)
             {
                 _lastBack = Environment.TickCount64;
                 try { BackTriggered?.Invoke(); Log("touch back dispatched"); }
@@ -512,7 +516,8 @@ public sealed class EdgeGestureService : IDisposable
                     }
                 }
                 else if (elapsed < 500 && (info.ptY - _downY) >= DismissThreshold && Math.Abs(info.ptX - _downX) < 80 &&
-                    (Environment.TickCount64 - _lastBack) > 600)
+                    (Environment.TickCount64 - _lastBack) > 600 &&
+                    Environment.TickCount64 > BackSuppressedUntil)
                 {
                     _lastBack = Environment.TickCount64;
                     try { BackTriggered?.Invoke(); Log("back dispatched"); }

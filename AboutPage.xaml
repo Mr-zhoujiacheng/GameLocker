@@ -87,7 +87,7 @@
         <ctl:SettingsHeader Grid.Row="0" Title="关于" Subtitle="ABOUT"/>
 
         <ScrollViewer x:Name="ContentScroll" Grid.Row="1" Padding="20,8,20,10" VerticalScrollBarVisibility="Hidden">
-            <StackPanel Spacing="10">
+            <StackPanel x:Name="ContentStack" Spacing="10">
 
                 <!-- 软件标识卡：图标 + 名称 + 版本胶囊 + 一句话介绍 -->
                 <Border CornerRadius="0" BorderThickness="2" BorderBrush="Transparent" Padding="16,14">
@@ -303,16 +303,16 @@
                 </Grid>
 
                 <TextBlock x:Name="CopyrightText" FontSize="12" Opacity="0.45" Margin="2,0,0,0"/>
+
+                <!-- 像素风标语：贴在内容末尾，顶边距由代码按「底部空白带」高度动态居中 -->
+                <TextBlock x:Name="SloganText" Text="永久免费，谢谢支持：）！"
+                           FontFamily="ms-appx:///Assets/Fonts/fusion-pixel-10px-proportional-zh_hans.ttf#Fusion Pixel 10px Prop zh-Hans"
+                           FontSize="20" Foreground="#FFFFFFFF" Opacity="0.55"
+                           TextAlignment="Center" HorizontalAlignment="Stretch"
+                           TextWrapping="Wrap" IsHitTestVisible="False"
+                           Margin="24,16,24,2"/>
             </StackPanel>
         </ScrollViewer>
-
-        <!-- 页面底部说明：仅展示，不可点击（艺术字体，缺字体时逐级回退）。
-             独立行 + 贴底对齐，固定在提示条正上方，不随上方内容滚动 -->
-        <TextBlock Grid.Row="2" Text="开源免费，谢谢支持：）！"
-                   FontFamily="华文行楷, 幼圆"
-                   FontSize="18" FontWeight="Bold" Opacity="0.62"
-                   TextWrapping="Wrap" TextAlignment="Center" HorizontalAlignment="Stretch"
-                   Margin="24,0,24,4"/>
 
         <!-- 悬浮放大的按键提示：浮在内容之上，不占布局行（与主页一致） -->
         <Border Grid.Row="0" Grid.RowSpan="99"

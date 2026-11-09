@@ -202,6 +202,55 @@ public static class SystemPanelService
         return SetBrightness(next);
     }
 
+    // ---- 下载模式：熄屏 / 静音与还原（WMI、CoreAudio 均需在后台线程调用）----
+
+    /// <summary>下载模式：把亮度压到设备最低并返回进入前的亮度；设备不支持调节时返回 null</summary>
+    public static uint? DimScreen()
+    {
+        if (!TryGetBrightness(out var min, out var cur, out _)) return null;
+        return SetBrightness(min) ? cur : null;
+    }
+
+    /// <summary>下载模式：把亮度恢复到进入前的值（越界会被钳到当前量程）</summary>
+    public static bool RestoreScreen(uint value) => SetBrightness(value);
+
+    /// <summary>下载模式：静音整机输出并返回进入前的静音/音量状态；音量接口不可用时返回 null</summary>
+    public static (bool Mute, float Volume)? MuteOutput()
+    {
+        var vol = GetVolume();
+        if (vol is null) return null;
+        try
+        {
+            var ctx = Guid.Empty;
+            vol.GetMute(out var mute);
+            vol.GetMasterVolumeLevelScalar(out var scalar);
+            vol.SetMute(true, ref ctx);
+            return (mute, scalar);
+        }
+        catch (Exception ex)
+        {
+            Debug.WriteLine($"[SystemPanel] 下载模式静音失败: {ex.Message}");
+            return null;
+        }
+    }
+
+    /// <summary>下载模式：还原整机输出（先写回音量，再还原静音状态）</summary>
+    public static void RestoreOutput((bool Mute, float Volume) state)
+    {
+        var vol = GetVolume();
+        if (vol is null) return;
+        try
+        {
+            var ctx = Guid.Empty;
+            vol.SetMasterVolumeLevelScalar(Math.Clamp(state.Volume, 0f, 1f), ref ctx);
+            vol.SetMute(state.Mute, ref ctx);
+        }
+        catch (Exception ex)
+        {
+            Debug.WriteLine($"[SystemPanel] 下载模式还原音量失败: {ex.Message}");
+        }
+    }
+
     /// <summary>刷新 WiFi / 蓝牙射频状态缓存（供磁贴读数用；射频对象只枚举一次，之后直接读 State）</summary>
     public static async Task RefreshRadiosAsync()
     {

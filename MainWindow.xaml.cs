@@ -465,6 +465,12 @@ public sealed partial class MainWindow : Window
         Closed += (_, _) =>
         {
             ReleaseTaskbar();
+            // 下载模式中直接退出（Alt+F4 等）时也要把任务栏放回来
+            if (_dlTaskbar != IntPtr.Zero)
+            {
+                ShowWindowAsync(_dlTaskbar, SW_SHOW);
+                _dlTaskbar = IntPtr.Zero;
+            }
             MonitorService.Stop();     // 销毁置顶悬浮条并停止 ETW 会话
             KeyboardHook.Dispose();
             if (_exiting)
@@ -1627,6 +1633,9 @@ public sealed partial class MainWindow : Window
     {
         if (_exiting) return;
         _exiting = true;
+        (Root.Content as MainPage)?.CancelPendingLaunch();
+        CpuPowerService.Shutdown();
+        GameCpuService.Shutdown();
         _startMenuAutoHide.Stop();
         _taskbarWatch.Stop();
         KeyboardHook.Dispose();
@@ -1998,7 +2007,9 @@ public sealed partial class MainWindow : Window
         // 下拉框由页面的展开/提交事件发声，不能用 SelectionChanged 区分预览和提交。
         if (FindAncestor<ComboBox>(e.OriginalSource) is not null) return;
         if (Root.Content is MainPage home && home.IsToggleTileSource(e.OriginalSource)) return;
-        UiSound.Play(IsSelectionSource(e.OriginalSource) ? UiSoundKind.Select : UiSoundKind.Confirm);
+        // 性能面板里的应用/确认与主页磁贴开关同款（success 音），不用 A 键确认音
+        var perfPanel = Root.Content is MainPage mp && mp.IsPerformancePanelOpen;
+        UiSound.Play(perfPanel || IsSelectionSource(e.OriginalSource) ? UiSoundKind.Select : UiSoundKind.Confirm);
     }
 
     /// <summary>向上找最近的指定类型控件；弹出层里的候选项不在本窗口可视树，不会命中</summary>
@@ -2042,6 +2053,10 @@ public sealed partial class MainWindow : Window
     /// </summary>
     private UiSoundKind? DefaultCue(GamepadButtons buttons)
     {
+        // 性能面板里的应用/切换与主页磁贴开关同款（success 音），不用 A 键确认音
+        var perfPanel = Root.Content is MainPage { IsPerformancePanelOpen: true };
+        if (perfPanel && (buttons.HasFlag(GamepadButtons.A) || buttons.HasFlag(GamepadButtons.X)))
+            return UiSoundKind.Select;
         if (buttons.HasFlag(GamepadButtons.A)) return UiSoundKind.Confirm;
         if (buttons.HasFlag(GamepadButtons.B)) return UiSoundKind.Back;
         if (buttons.HasFlag(GamepadButtons.View))
@@ -2234,6 +2249,68 @@ public sealed partial class MainWindow : Window
         ApplyWindowCorners();
     }
 
+    // ---- 下载模式：全屏置顶遮罩 / 临时露出下载页 ----
+
+    /// <summary>进入下载模式前是否已处于全屏（退出时按原状恢复）</summary>
+    private bool? _downloadPrevFullscreen;
+
+    /// <summary>下载模式期间隐藏的任务栏窗口（退出时按原可见状态恢复）</summary>
+    private IntPtr _dlTaskbar;
+
+    /// <summary>进入下载模式：强制全屏 + 置顶，并隐藏任务栏，让纯黑遮罩真正盖满整屏</summary>
+    public void BeginDownloadOverlay()
+    {
+        _downloadPrevFullscreen = _fullscreen;
+        if (!_fullscreen)
+        {
+            ToggleFullscreen();
+        }
+        else if (AppWindow.Presenter is OverlappedPresenter p2)
+        {
+            // 已经是全屏：按当前显示器重新铺满（窗口可能被挪动过），不再退出重进以免闪一下
+            var bounds = Microsoft.UI.Windowing.DisplayArea.Primary.OuterBounds;
+            AppWindow.Resize(new Windows.Graphics.SizeInt32(bounds.Width, bounds.Height));
+            AppWindow.Move(new Windows.Graphics.PointInt32(bounds.X, bounds.Y));
+            p2.IsAlwaysOnTop = true;
+        }
+        SetAlwaysOnTop(true);
+
+        // 任务栏自身是 TOPMOST，伪全屏偶尔仍会被它压住；直接隐藏，退出时恢复
+        ReleaseTaskbar(); // 先停掉"边缘呼出任务栏"的维护，避免下载模式期间又把它提起来
+        _dlTaskbar = FindWindow("Shell_TrayWnd", null);
+        if (_dlTaskbar != IntPtr.Zero)
+            ShowWindowAsync(_dlTaskbar, SW_HIDE);
+    }
+
+    /// <summary>退出下载模式：恢复任务栏与进入前的全屏状态</summary>
+    public void EndDownloadOverlay()
+    {
+        var wasFullscreen = _downloadPrevFullscreen;
+        _downloadPrevFullscreen = null;
+        if (_dlTaskbar != IntPtr.Zero)
+        {
+            // Explorer 重建过任务栏就不再动新窗口
+            if (FindWindow("Shell_TrayWnd", null) == _dlTaskbar)
+                ShowWindowAsync(_dlTaskbar, SW_SHOW);
+            _dlTaskbar = IntPtr.Zero;
+        }
+        if (wasFullscreen == false && _fullscreen) ToggleFullscreen();
+    }
+
+    /// <summary>查看下载进度：最小化本窗口，露出进入前的下载页面</summary>
+    public void HideWindowForPeek()
+    {
+        if (_hwnd != IntPtr.Zero) ShowWindowAsync(_hwnd, SW_MINIMIZE);
+    }
+
+    /// <summary>查看结束：还原并前置本窗口（全屏与置顶保持）</summary>
+    public void ShowWindowAfterPeek()
+    {
+        if (_hwnd == IntPtr.Zero) return;
+        ShowWindowAsync(_hwnd, SW_RESTORE);
+        SetForegroundWindow(_hwnd);
+    }
+
     /// <summary>把自定义图标设到窗口标题栏与任务栏</summary>
     private void SetWindowIcon()
     {
@@ -2265,6 +2342,20 @@ public sealed partial class MainWindow : Window
 
     /// <summary>本次触摸起点是否落在抽屉手势感应区内（决定上/下划是抽屉呼出/收起，而非最小化/返回）</summary>
     private bool _swipeFromBottom;
+    /// <summary>本次触摸起点在已向上滚动的内容里：下滑只用于浏览，不判返回</summary>
+    private bool _swipeFromScroll;
+
+    /// <summary>指针起点是否在"已滚动过的可滚动区域"：ScrollViewer 还能往上滚且当前不在顶部。
+    /// 这类下滑是用户在浏览列表，不能当成"下划=返回"</summary>
+    private static bool IsScrolledContentOrigin(PointerRoutedEventArgs e)
+    {
+        if (e.OriginalSource is not DependencyObject src) return false;
+        for (var node = src; node is not null; node = VisualTreeHelper.GetParent(node))
+        {
+            if (node is ScrollViewer sv) return sv.ScrollableHeight > 8 && sv.VerticalOffset > 8;
+        }
+        return false;
+    }
     /// <summary>最近一次"抽屉感应区内触摸"的时间戳：该触摸期间及抬起后短暂窗口内，
     /// 原始输入触摸通道的返回/最小化一并让位（本地触摸由窗口指针通道处理），避免两通道抢同一手势</summary>
     private long _drawerTouchAt;
@@ -2292,12 +2383,21 @@ public sealed partial class MainWindow : Window
 
     private void OnSwipePointerDown(object sender, PointerRoutedEventArgs e)
     {
+        // 起点在"已经向上滚动过"的列表/页面里：这次下滑是浏览内容，不是返回。
+        // 指针通道直接跳过返回判定，同时压制原始输入通道（触摸会同时进这两条通道）
+        var scrolledOrigin = IsScrolledContentOrigin(e);
+        if (scrolledOrigin)
+        {
+            _edgeGesture.BackSuppressedUntil = Environment.TickCount64 + 900;
+            EdgeGestureService.Trace($"win swipe scroll-suppressed page={Root.Content?.GetType().Name}");
+        }
         if (e.Pointer.PointerDeviceType == Microsoft.UI.Input.PointerDeviceType.Mouse) return;
         _swipeStart = e.GetCurrentPoint(null).Position;
         _swipeStartAt = DateTime.UtcNow;
         _swipeId = e.Pointer.PointerId;
         _swipeDone = false;
         _swipeMoveLogged = false;
+        _swipeFromScroll = scrolledOrigin;
         // 起点落在抽屉手势感应区内（抽屉面板区域 / 抽屉收起时的窗口底部窄带，仅自动隐藏开启时）：
         // 本次触摸归抽屉处理，并立刻预埋去重时间戳，避免原始输入通道抢先触发"下划=返回/反向滑=最小化"
         _swipeFromBottom = Content is FrameworkElement rootEl && rootEl.ActualHeight > 0
@@ -2369,7 +2469,8 @@ public sealed partial class MainWindow : Window
             Minimize();
         }
         // 向下滑（竖直向下、横向偏移小）→ 返回上一级。全屏停靠时"向下"即呼出方向，不会与上面的反向滑冲突
-        else if (fast && dy > 120 && Math.Abs(dx) < 80
+        // 起点在已滚动的内容里时不当返回（那是用户在往下翻看列表）
+        else if (!_swipeFromScroll && fast && dy > 120 && Math.Abs(dx) < 80
             && Environment.TickCount64 - Math.Max(_backAt, _dismissAt) > 600)
         {
             _swipeDone = true;
@@ -2465,7 +2566,10 @@ public sealed partial class MainWindow : Window
     private const uint SWP_SHOWWINDOW = 0x0040;
     private const uint SWP_HIDEWINDOW = 0x0080;
     private const uint SWP_NOSENDCHANGING = 0x0400;
+    private const int SW_HIDE = 0;
+    private const int SW_SHOW = 5;
     private const int SW_MINIMIZE = 6;
+    private const int SW_RESTORE = 9;
 
     private delegate bool EnumWindowsProc(IntPtr hwnd, IntPtr lParam);
 

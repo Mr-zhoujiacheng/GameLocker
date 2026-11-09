@@ -41,7 +41,133 @@ public static class LosslessScalingService
         /// <summary>已发送热键：插帧已关闭</summary>
         FrameGenOff,
         /// <summary>热键发出去了，但插帧状态没有变化（小黄鸭没响应注入的热键）</summary>
-        ToggleFailed
+        ToggleFailed,
+        BridgeFailed,
+        BridgeRestartRequired,
+        BridgeToggleSent
+    }
+
+    private static readonly Dictionary<(int Pid, long Started), bool> BridgeSessions = new();
+    public static string? BridgeError { get; private set; }
+
+    private static async Task WatchBridgeOutputAsync(int pid, long started)
+    {
+        try
+        {
+            using var signal = new EventWaitHandle(false, EventResetMode.AutoReset,
+                $@"Local\GameLocker-XeSS-Active-{pid}");
+            var confirmed = false;
+            for (var i = 0; ; i++)
+            {
+                using var process = Process.GetProcessById(pid);
+                if (process.HasExited || process.StartTime.ToUniversalTime().Ticks != started) return;
+                if (signal.WaitOne(0))
+                {
+                    FloatingToastService.Show("XeSS 输出已接管");
+                    DebugLog.Write("XeSS: 收到原生有效插帧输出接管信号（非 scanout 测量）");
+                    confirmed = true;
+                }
+                if (i == 240 && !confirmed)
+                    FloatingToastService.Show("尚未确认 XeSS 输出，请检查 LS 捕获状态", warning: true);
+                await Task.Delay(250);
+            }
+        }
+        catch (ArgumentException) { /* LS 已退出。 */ }
+        catch (Exception ex) { DebugLog.Write("XeSS 输出通知: " + ex.Message); }
+    }
+
+    private static async Task<ScaleResult?> EnsureBridgeAsync(bool enabled)
+    {
+        BridgeError = null;
+        var processes = Process.GetProcessesByName("LosslessScaling");
+        try
+        {
+            if (processes.Length != 1)
+            {
+                BridgeError = "请仅保留一个 Lossless Scaling 实例";
+                return ScaleResult.BridgeFailed;
+            }
+            var process = processes[0];
+            if (!enabled && BridgeSessions.Count == 0)
+            {
+                // 普通 LS 模式不因模块枚举权限不足而失去原有功能。
+                try
+                {
+                    foreach (ProcessModule module in process.Modules)
+                        if (string.Equals(module.ModuleName, "ls_probe.dll", StringComparison.OrdinalIgnoreCase))
+                            return ScaleResult.BridgeRestartRequired;
+                }
+                catch (System.ComponentModel.Win32Exception) { }
+                return null;
+            }
+            var key = (process.Id, process.StartTime.ToUniversalTime().Ticks);
+            foreach (var stale in BridgeSessions.Keys.Where(k => k != key).ToArray())
+                BridgeSessions.Remove(stale);
+            if (BridgeSessions.TryGetValue(key, out var ready))
+                return enabled && ready ? null : ScaleResult.BridgeRestartRequired;
+
+            // 启动器重启后不能重复注入仍驻留在 LS 中的 hook。
+            foreach (ProcessModule module in process.Modules)
+                if (string.Equals(module.ModuleName, "ls_probe.dll", StringComparison.OrdinalIgnoreCase))
+                    return ScaleResult.BridgeRestartRequired;
+            if (!enabled) return null;
+            if (IsScalingNow(new List<int> { process.Id }))
+            {
+                BridgeError = "请先停止 LS 捕获，再开启 XeSS 实验模式";
+                return ScaleResult.BridgeFailed;
+            }
+            var directory = Path.Combine(AppContext.BaseDirectory, "XeSSFG");
+            string[] files = { "ls_probe_loader.exe", "ls_probe.dll", "xel_fg.dll", "libxess_fg.dll", "libxell.dll" };
+            var missing = files.FirstOrDefault(file => !File.Exists(Path.Combine(directory, file)));
+            if (missing is not null)
+            {
+                BridgeError = $"XeSS 组件缺失：{missing}";
+                return ScaleResult.BridgeFailed;
+            }
+            var info = new ProcessStartInfo(Path.Combine(directory, "ls_probe_loader.exe"))
+            {
+                WorkingDirectory = directory,
+                UseShellExecute = false,
+                CreateNoWindow = true,
+                RedirectStandardOutput = true,
+                RedirectStandardError = true
+            };
+            info.ArgumentList.Add("--pid");
+            info.ArgumentList.Add(process.Id.ToString(System.Globalization.CultureInfo.InvariantCulture));
+            info.ArgumentList.Add("--dll");
+            info.ArgumentList.Add(Path.Combine(directory, "ls_probe.dll"));
+            info.ArgumentList.Add("--bypass");
+            using var loader = Process.Start(info) ?? throw new InvalidOperationException("无法启动 XeSS loader");
+            // 启动后任何不确定结果都要求重启 LS，不在同一会话反复注入。
+            BridgeSessions[key] = false;
+            var output = loader.StandardOutput.ReadToEndAsync();
+            var error = loader.StandardError.ReadToEndAsync();
+            using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(75));
+            try { await loader.WaitForExitAsync(timeout.Token); }
+            catch (OperationCanceledException)
+            {
+                BridgeError = "XeSS 接入超时；请重启 Lossless Scaling 后重试";
+                DebugLog.Write(BridgeError);
+                return ScaleResult.BridgeFailed;
+            }
+            DebugLog.Write($"XeSS loader exit={loader.ExitCode}\n{await output}\n{await error}");
+            if (loader.ExitCode != 0)
+            {
+                BridgeError = "XeSS 接入失败；请查看日志并重启 LS（不会自动提权）";
+                return ScaleResult.BridgeFailed;
+            }
+            BridgeSessions[key] = true;
+            FloatingToastService.Show("XeSS 桥接已加载，等待捕获输出");
+            _ = WatchBridgeOutputAsync(key.Id, key.Ticks);
+            return null;
+        }
+        catch (Exception ex)
+        {
+            BridgeError = "无法接入 XeSS：" + ex.Message;
+            DebugLog.Write(BridgeError);
+            return ScaleResult.BridgeFailed;
+        }
+        finally { foreach (var process in processes) process.Dispose(); }
     }
 
     private static string? _detectedExe;
@@ -318,7 +444,8 @@ public static class LosslessScalingService
             if (Environment.TickCount64 - _lastToggleAt < ToggleCooldownMs)
             {
                 DebugLog.Write($"小黄鸭: 距上次切换 {Environment.TickCount64 - _lastToggleAt}ms，忽略本次按键（状态={(_frameGenState ? "开" : "关")}）");
-                return _frameGenState ? ScaleResult.FrameGenOn : ScaleResult.FrameGenOff;
+                return item.LosslessXeSSBypass ? ScaleResult.BridgeToggleSent
+                    : _frameGenState ? ScaleResult.FrameGenOn : ScaleResult.FrameGenOff;
             }
 
             // 必须在启动小黄鸭之前确定目标游戏窗口：小黄鸭一启动就会抢占前台，
@@ -364,6 +491,9 @@ public static class LosslessScalingService
                 return ScaleResult.NoGame;
             }
 
+            var bridgeResult = await EnsureBridgeAsync(item.LosslessXeSSBypass);
+            if (bridgeResult.HasValue) return bridgeResult.Value;
+
             // 收起启动器与小黄鸭主窗口，再把游戏切回前台（小黄鸭缩放的是当前前台窗口）
             App.Main?.HideToTray();
             MinimizeBlocked = !MinimizeWindows();
@@ -387,6 +517,16 @@ public static class LosslessScalingService
             // 单靠它判断开关并不可靠（回到启动器按 A 时常常已经看不到）。
             // 方向以"上次成功切换的状态"为准；切回游戏后若实测已在插帧（小黄鸭恢复了输出）再纠偏为开。
             var pids = RunningProcessIds();
+            if (item.LosslessXeSSBypass)
+            {
+                // 旁路后不能沿用 LSFG GPU 阈值，更不能因误判而补发热键。
+                var sent = await KeySendService.SendAsync(ScaleHotkeyKey, ScaleHotkeyMods);
+                if (sent == 0) return ScaleResult.ToggleFailed;
+                _lastToggleAt = Environment.TickCount64;
+                _frameGenState = false; // 实验路径不把请求成功当成实际出帧确认。
+                DebugLog.Write("XeSS: 已发送一次 LS 捕获切换热键；实际输出请在游戏中确认");
+                return ScaleResult.BridgeToggleSent;
+            }
             if (await WaitScalingStableAsync(pids, true, 1600, 2, "切回游戏后确认插帧已恢复"))
                 _frameGenState = true;
             var desired = !_frameGenState;

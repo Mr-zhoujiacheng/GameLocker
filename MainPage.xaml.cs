@@ -3904,6 +3904,17 @@ public sealed partial class MainPage : Page
             case LosslessScalingService.ScaleResult.FrameGenOff:
                 ShowToast("已关闭插帧" + minSuffix, minKind, sound: UiSoundKind.Select);
                 break;
+            case LosslessScalingService.ScaleResult.BridgeToggleSent:
+                ShowToast("XeSS 实验模式：已发送捕获切换热键，请在游戏中确认画面", ToastKind.Warning);
+                break;
+            case LosslessScalingService.ScaleResult.BridgeRestartRequired:
+                FloatingToastService.Show("请重启 Lossless Scaling，驻留桥接不能热卸载", warning: true);
+                ShowToast("请完全退出并重启 Lossless Scaling 后再操作；驻留桥接不能热卸载", ToastKind.Warning);
+                break;
+            case LosslessScalingService.ScaleResult.BridgeFailed:
+                FloatingToastService.Show(LosslessScalingService.BridgeError ?? "XeSS 接入失败，请重启 LS 后重试", warning: true);
+                ShowToast(LosslessScalingService.BridgeError ?? "XeSS 接入失败，请重启 LS 后重试", ToastKind.Warning);
+                break;
             case LosslessScalingService.ScaleResult.ToggleFailed:
                 ShowToast("未能切换插帧：请在小黄鸭里按 Ctrl+Alt+S 确认热键", ToastKind.Warning);
                 break;

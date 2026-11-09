@@ -525,6 +525,7 @@ public sealed partial class AddItemPage : Page, ISettingsGamepad
             list.Add(LosslessClearButton);
             list.Add(LosslessProfileCombo);
             list.Add(LosslessNewProfileButton);
+            list.Add(LosslessXeSSBypassToggle);
         }
         // 小猫咪：订阅链接 / 代理模式 / 本地代理端口 / 内核版本与更新 / 节点下拉
         if (ProxyRow.Visibility == vis)
@@ -863,6 +864,7 @@ public sealed partial class AddItemPage : Page, ISettingsGamepad
                 LosslessPathText.Text = string.IsNullOrWhiteSpace(item.LosslessPath)
                     ? "自动检测（Steam 库）" : item.LosslessPath!;
                 ReloadLosslessProfiles(item.LosslessProfile);
+                LosslessXeSSBypassToggle.IsOn = item.LosslessXeSSBypass;
             }
             // 小猫咪：订阅链接 / 代理模式 / 本地代理端口 / 节点下拉（磁贴固定显示 "Clash"，不允许改名）
             var isProxy = item.WidgetKind == WidgetKind.Clash;
@@ -1982,6 +1984,7 @@ public sealed partial class AddItemPage : Page, ISettingsGamepad
                     it.LosslessPath = string.IsNullOrWhiteSpace(_pendingLosslessPath) ? null : _pendingLosslessPath.Trim();
                     var profile = CurrentLosslessProfile();
                     it.LosslessProfile = string.IsNullOrWhiteSpace(profile) ? null : profile;
+                    it.LosslessXeSSBypass = LosslessXeSSBypassToggle.IsOn;
                     LosslessScalingService.InvalidateCache(); // 路径变化后让磁贴状态立即重新检测
                 }
                 else if (it.WidgetKind == WidgetKind.DownloadMode)

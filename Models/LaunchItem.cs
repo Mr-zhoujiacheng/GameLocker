@@ -396,6 +396,9 @@ public class LaunchItem
     /// 空=不指定，完全跟随小黄鸭自己的匹配）</summary>
     public string? LosslessProfile { get; set; }
 
+    /// <summary>实验性 XeSS 接管并旁路 LSFG 计算（仅 WidgetKind.LosslessScaling 使用，默认关闭）</summary>
+    public bool LosslessXeSSBypass { get; set; } = false;
+
     /// <summary>小猫咪：Clash/Mihomo 订阅链接（仅 WidgetKind.Clash 使用）</summary>
     public string ProxySubscription { get; set; } = "";
 
@@ -482,6 +485,7 @@ public class LaunchItem
         FileTransferRecvFolder = FileTransferRecvFolder,
         LosslessPath = LosslessPath,
         LosslessProfile = LosslessProfile,
+        LosslessXeSSBypass = LosslessXeSSBypass,
         ProxySubscription = ProxySubscription,
         ProxyPort = ProxyPort,
         ProxySelected = ProxySelected,

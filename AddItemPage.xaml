@@ -1017,6 +1017,14 @@
                         <TextBlock x:Name="LosslessProfileHint" FontSize="12" Opacity="0.55" TextWrapping="Wrap"
                                    Text="下拉框读取小黄鸭的配置；「新建配置」会打开小黄鸭，配置建好后重新展开下拉框即可选择。"/>
                     </StackPanel>
+
+                    <StackPanel Spacing="4">
+                        <TextBlock Text="XeSS 接管（实验）" FontSize="15" Opacity="0.9"/>
+                        <ToggleSwitch x:Name="LosslessXeSSBypassToggle" HorizontalAlignment="Left"
+                                      IsOn="False" OnContent="开" OffContent="关"/>
+                        <TextBlock Text="开启后由 XeSS 接管并旁路 LSFG 计算。关闭开关或按 Escape 后，恢复 LSFG 需重启 Lossless Scaling。实验图像输入仍使用占位运动矢量和深度。"
+                                   FontSize="12" Opacity="0.55" TextWrapping="Wrap"/>
+                    </StackPanel>
                 </StackPanel>
 
                 <!-- 小猫咪小组件：订阅链接 / 混合端口 / 指定节点（仅小猫咪编辑时显示） -->

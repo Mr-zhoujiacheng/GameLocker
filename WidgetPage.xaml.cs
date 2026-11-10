@@ -539,7 +539,7 @@ public sealed partial class WidgetPage : Page
         else if (ReferenceEquals(c, ClashWidgetCard)) AddClashWidget();
         else if (ReferenceEquals(c, WallpaperWidgetCard)) AddWallpaperWidget();
         else if (ReferenceEquals(c, ScreenTranslateWidgetCard)) AddScreenTranslateWidget();
-        else AddMusicWidget();
+        else if (ReferenceEquals(c, MusicWidgetCard)) AddMusicWidget();
     }
 
     // 行感知导航（与 AddItemPage 同一套模式）
@@ -1105,6 +1105,6 @@ public sealed partial class WidgetPage : Page
         else if (sender is Button { Tag: "clash" }) AddClashWidget();
         else if (sender is Button { Tag: "wallpaper" }) AddWallpaperWidget();
         else if (sender is Button { Tag: "screentranslate" }) AddScreenTranslateWidget();
-        else AddMusicWidget();
+        else if (sender is Button { Tag: "music" }) AddMusicWidget();
     }
 }

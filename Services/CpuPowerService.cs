@@ -181,6 +181,24 @@ internal static class CpuPowerService
         }
     }
 
+    /// <summary>程序启动时触发登录计划任务，把已保存的功耗立即写回硬件（任务本身是管理员权限，不弹 UAC）。
+    /// 正常情况下登录任务已经写过一次，这里只是兜底重开程序后的场景。</summary>
+    public static void TriggerLogonTask()
+    {
+        try
+        {
+            using var process = Process.Start(new ProcessStartInfo("schtasks.exe", "/Run /TN \"" + LogonTaskName + "\"")
+            {
+                UseShellExecute = false,
+                CreateNoWindow = true,
+                RedirectStandardOutput = true,
+                RedirectStandardError = true
+            });
+            process?.WaitForExit(5000);
+        }
+        catch (Exception ex) { DebugLog.Write("[功耗] 触发登录写回任务失败：" + ErrorMessage(ex)); }
+    }
+
     /// <summary>退出程序：有已保存的功耗目标时保留硬件设置（否则关掉程序就恢复默认），
     /// 没有保存目标时按原有安全语义恢复接管前的值。</summary>
     public static void Shutdown()

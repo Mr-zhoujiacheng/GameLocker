@@ -4193,6 +4193,7 @@ public sealed partial class MainPage : Page
         if (item.Kind == LaunchKind.Widget && item.WidgetKind == WidgetKind.Power) return;  // 电源磁贴没有"可关闭"的对象
         if (item.Kind == LaunchKind.Widget && item.WidgetKind == WidgetKind.FileTransfer) return; // 文件传输：Y 已用于浮层内刷新列表
         if (item.Kind == LaunchKind.Widget && item.WidgetKind == WidgetKind.LosslessScaling) { LaunchLossless(item); return; } // 小黄鸭：Y=启动/唤醒
+
         if (item.Kind == LaunchKind.Widget && item.WidgetKind == WidgetKind.Monitor)
         {
             // 性能监控：Y 键直接关闭监控（未开启时无动作）
@@ -6677,12 +6678,16 @@ public sealed partial class MainPage : Page
     }
 
     /// <summary>系统小组件切换面板项动画：旧内容向切换方向反向滑出淡出，新内容从另一侧滑入淡入</summary>
-    private void AnimateSystemSwitch(int delta)
+    private void AnimateSystemSwitch(int delta) =>
+        AnimateTileSwitch(_sysRefs.Select(kv =>
+            (kv.Key.SlideRow, (Action)(() => TileStyle.FillSystemTile(kv.Key, kv.Value)))), delta);
+
+    /// <summary>磁贴切换动画：旧内容向切换方向反向滑出淡出，换内容后从另一侧滑入淡入</summary>
+    private static void AnimateTileSwitch(IEnumerable<(Grid Slide, Action Refresh)> tiles, int delta)
     {
         var dir = delta >= 0 ? 1 : -1;
-        foreach (var (refs, item) in _sysRefs.ToList())
+        foreach (var (slide, refresh) in tiles)
         {
-            var slide = refs.SlideRow;
             if (slide.RenderTransform is not TranslateTransform t)
             {
                 t = new TranslateTransform();
@@ -6709,7 +6714,7 @@ public sealed partial class MainPage : Page
             sbOut.Children.Add(opacityOut);
             sbOut.Completed += (_, _) =>
             {
-                TileStyle.FillSystemTile(refs, item); // 换成新面板项的内容
+                refresh(); // 换成新选项的内容
                 t.X = dir * 26;
                 var inAnim = new DoubleAnimation
                 {

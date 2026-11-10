@@ -36,11 +36,16 @@ internal static class CpuPowerAutoApply
         }
     }
 
-    /// <summary>睡眠唤醒后重新写回；仅在功耗助手仍在连接时才操作，避免凭空提权。</summary>
+    /// <summary>睡眠唤醒后重新写回。没有提权助手时交给登录计划任务（管理员权限，不弹 UAC）静默写回。</summary>
     public static void ReapplyIfActive()
     {
         var settings = SettingsService.Current;
-        if (settings.CpuPowerPl1 <= 0 || !CpuPowerService.Active) return;
+        if (settings.CpuPowerPl1 <= 0) return;
+        if (!CpuPowerService.Active)
+        {
+            CpuPowerService.TriggerLogonTask();
+            return;
+        }
         try
         {
             var state = CpuPowerService.Read();

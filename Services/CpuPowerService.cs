@@ -41,6 +41,41 @@ internal static class CpuPowerService
         get { lock (Gate) return _pipe is not null; }
     }
 
+    /// <summary>保存过功耗目标且处于接管状态：磁贴/面板按"已启用"展示，实际写入由登录计划任务完成</summary>
+    public static bool TakeoverActive =>
+        SettingsService.Current.CpuPowerTakeover && SettingsService.Current.CpuPowerPl1 > 0;
+
+    /// <summary>启动时恢复接管展示，并触发一次登录任务静默写回（任务本身是管理员权限，不弹 UAC）</summary>
+    public static void ResumeSavedTakeover()
+    {
+        var s = SettingsService.Current;
+        if (s.CpuPowerPl1 <= 0) return;
+        // 兼容旧版本：之前保存过功耗目标就视为已接管，无需重新保存一次
+        if (!s.CpuPowerTakeover) SettingsService.Update(x => x.CpuPowerTakeover = true);
+        SetCached(SavedTakeoverState()!);
+        TriggerLogonTask();
+    }
+
+    /// <summary>没有提权助手时，用保存的目标合成一份"已接管"状态（范围取首次接管时记录的固件上限）</summary>
+    private static State? SavedTakeoverState()
+    {
+        var s = SettingsService.Current;
+        if (s.CpuPowerPl1 <= 0 || !s.CpuPowerTakeover) return null;
+        var pl1 = s.CpuPowerPl1;
+        var pl2 = s.CpuPowerPl2 > 0 ? s.CpuPowerPl2 : pl1;
+        var fppt = s.CpuPowerFppt > 0 ? s.CpuPowerFppt : pl2;
+        Limit Make(string name, int watts, int firmwareMax) => new(
+            name, watts, Math.Min(watts, 5), Math.Max(watts, firmwareMax), true);
+        var limits = new List<Limit>
+        {
+            Make("PL1 / 持续", pl1, Math.Max(s.CpuPowerOriginalPl1, pl1)),
+            Make("PL2 / 短时", pl2, Math.Max(s.CpuPowerOriginalPl2, pl2))
+        };
+        if (s.CpuPowerFppt > 0)
+            limits.Add(Make("FPPT / 峰值", fppt, Math.Max(s.CpuPowerOriginalPl2, fppt)));
+        return new State(true, true, "已按保存值自动接管（调节时会再授权一次）", limits.ToArray());
+    }
+
     private static void SetCached(State state)
     {
         lock (CacheGate) _cached = state;
@@ -60,6 +95,12 @@ internal static class CpuPowerService
         {
             if (_pipe is null)
             {
+                var saved = SavedTakeoverState();
+                if (saved is not null)
+                {
+                    SetCached(saved);
+                    return saved;
+                }
                 var disabled = new State(false, false, DisabledMessage, []);
                 SetCached(disabled);
                 return disabled;
@@ -120,6 +161,9 @@ internal static class CpuPowerService
                 }
                 if (response.State is null) throw new IOException("CPU 功耗助手未返回设备状态");
                 SetCached(response.State);
+                // 首次成功接管后记住状态：之后每次启动自动恢复，不再要求点击启用
+                if (!SettingsService.Current.CpuPowerTakeover)
+                    SettingsService.Update(s => s.CpuPowerTakeover = true);
                 return new(response.State.Supported, response.State.Message);
             }
             catch (Exception ex)
@@ -136,6 +180,12 @@ internal static class CpuPowerService
     {
         lock (Gate)
         {
+            // 已保存目标但助手没连上（例如重启后）：调节动作本身即授权意图，这里再拉起一次助手
+            if (_pipe is null && TakeoverActive)
+            {
+                var enabled = Enable();
+                if (!enabled.Ok) return enabled;
+            }
             if (_pipe is null) return new(false, DisabledMessage);
             if (index < 0 || !double.IsFinite(watts)) return new(false, "功耗索引或瓦数无效");
             try { return Exchange(new("set", index, watts)).Result; }
@@ -166,11 +216,20 @@ internal static class CpuPowerService
     {
         lock (Gate)
         {
-            if (_pipe is null) return new(true, "CPU 功耗未启用");
+            if (_pipe is null)
+            {
+                var had = SettingsService.Current.CpuPowerTakeover;
+                if (had) SettingsService.Update(s => s.CpuPowerTakeover = false);
+                return new(true, had ? "已关闭自动接管，硬件限制重启后恢复" : "CPU 功耗未启用");
+            }
             try
             {
                 var result = Exchange(new("restore")).Result;
-                if (result.Ok) CloseSession();
+                if (result.Ok)
+                {
+                    CloseSession();
+                    SettingsService.Update(s => s.CpuPowerTakeover = false);
+                }
                 return result;
             }
             catch (Exception ex)

@@ -5,7 +5,7 @@
 ;       故打包统一取 build 产物，并排除 publish 与 *.pdb
 
 #define AppName "Game Locker"
-#define AppVersion "3.1.7"
+#define AppVersion "3.1.8"
 #define AppPublisher "Mr-zhoujiacheng"
 #define AppUrl "https://github.com/Mr-zhoujiacheng/GameLocker"
 #ifndef SrcDir
@@ -45,6 +45,10 @@ Name: "desktopicon"; Description: "创建桌面快捷方式"; GroupDescription: 
 
 [Files]
 Source: "{#SrcDir}\*"; DestDir: "{app}"; Flags: ignoreversion recursesubdirs createallsubdirs; Excludes: "publish,publish\*,*.pdb"
+
+[InstallDelete]
+; 小黄鸭的 XeSS/FSR/FSR4 接管后端已下线，升级安装时清掉旧版本残留
+Type: filesandordirs; Name: "{app}\XeSSFG"
 
 [Icons]
 Name: "{group}\{#AppName}"; Filename: "{app}\GameLocker.exe"

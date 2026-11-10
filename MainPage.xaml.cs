@@ -3901,9 +3901,7 @@ public sealed partial class MainPage : Page
                 Report("小黄鸭启动失败", ToastKind.Warning);
                 break;
             case LosslessScalingService.ScaleResult.NoGame:
-                Report(item.LosslessFsr4Upscale
-                    ? "未检测到游戏：小黄鸭已打开并最小化，进入游戏后再按 A 开启超分"
-                    : "未检测到游戏：小黄鸭已打开并最小化，进入游戏后再按 A 开启插帧", ToastKind.Warning);
+                Report("未检测到游戏：小黄鸭已打开并最小化，进入游戏后再按 A 开启插帧", ToastKind.Warning);
                 break;
             case LosslessScalingService.ScaleResult.FocusFailed:
                 Report("切不回游戏窗口：请进入游戏后再按 A", ToastKind.Warning);
@@ -3914,21 +3912,8 @@ public sealed partial class MainPage : Page
             case LosslessScalingService.ScaleResult.FrameGenOff:
                 Report("已关闭插帧" + minSuffix, minKind, UiSoundKind.Select);
                 break;
-            case LosslessScalingService.ScaleResult.BridgeToggleSent:
-                Report(item.LosslessFsr4Upscale
-                    ? "FSR4 超分接管中：已发送小黄鸭缩放开关热键，请在游戏中确认画面；成功后会提示“FSR4 超分已运行”"
-                    : $"{(item.LosslessFsr3Bypass ? "FSR3" : "XeSS")} 实验模式：已发送捕获切换热键，请在游戏中确认画面", ToastKind.Warning);
-                break;
-            case LosslessScalingService.ScaleResult.BridgeRestartRequired:
-                Report("请完全退出并重启 Lossless Scaling 后再操作；驻留桥接不能热卸载", ToastKind.Warning);
-                break;
-            case LosslessScalingService.ScaleResult.BridgeFailed:
-                Report(LosslessScalingService.BridgeError ?? $"{(item.LosslessFsr4Upscale ? "FSR4" : item.LosslessFsr3Bypass ? "FSR3" : "XeSS")} 接入失败，请重启 LS 后重试", ToastKind.Warning);
-                break;
             case LosslessScalingService.ScaleResult.ToggleFailed:
-                Report(item.LosslessFsr4Upscale
-                    ? "未能切换超分：请在小黄鸭里按 Ctrl+Alt+S 确认热键"
-                    : "未能切换插帧：请在小黄鸭里按 Ctrl+Alt+S 确认热键", ToastKind.Warning);
+                Report("未能切换插帧：请在小黄鸭里按 Ctrl+Alt+S 确认热键", ToastKind.Warning);
                 break;
         }
     }
@@ -5092,6 +5077,7 @@ public sealed partial class MainPage : Page
             s.CpuPowerPl1 = pl1;
             s.CpuPowerPl2 = pl2;
             s.CpuPowerFppt = fppt;
+            s.CpuPowerTakeover = true;
         });
         var task = await Task.Run(CpuPowerService.EnsureAutoApplyTask);
         if (!task.Ok) ShowToast("功耗已保存，但开机自动恢复未注册：" + task.Message, ToastKind.Warning);
@@ -5108,7 +5094,7 @@ public sealed partial class MainPage : Page
             var result = await Task.Run(() => disabling ? CpuPowerService.Disable() : CpuPowerService.Enable());
             // 关闭功耗接管：清除保存的目标值，避免下次登录又把限制写回去
             if (disabling && result.Ok)
-                SettingsService.Update(s => { s.CpuPowerPl1 = 0; s.CpuPowerPl2 = 0; s.CpuPowerFppt = 0; });
+                SettingsService.Update(s => { s.CpuPowerPl1 = 0; s.CpuPowerPl2 = 0; s.CpuPowerFppt = 0; s.CpuPowerTakeover = false; });
             _perfPowerState = await Task.Run(CpuPowerService.Read);
             ShowToast(result.Message, result.Ok ? ToastKind.Success : ToastKind.Warning);
         }

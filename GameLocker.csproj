@@ -13,7 +13,7 @@
     <EnableMsixTooling>false</EnableMsixTooling>
     <ApplicationManifest>app.manifest</ApplicationManifest>
     <AssemblyName>GameLocker</AssemblyName>
-    <Version>3.1.7</Version>
+    <Version>3.1.8</Version>
     <ApplicationIcon>Assets\GameLocker.ico</ApplicationIcon>
     <NoWarn>$(NoWarn);CA1416</NoWarn>
     <!-- dotnet CLI 构建时指向 VS BuildTools 的 AppxPackage 任务目录（生成 PRI 所需） -->
@@ -53,8 +53,6 @@
     <Content Include="Resources\RyzenAdj\*" Exclude="Resources\RyzenAdj\WinRing0x64.sys" Link="RyzenAdj\%(Filename)%(Extension)" CopyToOutputDirectory="PreserveNewest" />
     <!-- WinRing0 按 helper EXE 目录寻找驱动文件 -->
     <Content Include="Resources\RyzenAdj\WinRing0x64.sys" Link="WinRing0x64.sys" CopyToOutputDirectory="PreserveNewest" Condition="Exists('Resources\RyzenAdj\WinRing0x64.sys')" />
-    <!-- XeSS 实验桥接：构建产物与第三方许可一起部署，不依赖开发机临时目录 -->
-    <Content Include="Resources\XeSSFG\*" Link="XeSSFG\%(Filename)%(Extension)" CopyToOutputDirectory="PreserveNewest" CopyToPublishDirectory="PreserveNewest" />
     <!-- IntelMSR 签名模块（PawnIO 驱动校验签名后执行） -->
     <EmbeddedResource Include="Resources\IntelMSR.bin" />
     <!-- LpcACPIEC 签名模块：ACPI EC 端口访问，用于探测厂商 EC 里的 GPU 温度 -->

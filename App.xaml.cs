@@ -87,8 +87,8 @@ public partial class App : Application
         // 睡眠/休眠唤醒后固件可能复位功耗限制：助手还连着时静默写回
         PowerResumeWatcher.Resumed += CpuPowerAutoApply.ReapplyIfActive;
         PowerResumeWatcher.Start();
-        // 重开程序时兜底：保存过功耗目标就触发一次登录任务静默写回，避免看起来“保存没生效”
-        if (SettingsService.Current.CpuPowerPl1 > 0) CpuPowerService.TriggerLogonTask();
+        // 保存过功耗目标即视为已接管：恢复展示并触发登录任务静默写回，重启/关机/睡眠唤醒后都不用再点启用
+        if (SettingsService.Current.CpuPowerPl1 > 0) CpuPowerService.ResumeSavedTakeover();
 
         // 接管系统屏幕键盘：关掉触屏键盘自动弹出、收起 osk/TabTip，改用本程序键盘
         SystemKeyboardWatcher.Apply(SettingsService.Current.TakeOverSystemKeyboard);

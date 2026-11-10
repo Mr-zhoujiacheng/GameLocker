@@ -41,155 +41,7 @@ public static class LosslessScalingService
         /// <summary>已发送热键：插帧已关闭</summary>
         FrameGenOff,
         /// <summary>热键发出去了，但插帧状态没有变化（小黄鸭没响应注入的热键）</summary>
-        ToggleFailed,
-        BridgeFailed,
-        BridgeRestartRequired,
-        BridgeToggleSent
-    }
-
-    private static readonly Dictionary<(int Pid, long Started), string> BridgeSessions = new();
-    public static string? BridgeError { get; private set; }
-
-    private static async Task WatchBridgeOutputAsync(int pid, long started, string backend)
-    {
-        try
-        {
-            using var signal = new EventWaitHandle(false, EventResetMode.AutoReset,
-                $@"Local\GameLocker-{backend}-Active-{pid}");
-            var confirmed = false;
-            for (var i = 0; ; i++)
-            {
-                using var process = Process.GetProcessById(pid);
-                if (process.HasExited || process.StartTime.ToUniversalTime().Ticks != started) return;
-                if (signal.WaitOne(0))
-                {
-                    FloatingToastService.Show(backend == "FSR4" ? "FSR4 超分已运行（估算输入）" : $"{backend} 输出已接管");
-                    DebugLog.Write(backend == "FSR4"
-                        ? "FSR4: 收到实际超分 dispatch 信号（估算输入，非插帧）"
-                        : $"{backend}: 收到原生有效插帧输出接管信号（非 scanout 测量）");
-                    confirmed = true;
-                }
-                if (i == 240 && !confirmed)
-                    FloatingToastService.Show(backend == "FSR4"
-                        ? "未确认 FSR4 出图，保留小黄鸭原缩放；请检查缩放通道采样"
-                        : $"尚未确认 {backend} 输出，请检查 LS 捕获状态", warning: true);
-                await Task.Delay(250);
-            }
-        }
-        catch (ArgumentException) { /* LS 已退出。 */ }
-        catch (Exception ex) { DebugLog.Write($"{backend} 输出通知: " + ex.Message); }
-    }
-
-    private static async Task<ScaleResult?> EnsureBridgeAsync(LaunchItem item)
-    {
-        var backend = item.LosslessFsr4Upscale ? "FSR4" : item.LosslessFsr3Bypass ? "FSR3" : item.LosslessXeSSBypass ? "XeSS" : "";
-        var enabled = backend.Length != 0;
-        var sessionKey = backend + (item.LosslessFsr4Upscale ? ":estimated" : item.LosslessEstimateInputs ? ":estimate" : ":flat");
-        BridgeError = null;
-        // FSR4 超分接管缩放通道，不依赖帧生成实验模式；旧配置可能同时开启，按 FSR4 优先处理
-        if (item.LosslessFsr4Upscale)
-        {
-            item.LosslessXeSSBypass = false;
-            item.LosslessFsr3Bypass = false;
-        }
-        var processes = Process.GetProcessesByName("LosslessScaling");
-        try
-        {
-            if (processes.Length != 1)
-            {
-                BridgeError = "请仅保留一个 Lossless Scaling 实例";
-                return ScaleResult.BridgeFailed;
-            }
-            var process = processes[0];
-            if (!enabled && BridgeSessions.Count == 0)
-            {
-                // 普通 LS 模式不因模块枚举权限不足而失去原有功能。
-                try
-                {
-                    foreach (ProcessModule module in process.Modules)
-                        if (string.Equals(module.ModuleName, "ls_probe.dll", StringComparison.OrdinalIgnoreCase))
-                            return ScaleResult.BridgeRestartRequired;
-                }
-                catch (System.ComponentModel.Win32Exception) { }
-                return null;
-            }
-            var key = (process.Id, process.StartTime.ToUniversalTime().Ticks);
-            foreach (var stale in BridgeSessions.Keys.Where(k => k != key).ToArray())
-                BridgeSessions.Remove(stale);
-            if (BridgeSessions.TryGetValue(key, out var ready))
-                return enabled && ready == sessionKey ? null : ScaleResult.BridgeRestartRequired;
-
-            // 启动器重启后不能重复注入仍驻留在 LS 中的 hook。
-            foreach (ProcessModule module in process.Modules)
-                if (string.Equals(module.ModuleName, "ls_probe.dll", StringComparison.OrdinalIgnoreCase))
-                    return ScaleResult.BridgeRestartRequired;
-            if (!enabled) return null;
-            if (IsScalingNow(new List<int> { process.Id }))
-            {
-                BridgeError = $"请先停止 LS 捕获，再开启 {backend} 实验模式";
-                return ScaleResult.BridgeFailed;
-            }
-            var directory = Path.Combine(AppContext.BaseDirectory, "XeSSFG");
-            string[] files = backend == "FSR4"
-                ? new[] { "ls_probe_loader.exe", "ls_probe.dll", "amd_fidelityfx_upscaler_dx12.dll" }
-                : backend == "FSR3"
-                    ? new[] { "ls_probe_loader.exe", "ls_probe.dll", "fsr_fg.dll", "amd_fidelityfx_dx12.dll" }
-                    : new[] { "ls_probe_loader.exe", "ls_probe.dll", "xel_fg.dll", "libxess_fg.dll", "libxell.dll" };
-            var missing = files.FirstOrDefault(file => !File.Exists(Path.Combine(directory, file)));
-            if (missing is not null)
-            {
-                BridgeError = $"{backend} 组件缺失：{missing}";
-                return ScaleResult.BridgeFailed;
-            }
-            var info = new ProcessStartInfo(Path.Combine(directory, "ls_probe_loader.exe"))
-            {
-                WorkingDirectory = directory,
-                UseShellExecute = false,
-                CreateNoWindow = true,
-                RedirectStandardOutput = true,
-                RedirectStandardError = true
-            };
-            info.ArgumentList.Add("--pid");
-            info.ArgumentList.Add(process.Id.ToString(System.Globalization.CultureInfo.InvariantCulture));
-            info.ArgumentList.Add("--dll");
-            info.ArgumentList.Add(Path.Combine(directory, "ls_probe.dll"));
-            info.ArgumentList.Add(backend == "FSR4" ? "--fsr4" : backend == "FSR3" ? "--fsr3" : "--bypass");
-            if (item.LosslessFsr4Upscale || item.LosslessEstimateInputs) info.ArgumentList.Add("--estimate-inputs");
-            using var loader = Process.Start(info) ?? throw new InvalidOperationException($"无法启动 {backend} loader");
-            // 启动后任何不确定结果都要求重启 LS，不在同一会话反复注入。
-            BridgeSessions[key] = "";
-            var output = loader.StandardOutput.ReadToEndAsync();
-            var error = loader.StandardError.ReadToEndAsync();
-            using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(75));
-            try { await loader.WaitForExitAsync(timeout.Token); }
-            catch (OperationCanceledException)
-            {
-                BridgeError = backend == "FSR4"
-                    ? "FSR4 超分接入超时；请重启 Lossless Scaling 后重试"
-                    : $"{backend} 接入超时；请重启 Lossless Scaling 后重试";
-                DebugLog.Write(BridgeError);
-                return ScaleResult.BridgeFailed;
-            }
-            DebugLog.Write($"{backend} loader exit={loader.ExitCode}\n{await output}\n{await error}");
-            if (loader.ExitCode != 0)
-            {
-                BridgeError = $"{backend} 接入失败；请查看日志并重启 LS（不会自动提权）";
-                return ScaleResult.BridgeFailed;
-            }
-            BridgeSessions[key] = sessionKey;
-            FloatingToastService.Show(backend == "FSR4"
-                ? "FSR4 超分已接管缩放通道，等待首帧确认"
-                : $"{backend} 桥接已加载，等待捕获输出");
-            _ = WatchBridgeOutputAsync(key.Id, key.Ticks, backend);
-            return null;
-        }
-        catch (Exception ex)
-        {
-            BridgeError = $"无法接入 {backend}：" + ex.Message;
-            DebugLog.Write(BridgeError);
-            return ScaleResult.BridgeFailed;
-        }
-        finally { foreach (var process in processes) process.Dispose(); }
+        ToggleFailed
     }
 
     private static string? _detectedExe;
@@ -456,8 +308,7 @@ public static class LosslessScalingService
     public static async Task<ScaleResult> ActivateAsync(LaunchItem item)
     {
         if (Interlocked.Exchange(ref _activating, 1) == 1)
-            return item.LosslessFsr4Upscale ? ScaleResult.BridgeToggleSent
-                : IsScaling ? ScaleResult.FrameGenOn : ScaleResult.FrameGenOff;
+            return IsScaling ? ScaleResult.FrameGenOn : ScaleResult.FrameGenOff;
         try
         {
             if (!IsInstalled(item)) return ScaleResult.NotInstalled;
@@ -466,9 +317,9 @@ public static class LosslessScalingService
             // 把刚生效的开关又切回去（表现为"慢一拍"）。冷却期内直接按上次结果回报。
             if (Environment.TickCount64 - _lastToggleAt < ToggleCooldownMs)
             {
-                DebugLog.Write($"小黄鸭: 距上次切换 {Environment.TickCount64 - _lastToggleAt}ms，忽略本次按键（状态={(_frameGenState ? "开" : "关")}）");
-                return (item.LosslessFsr4Upscale || item.LosslessXeSSBypass || item.LosslessFsr3Bypass) ? ScaleResult.BridgeToggleSent
-                    : _frameGenState ? ScaleResult.FrameGenOn : ScaleResult.FrameGenOff;
+                var current = _frameGenState;
+                DebugLog.Write($"小黄鸭: 距上次切换 {Environment.TickCount64 - _lastToggleAt}ms，忽略本次按键（状态={(current ? "开" : "关")}）");
+                return current ? ScaleResult.FrameGenOn : ScaleResult.FrameGenOff;
             }
 
             // 必须在启动小黄鸭之前确定目标游戏窗口：小黄鸭一启动就会抢占前台，
@@ -514,9 +365,6 @@ public static class LosslessScalingService
                 return ScaleResult.NoGame;
             }
 
-            var bridgeResult = await EnsureBridgeAsync(item);
-            if (bridgeResult.HasValue) return bridgeResult.Value;
-
             // 收起启动器与小黄鸭主窗口，再把游戏切回前台（小黄鸭缩放的是当前前台窗口）
             App.Main?.HideToTray();
             MinimizeBlocked = !MinimizeWindows();
@@ -537,35 +385,13 @@ public static class LosslessScalingService
             }
 
             // 覆盖层只为"被缩放的那个窗口"创建，且在前台切换时可能销毁也可能保留，
-            // 单靠它判断开关并不可靠（回到启动器按 A 时常常已经看不到）。
-            // 方向以"上次成功切换的状态"为准；切回游戏后若实测已在插帧（小黄鸭恢复了输出）再纠偏为开。
+            // 单靠它判断开关并不可靠；切回游戏后若实测已在插帧（小黄鸭恢复了输出）再纠偏为开。
             var pids = RunningProcessIds();
-            if (item.LosslessFsr4Upscale || item.LosslessXeSSBypass || item.LosslessFsr3Bypass)
-            {
-                // FSR4：小黄鸭已经在缩放时只做注入接管，再按热键反而会把缩放关掉
-                if (item.LosslessFsr4Upscale && (IsScalingNow(pids) || IsOverlayVisible))
-                {
-                    _lastToggleAt = Environment.TickCount64;
-                    _frameGenState = false;
-                    DebugLog.Write("FSR4 超分: 小黄鸭已在缩放，跳过捕获热键，等待实际超分 dispatch 确认");
-                    return ScaleResult.BridgeToggleSent;
-                }
-                // 旁路后不能沿用 LSFG GPU 阈值，更不能因误判而补发热键。
-                var sent = await KeySendService.SendAsync(ScaleHotkeyKey, ScaleHotkeyMods);
-                if (sent == 0) return ScaleResult.ToggleFailed;
-                _lastToggleAt = Environment.TickCount64;
-                _frameGenState = false; // 实验路径不把请求成功当成实际出帧确认。
-                DebugLog.Write(item.LosslessFsr4Upscale
-                    ? "FSR4 超分: 已发送一次 LS 捕获切换热键；等待实际超分 dispatch 确认（非插帧）"
-                    : "外部帧生成: 已发送一次 LS 捕获切换热键；实际输出请在游戏中确认");
-                return ScaleResult.BridgeToggleSent;
-            }
             if (await WaitScalingStableAsync(pids, true, 1600, 2, "切回游戏后确认插帧已恢复"))
                 _frameGenState = true;
             var desired = !_frameGenState;
             DebugLog.Write($"小黄鸭: 切换前状态={(_frameGenState ? "开" : "关")} GPU={GpuValue(pids):0.#}% 覆盖层={(IsOverlayVisible ? "在" : "无")} 目标={targetName}");
             var ok = await ToggleAsync(target, desired, targetName, pids);
-            _frameGenState = ok ? desired : IsScalingNow(pids);
             return ok
                 ? desired ? ScaleResult.FrameGenOn : ScaleResult.FrameGenOff
                 : ScaleResult.ToggleFailed;
@@ -604,6 +430,7 @@ public static class LosslessScalingService
             if (ok)
             {
                 _lastToggleAt = Environment.TickCount64;
+                _frameGenState = desired;
                 return true;
             }
             if (attempt < 2) await Task.Delay(500);

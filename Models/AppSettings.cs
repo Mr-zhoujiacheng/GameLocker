@@ -65,6 +65,10 @@ public class AppSettings
     /// <summary>已保存的 CPU 瞬时功耗（FPPT，W；0=跟随短时功耗）</summary>
     public int CpuPowerFppt { get; set; }
 
+    /// <summary>保存过功耗目标后视为已接管：每次启动自动按保存值恢复，不再要求点击启用。
+    /// 真正的写入由登录计划任务（管理员、无 UAC）完成；调节时才临时拉起助手授权</summary>
+    public bool CpuPowerTakeover { get; set; }
+
     /// <summary>接管前固件允许的持续功耗上限（W；0=未记录）。
     /// 重启后登录任务会先写入限制，若没有这个记录，后续会话会把已写入的限制误当成固件上限而无法再调高</summary>
     public int CpuPowerOriginalPl1 { get; set; }

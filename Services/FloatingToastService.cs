@@ -4,10 +4,14 @@ using Microsoft.UI.Dispatching;
 
 namespace GameLocker.Services;
 
-/// <summary>独立 Win32 分层文字提示；Show 必须在主 UI 线程调用。</summary>
+/// <summary>
+/// 独立 Win32 分层文字提示。任意线程均可调用，内部会切回主 UI 线程；
+/// 窗口常驻不销毁，超时只隐藏，显示期间持续置顶并跟随前台窗口所在显示器。
+/// </summary>
 public static class FloatingToastService
 {
     private const string ClassName = "GameLockerFloatingToast";
+    private const string WindowTitle = "GameLocker Toast";
     private const int WS_POPUP = unchecked((int)0x80000000);
     private const int WS_EX_TOPMOST = 0x00000008;
     private const int WS_EX_TRANSPARENT = 0x00000020;
@@ -15,73 +19,143 @@ public static class FloatingToastService
     private const int WS_EX_LAYERED = 0x00080000;
     private const int WS_EX_NOACTIVATE = 0x08000000;
     private const uint WDA_EXCLUDEFROMCAPTURE = 0x00000011;
+    private const int SW_HIDE = 0;
+    private const int HWND_TOPMOST = -1;
+    private const uint SWP_NOSIZE = 0x0001;
+    private const uint SWP_NOMOVE = 0x0002;
+    private const uint SWP_NOACTIVATE = 0x0010;
+    private const uint SWP_SHOWWINDOW = 0x0040;
     private static readonly WndProcDelegate WindowProc = WndProc;
     private static bool _registered;
     private static IntPtr _hwnd;
     private static DispatcherQueue? _queue;
-    private static DispatcherQueueTimer? _timer;
+    private static DispatcherQueueTimer? _hideTimer;
+    private static DispatcherQueueTimer? _followTimer;
+    private static string _text = "";
+    private static bool _warning;
+    private static IntPtr _monitor;
+    private static uint _dpi;
 
     /// <summary>
     /// 在前台窗口所在显示器的工作区顶部居中显示约八秒；重复调用替换内容并重新计时。
-    /// 必须在 App.Main 初始化后的主 UI 线程调用；空白消息不显示。
+    /// 显示期间每 400ms 重新置顶并检查前台显示器，避免被小黄鸭输出层等置顶窗口盖住。
+    /// 空白消息不显示；App 尚未初始化时静默忽略。
     /// </summary>
     public static void Show(string message, bool warning = false)
     {
-        var queue = App.Main?.DispatcherQueue;
-        if (queue is null || !queue.HasThreadAccess)
-            throw new InvalidOperationException("FloatingToastService.Show 必须在主 UI 线程且 App.Main 初始化后调用。");
         if (string.IsNullOrWhiteSpace(message)) return;
-
-        if (_queue is null)
+        var queue = App.Main?.DispatcherQueue;
+        if (queue is null) return;
+        if (!queue.HasThreadAccess)
         {
-            _queue = queue;
-            _timer = queue.CreateTimer();
-            _timer.Interval = TimeSpan.FromSeconds(8);
-            _timer.IsRepeating = false;
-            _timer.Tick += OnTimerTick;
-            queue.ShutdownStarting += OnShutdownStarting;
+            queue.TryEnqueue(() => Show(message, warning));
+            return;
         }
+        ShowCore(message, warning);
+    }
 
-        _timer!.Stop();
+    private static void ShowCore(string message, bool warning)
+    {
+        try
+        {
+            EnsureTimers();
+            _text = message.Replace('\r', ' ').Replace('\n', ' ').Replace('\t', ' ');
+            _warning = warning;
+            _hideTimer!.Stop();
+            _followTimer!.Stop();
+            EnsureWindow();
+            RenderForForeground();
+            Raise();
+            _hideTimer.Start();
+            // 游戏切到前台、小黄鸭输出层出现后仍保持可见，并跟随显示器的变化。
+            _followTimer.Start();
+        }
+        catch (Exception ex)
+        {
+            // 提示失败不影响游戏，也不销毁正在显示的旧提示。
+            DebugLog.Write("悬浮提示显示失败: " + ex.Message);
+        }
+    }
+
+    private static void EnsureTimers()
+    {
+        if (_queue is not null) return;
+        var queue = App.Main?.DispatcherQueue;
+        if (queue is null) return;
+        _queue = queue;
+        _hideTimer = queue.CreateTimer();
+        _hideTimer.Interval = TimeSpan.FromSeconds(8);
+        _hideTimer.IsRepeating = false;
+        _hideTimer.Tick += OnHideTick;
+        _followTimer = queue.CreateTimer();
+        _followTimer.Interval = TimeSpan.FromMilliseconds(400);
+        _followTimer.IsRepeating = true;
+        _followTimer.Tick += OnFollowTick;
+        queue.ShutdownStarting += OnShutdownStarting;
+    }
+
+    /// <summary>按当前前台窗口所在显示器重新绘制提示内容。</summary>
+    private static void RenderForForeground()
+    {
+        var foreground = GetForegroundWindow();
+        var monitor = MonitorFromWindow(foreground, 2 /* MONITOR_DEFAULTTONEAREST */);
+        var dpi = foreground != IntPtr.Zero ? GetDpiForWindow(foreground) : 96u;
+        var info = new MONITORINFO { cbSize = (uint)Marshal.SizeOf<MONITORINFO>() };
+        if (!GetMonitorInfoW(monitor, ref info)) throw new Win32Exception(Marshal.GetLastWin32Error());
+        Render(_text, _warning, info.rcWork, (dpi == 0 ? 96 : dpi) / 96.0);
+        _monitor = monitor;
+        _dpi = dpi;
+    }
+
+    /// <summary>不使用 Activate/SetForegroundWindow；分层窗口的 TRANSPARENT 样式使鼠标穿透。</summary>
+    private static void Raise()
+    {
+        if (_hwnd == IntPtr.Zero) return;
+        if (!SetWindowPos(_hwnd, new IntPtr(HWND_TOPMOST), 0, 0, 0, 0,
+                SWP_NOSIZE | SWP_NOMOVE | SWP_NOACTIVATE | SWP_SHOWWINDOW))
+            throw new Win32Exception(Marshal.GetLastWin32Error());
+    }
+
+    private static void OnHideTick(DispatcherQueueTimer sender, object args)
+    {
+        sender.Stop();
+        _followTimer?.Stop();
+        if (_hwnd != IntPtr.Zero) ShowWindow(_hwnd, SW_HIDE);
+    }
+
+    private static void OnFollowTick(DispatcherQueueTimer sender, object args)
+    {
+        if (_hwnd == IntPtr.Zero)
+        {
+            sender.Stop();
+            return;
+        }
         try
         {
             var foreground = GetForegroundWindow();
             var monitor = MonitorFromWindow(foreground, 2 /* MONITOR_DEFAULTTONEAREST */);
-            var info = new MONITORINFO { cbSize = (uint)Marshal.SizeOf<MONITORINFO>() };
-            if (!GetMonitorInfoW(monitor, ref info)) throw new Win32Exception(Marshal.GetLastWin32Error());
             var dpi = foreground != IntPtr.Zero ? GetDpiForWindow(foreground) : 96u;
-            var scale = (dpi == 0 ? 96 : dpi) / 96.0;
-            var text = message.Replace('\r', ' ').Replace('\n', ' ').Replace('\t', ' ');
-
-            EnsureWindow();
-            Render(text, warning, info.rcWork, scale);
-            // 不使用 Activate/SetForegroundWindow；分层窗口的 TRANSPARENT 样式使鼠标穿透。
-            if (!SetWindowPos(_hwnd, new IntPtr(-1), 0, 0, 0, 0,
-                    0x0001 | 0x0002 | 0x0010 | 0x0040 /* NOSIZE|NOMOVE|NOACTIVATE|SHOWWINDOW */))
-                throw new Win32Exception(Marshal.GetLastWin32Error());
-            _timer.Start();
+            if (monitor != _monitor || dpi != _dpi) RenderForForeground();
+            // 每轮都重新置顶：小黄鸭输出层是全屏置顶窗口，否则会把提示挡在下面。
+            Raise();
         }
-        catch
+        catch (Exception ex)
         {
-            // 提示失败不影响游戏；尤其排除捕获失败时，不显示可能被 LS 反复捕获的窗口。
-            DestroyToast();
+            DebugLog.Write("悬浮提示置顶失败: " + ex.Message);
         }
-    }
-
-    private static void OnTimerTick(DispatcherQueueTimer sender, object args)
-    {
-        sender.Stop();
-        DestroyToast();
     }
 
     private static void OnShutdownStarting(DispatcherQueue sender, DispatcherQueueShutdownStartingEventArgs args)
     {
-        if (_timer is not null)
+        foreach (var timer in new[] { _hideTimer, _followTimer })
         {
-            _timer.Stop();
-            _timer.Tick -= OnTimerTick;
-            _timer = null;
+            if (timer is null) continue;
+            timer.Stop();
+            timer.Tick -= OnHideTick;
+            timer.Tick -= OnFollowTick;
         }
+        _hideTimer = null;
+        _followTimer = null;
         DestroyToast();
         sender.ShutdownStarting -= OnShutdownStarting;
         _queue = null;
@@ -112,7 +186,7 @@ public static class FloatingToastService
         }
         _hwnd = CreateWindowExW(
             WS_EX_TOPMOST | WS_EX_TRANSPARENT | WS_EX_TOOLWINDOW | WS_EX_LAYERED | WS_EX_NOACTIVATE,
-            ClassName, "GameLocker Toast", WS_POPUP, 0, 0, 1, 1,
+            ClassName, WindowTitle, WS_POPUP, 0, 0, 1, 1,
             IntPtr.Zero, IntPtr.Zero, instance, IntPtr.Zero);
         if (_hwnd == IntPtr.Zero) throw new Win32Exception(Marshal.GetLastWin32Error());
         if (!SetWindowDisplayAffinity(_hwnd, WDA_EXCLUDEFROMCAPTURE))
@@ -264,6 +338,8 @@ public static class FloatingToastService
         int x, int y, int width, int height, IntPtr parent, IntPtr menu, IntPtr instance, IntPtr param);
     [DllImport("user32.dll")]
     private static extern bool DestroyWindow(IntPtr hwnd);
+    [DllImport("user32.dll")]
+    private static extern bool ShowWindow(IntPtr hwnd, int command);
     [DllImport("user32.dll", CharSet = CharSet.Unicode)]
     private static extern IntPtr DefWindowProcW(IntPtr hwnd, uint message, IntPtr wParam, IntPtr lParam);
     [DllImport("user32.dll", SetLastError = true)]

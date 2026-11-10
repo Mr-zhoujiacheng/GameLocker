@@ -56,6 +56,22 @@ public class AppSettings
     public int GameCoreCount { get; set; }
     public GameCoreMode GameCoreMode { get; set; } = GameCoreMode.Auto;
 
+    /// <summary>已保存的 CPU 持续功耗（PL1，W；0=未保存）。重启后由登录计划任务写回硬件</summary>
+    public int CpuPowerPl1 { get; set; }
+
+    /// <summary>已保存的 CPU 短时功耗（PL2，W；0=跟随持续功耗）</summary>
+    public int CpuPowerPl2 { get; set; }
+
+    /// <summary>已保存的 CPU 瞬时功耗（FPPT，W；0=跟随短时功耗）</summary>
+    public int CpuPowerFppt { get; set; }
+
+    /// <summary>接管前固件允许的持续功耗上限（W；0=未记录）。
+    /// 重启后登录任务会先写入限制，若没有这个记录，后续会话会把已写入的限制误当成固件上限而无法再调高</summary>
+    public int CpuPowerOriginalPl1 { get; set; }
+
+    /// <summary>接管前固件允许的短时功耗上限（W；0=未记录）</summary>
+    public int CpuPowerOriginalPl2 { get; set; }
+
     /// <summary>开机自动启动（写入 HKCU Run 键）</summary>
     public bool AutoStart { get; set; }
 

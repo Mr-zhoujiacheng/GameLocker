@@ -20,6 +20,7 @@ internal static class CpuPowerService
     private const int TimeoutMilliseconds = 8000;
     private const int MaximumLineLength = 65536;
     private const string DisabledMessage = "点击设备功耗启用并授权";
+    private const string LogonTaskName = "GameLocker CPU Power AutoApply";
     private static readonly object Gate = new();
     private static NamedPipeServerStream? _pipe;
     private static StreamReader? _reader;
@@ -32,6 +33,12 @@ internal static class CpuPowerService
     public static State Cached
     {
         get { lock (CacheGate) return _cached; }
+    }
+
+    /// <summary>当前是否已连上提权助手（连接存活时才能直接写回硬件）</summary>
+    public static bool Active
+    {
+        get { lock (Gate) return _pipe is not null; }
     }
 
     private static void SetCached(State state)
@@ -140,6 +147,21 @@ internal static class CpuPowerService
         }
     }
 
+    /// <summary>注册/更新登录时静默写回已保存功耗的计划任务（助手此时已是管理员权限，无需再次 UAC）</summary>
+    public static Result EnsureAutoApplyTask()
+    {
+        lock (Gate)
+        {
+            if (_pipe is null) return new(false, DisabledMessage);
+            try { return Exchange(new("task")).Result; }
+            catch (Exception ex)
+            {
+                CloseSession();
+                return new(false, "注册开机自动恢复失败：" + ErrorMessage(ex));
+            }
+        }
+    }
+
     public static Result Disable()
     {
         lock (Gate)
@@ -159,7 +181,18 @@ internal static class CpuPowerService
         }
     }
 
-    public static void Shutdown() => Disable();
+    /// <summary>退出程序：有已保存的功耗目标时保留硬件设置（否则关掉程序就恢复默认），
+    /// 没有保存目标时按原有安全语义恢复接管前的值。</summary>
+    public static void Shutdown()
+    {
+        lock (Gate)
+        {
+            if (_pipe is null) return;
+            try { Exchange(new(SettingsService.Current.CpuPowerPl1 > 0 ? "keep" : "restore")); }
+            catch (Exception) { /* 管道已断：助手会自行恢复 */ }
+            finally { CloseSession(); }
+        }
+    }
 
     private static Response Exchange(Request request)
     {
@@ -207,6 +240,7 @@ internal static class CpuPowerService
         Stream? writer = null;
         Task? watch = null;
         bool restoreRequested = false;
+        bool keepOnExit = false;
         try
         {
             parent = Process.GetProcessById(parentPid);
@@ -249,6 +283,14 @@ internal static class CpuPowerService
                                 throw new ArgumentException("功耗索引或瓦数无效");
                             response = new(null, backend.Apply(request.Index, request.Watts));
                             break;
+                        case "task":
+                            response = new(null, InstallLogonTask());
+                            break;
+                        case "keep":
+                            // 用户已保存功耗目标：退出时保留硬件设置，不恢复接管前的值。
+                            keepOnExit = true;
+                            response = new(null, new(true, "已保留功耗设置"));
+                            break;
                         case "restore":
                             var restoreResult = backend.Restore();
                             if (restoreResult.Ok)
@@ -279,12 +321,21 @@ internal static class CpuPowerService
             Result restored = new(false, "CPU 功耗后端未初始化");
             if (backend is not null)
             {
-                try { restored = backend.Restore(); }
-                catch (Exception ex) { restored = new(false, "恢复 CPU 功耗失败：" + ErrorMessage(ex)); }
-                finally
+                if (keepOnExit)
                 {
+                    restored = new(true, "已保留功耗设置");
                     try { backend.Dispose(); }
-                    catch (Exception ex) { restored = new(false, restored.Message + "；释放后端失败：" + ErrorMessage(ex)); }
+                    catch (Exception ex) { restored = new(false, "释放后端失败：" + ErrorMessage(ex)); }
+                }
+                else
+                {
+                    try { restored = backend.Restore(); }
+                    catch (Exception ex) { restored = new(false, "恢复 CPU 功耗失败：" + ErrorMessage(ex)); }
+                    finally
+                    {
+                        try { backend.Dispose(); }
+                        catch (Exception ex) { restored = new(false, restored.Message + "；释放后端失败：" + ErrorMessage(ex)); }
+                    }
                 }
             }
             if (restoreRequested && writer is not null && pipe.IsConnected)
@@ -298,6 +349,35 @@ internal static class CpuPowerService
             writer?.Dispose();
             parent?.Dispose();
         }
+    }
+
+    /// <summary>以当前管理员助手身份注册“登录时静默写回功耗”的计划任务，之后开机不再弹 UAC。</summary>
+    private static Result InstallLogonTask()
+    {
+        try
+        {
+            string executable = Environment.ProcessPath
+                ?? throw new InvalidOperationException("无法确定当前程序路径");
+            string arguments = "/Create /F /SC ONLOGON /RL HIGHEST /DELAY 0000:15 /TN \""
+                + LogonTaskName + "\" /TR \"\\\"" + executable + "\\\" --apply-cpu-power\"";
+            using var process = Process.Start(new ProcessStartInfo("schtasks.exe", arguments)
+            {
+                UseShellExecute = false,
+                CreateNoWindow = true,
+                RedirectStandardOutput = true,
+                RedirectStandardError = true
+            }) ?? throw new InvalidOperationException("无法启动 schtasks");
+            string output = process.StandardOutput.ReadToEnd() + process.StandardError.ReadToEnd();
+            if (!process.WaitForExit(15000))
+            {
+                try { process.Kill(); } catch { }
+                return new(false, "注册开机自动恢复任务超时");
+            }
+            return process.ExitCode == 0
+                ? new(true, "已注册登录时静默恢复功耗")
+                : new(false, "注册开机自动恢复任务失败：" + output.Trim());
+        }
+        catch (Exception ex) { return new(false, "注册开机自动恢复任务失败：" + ErrorMessage(ex)); }
     }
 
     private static async Task WatchParentAsync(Process parent, CancellationTokenSource lifetime)

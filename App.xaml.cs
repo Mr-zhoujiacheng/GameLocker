@@ -50,6 +50,13 @@ public partial class App : Application
         // 提权监控助手模式（--monitor-helper <父进程PID>）：只跑 ETW 帧率采集并写共享内存，
         // 不创建主窗口，父进程退出或发出停止事件后自行结束。
         var argv = Environment.GetCommandLineArgs();
+        // 登录计划任务模式（--apply-cpu-power）：以管理员权限把已保存的 CPU 功耗写回硬件后退出，
+        // 不创建窗口。放在单实例检查之前，避免开机自启已经在跑时任务被吞掉。
+        if (Array.IndexOf(argv, "--apply-cpu-power") >= 0)
+        {
+            CpuPowerAutoApply.RunFromTask();
+            Environment.Exit(0);
+        }
         var powerIndex = Array.IndexOf(argv, "--cpu-power-helper");
         if (powerIndex >= 0 && powerIndex + 2 < argv.Length
             && int.TryParse(argv[powerIndex + 1], out var powerParent))
@@ -76,6 +83,10 @@ public partial class App : Application
         SettingsService.EnsureAutoStartPath(); // 校正开机自启路径（程序移动/改名后 Run 键会失效）
         var coreResult = GameCpuService.Configure(SettingsService.Current.GameCoreCount, SettingsService.Current.GameCoreMode);
         if (!coreResult.Ok) LaunchService.Diag(coreResult.Message);
+
+        // 睡眠/休眠唤醒后固件可能复位功耗限制：助手还连着时静默写回
+        PowerResumeWatcher.Resumed += CpuPowerAutoApply.ReapplyIfActive;
+        PowerResumeWatcher.Start();
 
         // 接管系统屏幕键盘：关掉触屏键盘自动弹出、收起 osk/TabTip，改用本程序键盘
         SystemKeyboardWatcher.Apply(SettingsService.Current.TakeOverSystemKeyboard);

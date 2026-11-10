@@ -1019,10 +1019,23 @@
                     </StackPanel>
 
                     <StackPanel Spacing="4">
-                        <TextBlock Text="XeSS 接管（实验）" FontSize="15" Opacity="0.9"/>
-                        <ToggleSwitch x:Name="LosslessXeSSBypassToggle" HorizontalAlignment="Left"
-                                      IsOn="False" OnContent="开" OffContent="关"/>
-                        <TextBlock Text="开启后由 XeSS 接管并旁路 LSFG 计算。关闭开关或按 Escape 后，恢复 LSFG 需重启 Lossless Scaling。实验图像输入仍使用占位运动矢量和深度。"
+                        <ToggleSwitch x:Name="LosslessFsr4UpscaleToggle" Header="FSR4 超分（实验）" IsOn="False" Toggled="OnLosslessFsr4Toggled"/>
+                        <TextBlock Text="由 FSR4 接管小黄鸭的缩放通道，替换其原本的放大算法。小黄鸭里只需开启缩放并关闭帧生成，缩放类型保持默认即可，无需调整其他参数；若同时开启锐化可能出现过度锐化。使用估算运动和伪深度、无游戏原生抖动。更改后需重启小黄鸭。"
+                                   FontSize="12" Opacity="0.55" TextWrapping="Wrap"/>
+                    </StackPanel>
+
+                    <StackPanel Spacing="4">
+                        <TextBlock Text="帧生成模式" FontSize="15" Opacity="0.9"/>
+                        <ComboBox x:Name="LosslessFrameGenCombo" HorizontalAlignment="Stretch" SelectedIndex="0" SelectionChanged="OnLosslessFrameGenChanged">
+                            <ComboBoxItem Content="原生 LSFG"/>
+                            <ComboBoxItem Content="XeSS 实验"/>
+                            <ComboBoxItem Content="FSR3 实验"/>
+                        </ComboBox>
+                        <ToggleSwitch x:Name="LosslessEstimateInputsToggle" Header="画面估算（实验）" IsOn="False"
+                                      OnContent="使用估算运动 + 伪深度" OffContent="零运动 + 平面深度"/>
+                        <TextBlock Text="XeSS / FSR3 共用；非真实游戏深度，略增 GPU 开销，更改后需重启 Lossless Scaling。"
+                                   FontSize="12" Opacity="0.55" TextWrapping="Wrap"/>
+                        <TextBlock Text="XeSS / FSR3 实验模式接管并旁路 LSFG 计算，缺少游戏真实运动矢量和深度，FSR3 仅作 2x 实验。切换模式或按 Escape 后恢复原生 LSFG，均需完全退出并重启 Lossless Scaling。"
                                    FontSize="12" Opacity="0.55" TextWrapping="Wrap"/>
                     </StackPanel>
                 </StackPanel>

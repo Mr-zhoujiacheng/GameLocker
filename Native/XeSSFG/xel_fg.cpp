@@ -1,4 +1,5 @@
 #include "xel_fg.h"
+#include "frame_estimator.h"
 #include <d3d11_4.h>
 #include <d3d12.h>
 #include <dxgi1_6.h>
@@ -44,7 +45,8 @@ template<class F> HRESULT boundary(F&& fn) noexcept {
 struct XelSession {
     DWORD thread = GetCurrentThreadId();
     UINT width = 0, height = 0;
-    bool enabled = true, reset = true, poisoned = false;
+    bool enabled = true, reset = true, poisoned = false, estimateInputs = false;
+    std::unique_ptr<FrameEstimator> estimator;
     uint32_t id = 0;
     uint64_t fenceValue = 0;
     ComPtr<ID3D11Device> device11;
@@ -117,7 +119,7 @@ struct XelSession {
         desc.Width = width; desc.Height = height;
         desc.DepthOrArraySize = 1; desc.MipLevels = 1;
         desc.Format = format; desc.SampleDesc.Count = 1;
-        desc.Flags = D3D12_RESOURCE_FLAG_ALLOW_RENDER_TARGET;
+        desc.Flags = D3D12_RESOURCE_FLAG_ALLOW_RENDER_TARGET | D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS;
         check(device12->CreateCommittedResource(&heap, D3D12_HEAP_FLAG_NONE, &desc,
             D3D12_RESOURCE_STATE_RENDER_TARGET, nullptr, IID_PPV_ARGS(&output)), "Create dummy input");
     }
@@ -229,6 +231,8 @@ struct XelSession {
         check(queue->Wait(fence12.Get(), fenceValue), "D3D12 wait for color");
         check(allocator->Reset(), "Reset allocator");
         check(commands->Reset(allocator.Get(), nullptr), "Reset command list");
+        if (estimator) check(estimator->record(commands.Get(), bridge12.Get(), motion.Get(), depth.Get(),
+            estimateInputs && enabled, reset || forceReset), "Estimate screen inputs");
         ComPtr<ID3D12Resource> back;
         check(swap->GetBuffer(swap->GetCurrentBackBufferIndex(), IID_PPV_ARGS(&back)), "Get proxy backbuffer");
         D3D12_RESOURCE_BARRIER start[] = {
@@ -247,6 +251,15 @@ struct XelSession {
             tag(depth.Get(), XEFG_SWAPCHAIN_RES_DEPTH);
             xefg_swapchain_frame_constant_data_t constants = {};
             for (int i = 0; i < 16; i += 5) constants.viewMatrix[i] = constants.projectionMatrix[i] = 1;
+            if (estimateInputs) {
+                // Synthetic camera matches the pseudo-depth encoding, not the game's camera.
+                constants.projectionMatrix[0] = 1.7320508f * (float)height / width;
+                constants.projectionMatrix[5] = 1.7320508f;
+                constants.projectionMatrix[10] = 1000.0f / 999.9f;
+                constants.projectionMatrix[11] = 1;
+                constants.projectionMatrix[14] = -100.0f / 999.9f;
+                constants.projectionMatrix[15] = 0;
+            }
             constants.motionVectorScaleX = constants.motionVectorScaleY = 1;
             constants.frameRenderTime = ms; constants.resetHistory = reset || forceReset;
             fg(xefgSwapChainTagFrameConstants(sdk, id, &constants), "Tag frame constants");
@@ -321,6 +334,17 @@ HRESULT __cdecl xelSubmit(XelSession* s, ID3D11Texture2D* src, float ms, uint32_
 HRESULT __cdecl xelSetEnabled(XelSession* s, uint32_t enabled) {
     return boundary([&] { auto& v = session(s); fg(xefgSwapChainSetEnabled(v.sdk, enabled != 0), "SetEnabled"); v.enabled = enabled != 0; v.reset = true;
         v.stats.flags = (v.stats.flags & ~XEL_STATUS_REQUESTED_ENABLED) | (v.enabled ? XEL_STATUS_REQUESTED_ENABLED : 0); });
+}
+HRESULT __cdecl xelSetEstimation(XelSession* s, uint32_t enabled) {
+    return boundary([&] {
+        auto& v = session(s);
+        if (enabled && !v.estimator) {
+            auto estimator = std::make_unique<FrameEstimator>();
+            check(estimator->initialize(v.device12.Get(), v.width, v.height), "Initialize screen estimator");
+            v.estimator = std::move(estimator);
+        }
+        if (v.estimateInputs != (enabled != 0)) { v.estimateInputs = enabled != 0; v.reset = true; }
+    });
 }
 HRESULT __cdecl xelResetHistory(XelSession* s) { return boundary([&] { session(s).reset = true; }); }
 HRESULT __cdecl xelAdoptThread(XelSession* s) {

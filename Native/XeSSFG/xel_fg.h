@@ -39,6 +39,10 @@ XEL_API HRESULT __cdecl xelCreate(ID3D11Device* device, ID3D11DeviceContext* imm
 XEL_API HRESULT __cdecl xelSubmit(XelSession* session, ID3D11Texture2D* source,
     float frameMilliseconds, uint32_t resetHistory);
 XEL_API HRESULT __cdecl xelSetEnabled(XelSession* session, uint32_t enabled);
+/* Default off: zero motion / flat depth. On: GPU screen-space block matching
+   and motion-derived pseudo-depth, NOT engine motion or physical scene depth.
+   Switching resets history. Adds GPU work and may worsen artifacts. */
+XEL_API HRESULT __cdecl xelSetEstimation(XelSession* session, uint32_t enabled);
 XEL_API HRESULT __cdecl xelResetHistory(XelSession* session);
 /* Under exclusive caller serialization, drain GPU work and transfer thread ownership. */
 XEL_API HRESULT __cdecl xelAdoptThread(XelSession* session);

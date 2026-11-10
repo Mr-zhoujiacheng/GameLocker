@@ -12,6 +12,11 @@ internal sealed class CpuPowerBackend : IDisposable
     private readonly ulong _original;
     private readonly double _unit;
     private ulong _changedMask;
+    // 固件真实上限与“恢复默认时应写回的值”：重启后登录任务可能已把限制写进寄存器，
+    // 若只读当前寄存器，会把已生效的限制误当成固件上限，导致再也无法调高。
+    private double _maxPl1;
+    private double _maxPl2;
+    private ulong _restoreRaw;
     private const ulong LockBit = 1UL << 63;
     private static int Shift(int index) => index * 32;
     private static ulong Field(int index) => 0x7FFFUL << Shift(index);
@@ -38,7 +43,19 @@ internal sealed class CpuPowerBackend : IDisposable
             if (!PawnIoMsr.ReadMsr(0x606, out var units) || !PawnIoMsr.ReadMsr(0x610, out _original))
             { _error = "无法读取 Intel RAPL 单位 / 封装功耗限制"; return; }
             _unit = Math.Pow(0.5, (int)(units & 0xF));
-            if (Watts(_original, 0) < 1 || Watts(_original, 1) < 1)
+            _restoreRaw = _original;
+            var savedPl1 = SettingsService.Current.CpuPowerOriginalPl1;
+            var savedPl2 = SettingsService.Current.CpuPowerOriginalPl2;
+            _maxPl1 = Math.Max(Watts(_original, 0), savedPl1);
+            _maxPl2 = Math.Max(Watts(_original, 1), savedPl2);
+            if (_unit > 0)
+            {
+                if (savedPl1 > Watts(_original, 0))
+                    _restoreRaw = (_restoreRaw & ~Field(0)) | ((ulong)Math.Floor(savedPl1 / _unit) << Shift(0));
+                if (savedPl2 > Watts(_original, 1))
+                    _restoreRaw = (_restoreRaw & ~Field(1)) | ((ulong)Math.Floor(savedPl2 / _unit) << Shift(1));
+            }
+            if (_maxPl1 < 1 || _maxPl2 < 1)
                 _error = "Intel 固件未提供有效 PL1 / PL2，禁止写入";
         }
         catch (Exception ex) { _error = "CPU 功耗初始化失败：" + ex.Message; }
@@ -50,8 +67,8 @@ internal sealed class CpuPowerBackend : IDisposable
         if (_error != null) return new(false, true, _error, []);
         if (!PawnIoMsr.ReadMsr(0x610, out var raw)) return new(false, true, "读取 Intel RAPL 失败", []);
         var limits = Enumerable.Range(0, 2).Select(i => new Limit(i == 0 ? "Intel PL1" : "Intel PL2",
-            Watts(raw, i), 1, Math.Max(1, Math.Floor(Watts(_original, i))),
-            (raw & LockBit) == 0 && (raw & (1UL << (Shift(i) + 15))) != 0 && Watts(_original, i) >= 1)).ToArray();
+            Watts(raw, i), 1, Math.Max(1, Math.Floor(i == 0 ? _maxPl1 : _maxPl2)),
+            (raw & LockBit) == 0 && (raw & (1UL << (Shift(i) + 15))) != 0 && (i == 0 ? _maxPl1 : _maxPl2) >= 1)).ToArray();
         return new(limits.Any(l => l.Writable), true,
             (raw & LockBit) != 0 ? "Intel RAPL 已被 BIOS 锁定，无法修改" :
             "Intel RAPL · 仅降低 / 恢复初始上限；保留时间窗与其他位；不保证覆盖 OEM / MMIO 的额外限制", limits);
@@ -73,7 +90,7 @@ internal sealed class CpuPowerBackend : IDisposable
         bool raiseBurst = false;
         if (index == 0 && watts > Watts(before, 1))
         {
-            var burstMax = Math.Max(1, Math.Floor(Watts(_original, 1)));
+            var burstMax = Math.Max(1, Math.Floor(_maxPl2));
             if (watts > burstMax)
                 return new(false, $"持续功耗不能超过短时功耗上限（{burstMax:0} W）");
             raiseBurst = true;
@@ -115,8 +132,12 @@ internal sealed class CpuPowerBackend : IDisposable
     public Result Restore()
     {
         if (_amd != null) return _amd.Restore();
-        if (_changedMask == 0) return new(true, "CPU 功耗未修改，已关闭接管");
-        if (!RestoreFields(_changedMask, _original)) return new(false, "Intel 初始功耗恢复未获确认，请检查固件 / 重启");
+        // 登录任务可能已经把限制写进寄存器（本次会话没有修改记录）：关闭接管时同样要恢复到固件原值
+        var mask = _changedMask;
+        if (_maxPl1 > Watts(_original, 0)) mask |= Field(0);
+        if (_maxPl2 > Watts(_original, 1)) mask |= Field(1);
+        if (mask == 0) return new(true, "CPU 功耗未修改，已关闭接管");
+        if (!RestoreFields(mask, _restoreRaw)) return new(false, "Intel 初始功耗恢复未获确认，请检查固件 / 重启");
         _changedMask = 0;
         return new(true, "Intel 初始功耗限制已恢复并验证");
     }

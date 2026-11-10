@@ -17,6 +17,8 @@ foreach(file IN LISTS required_files)
         message(FATAL_ERROR "Missing official SDK file: ${XeSS_SDK_ROOT}/${file}")
     endif()
 endforeach()
+set(FSR4_SDK_ROOT "" CACHE PATH "Optional external FidelityFX upscale API include root")
+set(FSR4_RUNTIME_ROOT "" CACHE PATH "Optional external standalone upscaler DLL directory")
 option(XEL_BUILD_LS_PROBE "Build opt-in Lossless Scaling diagnostic hooks" OFF)
 if(XEL_BUILD_LS_PROBE)
     set(MINHOOK_ROOT "" CACHE PATH "External pinned MinHook source root")
@@ -42,6 +44,29 @@ if(XEL_BUILD_LS_PROBE)
     add_custom_command(TARGET ls_probe POST_BUILD
         COMMAND ${CMAKE_COMMAND} -E copy_if_different "${MINHOOK_ROOT}/LICENSE.txt"
             "$<TARGET_FILE_DIR:ls_probe>/MinHook-LICENSE.txt" VERBATIM)
+    if(FSR4_SDK_ROOT)
+        foreach(file ffx_api.h ffx_api_types.h ffx_upscale.h dx12/ffx_api_dx12.h)
+            if(NOT EXISTS "${FSR4_SDK_ROOT}/${file}")
+                message(FATAL_ERROR "Missing FSR4 API header: ${file}")
+            endif()
+        endforeach()
+        foreach(target ls_probe ls_probe_selftest)
+            target_sources(${target} PRIVATE fsr_sr.cpp fsr_sr.h frame_estimator.h)
+            target_include_directories(${target} PRIVATE "${FSR4_SDK_ROOT}")
+            target_compile_definitions(${target} PRIVATE XEL_FSR4_SR)
+            target_link_libraries(${target} PRIVATE d3d12 d3dcompiler)
+        endforeach()
+        if(NOT EXISTS "${FSR4_RUNTIME_ROOT}/amd_fidelityfx_upscaler_dx12.dll" OR
+           NOT EXISTS "${FSR4_RUNTIME_ROOT}/FidelityFX_v2_LICENSE.md")
+            message(FATAL_ERROR "FSR4 standalone runtime and its license are required")
+        endif()
+        add_custom_command(TARGET ls_probe POST_BUILD
+            COMMAND ${CMAKE_COMMAND} -E copy_if_different
+                "${FSR4_RUNTIME_ROOT}/amd_fidelityfx_upscaler_dx12.dll"
+                "${FSR4_RUNTIME_ROOT}/FidelityFX_v2_LICENSE.md" "$<TARGET_FILE_DIR:ls_probe>" VERBATIM)
+        install(FILES "${FSR4_RUNTIME_ROOT}/amd_fidelityfx_upscaler_dx12.dll"
+            "${FSR4_RUNTIME_ROOT}/FidelityFX_v2_LICENSE.md" DESTINATION .)
+    endif()
     install(TARGETS ls_probe ls_probe_loader RUNTIME DESTINATION .)
     install(FILES "${MINHOOK_ROOT}/LICENSE.txt" DESTINATION . RENAME MinHook-LICENSE.txt)
 endif()
@@ -49,7 +74,7 @@ add_library(xel_fg SHARED xel_fg.cpp xel_fg.h)
 target_compile_features(xel_fg PRIVATE cxx_std_17)
 target_compile_definitions(xel_fg PRIVATE XEL_FG_EXPORTS WIN32_LEAN_AND_MEAN NOMINMAX)
 target_include_directories(xel_fg PRIVATE "${XeSS_SDK_ROOT}/inc")
-target_link_libraries(xel_fg PRIVATE d3d11 d3d12 dxgi
+target_link_libraries(xel_fg PRIVATE d3d11 d3d12 d3dcompiler dxgi
     "${XeSS_SDK_ROOT}/lib/libxess_fg.lib" "${XeSS_SDK_ROOT}/lib/libxell.lib")
 add_executable(xel_smoke smoke.cpp)
 target_compile_features(xel_smoke PRIVATE cxx_std_17)
@@ -74,3 +99,35 @@ install(FILES "${XeSS_SDK_ROOT}/bin/libxess_fg.dll" "${XeSS_SDK_ROOT}/bin/libxel
 install(FILES "${XeSS_SDK_ROOT}/LICENSE.txt" DESTINATION . RENAME Intel-XeSS-LICENSE.txt)
 install(FILES "${XeSS_SDK_ROOT}/third-party-programs.txt" DESTINATION . RENAME Intel-third-party-programs.txt)
 install(FILES "${XeSS_SDK_ROOT}/inc/MIT.txt" DESTINATION . RENAME Intel-headers-MIT.txt)
+
+set(FSR_SDK_ROOT "" CACHE PATH "Optional external official FidelityFX SDK v1.1.4 root")
+if(FSR_SDK_ROOT)
+    if(NOT IS_ABSOLUTE "${FSR_SDK_ROOT}")
+        message(FATAL_ERROR "FSR_SDK_ROOT must be an absolute external SDK path")
+    endif()
+    foreach(file ffx-api/include/ffx_api/ffx_framegeneration.h
+            PrebuiltSignedDLL/amd_fidelityfx_dx12.dll LICENSE.txt)
+        if(NOT EXISTS "${FSR_SDK_ROOT}/${file}")
+            message(FATAL_ERROR "Missing official FSR SDK file: ${FSR_SDK_ROOT}/${file}")
+        endif()
+    endforeach()
+    add_library(fsr_fg SHARED fsr_fg.cpp xel_fg.h)
+    target_compile_features(fsr_fg PRIVATE cxx_std_17)
+    target_compile_definitions(fsr_fg PRIVATE XEL_FG_EXPORTS WIN32_LEAN_AND_MEAN NOMINMAX)
+    target_compile_options(fsr_fg PRIVATE /W4 /EHsc /utf-8)
+    target_include_directories(fsr_fg PRIVATE "${FSR_SDK_ROOT}/ffx-api/include")
+    target_link_libraries(fsr_fg PRIVATE d3d11 d3d12 d3dcompiler dxgi user32)
+    add_custom_command(TARGET fsr_fg POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different
+            "${FSR_SDK_ROOT}/PrebuiltSignedDLL/amd_fidelityfx_dx12.dll" "$<TARGET_FILE_DIR:fsr_fg>"
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different "${FSR_SDK_ROOT}/LICENSE.txt"
+            "$<TARGET_FILE_DIR:fsr_fg>/AMD-FidelityFX-MIT.txt" VERBATIM)
+    add_executable(fsr_smoke smoke.cpp)
+    target_compile_features(fsr_smoke PRIVATE cxx_std_17)
+    target_compile_definitions(fsr_smoke PRIVATE FSR_SMOKE WIN32_LEAN_AND_MEAN NOMINMAX UNICODE _UNICODE)
+    target_compile_options(fsr_smoke PRIVATE /W4 /EHsc /utf-8)
+    target_link_libraries(fsr_smoke PRIVATE fsr_fg d3d11 dxgi user32)
+    install(TARGETS fsr_fg RUNTIME DESTINATION .)
+    install(FILES "${FSR_SDK_ROOT}/PrebuiltSignedDLL/amd_fidelityfx_dx12.dll" DESTINATION .)
+    install(FILES "${FSR_SDK_ROOT}/LICENSE.txt" DESTINATION . RENAME AMD-FidelityFX-MIT.txt)
+endif()

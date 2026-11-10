@@ -160,16 +160,21 @@ int wmain(int argc, wchar_t** argv) {
     bool remoteLoadStarted = false;
     try {
         DWORD pid = 0;
-        bool bridge = false, bypass = false;
+        bool bridge = false, bypass = false, fsr3 = false, fsr4 = false, estimateInputs = false;
         std::wstring dllPath;
         for (int i = 1; i < argc; ++i) {
             if (!std::wcscmp(argv[i], L"--pid") && i + 1 < argc && !pid) pid = parsePid(argv[++i]);
             else if (!std::wcscmp(argv[i], L"--dll") && i + 1 < argc && dllPath.empty()) dllPath = argv[++i];
             else if (!std::wcscmp(argv[i], L"--bridge") && !bridge) bridge = true;
             else if (!std::wcscmp(argv[i], L"--bypass") && !bypass) bypass = true;
-            else throw std::runtime_error("Usage: probe_loader --pid <integer> --dll <absolute DLL path> [--bridge] [--bypass]");
+            else if (!std::wcscmp(argv[i], L"--fsr3") && !fsr3) fsr3 = true;
+            else if (!std::wcscmp(argv[i], L"--fsr4") && !fsr4) fsr4 = true;
+            else if (!std::wcscmp(argv[i], L"--estimate-inputs") && !estimateInputs) estimateInputs = true;
+            else throw std::runtime_error("Usage: probe_loader --pid <integer> --dll <absolute DLL path> [--bridge] [--bypass] [--fsr3] [--fsr4] [--estimate-inputs]");
         }
         if (!pid || dllPath.empty()) throw std::runtime_error("Usage: probe_loader --pid <integer> --dll <absolute DLL path>");
+        if (fsr4 && (fsr3 || bridge || bypass)) throw std::runtime_error("FSR4 upscaling cannot be combined with FG takeover.");
+        if (fsr3) bypass = true;
         if (bypass) bridge = true;
         if (!absolutePath(dllPath)) throw std::runtime_error("--dll must be an absolute path.");
         dllPath = fullPath(dllPath);
@@ -212,10 +217,11 @@ int wmain(int argc, wchar_t** argv) {
         if (startRva >= remote.modBaseSize) throw std::runtime_error("probeStart RVA is outside the remote image.");
         const auto start = reinterpret_cast<LPTHREAD_START_ROUTINE>(
             reinterpret_cast<std::uintptr_t>(remote.modBaseAddr) + startRva);
-        std::fprintf(stdout, "Mode: %s\n", bypass ? "XeSS takeover + exact LSFG compute bypass; Escape uses raw fallback; restart to restore LSFG" :
+        std::fprintf(stdout, "Mode: %s\n", fsr4 ? "FSR4 experimental post-process upscaling; FG untouched; exact shader required" : fsr3 ? "FSR3 experimental takeover + exact LSFG compute bypass; restart to switch backend" : bypass ? "XeSS takeover + exact LSFG compute bypass; Escape uses raw fallback; restart to restore LSFG" :
             bridge ? "XeSS presentation takeover; Escape disables; LSFG compute retained" : "observe-only diagnostic");
+        const std::uintptr_t mode = (fsr4 ? 4u : fsr3 ? 3u : bypass ? 2u : bridge ? 1u : 0u) | (estimateInputs ? 0x100u : 0u);
         Handle startThread(CreateRemoteThread(process.value, nullptr, 0, start,
-            bypass ? reinterpret_cast<void*>(2) : bridge ? reinterpret_cast<void*>(1) : nullptr, 0, nullptr));
+            reinterpret_cast<void*>(mode), 0, nullptr));
         if (!startThread.value) winError("CreateRemoteThread(probeStart)");
         waitThread(startThread.value, "probeStart");
         DWORD result = 0;

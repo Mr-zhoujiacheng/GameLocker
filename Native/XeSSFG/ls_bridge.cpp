@@ -40,9 +40,12 @@ bool isFg(const ShaderTag& tag) {
     return false;
 }
 bool bypassRequested = false, bypassFrame = false, historyDirty = false;
+bool fsr3Backend = false;
+bool estimateInputsRequested = false;
 uint64_t skippedDispatches = 0;
 struct Api {
     decltype(&xelCreate) create = nullptr;
+    HRESULT(__cdecl *estimate)(XelSession*, uint32_t) = nullptr;
     decltype(&xelSubmit) submit = nullptr;
     decltype(&xelGetStats) stats = nullptr;
     decltype(&xelDestroy) destroy = nullptr;
@@ -262,14 +265,16 @@ bool ownerCheck(ID3D11DeviceContext* context) {
 }
 } // namespace
 
-bool start(HMODULE module, bool bypass) {
-    std::call_once(startup, [module, bypass]() {
+bool start(HMODULE module, bool bypass, bool fsr3, bool estimateInputs) {
+    std::call_once(startup, [module, bypass, fsr3, estimateInputs]() {
         bypassRequested = bypass;
+        fsr3Backend = fsr3;
+        estimateInputsRequested = estimateInputs;
         wchar_t temp[MAX_PATH] = {}, path[MAX_PATH] = {};
         DWORD length = GetTempPathW(MAX_PATH, temp);
         if (length && length < MAX_PATH && swprintf_s(path, L"%sGameLocker-LS-bridge-%lu.log", temp, GetCurrentProcessId()) > 0)
             _wfopen_s(&logFile, path, L"a");
-        log("opt-in presentation bridge starting computeBypassRequested=%u", bypass ? 1u : 0u);
+        log("opt-in presentation bridge starting backend=%s computeBypassRequested=%u estimateInputs=%u", fsr3 ? "FSR3" : "XeSS", bypass ? 1u : 0u, estimateInputs ? 1u : 0u);
         LARGE_INTEGER hz;
         if (!module || !QueryPerformanceFrequency(&hz) || hz.QuadPart <= 0) {
             disable("invalid module or QPC"); return;
@@ -284,12 +289,12 @@ bool start(HMODULE module, bool bypass) {
         DWORD count = GetModuleFileNameW(module, dllPath, 32768);
         if (!count || count >= 32768) { disable("module path unavailable"); return; }
         wchar_t* slash = wcsrchr(dllPath, L'\\');
-        if (!slash || wcscpy_s(slash + 1, 32768 - static_cast<size_t>(slash + 1 - dllPath), L"xel_fg.dll")) {
+        if (!slash || wcscpy_s(slash + 1, 32768 - static_cast<size_t>(slash + 1 - dllPath), fsr3 ? L"fsr_fg.dll" : L"xel_fg.dll")) {
             disable("sibling path invalid"); return;
         }
         HMODULE dll = LoadLibraryExW(dllPath, nullptr,
             LOAD_LIBRARY_SEARCH_DLL_LOAD_DIR | LOAD_LIBRARY_SEARCH_DEFAULT_DIRS);
-        if (!dll) { log("LoadLibraryEx failed error=%lu", GetLastError()); disable("xel_fg unavailable"); return; }
+        if (!dll) { log("LoadLibraryEx failed error=%lu", GetLastError()); disable("frame generation backend unavailable"); return; }
         // Intentionally retain the backend module; no unloading or thread teardown in DllMain.
         api.create = reinterpret_cast<decltype(api.create)>(GetProcAddress(dll, "xelCreate"));
         api.submit = reinterpret_cast<decltype(api.submit)>(GetProcAddress(dll, "xelSubmit"));
@@ -297,7 +302,8 @@ bool start(HMODULE module, bool bypass) {
         api.destroy = reinterpret_cast<decltype(api.destroy)>(GetProcAddress(dll, "xelDestroy"));
         api.error = reinterpret_cast<decltype(api.error)>(GetProcAddress(dll, "xelGetLastError"));
         api.adopt = reinterpret_cast<decltype(api.adopt)>(GetProcAddress(dll, "xelAdoptThread"));
-        if (!api.create || !api.submit || !api.stats || !api.destroy || !api.error || !api.adopt) {
+        api.estimate = reinterpret_cast<decltype(api.estimate)>(GetProcAddress(dll, "xelSetEstimation"));
+        if (!api.create || !api.submit || !api.stats || !api.destroy || !api.error || !api.adopt || !api.estimate) {
             disable("missing backend exports"); return;
         }
         HANDLE thread = CreateThread(nullptr, 0, windowThread, nullptr, 0, nullptr);
@@ -522,6 +528,11 @@ bool present(IDXGISwapChain* swapchain, UINT flags) {
                 log("xelCreate failed hr=%08lx: %s", hr, api.error());
                 disable("backend create failed"); cleanup(); return false;
             }
+            hr = api.estimate(session, estimateInputsRequested ? 1u : 0u);
+            if (FAILED(hr)) {
+                log("xelSetEstimation failed hr=%08lx: %s", hr, api.error());
+                disable("backend estimation setup failed"); cleanup(); return false;
+            }
             log("backend session created on render thread");
         }
         const double milliseconds =
@@ -570,11 +581,11 @@ bool present(IDXGISwapChain* swapchain, UINT flags) {
     const bool take = !disabled.load() && affinity.load() && wanted.load() && IsWindowVisible(output) != FALSE;
     static uint64_t suppressed = 0;
     if (take && (++suppressed == 1 || suppressed % 240 == 0))
-        log("original Present suppressed=%llu; XeSS output active (not scanout measurement)", suppressed);
+        log("original Present suppressed=%llu; %s output active (not scanout measurement)", suppressed, fsr3Backend ? "FSR3" : "XeSS");
     if (take) {
         if (!notified.load()) {
             wchar_t name[96] = {};
-            swprintf_s(name, L"Local\\GameLocker-XeSS-Active-%lu", GetCurrentProcessId());
+            swprintf_s(name, L"Local\\GameLocker-%s-Active-%lu", fsr3Backend ? L"FSR3" : L"XeSS", GetCurrentProcessId());
             HANDLE event = OpenEventW(EVENT_MODIFY_STATE, FALSE, name);
             if (event) {
                 notified.store(SetEvent(event) != FALSE);

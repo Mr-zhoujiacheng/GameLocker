@@ -439,6 +439,8 @@ public sealed partial class AddItemPage : Page, ISettingsGamepad
             UiSound.Play(UiSoundKind.Select);
     }
 
+    /// <summary>程序内同步 FSR4 超分与帧生成模式时，抑制联动事件</summary>
+    private bool _suppressLosslessSync;
     /// <summary>程序内回填"具体版本 / FSR4 版本"下拉时，抑制 SelectionChanged 触发的后台下载</summary>
     private bool _suppressOptiTagEvent;
 
@@ -525,7 +527,9 @@ public sealed partial class AddItemPage : Page, ISettingsGamepad
             list.Add(LosslessClearButton);
             list.Add(LosslessProfileCombo);
             list.Add(LosslessNewProfileButton);
-            list.Add(LosslessXeSSBypassToggle);
+            list.Add(LosslessFsr4UpscaleToggle);
+            list.Add(LosslessFrameGenCombo);
+            list.Add(LosslessEstimateInputsToggle);
         }
         // 小猫咪：订阅链接 / 代理模式 / 本地代理端口 / 内核版本与更新 / 节点下拉
         if (ProxyRow.Visibility == vis)
@@ -864,7 +868,9 @@ public sealed partial class AddItemPage : Page, ISettingsGamepad
                 LosslessPathText.Text = string.IsNullOrWhiteSpace(item.LosslessPath)
                     ? "自动检测（Steam 库）" : item.LosslessPath!;
                 ReloadLosslessProfiles(item.LosslessProfile);
-                LosslessXeSSBypassToggle.IsOn = item.LosslessXeSSBypass;
+                LosslessFrameGenCombo.SelectedIndex = item.LosslessFsr4Upscale ? 0 : item.LosslessFsr3Bypass ? 2 : item.LosslessXeSSBypass ? 1 : 0;
+                LosslessFsr4UpscaleToggle.IsOn = item.LosslessFsr4Upscale;
+                LosslessEstimateInputsToggle.IsOn = item.LosslessEstimateInputs;
             }
             // 小猫咪：订阅链接 / 代理模式 / 本地代理端口 / 节点下拉（磁贴固定显示 "Clash"，不允许改名）
             var isProxy = item.WidgetKind == WidgetKind.Clash;
@@ -1984,7 +1990,10 @@ public sealed partial class AddItemPage : Page, ISettingsGamepad
                     it.LosslessPath = string.IsNullOrWhiteSpace(_pendingLosslessPath) ? null : _pendingLosslessPath.Trim();
                     var profile = CurrentLosslessProfile();
                     it.LosslessProfile = string.IsNullOrWhiteSpace(profile) ? null : profile;
-                    it.LosslessXeSSBypass = LosslessXeSSBypassToggle.IsOn;
+                    it.LosslessXeSSBypass = !LosslessFsr4UpscaleToggle.IsOn && LosslessFrameGenCombo.SelectedIndex == 1;
+                    it.LosslessFsr3Bypass = !LosslessFsr4UpscaleToggle.IsOn && LosslessFrameGenCombo.SelectedIndex == 2;
+                    it.LosslessFsr4Upscale = LosslessFsr4UpscaleToggle.IsOn;
+                    it.LosslessEstimateInputs = LosslessEstimateInputsToggle.IsOn;
                     LosslessScalingService.InvalidateCache(); // 路径变化后让磁贴状态立即重新检测
                 }
                 else if (it.WidgetKind == WidgetKind.DownloadMode)
@@ -2353,6 +2362,23 @@ public sealed partial class AddItemPage : Page, ISettingsGamepad
     // 小黄鸭配置：展开下拉时重读 Settings.xml（在小黄鸭里新建/删除配置后无需退出本页）
     private void OnLosslessProfileDropDownOpened(object? sender, object e) =>
         ReloadLosslessProfiles(CurrentLosslessProfile());
+
+    // FSR4 超分接管缩放通道，与帧生成的两种实验模式互斥
+    private void OnLosslessFsr4Toggled(object sender, Microsoft.UI.Xaml.RoutedEventArgs e)
+    {
+        if (_suppressLosslessSync || !LosslessFsr4UpscaleToggle.IsOn) return;
+        _suppressLosslessSync = true;
+        LosslessFrameGenCombo.SelectedIndex = 0;
+        _suppressLosslessSync = false;
+    }
+
+    private void OnLosslessFrameGenChanged(object sender, Microsoft.UI.Xaml.Controls.SelectionChangedEventArgs e)
+    {
+        if (_suppressLosslessSync || LosslessFrameGenCombo.SelectedIndex == 0) return;
+        _suppressLosslessSync = true;
+        LosslessFsr4UpscaleToggle.IsOn = false;
+        _suppressLosslessSync = false;
+    }
 
     /// <summary>小黄鸭：当前下拉选中的配置名（空串=不指定，跟随小黄鸭）</summary>
     private string CurrentLosslessProfile() =>

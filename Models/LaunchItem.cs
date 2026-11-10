@@ -399,6 +399,15 @@ public class LaunchItem
     /// <summary>实验性 XeSS 接管并旁路 LSFG 计算（仅 WidgetKind.LosslessScaling 使用，默认关闭）</summary>
     public bool LosslessXeSSBypass { get; set; } = false;
 
+    /// <summary>实验性 FSR3 接管并旁路 LSFG 计算（仅 WidgetKind.LosslessScaling 使用，默认关闭）</summary>
+    public bool LosslessFsr3Bypass { get; set; } = false;
+
+    /// <summary>实验性 FSR4 后置超分，固定使用估算运动与伪深度（默认关闭）</summary>
+    public bool LosslessFsr4Upscale { get; set; } = false;
+
+    /// <summary>XeSS / FSR3 实验模式从画面估算运动与伪深度（默认关闭，不影响原生 LSFG）</summary>
+    public bool LosslessEstimateInputs { get; set; } = false;
+
     /// <summary>小猫咪：Clash/Mihomo 订阅链接（仅 WidgetKind.Clash 使用）</summary>
     public string ProxySubscription { get; set; } = "";
 
@@ -486,6 +495,9 @@ public class LaunchItem
         LosslessPath = LosslessPath,
         LosslessProfile = LosslessProfile,
         LosslessXeSSBypass = LosslessXeSSBypass,
+        LosslessFsr3Bypass = LosslessFsr3Bypass,
+        LosslessFsr4Upscale = LosslessFsr4Upscale,
+        LosslessEstimateInputs = LosslessEstimateInputs,
         ProxySubscription = ProxySubscription,
         ProxyPort = ProxyPort,
         ProxySelected = ProxySelected,

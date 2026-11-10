@@ -38,12 +38,19 @@ int main(int argc, char** argv) {
     int exitCode = 0;
     try {
         unsigned frames = 120, adapterIndex = 0;
-        bool explicitAdapter = false, disabled = false, exercise = false;
+        bool explicitAdapter = false, disabled = false, exercise = false, estimateInputs = false;
+#ifdef FSR_SMOKE
+        unsigned hiddenFrames = 0;
+#endif
         for (int i = 1; i < argc; ++i) {
             if (!strcmp(argv[i], "--frames") && i + 1 < argc) frames = number(argv[++i]);
             else if (!strcmp(argv[i], "--adapter") && i + 1 < argc) { adapterIndex = number(argv[++i]); explicitAdapter = true; }
             else if (!strcmp(argv[i], "--disabled")) disabled = true;
             else if (!strcmp(argv[i], "--exercise")) exercise = true;
+            else if (!strcmp(argv[i], "--estimate-inputs")) estimateInputs = true;
+#ifdef FSR_SMOKE
+            else if (!strcmp(argv[i], "--hidden-frames") && i + 1 < argc) hiddenFrames = number(argv[++i]);
+#endif
             else throw std::runtime_error("Usage: xel_smoke [--frames N] [--disabled] [--adapter index] [--exercise]");
         }
         if (!frames || (exercise && frames < 12)) throw std::runtime_error("Frames must be >0; exercise requires >=12");
@@ -68,10 +75,13 @@ int main(int argc, char** argv) {
         constexpr UINT width = 1280, height = 720;
         const DWORD style = WS_OVERLAPPED | WS_CAPTION | WS_SYSMENU | WS_MINIMIZEBOX;
         RECT rect = {0, 0, (LONG)width, (LONG)height}; AdjustWindowRect(&rect, style, FALSE);
-        window = CreateWindowExW(0, wc.lpszClassName, L"XeSS-FG standalone D3D11 smoke (zero MV / flat depth)", style,
+        window = CreateWindowExW(0, wc.lpszClassName, L"Frame-generation standalone D3D11 smoke", style,
             CW_USEDEFAULT, CW_USEDEFAULT, rect.right - rect.left, rect.bottom - rect.top, nullptr, nullptr, wc.hInstance, nullptr);
         if (!window) hr(HRESULT_FROM_WIN32(GetLastError()), "Create window");
-        ShowWindow(window, SW_SHOW); UpdateWindow(window);
+#ifdef FSR_SMOKE
+        if (!hiddenFrames)
+#endif
+        { ShowWindow(window, SW_SHOW); UpdateWindow(window); }
         ComPtr<ID3D11Device> device;
         ComPtr<ID3D11DeviceContext> context;
         D3D_FEATURE_LEVEL obtained;
@@ -85,6 +95,8 @@ int main(int argc, char** argv) {
         ComPtr<ID3D11RenderTargetView> rtv; hr(device->CreateRenderTargetView(texture.Get(), nullptr, &rtv), "Create source RTV");
         hr(xelCreate(device.Get(), context.Get(), window, width, height, &session), "xelCreate");
         hr(xelSetEnabled(session, !disabled), "Initial enable state");
+        hr(xelSetEstimation(session, estimateInputs), "Initial estimation state");
+        printf("screen_estimation=%u (motion-derived pseudo-depth, not engine data)\n", estimateInputs);
         if (exercise) {
             expect(xelSubmit(session, nullptr, 16.6667f, 0), E_INVALIDARG, "null source");
             expect(xelSubmit(session, texture.Get(), 0, 0), E_INVALIDARG, "zero milliseconds");
@@ -116,6 +128,17 @@ int main(int argc, char** argv) {
                 if (msg.message == WM_QUIT) throw std::runtime_error("Window closed before requested frames completed");
                 TranslateMessage(&msg); DispatchMessageW(&msg);
             }
+#ifdef FSR_SMOKE
+            if (hiddenFrames && frame == hiddenFrames) {
+                printf("bootstrap: showing window independently of presentation stats\n");
+                ShowWindow(window, SW_SHOWNOACTIVATE); UpdateWindow(window);
+                hr(xelResetHistory(session), "Reset after hidden bootstrap");
+            }
+#endif
+            if (exercise && estimateInputs && frame == frames / 4)
+                hr(xelSetEstimation(session, 0), "Estimation off");
+            if (exercise && estimateInputs && frame == 3 * frames / 4)
+                hr(xelSetEstimation(session, 1), "Estimation restore");
             if (exercise && frame == frames / 3) {
                 currentEnabled = false; hr(xelSetEnabled(session, 0), "Toggle off");
             }
@@ -131,6 +154,16 @@ int main(int argc, char** argv) {
             context1->ClearView(rtv.Get(), foreground, &area, 1);
             hr(xelSubmit(session, texture.Get(), 16.6667f, frame == 0), "xelSubmit");
             hr(xelGetStats(session, &stats), "xelGetStats");
+#ifdef FSR_SMOKE
+            if (frame < hiddenFrames) {
+                printf("hidden=%u sent=%u generatedResult=%d flags=0x%X warnings=%llu\n", frame,
+                    stats.lastFramesSent, stats.lastFrameGenerationResult, stats.flags,
+                    (unsigned long long)stats.statusWarnings);
+                if (!stats.lastFramesSent && (stats.flags & XEL_STATUS_LAST_INTERPOLATED))
+                    throw std::runtime_error("No successful presentation but interpolation flag set");
+                continue;
+            }
+#endif
             if (stats.flags & XEL_STATUS_VALID) {
                 if (!currentEnabled) {
                     if (stats.lastFramesSent != 1 || (stats.flags & (XEL_STATUS_SDK_ENABLED | XEL_STATUS_LAST_INTERPOLATED)))

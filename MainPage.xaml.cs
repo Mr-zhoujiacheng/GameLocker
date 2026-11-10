@@ -3884,39 +3884,51 @@ public sealed partial class MainPage : Page
         // 小黄鸭以管理员身份运行时，普通权限的启动器无法收起它的窗口，提示里说明一下
         var minSuffix = LosslessScalingService.MinimizeBlocked ? "（小黄鸭以管理员运行，窗口无法最小化）" : "";
         var minKind = minSuffix.Length > 0 ? ToastKind.Warning : ToastKind.Success;
+        // 游戏里按 A 时启动器已收进托盘，页面内的提示根本看不见，改用独立悬浮提示。
+        void Report(string text, ToastKind kind = ToastKind.Success, UiSoundKind? sound = null)
+        {
+            if (App.Main is { IsShown: false })
+                FloatingToastService.Show(text, warning: kind == ToastKind.Warning);
+            else
+                ShowToast(text, kind, sound: sound);
+        }
         switch (result)
         {
             case LosslessScalingService.ScaleResult.NotInstalled:
-                ShowToast("未检测到小黄鸭：请先安装，或按 R3 指定程序", ToastKind.Warning);
+                Report("未检测到小黄鸭：请先安装，或按 R3 指定程序", ToastKind.Warning);
                 break;
             case LosslessScalingService.ScaleResult.LaunchFailed:
-                ShowToast("小黄鸭启动失败", ToastKind.Warning);
+                Report("小黄鸭启动失败", ToastKind.Warning);
                 break;
             case LosslessScalingService.ScaleResult.NoGame:
-                ShowToast("未检测到游戏：小黄鸭已打开并最小化，进入游戏后再按 A 开启插帧", ToastKind.Warning);
+                Report(item.LosslessFsr4Upscale
+                    ? "未检测到游戏：小黄鸭已打开并最小化，进入游戏后再按 A 开启超分"
+                    : "未检测到游戏：小黄鸭已打开并最小化，进入游戏后再按 A 开启插帧", ToastKind.Warning);
                 break;
             case LosslessScalingService.ScaleResult.FocusFailed:
-                ShowToast("切不回游戏窗口：请进入游戏后再按 A", ToastKind.Warning);
+                Report("切不回游戏窗口：请进入游戏后再按 A", ToastKind.Warning);
                 break;
             case LosslessScalingService.ScaleResult.FrameGenOn:
-                ShowToast("已开启插帧" + minSuffix, minKind, sound: UiSoundKind.Select);
+                Report("已开启插帧" + minSuffix, minKind, UiSoundKind.Select);
                 break;
             case LosslessScalingService.ScaleResult.FrameGenOff:
-                ShowToast("已关闭插帧" + minSuffix, minKind, sound: UiSoundKind.Select);
+                Report("已关闭插帧" + minSuffix, minKind, UiSoundKind.Select);
                 break;
             case LosslessScalingService.ScaleResult.BridgeToggleSent:
-                ShowToast("XeSS 实验模式：已发送捕获切换热键，请在游戏中确认画面", ToastKind.Warning);
+                Report(item.LosslessFsr4Upscale
+                    ? "FSR4 超分接管中：已发送小黄鸭缩放开关热键，请在游戏中确认画面；成功后会提示“FSR4 超分已运行”"
+                    : $"{(item.LosslessFsr3Bypass ? "FSR3" : "XeSS")} 实验模式：已发送捕获切换热键，请在游戏中确认画面", ToastKind.Warning);
                 break;
             case LosslessScalingService.ScaleResult.BridgeRestartRequired:
-                FloatingToastService.Show("请重启 Lossless Scaling，驻留桥接不能热卸载", warning: true);
-                ShowToast("请完全退出并重启 Lossless Scaling 后再操作；驻留桥接不能热卸载", ToastKind.Warning);
+                Report("请完全退出并重启 Lossless Scaling 后再操作；驻留桥接不能热卸载", ToastKind.Warning);
                 break;
             case LosslessScalingService.ScaleResult.BridgeFailed:
-                FloatingToastService.Show(LosslessScalingService.BridgeError ?? "XeSS 接入失败，请重启 LS 后重试", warning: true);
-                ShowToast(LosslessScalingService.BridgeError ?? "XeSS 接入失败，请重启 LS 后重试", ToastKind.Warning);
+                Report(LosslessScalingService.BridgeError ?? $"{(item.LosslessFsr4Upscale ? "FSR4" : item.LosslessFsr3Bypass ? "FSR3" : "XeSS")} 接入失败，请重启 LS 后重试", ToastKind.Warning);
                 break;
             case LosslessScalingService.ScaleResult.ToggleFailed:
-                ShowToast("未能切换插帧：请在小黄鸭里按 Ctrl+Alt+S 确认热键", ToastKind.Warning);
+                Report(item.LosslessFsr4Upscale
+                    ? "未能切换超分：请在小黄鸭里按 Ctrl+Alt+S 确认热键"
+                    : "未能切换插帧：请在小黄鸭里按 Ctrl+Alt+S 确认热键", ToastKind.Warning);
                 break;
         }
     }
@@ -5029,7 +5041,10 @@ public sealed partial class MainPage : Page
             _perfPowerPill.Background = new SolidColorBrush(on ? Windows.UI.Color.FromArgb(0xFF, 0xFF, 0x9A, 0x4D) : Windows.UI.Color.FromArgb(0x1F, 0xFF, 0xFF, 0xFF));
             _perfPowerDot!.HorizontalAlignment = on ? HorizontalAlignment.Right : HorizontalAlignment.Left;
             _perfPowerDot.Margin = on ? new Thickness(0, 0, 2, 0) : new Thickness(2, 0, 0, 0);
-            _perfRowHints[_perfPowerRow!].Text = _perfPowerState.Message;
+            var saved = SettingsService.Current;
+            _perfRowHints[_perfPowerRow!].Text = !on && saved.CpuPowerPl1 > 0
+                ? $"已保存并开机自动恢复：持续 {saved.CpuPowerPl1} W / 短时 {(saved.CpuPowerPl2 > 0 ? saved.CpuPowerPl2 : saved.CpuPowerPl1)} W · 点击可接管调节"
+                : _perfPowerState.Message;
             for (int i = 0; i < _perfPowerControls.Count; i++)
             {
                 var c = _perfPowerControls[i];
@@ -5062,6 +5077,25 @@ public sealed partial class MainPage : Page
         finally { _perfPowerLoading = false; RenderCpuPower(); }
     }
 
+    /// <summary>保存当前生效的功耗限制，并注册登录时静默写回硬件的计划任务（重启后自动恢复）</summary>
+    private async Task SaveCpuPowerSettingsAsync()
+    {
+        var state = await Task.Run(CpuPowerService.Read);
+        if (!state.Enabled || state.Limits.Length == 0) return;
+        CpuPowerAutoApply.RememberOriginals(state);
+        var pl1 = (int)Math.Round(state.Limits[0].Watts);
+        var pl2 = state.Limits.Length > 1 ? (int)Math.Round(state.Limits[1].Watts) : 0;
+        var fppt = state.Limits.Length > 2 ? (int)Math.Round(state.Limits[2].Watts) : 0;
+        SettingsService.Update(s =>
+        {
+            s.CpuPowerPl1 = pl1;
+            s.CpuPowerPl2 = pl2;
+            s.CpuPowerFppt = fppt;
+        });
+        var task = await Task.Run(CpuPowerService.EnsureAutoApplyTask);
+        if (!task.Ok) ShowToast("功耗已保存，但开机自动恢复未注册：" + task.Message, ToastKind.Warning);
+    }
+
     private async void ToggleCpuPower()
     {
         if (!_perfOpen || _perfBusy || _perfSaving || _perfPowerLoading) return;
@@ -5069,7 +5103,11 @@ public sealed partial class MainPage : Page
         RenderCpuPower();
         try
         {
-            var result = await Task.Run(() => _perfPowerState.Enabled ? CpuPowerService.Disable() : CpuPowerService.Enable());
+            var disabling = _perfPowerState.Enabled;
+            var result = await Task.Run(() => disabling ? CpuPowerService.Disable() : CpuPowerService.Enable());
+            // 关闭功耗接管：清除保存的目标值，避免下次登录又把限制写回去
+            if (disabling && result.Ok)
+                SettingsService.Update(s => { s.CpuPowerPl1 = 0; s.CpuPowerPl2 = 0; s.CpuPowerFppt = 0; });
             _perfPowerState = await Task.Run(CpuPowerService.Read);
             ShowToast(result.Message, result.Ok ? ToastKind.Success : ToastKind.Warning);
         }
@@ -5091,6 +5129,7 @@ public sealed partial class MainPage : Page
             bool confirmed = result.Ok && index < _perfPowerState.Limits.Length
                 && Math.Abs(_perfPowerState.Limits[index].Watts - watts) <= 0.25;
             ShowToast(confirmed || !result.Ok ? result.Message : "写入后再次读取未能确认目标值，请检查固件覆盖或助手状态", confirmed ? ToastKind.Success : ToastKind.Warning);
+            if (confirmed) await SaveCpuPowerSettingsAsync();
         }
         finally { _perfBusy = false; RenderCpuPower(); }
     }
@@ -5259,6 +5298,7 @@ public sealed partial class MainPage : Page
                 var (powerOk, powerMessage) = await ApplyPowerLimitsAsync(
                     targets, limits.Select(l => l.Watts).ToArray());
                 if (!powerOk) failures.Add(powerMessage);
+                else if (targets.Length > 0) await SaveCpuPowerSettingsAsync(); // 记住目标值，重启后自动写回
             }
 
             // 4) CPU 睿频 / 最高频率
@@ -6963,6 +7003,7 @@ public sealed partial class MainPage : Page
             await CpuPowerService.RefreshCacheAsync();
             RefreshPerformanceTiles();
             ShowToast($"持续功耗 {pl1} W（短时 {pl2} W / 瞬时 {fppt} W）", ToastKind.Success);
+            await SaveCpuPowerSettingsAsync(); // 记住目标值，重启后自动写回
         }
         else
         {

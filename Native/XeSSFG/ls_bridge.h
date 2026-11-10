@@ -8,7 +8,7 @@
 // Hooks must guard recursion, and call afterDispatch AFTER the original Dispatch.
 // Compute bypass is a separate opt-in; restart LS to restore its FG history.
 namespace lsbridge {
-bool start(HMODULE module, bool bypass = false);
+bool start(HMODULE module, bool bypass = false, bool fsr3 = false, bool estimateInputs = false);
 bool skipDispatch(ID3D11DeviceContext* context);
 // When takeover fails after bypass, copy raw to LS or suppress unsafe presentation.
 bool fallbackPresent(IDXGISwapChain* swapchain, UINT flags);

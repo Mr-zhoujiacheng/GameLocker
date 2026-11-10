@@ -10,6 +10,9 @@
 #include <cstdarg>
 #include <cstdint>
 #include "ls_bridge.h"
+#ifdef XEL_FSR4_SR
+#include "fsr_sr.h"
+#endif
 
 using Microsoft::WRL::ComPtr;
 namespace {
@@ -20,6 +23,15 @@ std::atomic<bool> ready{false};
 thread_local bool inside = false;
 std::unordered_map<void*, unsigned> dispatchCounts;
 unsigned presentCount = 0, copyCount = 0;
+bool upscaleMode = false, upscaleStopped = false;
+constexpr GUID upscaleIdentityTag = {0xa3e32713,0x964d,0x4f02,{0x91,0x2f,0x40,0xa6,0xda,0x21,0x45,0x82}};
+struct UpscaleIdentity { uint64_t hash; uint64_t bytes; };
+// Filled only after bytecode capture from the actual LS scaling pass.
+// Calibrated on this LS build: 1280x800 BGRA immutable SRV -> 1920x1200 RGBA UAV,
+// 16x16 groups. The following same-size pass is excluded by the size test.
+constexpr uint64_t upscaleShaderHash = 0xd491666dc80f4fa5ull;
+constexpr SIZE_T upscaleShaderBytes = 33188;
+unsigned upscaleReports = 0;
 using Dispatch = void(STDMETHODCALLTYPE*)(ID3D11DeviceContext*, UINT, UINT, UINT);
 using Indirect = void(STDMETHODCALLTYPE*)(ID3D11DeviceContext*, ID3D11Buffer*, UINT);
 using Present = HRESULT(STDMETHODCALLTYPE*)(IDXGISwapChain*, UINT, UINT);
@@ -27,8 +39,13 @@ using Present1 = HRESULT(STDMETHODCALLTYPE*)(IDXGISwapChain1*, UINT, UINT, const
 using CreateCS = HRESULT(STDMETHODCALLTYPE*)(ID3D11Device*, const void*, SIZE_T, ID3D11ClassLinkage*, ID3D11ComputeShader**);
 using Copy = void(STDMETHODCALLTYPE*)(ID3D11DeviceContext*, ID3D11Resource*, ID3D11Resource*);
 using CopyRegion = void(STDMETHODCALLTYPE*)(ID3D11DeviceContext*, ID3D11Resource*, UINT, UINT, UINT, UINT, ID3D11Resource*, UINT, const D3D11_BOX*);
+using Draw = void(STDMETHODCALLTYPE*)(ID3D11DeviceContext*, UINT, UINT);
+using DrawIndexed = void(STDMETHODCALLTYPE*)(ID3D11DeviceContext*, UINT, UINT, INT);
 Dispatch originalDispatch = nullptr;
 Indirect originalIndirect = nullptr;
+Draw originalDraw = nullptr;
+DrawIndexed originalDrawIndexed = nullptr;
+unsigned drawCandidates = 0;
 Present originalPresent = nullptr;
 Present1 originalPresent1 = nullptr;
 CreateCS originalCreateCS = nullptr;
@@ -58,7 +75,9 @@ void inspect(ID3D11DeviceContext* context, UINT x, UINT y, UINT z, bool indirect
         context->CSGetShader(&shader, nullptr, nullptr);
         // Bounded per shader: this is a discovery trace, never an FG classifier.
         if (dispatchCounts.size() < 4096 && ++dispatchCounts[shader.Get()] <= 4) {
-            record("dispatch context=%p shader=%p groups=%u,%u,%u indirect=%u", context, shader.Get(), x, y, z, indirect);
+            UpscaleIdentity identity = {}; UINT identitySize = sizeof(identity);
+            if (shader) shader->GetPrivateData(upscaleIdentityTag, &identitySize, &identity);
+            record("dispatch context=%p shader=%p groups=%u,%u,%u indirect=%u fnv1a64=%016llx bytes=%llu", context, shader.Get(), x, y, z, indirect, identity.hash, identity.bytes);
             ID3D11ShaderResourceView* srvs[D3D11_COMMONSHADER_INPUT_RESOURCE_SLOT_COUNT] = {};
             context->CSGetShaderResources(0, D3D11_COMMONSHADER_INPUT_RESOURCE_SLOT_COUNT, srvs);
             for (UINT i = 0; i < D3D11_COMMONSHADER_INPUT_RESOURCE_SLOT_COUNT; ++i) if (srvs[i]) {
@@ -73,12 +92,59 @@ void inspect(ID3D11DeviceContext* context, UINT x, UINT y, UINT z, bool indirect
     } catch (...) { /* A diagnostic must not interrupt the renderer. */ }
     inside = false;
 }
+bool upscaleDispatch(ID3D11DeviceContext* c, UINT x, UINT y, UINT z) {
+#ifdef XEL_FSR4_SR
+    if (!upscaleMode || upscaleStopped || c->GetType() != D3D11_DEVICE_CONTEXT_IMMEDIATE) return false;
+    if (GetAsyncKeyState(VK_ESCAPE) & 0x8000) { upscaleStopped = true; record("FSR4 stopped by Escape; original LS scaling retained"); return false; }
+    ComPtr<ID3D11ComputeShader> shader; c->CSGetShader(&shader, nullptr, nullptr);
+    if (!shader) return false;
+    UpscaleIdentity identity = {}; UINT size = sizeof(identity);
+    const bool knownBytecode = SUCCEEDED(shader->GetPrivateData(upscaleIdentityTag, &size, &identity)) &&
+        size == sizeof(identity) && identity.hash == upscaleShaderHash && identity.bytes == upscaleShaderBytes;
+    ComPtr<ID3D11ShaderResourceView> srv; ComPtr<ID3D11UnorderedAccessView> uav;
+    c->CSGetShaderResources(0, 1, &srv); c->CSGetUnorderedAccessViews(0, 1, &uav);
+    if (!srv || !uav) return false;
+    ComPtr<ID3D11Resource> source, target; srv->GetResource(&source); uav->GetResource(&target);
+    ComPtr<ID3D11Texture2D> input, output;
+    if (FAILED(source.As(&input)) || FAILED(target.As(&output))) return false;
+    D3D11_TEXTURE2D_DESC a = {}, b = {}; input->GetDesc(&a); output->GetDesc(&b);
+    D3D11_SHADER_RESOURCE_VIEW_DESC sv = {}; srv->GetDesc(&sv);
+    D3D11_UNORDERED_ACCESS_VIEW_DESC uv = {}; uav->GetDesc(&uv);
+    if (a.Width < 320 || a.Height < 200 || b.Width <= a.Width || b.Height <= a.Height ||
+        a.Format != DXGI_FORMAT_B8G8R8A8_UNORM || b.Format != DXGI_FORMAT_R8G8B8A8_UNORM ||
+        a.MipLevels != 1 || b.MipLevels != 1 || a.ArraySize != 1 || b.ArraySize != 1 ||
+        a.SampleDesc.Count != 1 || b.SampleDesc.Count != 1 ||
+        sv.ViewDimension != D3D11_SRV_DIMENSION_TEXTURE2D || sv.Texture2D.MostDetailedMip != 0 ||
+        uv.ViewDimension != D3D11_UAV_DIMENSION_TEXTURE2D || uv.Texture2D.MipSlice != 0 ||
+        x != (b.Width + 15) / 16 || y != (b.Height + 15) / 16 || z != 1) return false;
+    // The calibrated bytecode is preferred. If another LS scaling algorithm is
+    // selected the shader changes, so accept the exact resource signature too:
+    // a smaller BGRA source written to a larger RGBA target at 16x16 groups.
+    static bool loggedSignatureMatch = false;
+    if (!knownBytecode && !loggedSignatureMatch) {
+        loggedSignatureMatch = true;
+        record("FSR4 scaling pass matched by resource signature; shader=%p fnv1a64=%016llx bytes=%llu calibrated=%016llx/%llu",
+            shader.Get(), identity.hash, identity.bytes, upscaleShaderHash, static_cast<unsigned long long>(upscaleShaderBytes));
+    }
+    const bool success = fsrsr::run(c, srv.Get(), output.Get());
+    if (upscaleReports++ < 8) record("FSR4 upscale success=%u input=%ux%u output=%ux%u %s", success, a.Width,a.Height,b.Width,b.Height,fsrsr::status());
+    static bool notifiedUpscale = false;
+    if (success && !notifiedUpscale) {
+        wchar_t name[128]; swprintf_s(name, L"Local\\GameLocker-FSR4-Active-%lu", GetCurrentProcessId());
+        HANDLE event = OpenEventW(EVENT_MODIFY_STATE, FALSE, name);
+        if (event) { notifiedUpscale = SetEvent(event) != FALSE; CloseHandle(event); }
+    }
+    return success;
+#else
+    (void)c; (void)x; (void)y; (void)z; return false;
+#endif
+}
 void STDMETHODCALLTYPE hookDispatch(ID3D11DeviceContext* c, UINT x, UINT y, UINT z) {
     inspect(c,x,y,z,false);
     bool skip = false;
     if (ready && !inside) {
         inside = true;
-        try { skip = lsbridge::skipDispatch(c); } catch (...) {}
+        try { skip = upscaleDispatch(c,x,y,z) || lsbridge::skipDispatch(c); } catch (...) {}
         inside = false;
     }
     if (skip) return;
@@ -100,6 +166,8 @@ HRESULT STDMETHODCALLTYPE hookCreateCS(ID3D11Device* d, const void* code, SIZE_T
             for (SIZE_T i = 0; i < size; ++i) { hash ^= bytes[i]; hash *= 1099511628211ull; }
             std::lock_guard<std::mutex> lock(gate);
             record("shader device=%p shader=%p bytes=%zu fnv1a64=%016llx", d, *result, size, hash);
+            const UpscaleIdentity identity = {hash, static_cast<uint64_t>(size)};
+            (*result)->SetPrivateData(upscaleIdentityTag, sizeof(identity), &identity);
             lsbridge::registerShader(*result, hash, size);
         } catch (...) {}
         inside = false;
@@ -121,6 +189,46 @@ void inspectCopy(ID3D11DeviceContext* c, ID3D11Resource* dst, ID3D11Resource* sr
 void STDMETHODCALLTYPE hookCopy(ID3D11DeviceContext* c, ID3D11Resource* dst, ID3D11Resource* src) { inspectCopy(c,dst,src,false); originalCopy(c,dst,src); }
 void STDMETHODCALLTYPE hookRegion(ID3D11DeviceContext* c, ID3D11Resource* dst, UINT sub, UINT x, UINT y, UINT z, ID3D11Resource* src, UINT ssub, const D3D11_BOX* box) {
     inspectCopy(c,dst,src,true); originalRegion(c,dst,sub,x,y,z,src,ssub,box);
+}
+// Pixel-shader scaling candidate: PS t0 and the bound render target have different sizes.
+void inspectDraw(ID3D11DeviceContext* context) {
+    if (!ready || inside || drawCandidates >= 48) return;
+    inside = true;
+    try {
+        std::lock_guard<std::mutex> lock(gate);
+        ComPtr<ID3D11PixelShader> shader;
+        ComPtr<ID3D11ShaderResourceView> srv;
+        ComPtr<ID3D11RenderTargetView> rtv;
+        context->PSGetShader(&shader, nullptr, nullptr);
+        context->PSGetShaderResources(0, 1, &srv);
+        context->OMGetRenderTargets(1, &rtv, nullptr);
+        if (shader && srv && rtv) {
+            D3D11_SHADER_RESOURCE_VIEW_DESC sd = {};
+            srv->GetDesc(&sd);
+            ComPtr<ID3D11Resource> inputResource, targetResource;
+            ComPtr<ID3D11Texture2D> input, target;
+            srv->GetResource(&inputResource);
+            rtv->GetResource(&targetResource);
+            if (SUCCEEDED(inputResource.As(&input)) && SUCCEEDED(targetResource.As(&target))) {
+                D3D11_TEXTURE2D_DESC in = {}, out = {};
+                input->GetDesc(&in);
+                target->GetDesc(&out);
+                if (in.Width != out.Width || in.Height != out.Height) {
+                    ++drawCandidates;
+                    record("upscale-candidate kind=pixel shader=%p srv=%ux%u format=%u target=%ux%u format=%u view=%u",
+                        shader.Get(), in.Width, in.Height, in.Format, out.Width, out.Height, out.Format,
+                        static_cast<unsigned>(sd.ViewDimension));
+                }
+            }
+        }
+    } catch (...) {}
+    inside = false;
+}
+void STDMETHODCALLTYPE hookDraw(ID3D11DeviceContext* c, UINT count, UINT start) {
+    inspectDraw(c); originalDraw(c, count, start);
+}
+void STDMETHODCALLTYPE hookDrawIndexed(ID3D11DeviceContext* c, UINT count, UINT start, INT base) {
+    inspectDraw(c); originalDrawIndexed(c, count, start, base);
 }
 void inspectPresent(IDXGISwapChain* swap, UINT sync, UINT flags) {
     if (!ready || inside) return;
@@ -156,7 +264,7 @@ HRESULT STDMETHODCALLTYPE hookPresent1(IDXGISwapChain1* s, UINT sync, UINT flags
     inspectPresent(s,sync,flags);
     return bridgePresent(s,flags) ? S_OK : originalPresent1(s,sync,flags,p);
 }
-void* targets[7] = {};
+void* targets[9] = {};
 template<class F> bool hook(unsigned index, void* target, void* replacement, F* original) {
     targets[index] = target;
     return MH_CreateHook(target,replacement,reinterpret_cast<void**>(original)) == MH_OK;
@@ -170,6 +278,12 @@ extern "C" __declspec(dllexport) DWORD WINAPI probeStart(void* mode) {
     if (!GetTempPathW(MAX_PATH,directory)) return GetLastError();
     swprintf_s(path,L"%sGameLocker-LS-probe-%lu.log",directory,GetCurrentProcessId());
     if (_wfopen_s(&logFile,path,L"w") != 0) return ERROR_OPEN_FAILED;
+    if (logFile) {
+        // Reopen shared so the trace can be tailed while the renderer is live.
+        fclose(logFile);
+        logFile = _wfsopen(path, L"w", _SH_DENYNO);
+        if (!logFile) return ERROR_OPEN_FAILED;
+    }
     LARGE_INTEGER frequency; QueryPerformanceFrequency(&frequency);
     record("probe version=2 qpcFrequency=%lld observeOnly=%u classifier=version-specific-BGRA-RGBA", frequency.QuadPart, mode ? 0u : 1u);
     WNDCLASSW wc = {}; wc.lpfnWndProc = DefWindowProcW; wc.hInstance = GetModuleHandleW(nullptr); wc.lpszClassName = L"GameLockerProbeDiscovery";
@@ -197,7 +311,9 @@ extern "C" __declspec(dllexport) DWORD WINAPI probeStart(void* mode) {
                 && hook(3,cv[47],reinterpret_cast<void*>(hookCopy),&originalCopy)
                 && hook(4,cv[46],reinterpret_cast<void*>(hookRegion),&originalRegion)
                 && hook(5,sv[8],reinterpret_cast<void*>(hookPresent),&originalPresent)
-                && hook(6,s1v[22],reinterpret_cast<void*>(hookPresent1),&originalPresent1);
+                && hook(6,s1v[22],reinterpret_cast<void*>(hookPresent1),&originalPresent1)
+                && hook(7,cv[12],reinterpret_cast<void*>(hookDrawIndexed),&originalDrawIndexed)
+                && hook(8,cv[13],reinterpret_cast<void*>(hookDraw),&originalDraw);
         }
         if (ok) {
             for (auto target : targets) if (MH_QueueEnableHook(target) != MH_OK) ok = false;
@@ -211,11 +327,22 @@ extern "C" __declspec(dllexport) DWORD WINAPI probeStart(void* mode) {
     if (window) DestroyWindow(window);
     UnregisterClassW(wc.lpszClassName,wc.hInstance);
     record("installation success=%u hr=0x%08lx requiresCaptureRestart=1",ok,static_cast<unsigned long>(hr));
-    if (ok && (mode == reinterpret_cast<void*>(1) || mode == reinterpret_cast<void*>(2))) {
+    const auto modeBits = reinterpret_cast<uintptr_t>(mode);
+    const auto bridgeMode = modeBits & 0xffu;
+    const bool estimateInputs = (modeBits & 0x100u) != 0;
+    upscaleMode = bridgeMode == 4;
+#ifndef XEL_FSR4_SR
+    if (upscaleMode) { record("FSR4 backend not compiled"); return ERROR_NOT_SUPPORTED; }
+#endif
+    if (upscaleMode) record("FSR4 experimental upscale requested; exact shader identity required; original LS scaling retained until successful dispatch");
+    if (ok && (bridgeMode == 1 || bridgeMode == 2 || bridgeMode == 3)) {
         HMODULE module = nullptr;
         GetModuleHandleExW(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS | GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
             reinterpret_cast<LPCWSTR>(&probeStart), &module);
-        if (!lsbridge::start(module, mode == reinterpret_cast<void*>(2))) record("bridge startup failed; original presentation retained");
+        if (!lsbridge::start(module, bridgeMode == 2 || bridgeMode == 3, bridgeMode == 3, estimateInputs)) {
+            record("bridge startup failed; original presentation retained; restart required");
+            return ERROR_NOT_SUPPORTED;
+        }
     }
     ready = ok;
     return ok ? ERROR_SUCCESS : ERROR_NOT_SUPPORTED;

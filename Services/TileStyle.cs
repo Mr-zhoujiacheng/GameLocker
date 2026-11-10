@@ -3013,9 +3013,32 @@ public static class TileStyle
         refs.ModeIcon.StrokeLineJoin = PenLineJoin.Round;
 
         var state = CpuPowerService.Cached;
+        var saved = SettingsService.Current.CpuPowerPl1;
         refs.Reading.Inlines.Clear();
         if (!state.Enabled)
         {
+            // 设置里已保存过功耗目标（登录任务会静默写回）时，磁贴显示保存值而不是"未启用"，
+            // 否则会让人误以为设置没生效；此时按 A 只是接管实时调节。
+            if (saved > 0)
+            {
+                refs.ModeIcon.Opacity = 0.85;
+                refs.Reading.Inlines.Add(new Run
+                {
+                    Text = saved.ToString(),
+                    FontSize = 28,
+                    FontWeight = Microsoft.UI.Text.FontWeights.Bold
+                });
+                refs.Reading.Inlines.Add(new Run
+                {
+                    Text = " W",
+                    FontSize = 12,
+                    FontWeight = Microsoft.UI.Text.FontWeights.SemiBold,
+                    Foreground = new SolidColorBrush(Windows.UI.Color.FromArgb(0xC0, 0xFF, 0xFF, 0xFF))
+                });
+                refs.Hint.Text = "已保存 · 按 A 接管";
+                refs.Hint.Foreground = new SolidColorBrush(Windows.UI.Color.FromArgb(0xFF, 0xFF, 0xB3, 0x66));
+                return;
+            }
             // 尚未授权：磁贴提示按 A 启用（A 会拉起管理员授权助手）
             refs.ModeIcon.Opacity = 0.5;
             refs.Reading.Inlines.Add(new Run { Text = "未启用", FontSize = 20 });

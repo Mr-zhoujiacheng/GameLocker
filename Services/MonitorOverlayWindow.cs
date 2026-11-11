@@ -40,6 +40,10 @@ internal sealed class MonitorOverlayWindow : IDisposable
     private const int ChipMemory = 58;
     /// <summary>当前时间块（时:分:秒）</summary>
     private const int ChipClock = 78;
+    /// <summary>TDP 上限块（"TDP 上限" + "自动"/"65 W"）</summary>
+    private const int ChipTdp = 88;
+    /// <summary>CPU 睿频块（"睿频" + "开启"/"关闭"）</summary>
+    private const int ChipBoost = 68;
     private const int PadH = 7;
     private const int BarHeight = 36;
 
@@ -54,6 +58,8 @@ internal sealed class MonitorOverlayWindow : IDisposable
     private int _socWidth;
     private int _memoryWidth;
     private int _clockWidth;
+    private int _tdpWidth;
+    private int _boostWidth;
     private RECT _work;
     private int _x, _y;
 
@@ -249,7 +255,8 @@ internal sealed class MonitorOverlayWindow : IDisposable
 
     /// <summary>全部块的当前总宽度（固定块 + 各动态块）</summary>
     private int TotalWidth() =>
-        Scaled(FixedChipsWidth()) + _fpsWidth + _cpuWidth + _gpuWidth + _batteryWidth + _socWidth + _memoryWidth + _clockWidth;
+        Scaled(FixedChipsWidth()) + _fpsWidth + _cpuWidth + _gpuWidth + _batteryWidth + _socWidth
+        + _memoryWidth + _clockWidth + _tdpWidth + _boostWidth;
 
     /// <summary>按字体测一段文字的像素宽度</summary>
     private int MeasureText(IntPtr hdc, IntPtr font, string text, out int width)
@@ -389,6 +396,32 @@ internal sealed class MonitorOverlayWindow : IDisposable
     /// <summary>当前时间文本：24 小时制 时:分:秒</summary>
     private static string ClockText() => DateTime.Now.ToString("HH:mm:ss");
 
+    /// <summary>TDP 上限块：显示性能控制里保存的持续功耗；没设置过显示"自动"</summary>
+    private string TdpValue()
+    {
+        var pl1 = SettingsService.Current.CpuPowerPl1;
+        return pl1 > 0 ? $"{pl1} W" : "自动";
+    }
+
+    /// <summary>CPU 睿频块：读取 powercfg 缓存，系统不支持时显示"—"</summary>
+    private static string BoostValue()
+    {
+        var cpu = PerformanceService.CachedCpu;
+        if (!cpu.BoostSupported) return "—";
+        return cpu.BoostMode != 0 ? "开启" : "关闭";
+    }
+
+    /// <summary>悬浮条是否需要周期性刷新 powercfg 睿频缓存</summary>
+    public bool NeedsCpuSettings => _visible && Has(MonitorMetric.CpuBoost);
+
+    /// <summary>TDP 上限块按文字宽度收紧；未勾选时宽度为 0</summary>
+    private int MeasureTdpWidth() =>
+        Has(MonitorMetric.TdpLimit) ? MeasureLabelValueWidth("TDP 上限", TdpValue(), 74, 0) : 0;
+
+    /// <summary>CPU 睿频块按文字宽度收紧；未勾选时宽度为 0</summary>
+    private int MeasureBoostWidth() =>
+        Has(MonitorMetric.CpuBoost) ? MeasureLabelValueWidth("睿频", BoostValue(), 54, 0) : 0;
+
     /// <summary>按实际文字重新计算 FPS / CPU / GPU / 电池 / 电量 / 内存块宽度；变化明显时返回 true（调用方负责重设区域与位置）</summary>
     private bool AdjustDynamicWidths()
     {
@@ -399,6 +432,8 @@ internal sealed class MonitorOverlayWindow : IDisposable
         var soc = MeasureSocWidth();
         var memory = MeasureMemoryWidth();
         var clock = MeasureClockWidth();
+        var tdp = MeasureTdpWidth();
+        var boost = MeasureBoostWidth();
         var changed = false;
         if (Math.Abs(fps - _fpsWidth) >= 4) { _fpsWidth = fps; changed = true; }
         if (Math.Abs(cpu - _cpuWidth) >= 4) { _cpuWidth = cpu; changed = true; }
@@ -407,6 +442,8 @@ internal sealed class MonitorOverlayWindow : IDisposable
         if (Math.Abs(soc - _socWidth) >= 4) { _socWidth = soc; changed = true; }
         if (Math.Abs(memory - _memoryWidth) >= 4) { _memoryWidth = memory; changed = true; }
         if (Math.Abs(clock - _clockWidth) >= 4) { _clockWidth = clock; changed = true; }
+        if (Math.Abs(tdp - _tdpWidth) >= 4) { _tdpWidth = tdp; changed = true; }
+        if (Math.Abs(boost - _boostWidth) >= 4) { _boostWidth = boost; changed = true; }
         if (!changed) return false;
         _width = TotalWidth();
         return true;
@@ -434,6 +471,8 @@ internal sealed class MonitorOverlayWindow : IDisposable
         _socWidth = Has(MonitorMetric.BatteryPercent) ? Scaled(ChipSoc) : 0;
         _memoryWidth = HasMemoryBlock() ? Scaled(ChipMemory) : 0;
         _clockWidth = Has(MonitorMetric.Clock) ? Scaled(ChipClock) : 0;
+        _tdpWidth = Has(MonitorMetric.TdpLimit) ? Scaled(ChipTdp) : 0;
+        _boostWidth = Has(MonitorMetric.CpuBoost) ? Scaled(ChipBoost) : 0;
         _width = TotalWidth();
         AdjustDynamicWidths();
     }
@@ -494,6 +533,8 @@ internal sealed class MonitorOverlayWindow : IDisposable
         _socWidth = Has(MonitorMetric.BatteryPercent) ? Scaled(ChipSoc) : 0;
         _memoryWidth = HasMemoryBlock() ? Scaled(ChipMemory) : 0;
         _clockWidth = Has(MonitorMetric.Clock) ? Scaled(ChipClock) : 0;
+        _tdpWidth = Has(MonitorMetric.TdpLimit) ? Scaled(ChipTdp) : 0;
+        _boostWidth = Has(MonitorMetric.CpuBoost) ? Scaled(ChipBoost) : 0;
         _width = TotalWidth();
     }
 
@@ -679,6 +720,11 @@ internal sealed class MonitorOverlayWindow : IDisposable
             x = DrawGraph(hdc, x, Scaled(ChipGraph), snap.FrameHistory, p.Graph);
         if (Has(MonitorMetric.CpuAny))
             x = DrawChip(hdc, x, _cpuWidth, CpuLabel(), CpuValue(snap), p.Cpu);
+        // TDP 上限与睿频紧跟 CPU 块，属于同一组处理器信息
+        if (Has(MonitorMetric.TdpLimit))
+            x = DrawChip(hdc, x, _tdpWidth, "TDP 上限", TdpValue(), p.Cpu);
+        if (Has(MonitorMetric.CpuBoost))
+            x = DrawChip(hdc, x, _boostWidth, "睿频", BoostValue(), p.Graph);
         if (Has(MonitorMetric.GpuAny))
             x = DrawChip(hdc, x, _gpuWidth, GpuLabel(snap), FormatGpu(snap), p.Gpu);
         // 内存 · 显存紧跟 GPU 块（在 GPU 分割线之后），电池类信息排在最后

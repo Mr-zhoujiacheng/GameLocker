@@ -2057,6 +2057,9 @@ public sealed partial class MainWindow : Window
         var perfPanel = Root.Content is MainPage { IsPerformancePanelOpen: true };
         if (perfPanel && (buttons.HasFlag(GamepadButtons.A) || buttons.HasFlag(GamepadButtons.X)))
             return UiSoundKind.Select;
+        // 性能控制磁贴的 A 是应用/开关，与主页开关同款 success 音
+        if (buttons.HasFlag(GamepadButtons.A) && Root.Content is MainPage { IsPerformanceTileSelected: true })
+            return UiSoundKind.Select;
         if (buttons.HasFlag(GamepadButtons.A)) return UiSoundKind.Confirm;
         if (buttons.HasFlag(GamepadButtons.B)) return UiSoundKind.Back;
         if (buttons.HasFlag(GamepadButtons.View))

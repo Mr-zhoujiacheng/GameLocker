@@ -5,7 +5,7 @@
 ;       故打包统一取 build 产物，并排除 publish 与 *.pdb
 
 #define AppName "Game Locker"
-#define AppVersion "3.1.8"
+#define AppVersion "3.2.0"
 #define AppPublisher "Mr-zhoujiacheng"
 #define AppUrl "https://github.com/Mr-zhoujiacheng/GameLocker"
 #ifndef SrcDir
@@ -49,6 +49,7 @@ Source: "{#SrcDir}\*"; DestDir: "{app}"; Flags: ignoreversion recursesubdirs cre
 [InstallDelete]
 ; 小黄鸭的 XeSS/FSR/FSR4 接管后端已下线，升级安装时清掉旧版本残留
 Type: filesandordirs; Name: "{app}\XeSSFG"
+Type: filesandordirs; Name: "{app}\Mako"
 
 [Icons]
 Name: "{group}\{#AppName}"; Filename: "{app}\GameLocker.exe"

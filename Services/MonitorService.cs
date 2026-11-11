@@ -74,6 +74,8 @@ public static class MonitorService
     private static bool _lastOutputGenerated;
     private static int _ticking;
     private static int _tickCount;
+    /// <summary>上次刷新睿频缓存的时间（悬浮条勾选"CPU 睿频"时每 5 秒刷一次 powercfg）</summary>
+    private static long _lastCpuSettingsRefresh;
 
     /// <summary>主窗口当前是否处于前台（Activated 且非 Deactivated）。MainWindow 在 Activated/Deactivated 里驱动。
     /// 后台时降低采样/重绘频率以省资源，但 ETW 帧率会话保持全速（后台玩游戏仍要显示真实帧数据）</summary>
@@ -492,6 +494,13 @@ public static class MonitorService
             if (_tickCount == 1) _ = Task.Run(WriteGpuDiagnostics);
 
             _overlay?.Update(snapshot);
+            // 睿频状态来自 powercfg，悬浮条开启该项时低频刷新缓存（不阻塞采样线程）
+            if (_overlay?.NeedsCpuSettings == true
+                && Environment.TickCount64 - Interlocked.Read(ref _lastCpuSettingsRefresh) >= 5000)
+            {
+                Interlocked.Exchange(ref _lastCpuSettingsRefresh, Environment.TickCount64);
+                _ = PerformanceService.RefreshCpuCacheAsync();
+            }
             if (fullscreen || (alwaysOn && !appFg)) _overlay?.ReassertTopmost();
         }
         catch { }

@@ -644,12 +644,9 @@
                                             FontSize="19" Padding="0" ToolTipService.ToolTip="放大 10%"/>
                                 </StackPanel>
                             </StackPanel>
-                            <StackPanel Spacing="4">
-                                <TextBlock Text="监控条常开" FontSize="15" Opacity="0.9"/>
-                                <ToggleSwitch x:Name="MonAlwaysOnToggle" HorizontalAlignment="Left"
-                                              OnContent="一直显示" OffContent="按情况显示"
-                                              ToolTipService.ToolTip="开启：主窗口切到后台也保留悬浮条；关闭：主窗口前台或有全屏游戏时才显示，节省资源。"/>
-                            </StackPanel>
+                            <ToggleSwitch x:Name="MonAlwaysOnToggle" Header="监控条常开"
+                                          HorizontalAlignment="Left"
+                                          ToolTipService.ToolTip="开启：主窗口切到后台也保留悬浮条；关闭：主窗口前台或有全屏游戏时才显示，节省资源。"/>
                         </StackPanel>
                     </Grid>
 
@@ -758,6 +755,7 @@
                                 <ColumnDefinition Width="*"/>
                             </Grid.ColumnDefinitions>
                             <Grid.RowDefinitions>
+                                <RowDefinition Height="Auto"/>
                                 <RowDefinition Height="Auto"/>
                                 <RowDefinition Height="Auto"/>
                                 <RowDefinition Height="Auto"/>
@@ -879,6 +877,20 @@
                                               HorizontalAlignment="Right" VerticalAlignment="Center"/>
                                 </Grid>
                             </ToggleButton>
+                            <ToggleButton x:Name="MonOptTdp" Grid.Row="4" Grid.Column="0" Style="{StaticResource SysOptionChipStyle}">
+                                <Grid>
+                                    <TextBlock Text="TDP 上限" FontSize="14" Margin="0,0,22,0"/>
+                                    <FontIcon x:Name="MonOptTdpMark" Glyph="&#xE711;" FontSize="14"
+                                              HorizontalAlignment="Right" VerticalAlignment="Center"/>
+                                </Grid>
+                            </ToggleButton>
+                            <ToggleButton x:Name="MonOptCpuBoost" Grid.Row="4" Grid.Column="1" Style="{StaticResource SysOptionChipStyle}">
+                                <Grid>
+                                    <TextBlock Text="CPU 睿频" FontSize="14" Margin="0,0,22,0"/>
+                                    <FontIcon x:Name="MonOptCpuBoostMark" Glyph="&#xE711;" FontSize="14"
+                                              HorizontalAlignment="Right" VerticalAlignment="Center"/>
+                                </Grid>
+                            </ToggleButton>
 
 
 
@@ -991,7 +1003,7 @@
                                 </StackPanel>
                             </Button>
                         </Grid>
-                        <TextBlock Text="留空则按 Steam 库自动查找（appid 993090）；未安装时可手动指定程序。按 A 会打开小黄鸭并发送默认补帧热键 Ctrl+Alt+S（游戏需为无边框窗口化）。"
+                        <TextBlock Text="留空则按 Steam 库自动查找（appid 993090）；未安装时可手动指定程序。LSFG 按 A 会打开小黄鸭并发送默认补帧热键 Ctrl+Alt+S（游戏需为无边框窗口化）。"
                                    FontSize="12" Opacity="0.55" TextWrapping="Wrap"/>
                     </StackPanel>
 
@@ -1016,6 +1028,156 @@
                         </Grid>
                         <TextBlock x:Name="LosslessProfileHint" FontSize="12" Opacity="0.55" TextWrapping="Wrap"
                                    Text="下拉框读取小黄鸭的配置；「新建配置」会打开小黄鸭，配置建好后重新展开下拉框即可选择。"/>
+                    </StackPanel>
+
+                    <StackPanel Spacing="6">
+                        <StackPanel.Resources>
+                            <SolidColorBrush x:Key="LosslessOptHoverBrush" Color="#1AFFFFFF"/>
+                            <SolidColorBrush x:Key="LosslessOptPressedBrush" Color="#26FFFFFF"/>
+                            <SolidColorBrush x:Key="LosslessOptOnBorderBrush" Color="#4CC2FF"/>
+                            <SolidColorBrush x:Key="LosslessOptOnFillBrush" Color="#1F4CC2FF"/>
+                            <!-- 优化勾选项：圆角卡片 + 左侧方形勾选框，文字与勾选框垂直居中对齐 -->
+                            <Style x:Key="LosslessOptCheckStyle" TargetType="CheckBox">
+                                <Setter Property="Background" Value="#0FFFFFFF"/>
+                                <Setter Property="BorderBrush" Value="#1FFFFFFF"/>
+                                <Setter Property="BorderThickness" Value="1"/>
+                                <Setter Property="CornerRadius" Value="10"/>
+                                <Setter Property="Padding" Value="12,9"/>
+                                <Setter Property="MinWidth" Value="0"/>
+                                <Setter Property="MinHeight" Value="0"/>
+                                <Setter Property="HorizontalAlignment" Value="Stretch"/>
+                                <Setter Property="VerticalAlignment" Value="Stretch"/>
+                                <Setter Property="Template">
+                                    <Setter.Value>
+                                        <ControlTemplate TargetType="CheckBox">
+                                            <Border x:Name="Root"
+                                                    Background="{TemplateBinding Background}"
+                                                    BorderBrush="{TemplateBinding BorderBrush}"
+                                                    BorderThickness="{TemplateBinding BorderThickness}"
+                                                    CornerRadius="{TemplateBinding CornerRadius}"
+                                                    Padding="{TemplateBinding Padding}">
+                                                <Grid ColumnSpacing="10">
+                                                    <Grid.ColumnDefinitions>
+                                                        <ColumnDefinition Width="Auto"/>
+                                                        <ColumnDefinition Width="*"/>
+                                                    </Grid.ColumnDefinitions>
+                                                    <Border x:Name="Box" Width="18" Height="18" CornerRadius="5"
+                                                            Background="#12FFFFFF" BorderBrush="#66FFFFFF"
+                                                            BorderThickness="1.2" VerticalAlignment="Center"/>
+                                                    <FontIcon x:Name="Check" Glyph="&#xE73E;" FontSize="11"
+                                                              Foreground="#4CC2FF" Visibility="Collapsed"
+                                                              HorizontalAlignment="Center" VerticalAlignment="Center"/>
+                                                    <ContentPresenter Grid.Column="1" Margin="0,0,2,0"
+                                                                      VerticalAlignment="Center"
+                                                                      HorizontalAlignment="Left"
+                                                                      Content="{TemplateBinding Content}"
+                                                                      ContentTemplate="{TemplateBinding ContentTemplate}"
+                                                                      Foreground="{TemplateBinding Foreground}"/>
+                                                    <!-- 命中/焦点目标：放在最上层，点卡片任意位置都能切换 -->
+                                                    <Grid x:Name="HitArea" Grid.ColumnSpan="2" Background="Transparent"
+                                                          Control.IsTemplateFocusTarget="True"/>
+                                                </Grid>
+                                            <VisualStateManager.VisualStateGroups>
+                                                <VisualStateGroup x:Name="CommonStates">
+                                                    <VisualState x:Name="Normal"/>
+                                                    <VisualState x:Name="PointerOver">
+                                                        <Storyboard>
+                                                            <ObjectAnimationUsingKeyFrames Storyboard.TargetName="Root"
+                                                                                           Storyboard.TargetProperty="Background">
+                                                                <DiscreteObjectKeyFrame KeyTime="0"
+                                                                                        Value="{StaticResource LosslessOptHoverBrush}"/>
+                                                            </ObjectAnimationUsingKeyFrames>
+                                                        </Storyboard>
+                                                    </VisualState>
+                                                    <VisualState x:Name="Pressed">
+                                                        <Storyboard>
+                                                            <ObjectAnimationUsingKeyFrames Storyboard.TargetName="Root"
+                                                                                           Storyboard.TargetProperty="Background">
+                                                                <DiscreteObjectKeyFrame KeyTime="0"
+                                                                                        Value="{StaticResource LosslessOptPressedBrush}"/>
+                                                            </ObjectAnimationUsingKeyFrames>
+                                                        </Storyboard>
+                                                    </VisualState>
+                                                    <VisualState x:Name="Disabled">
+                                                        <Storyboard>
+                                                            <ObjectAnimationUsingKeyFrames Storyboard.TargetName="Root"
+                                                                                           Storyboard.TargetProperty="Opacity">
+                                                                <DiscreteObjectKeyFrame KeyTime="0" Value="0.5"/>
+                                                            </ObjectAnimationUsingKeyFrames>
+                                                        </Storyboard>
+                                                    </VisualState>
+                                                </VisualStateGroup>
+                                                <VisualStateGroup x:Name="CheckStates">
+                                                    <VisualState x:Name="Unchecked"/>
+                                                    <VisualState x:Name="Indeterminate"/>
+                                                    <VisualState x:Name="Checked">
+                                                        <Storyboard>
+                                                            <ObjectAnimationUsingKeyFrames Storyboard.TargetName="Check"
+                                                                                           Storyboard.TargetProperty="Visibility">
+                                                                <DiscreteObjectKeyFrame KeyTime="0" Value="Visible"/>
+                                                            </ObjectAnimationUsingKeyFrames>
+                                                            <ObjectAnimationUsingKeyFrames Storyboard.TargetName="Box"
+                                                                                           Storyboard.TargetProperty="BorderBrush">
+                                                                <DiscreteObjectKeyFrame KeyTime="0"
+                                                                                        Value="{StaticResource LosslessOptOnBorderBrush}"/>
+                                                            </ObjectAnimationUsingKeyFrames>
+                                                            <ObjectAnimationUsingKeyFrames Storyboard.TargetName="Box"
+                                                                                           Storyboard.TargetProperty="Background">
+                                                                <DiscreteObjectKeyFrame KeyTime="0"
+                                                                                        Value="{StaticResource LosslessOptOnFillBrush}"/>
+                                                            </ObjectAnimationUsingKeyFrames>
+                                                        </Storyboard>
+                                                    </VisualState>
+                                                </VisualStateGroup>
+                                            </VisualStateManager.VisualStateGroups>
+                                            </Border>
+                                        </ControlTemplate>
+                                    </Setter.Value>
+                                </Setter>
+                            </Style>
+                        </StackPanel.Resources>
+                        <ToggleSwitch x:Name="LosslessOptimizeSwitch" Header="优化"
+                                      OnContent="已开启" OffContent="关闭"
+                                      Toggled="OnLosslessOptimizeToggled"
+                                      ToolTipService.ToolTip="按下方勾选项改写小黄鸭 Settings.xml，在启动小黄鸭前生效。"/>
+                        <TextBlock FontSize="12" Opacity="0.55" TextWrapping="Wrap"
+                                   Text="自动写入小黄鸭的配置文件（Settings.xml）。小黄鸭已在运行时不会重读，需重启后生效。"/>
+                        <Grid x:Name="LosslessOptimizePanel" ColumnSpacing="10" RowSpacing="8"
+                              Visibility="Collapsed">
+                            <Grid.ColumnDefinitions>
+                                <ColumnDefinition Width="*"/>
+                                <ColumnDefinition Width="*"/>
+                            </Grid.ColumnDefinitions>
+                            <Grid.RowDefinitions>
+                                <RowDefinition Height="Auto"/>
+                                <RowDefinition Height="Auto"/>
+                                <RowDefinition Height="Auto"/>
+                            </Grid.RowDefinitions>
+                            <CheckBox x:Name="LosslessOptQueue" Grid.Row="0" Grid.Column="0"
+                                      Style="{StaticResource LosslessOptCheckStyle}"
+                                      Content="稳定缓冲（QueueTarget 1）"
+                                      ToolTipService.ToolTip="0 为无缓冲，延迟最低但容易抖动；1 在延迟与稳定之间平衡。"/>
+                            <CheckBox x:Name="LosslessOptFrameLatency" Grid.Row="0" Grid.Column="1"
+                                      Style="{StaticResource LosslessOptCheckStyle}"
+                                      Content="帧延迟 3（MaxFrameLatency）"
+                                      ToolTipService.ToolTip="官方推荐 2–3；设为 1 会频繁 CPU/GPU 同步，反而更卡。"/>
+                            <CheckBox x:Name="LosslessOptWgc" Grid.Row="1" Grid.Column="0"
+                                      Style="{StaticResource LosslessOptCheckStyle}"
+                                      Content="WGC 捕获（24H2+）"
+                                      ToolTipService.ToolTip="较新系统用 WGC 更能处理覆盖层与 MPO；旧系统自动保持 DXGI。"/>
+                            <CheckBox x:Name="LosslessOptGsync" Grid.Row="1" Grid.Column="1"
+                                      Style="{StaticResource LosslessOptCheckStyle}"
+                                      Content="G-Sync / VRR"
+                                      ToolTipService.ToolTip="显示器支持可变刷新率时开启，可改善帧步进；不支持请保持关闭。"/>
+                            <CheckBox x:Name="LosslessOptFlowScale" Grid.Row="2" Grid.Column="0"
+                                      Style="{StaticResource LosslessOptCheckStyle}"
+                                      Content="自动 FlowScale"
+                                      ToolTipService.ToolTip="1080p=90、1440p=70、4K=45，降低插帧 GPU 占用与伪影。"/>
+                            <CheckBox x:Name="LosslessOptHideFps" Grid.Row="2" Grid.Column="1"
+                                      Style="{StaticResource LosslessOptCheckStyle}"
+                                      Content="关闭 FPS 计数器"
+                                      ToolTipService.ToolTip="减少一个覆盖层，避免干扰画面捕获。"/>
+                        </Grid>
                     </StackPanel>
                 </StackPanel>
 

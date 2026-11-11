@@ -252,7 +252,7 @@
 
                 <!-- 性能控制：橙 -->
                 <Button x:Name="PerformanceWidgetCard" Tag="performance" Style="{StaticResource WidgetCardStyle}" Click="OnAddClick"
-                        ToolTipService.ToolTip="默认大组件 · 右摇杆←→切换查看 · Y 打开性能设置">
+                        ToolTipService.ToolTip="根据 CPU、GPU 型号，自动使用对应厂家技术优化和控制性能调度">
                     <Button.Background>
                         <LinearGradientBrush StartPoint="0,0" EndPoint="0,1">
                             <GradientStop Color="#12FFFFFF" Offset="0"/>

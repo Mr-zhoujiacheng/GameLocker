@@ -171,7 +171,8 @@ public sealed partial class AddItemPage : Page, ISettingsGamepad
         MonitorMetric.Fps, MonitorMetric.FrameTime, MonitorMetric.FrameGraph, MonitorMetric.Memory,
         MonitorMetric.CpuUsage, MonitorMetric.CpuFreq, MonitorMetric.CpuTemp, MonitorMetric.CpuPower,
         MonitorMetric.GpuUsage, MonitorMetric.GpuFreq, MonitorMetric.GpuPower, MonitorMetric.GpuTemp,
-        MonitorMetric.BatteryPercent, MonitorMetric.Battery, MonitorMetric.GpuVram, MonitorMetric.Clock
+        MonitorMetric.BatteryPercent, MonitorMetric.Battery, MonitorMetric.GpuVram, MonitorMetric.Clock,
+        MonitorMetric.TdpLimit, MonitorMetric.CpuBoost
     ];
 
     // 胶囊选中/未选视觉（代码直设，不走 VisualState）
@@ -318,11 +319,13 @@ public sealed partial class AddItemPage : Page, ISettingsGamepad
         _monOptBoxes = [MonOptFps, MonOptFrameTime, MonOptGraph, MonOptMemory,
             MonOptCpuUsage, MonOptCpuFreq, MonOptCpuTemp, MonOptCpuPower,
             MonOptGpuUsage, MonOptGpuFreq, MonOptGpuPower, MonOptGpuTemp,
-            MonOptBatteryPercent, MonOptBattery, MonOptVram, MonOptClock];
+            MonOptBatteryPercent, MonOptBattery, MonOptVram, MonOptClock,
+            MonOptTdp, MonOptCpuBoost];
         _monOptMarks = [MonOptFpsMark, MonOptFrameTimeMark, MonOptGraphMark, MonOptMemoryMark,
             MonOptCpuUsageMark, MonOptCpuFreqMark, MonOptCpuTempMark, MonOptCpuPowerMark,
             MonOptGpuUsageMark, MonOptGpuFreqMark, MonOptGpuPowerMark, MonOptGpuTempMark,
-            MonOptBatteryPercentMark, MonOptBatteryMark, MonOptVramMark, MonOptClockMark];
+            MonOptBatteryPercentMark, MonOptBatteryMark, MonOptVramMark, MonOptClockMark,
+            MonOptTdpMark, MonOptCpuBoostMark];
         for (var i = 0; i < _monOptBoxes.Length; i++)
         {
             var chip = _monOptBoxes[i];
@@ -518,13 +521,23 @@ public sealed partial class AddItemPage : Page, ISettingsGamepad
             list.Add(FtSendFolderButton);
             list.Add(FtRecvFolderButton);
         }
-        // 小黄鸭：程序路径（选择 / 恢复自动检测）/ 配置下拉 / 新建配置
+        // 小黄鸭：程序路径（选择 / 恢复自动检测）/ 配置下拉 / 新建配置 / 优化开关与逐项勾选
         if (LosslessRow.Visibility == vis)
         {
             list.Add(LosslessBrowseButton);
             list.Add(LosslessClearButton);
             list.Add(LosslessProfileCombo);
             list.Add(LosslessNewProfileButton);
+            list.Add(LosslessOptimizeSwitch);
+            if (LosslessOptimizePanel.Visibility == vis)
+            {
+                list.Add(LosslessOptQueue);
+                list.Add(LosslessOptFrameLatency);
+                list.Add(LosslessOptWgc);
+                list.Add(LosslessOptGsync);
+                list.Add(LosslessOptFlowScale);
+                list.Add(LosslessOptHideFps);
+            }
         }
         // 小猫咪：订阅链接 / 代理模式 / 本地代理端口 / 内核版本与更新 / 节点下拉
         if (ProxyRow.Visibility == vis)
@@ -863,6 +876,15 @@ public sealed partial class AddItemPage : Page, ISettingsGamepad
                 LosslessPathText.Text = string.IsNullOrWhiteSpace(item.LosslessPath)
                     ? "自动检测（Steam 库）" : item.LosslessPath!;
                 ReloadLosslessProfiles(item.LosslessProfile);
+                LosslessOptimizeSwitch.IsOn = item.LosslessOptimize;
+                LosslessOptQueue.IsChecked = item.LosslessOptQueue;
+                LosslessOptFrameLatency.IsChecked = item.LosslessOptFrameLatency;
+                LosslessOptWgc.IsChecked = item.LosslessOptWgc;
+                LosslessOptGsync.IsChecked = item.LosslessOptGsync;
+                LosslessOptFlowScale.IsChecked = item.LosslessOptFlowScale;
+                LosslessOptHideFps.IsChecked = item.LosslessOptHideFps;
+                LosslessOptimizePanel.Visibility = item.LosslessOptimize
+                    ? Microsoft.UI.Xaml.Visibility.Visible : Microsoft.UI.Xaml.Visibility.Collapsed;
             }
             // 小猫咪：订阅链接 / 代理模式 / 本地代理端口 / 节点下拉（磁贴固定显示 "Clash"，不允许改名）
             var isProxy = item.WidgetKind == WidgetKind.Clash;
@@ -1105,6 +1127,14 @@ public sealed partial class AddItemPage : Page, ISettingsGamepad
             _pendingLosslessPath = null;
             _pickingLosslessPath = false;
             LosslessPathText.Text = "自动检测（Steam 库）";
+            LosslessOptimizeSwitch.IsOn = false;
+            LosslessOptQueue.IsChecked = true;
+            LosslessOptFrameLatency.IsChecked = true;
+            LosslessOptWgc.IsChecked = true;
+            LosslessOptGsync.IsChecked = false;
+            LosslessOptFlowScale.IsChecked = true;
+            LosslessOptHideFps.IsChecked = false;
+            LosslessOptimizePanel.Visibility = Microsoft.UI.Xaml.Visibility.Collapsed;
             DrawerRow.Visibility = Microsoft.UI.Xaml.Visibility.Collapsed;
             _pendingDrawers = [];
             _drawerCursor = 0;
@@ -1678,6 +1708,7 @@ public sealed partial class AddItemPage : Page, ISettingsGamepad
         // 透明按钮上看不见，必须显式画一圈白框
         UpdateZoneCursor(_mapZones.FirstOrDefault(z => ReferenceEquals(z.Hit, c))?.Hit);
         UpdateSysChipCursor(c is ToggleButton tb && !(c is RadioButton) ? tb : null);
+        UpdateLosslessCheckCursor(c as CheckBox);
         // 先清掉上一项的系统焦点框：页面用自绘光标/选框，残留的焦点框不会跟着光标走
         FocusRing.HideCurrent(XamlRoot);
         if (c is RadioButton rb)
@@ -1689,6 +1720,16 @@ public sealed partial class AddItemPage : Page, ISettingsGamepad
             UpdateToggleCursor(null);
             UpdateComboCursor(null);
             EnsureVisible(c);
+            return;
+        }
+        if (c is CheckBox cbx)
+        {
+            // 复选框（CheckBox 继承 ToggleButton，须先于胶囊分支判断）：
+            // 只画白色描边光标，按 A 才切换，避免 XAML 焦点机制干扰
+            UpdateRadioCursor(null);
+            UpdateToggleCursor(null);
+            UpdateComboCursor(null);
+            EnsureVisible(cbx);
             return;
         }
         if (c is ToggleButton chip)
@@ -1745,6 +1786,17 @@ public sealed partial class AddItemPage : Page, ISettingsGamepad
             if (ctl is not ToggleSwitch t) continue;
             if (ReferenceEquals(t, cursor)) t.BorderBrush = CursorBrush;
             else t.ClearValue(ToggleSwitch.BorderBrushProperty);
+        }
+    }
+
+    /// <summary>高亮光标所在的优化复选框（白色描边卡片；非光标项恢复样式自带描边）</summary>
+    private void UpdateLosslessCheckCursor(CheckBox? cursor)
+    {
+        foreach (var ctl in _formControls)
+        {
+            if (ctl is not CheckBox c) continue;
+            if (ReferenceEquals(c, cursor)) c.BorderBrush = CursorBrush;
+            else c.ClearValue(CheckBox.BorderBrushProperty);
         }
     }
 
@@ -1976,12 +2028,19 @@ public sealed partial class AddItemPage : Page, ISettingsGamepad
                 }
                 else if (it.WidgetKind == WidgetKind.LosslessScaling)
                 {
-                    // 小黄鸭：改大小、颜色、程序路径与要应用的配置（空=按 Steam 库自动检测 / 不指定配置）
+                    // 小黄鸭：改大小、颜色、程序路径与要应用的配置
                     it.Size = SelectedSize();
                     it.TileColor = SelectedColor();
                     it.LosslessPath = string.IsNullOrWhiteSpace(_pendingLosslessPath) ? null : _pendingLosslessPath.Trim();
                     var profile = CurrentLosslessProfile();
                     it.LosslessProfile = string.IsNullOrWhiteSpace(profile) ? null : profile;
+                    it.LosslessOptimize = LosslessOptimizeSwitch.IsOn;
+                    it.LosslessOptQueue = LosslessOptQueue.IsChecked == true;
+                    it.LosslessOptFrameLatency = LosslessOptFrameLatency.IsChecked == true;
+                    it.LosslessOptWgc = LosslessOptWgc.IsChecked == true;
+                    it.LosslessOptGsync = LosslessOptGsync.IsChecked == true;
+                    it.LosslessOptFlowScale = LosslessOptFlowScale.IsChecked == true;
+                    it.LosslessOptHideFps = LosslessOptHideFps.IsChecked == true;
                     LosslessScalingService.InvalidateCache(); // 路径变化后让磁贴状态立即重新检测
                 }
                 else if (it.WidgetKind == WidgetKind.DownloadMode)
@@ -2350,6 +2409,14 @@ public sealed partial class AddItemPage : Page, ISettingsGamepad
     // 小黄鸭配置：展开下拉时重读 Settings.xml（在小黄鸭里新建/删除配置后无需退出本页）
     private void OnLosslessProfileDropDownOpened(object? sender, object e) =>
         ReloadLosslessProfiles(CurrentLosslessProfile());
+
+    /// <summary>小黄鸭「优化」总开关：打开后展开逐项优化勾选，并同步表单导航序列</summary>
+    private void OnLosslessOptimizeToggled(object sender, Microsoft.UI.Xaml.RoutedEventArgs e)
+    {
+        LosslessOptimizePanel.Visibility = LosslessOptimizeSwitch.IsOn
+            ? Microsoft.UI.Xaml.Visibility.Visible : Microsoft.UI.Xaml.Visibility.Collapsed;
+        RebuildFormControls();
+    }
 
     /// <summary>小黄鸭：当前下拉选中的配置名（空串=不指定，跟随小黄鸭）</summary>
     private string CurrentLosslessProfile() =>

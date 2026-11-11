@@ -92,6 +92,23 @@ internal static class FrameLimitService
         catch { return 0; }
     }
 
+    /// <summary>当前主显示器纵向分辨率（像素）；读取失败返回 0</summary>
+    internal static int ReadDisplayHeight()
+    {
+        try
+        {
+            var mode = new DevMode
+            {
+                DeviceName = "", FormName = "",
+                Size = (short)Marshal.SizeOf<DevMode>()
+            };
+            return EnumDisplaySettings(null, -1, ref mode) && mode.PelsHeight > 0
+                ? mode.PelsHeight
+                : 0;
+        }
+        catch { return 0; }
+    }
+
     public static (bool Ok, string Message) Apply(State selected, int fps)
     {
         var result = ApplyCore(selected, fps);

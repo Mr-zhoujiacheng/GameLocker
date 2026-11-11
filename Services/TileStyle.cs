@@ -2872,13 +2872,13 @@ public static class TileStyle
         var valueSlot = new Grid { Height = 44 };
         valueSlot.Children.Add(refs.Reading);
         valueSlot.Children.Add(refs.BoostPill);
-        var body = new StackPanel
-        {
-            Spacing = 8,
-            VerticalAlignment = VerticalAlignment.Center,
-            HorizontalAlignment = HorizontalAlignment.Center
-        };
+        // 固定三段：图标在上方剩余空间内居中，数值固定在下方 44 高槽位；
+        // 数值变化只改文字，不参与测量，因此图标与数值的位置不会移动。
+        var body = new Grid();
+        body.RowDefinitions.Add(new RowDefinition { Height = new GridLength(1, GridUnitType.Star) });
+        body.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });
         body.Children.Add(iconSlot);
+        Grid.SetRow(valueSlot, 1);
         body.Children.Add(valueSlot);
         slide.Children.Add(body);
         Grid.SetRow(slide, 1);
@@ -2893,6 +2893,13 @@ public static class TileStyle
             Opacity = 0.7,
             Foreground = white,
             HorizontalAlignment = HorizontalAlignment.Center,
+            TextAlignment = TextAlignment.Center,
+            // 固定 18 高 + 单行：提示文字切换（当前生效/待应用/按 A 启用）不改变整体布局
+            Height = 18,
+            MaxLines = 1,
+            TextWrapping = TextWrapping.NoWrap,
+            TextTrimming = TextTrimming.CharacterEllipsis,
+            Width = width - 32,
             IsHitTestVisible = false
         };
         refs.Hint = hint;

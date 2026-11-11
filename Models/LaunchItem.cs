@@ -182,6 +182,10 @@ public enum MonitorMetric
     Clock = 1 << 15,
     /// <summary>旧版原始帧率选项，仅保留用于配置迁移</summary>
     OriginalFps = 1 << 16,
+    /// <summary>TDP 上限（性能控制里保存的持续功耗，未设置显示"自动"）</summary>
+    TdpLimit = 1 << 17,
+    /// <summary>CPU 睿频状态（开启 / 关闭）</summary>
+    CpuBoost = 1 << 18,
 
     /// <summary>CPU 块的任意一项（用于决定 CPU 块是否显示）</summary>
     CpuAny = CpuUsage | CpuFreq | CpuTemp | CpuPower,
@@ -191,6 +195,7 @@ public enum MonitorMetric
     /// <summary>默认全开（与旧版一律显示全部指标保持一致）</summary>
     All = Fps | FrameTime | FrameGraph | CpuUsage | CpuFreq | CpuTemp | CpuPower
         | GpuUsage | GpuFreq | GpuPower | Battery | Memory | GpuTemp | BatteryPercent | GpuVram | Clock
+        | TdpLimit | CpuBoost
 }
 
 /// <summary>性能监控悬浮条配色（组合色：每组为帧率 / CPU / GPU / 电池 / 内存等指标分配不同颜色）</summary>
@@ -396,6 +401,28 @@ public class LaunchItem
     /// 空=不指定，完全跟随小黄鸭自己的匹配）</summary>
     public string? LosslessProfile { get; set; }
 
+    /// <summary>是否按下方勾选项自动优化小黄鸭配置（仅 WidgetKind.LosslessScaling 使用）；
+    /// 优化值直接写进 Settings.xml 的目标配置，在小黄鸭启动前生效</summary>
+    public bool LosslessOptimize { get; set; }
+
+    /// <summary>优化：捕获缓冲改为 1 帧（QueueTarget=1）。0=无缓冲延迟最低但容易抖动</summary>
+    public bool LosslessOptQueue { get; set; } = true;
+
+    /// <summary>优化：MaxFrameLatency=3。官方推荐 2–3；设为 1 会频繁 CPU/GPU 同步，反而更卡</summary>
+    public bool LosslessOptFrameLatency { get; set; } = true;
+
+    /// <summary>优化：优先使用 WGC 捕获（仅 Windows 11 24H2+ 生效，旧系统保持 DXGI）</summary>
+    public bool LosslessOptWgc { get; set; } = true;
+
+    /// <summary>优化：开启 G-Sync/VRR 支持（显示器支持可变刷新率时再开）</summary>
+    public bool LosslessOptGsync { get; set; }
+
+    /// <summary>优化：按显示器分辨率自动设置 FlowScale（1080p=90 / 1440p=70 / 4K=45）</summary>
+    public bool LosslessOptFlowScale { get; set; } = true;
+
+    /// <summary>优化：关闭小黄鸭内置 FPS 计数器，减少覆盖层干扰</summary>
+    public bool LosslessOptHideFps { get; set; }
+
     /// <summary>小猫咪：Clash/Mihomo 订阅链接（仅 WidgetKind.Clash 使用）</summary>
     public string ProxySubscription { get; set; } = "";
 
@@ -482,6 +509,13 @@ public class LaunchItem
         FileTransferRecvFolder = FileTransferRecvFolder,
         LosslessPath = LosslessPath,
         LosslessProfile = LosslessProfile,
+        LosslessOptimize = LosslessOptimize,
+        LosslessOptQueue = LosslessOptQueue,
+        LosslessOptFrameLatency = LosslessOptFrameLatency,
+        LosslessOptWgc = LosslessOptWgc,
+        LosslessOptGsync = LosslessOptGsync,
+        LosslessOptFlowScale = LosslessOptFlowScale,
+        LosslessOptHideFps = LosslessOptHideFps,
         ProxySubscription = ProxySubscription,
         ProxyPort = ProxyPort,
         ProxySelected = ProxySelected,

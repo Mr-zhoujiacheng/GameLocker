@@ -709,25 +709,56 @@
 
                     <Border x:Name="DlDurationRow" CornerRadius="16" Padding="18,12" Background="#12FFFFFF"
                             BorderBrush="Transparent" BorderThickness="1.5">
-                        <Grid>
-                            <StackPanel Spacing="2">
+                        <Grid ColumnSpacing="10">
+                            <Grid.ColumnDefinitions>
+                                <ColumnDefinition Width="*"/>
+                                <ColumnDefinition Width="Auto"/>
+                            </Grid.ColumnDefinitions>
+                            <StackPanel Spacing="2" VerticalAlignment="Center">
                                 <TextBlock Text="下载时间" FontSize="12" Opacity="0.55"/>
                                 <TextBlock x:Name="DlDurationText" Text="60 分钟" FontSize="26" FontWeight="SemiBold"/>
                             </StackPanel>
-                            <TextBlock Text="LB / RB 调整" FontSize="11" Opacity="0.4"
-                                       HorizontalAlignment="Right" VerticalAlignment="Center"/>
+                            <!-- 触屏：− / + 调节下载时长 -->
+                            <StackPanel Grid.Column="1" Orientation="Horizontal" Spacing="8"
+                                        HorizontalAlignment="Right" VerticalAlignment="Center">
+                                <Border x:Name="DlDurationMinus" Width="44" Height="40" CornerRadius="10"
+                                        Background="#1FFFFFFF" BorderBrush="Transparent" BorderThickness="1.5"
+                                        Tapped="OnDownloadDurationMinusTapped"
+                                        ToolTipService.ToolTip="减少 5 分钟">
+                                    <TextBlock Text="−" FontSize="20" HorizontalAlignment="Center"
+                                               VerticalAlignment="Center"/>
+                                </Border>
+                                <Border x:Name="DlDurationPlus" Width="44" Height="40" CornerRadius="10"
+                                        Background="#1FFFFFFF" BorderBrush="Transparent" BorderThickness="1.5"
+                                        Tapped="OnDownloadDurationPlusTapped"
+                                        ToolTipService.ToolTip="增加 5 分钟">
+                                    <TextBlock Text="+" FontSize="20" HorizontalAlignment="Center"
+                                               VerticalAlignment="Center"/>
+                                </Border>
+                            </StackPanel>
                         </Grid>
                     </Border>
 
                     <Border x:Name="DlActionRow" CornerRadius="16" Padding="18,12" Background="#12FFFFFF"
                             BorderBrush="Transparent" BorderThickness="1.5">
-                        <Grid>
-                            <StackPanel Spacing="2">
+                        <Grid ColumnSpacing="10">
+                            <Grid.ColumnDefinitions>
+                                <ColumnDefinition Width="*"/>
+                                <ColumnDefinition Width="Auto"/>
+                            </Grid.ColumnDefinitions>
+                            <StackPanel Spacing="2" VerticalAlignment="Center">
                                 <TextBlock Text="下载完成后" FontSize="12" Opacity="0.55"/>
                                 <TextBlock x:Name="DlActionText" Text="睡眠" FontSize="26" FontWeight="SemiBold"/>
                             </StackPanel>
-                            <TextBlock Text="LB / RB 切换" FontSize="11" Opacity="0.4"
-                                       HorizontalAlignment="Right" VerticalAlignment="Center"/>
+                            <!-- 触屏：点击循环切换完成动作 -->
+                            <Border x:Name="DlActionSwitch" Grid.Column="1" Width="76" Height="40" CornerRadius="10"
+                                    Background="#1FFFFFFF" BorderBrush="Transparent" BorderThickness="1.5"
+                                    HorizontalAlignment="Right" VerticalAlignment="Center"
+                                    Tapped="OnDownloadActionSwitchTapped"
+                                    ToolTipService.ToolTip="切换完成后的动作">
+                                <TextBlock Text="切换" FontSize="14" HorizontalAlignment="Center"
+                                           VerticalAlignment="Center"/>
+                            </Border>
                         </Grid>
                     </Border>
 
@@ -746,7 +777,7 @@
                     </Border>
 
                     <ctl:GamepadHintBar x:Name="DownloadSetupHint" HorizontalAlignment="Center" BadgeScale="0.9"
-                                        Hints="UD:选择|LR:调整|A:确认|B:取消"/>
+                                        Hints="UD:选择|LB/RB:调整|A:确认|B:取消"/>
                 </StackPanel>
             </Grid>
 

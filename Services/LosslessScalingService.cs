@@ -14,7 +14,7 @@ namespace GameLocker.Services;
 /// 检测安装位置（手动指定优先，其次按 Steam 库自动查找）、启动/唤醒、查询运行状态，
 /// 以及"开关插帧"——启动小黄鸭并最小化后，把前台切回按 A 之前的那款游戏，
 /// 再发送小黄鸭的默认补帧热键（Ctrl+Alt+S）；再按一次 A 即发送同一热键关闭插帧。
-/// 不读写小黄鸭的配置与画质档；游戏需为无边框窗口化，插帧才会生效。
+/// 在启动前可按编辑页勾选把游戏配置与优化项写进 Settings.xml；游戏需为无边框窗口化，插帧才会生效。
 /// </summary>
 public static class LosslessScalingService
 {
@@ -184,11 +184,14 @@ public static class LosslessScalingService
     /// 把选中的配置参数应用到当前游戏：优先写进与游戏 exe/标题匹配的配置，
     /// 没有匹配项则写进「默认」配置。Title/Path 保留目标自己的，AutoScale 系列也不复制，
     /// 避免小黄鸭在发送热键前就自动开启缩放（那样 A 键反而会把它关掉）。
+    /// 勾选了「优化」时再按开关写入 QueueTarget / MaxFrameLatency / CaptureApi 等；
     /// 写文件须在小黄鸭启动前完成，运行中的实例不会重读配置。
     /// </summary>
-    public static bool ApplyProfile(string title, ForegroundWatcherService.ForegroundApp? app)
+    public static bool ApplyProfile(string? title, ForegroundWatcherService.ForegroundApp? app, LaunchItem? item = null)
     {
-        if (string.IsNullOrWhiteSpace(title) || app is null) return false;
+        if (app is null) return false;
+        var optimize = item is { LosslessOptimize: true };
+        if (string.IsNullOrWhiteSpace(title) && !optimize) return false;
         try
         {
             if (!File.Exists(SettingsPath)) return false;
@@ -196,28 +199,42 @@ public static class LosslessScalingService
             var profiles = doc.Root?.Element("GameProfiles")?.Elements("Profile").ToList();
             if (profiles is null || profiles.Count == 0) return false;
 
-            var selected = profiles.FirstOrDefault(p => string.Equals(
-                ((string?)p.Element("Title"))?.Trim(), title, StringComparison.OrdinalIgnoreCase));
-            if (selected is null) return false; // 配置已在小黄鸭里被删除
+            XElement? selected = null;
+            if (!string.IsNullOrWhiteSpace(title))
+            {
+                selected = profiles.FirstOrDefault(p => string.Equals(
+                    ((string?)p.Element("Title"))?.Trim(), title, StringComparison.OrdinalIgnoreCase));
+                if (selected is null) return false; // 配置已在小黄鸭里被删除
+            }
 
             var target = FindProfileForGame(profiles, app)
                 ?? profiles.FirstOrDefault(p => string.Equals(
                     ((string?)p.Element("Title"))?.Trim(), "默认", StringComparison.OrdinalIgnoreCase));
             if (target is null) return false;
-            if (ReferenceEquals(target, selected)) return true; // 小黄鸭本来就会用这个配置
 
-            // 目标配置的 Title/Path/AutoScale 保持原样，其余参数整体替换为选中配置的
-            var keep = new HashSet<string>(StringComparer.OrdinalIgnoreCase)
+            var changed = false;
+            if (selected is not null && !ReferenceEquals(target, selected))
             {
-                "Title", "Path", "AutoScale", "AutoScaleDelay"
-            };
-            foreach (var e in target.Elements().Where(e => !keep.Contains(e.Name.LocalName)).ToList())
-                e.Remove();
-            foreach (var e in selected.Elements().Where(e => !keep.Contains(e.Name.LocalName)))
-                target.Add(new XElement(e));
+                // 目标配置的 Title/Path/AutoScale 保持原样，其余参数整体替换为选中配置的
+                var keep = new HashSet<string>(StringComparer.OrdinalIgnoreCase)
+                {
+                    "Title", "Path", "AutoScale", "AutoScaleDelay"
+                };
+                foreach (var e in target.Elements().Where(e => !keep.Contains(e.Name.LocalName)).ToList())
+                    e.Remove();
+                foreach (var e in selected.Elements().Where(e => !keep.Contains(e.Name.LocalName)))
+                    target.Add(new XElement(e));
+                changed = true;
+            }
 
-            SaveSettings(doc);
-            DebugLog.Write($"小黄鸭: 应用配置「{title}」→「{(string?)target.Element("Title")}」（游戏={app.ProcessName}）");
+            if (optimize && item is not null) changed |= ApplyOptimizations(target, item);
+
+            if (changed)
+            {
+                SaveSettings(doc);
+                DebugLog.Write($"小黄鸭: 应用配置「{title}」→「{(string?)target.Element("Title")}」" +
+                               $"（游戏={app.ProcessName}，优化={(optimize ? "开" : "关")}）");
+            }
             return true;
         }
         catch (Exception ex)
@@ -225,6 +242,43 @@ public static class LosslessScalingService
             DebugLog.Write($"小黄鸭: 应用配置失败「{title}」：{ex.Message}");
             return false;
         }
+    }
+
+    /// <summary>把小黄鸭「优化」勾选项写进目标配置；返回 XML 是否真的发生变化</summary>
+    private static bool ApplyOptimizations(XElement profile, LaunchItem item)
+    {
+        var changed = false;
+        if (item.LosslessOptQueue) changed |= SetProfileValue(profile, "QueueTarget", "1");
+        if (item.LosslessOptFrameLatency) changed |= SetProfileValue(profile, "MaxFrameLatency", "3");
+        // WGC 仅 Windows 11 24H2+ 提供，旧系统保持 DXGI
+        if (item.LosslessOptWgc && Environment.OSVersion.Version.Build >= 26100)
+            changed |= SetProfileValue(profile, "CaptureApi", "WGC");
+        if (item.LosslessOptGsync) changed |= SetProfileValue(profile, "GsyncSupport", "true");
+        if (item.LosslessOptFlowScale)
+            changed |= SetProfileValue(profile, "LSFGFlowScale", FlowScaleForDisplay().ToString());
+        if (item.LosslessOptHideFps) changed |= SetProfileValue(profile, "DrawFps", "false");
+        return changed;
+    }
+
+    /// <summary>FlowScale 按主显示器纵向分辨率取档（1080p=90 / 1440p=70 / 4K=45）</summary>
+    private static int FlowScaleForDisplay()
+    {
+        var height = FrameLimitService.ReadDisplayHeight();
+        return height >= 2000 ? 45 : height >= 1300 ? 70 : 90;
+    }
+
+    /// <summary>写入配置项（不存在则新建）；返回值表示值是否发生变化</summary>
+    private static bool SetProfileValue(XElement profile, string name, string value)
+    {
+        var node = profile.Element(name);
+        if (node is null)
+        {
+            profile.Add(new XElement(name, value));
+            return true;
+        }
+        if (string.Equals(node.Value, value, StringComparison.OrdinalIgnoreCase)) return false;
+        node.Value = value;
+        return true;
     }
 
     /// <summary>找出与前台游戏匹配的配置：Path 可是完整路径、exe 文件名或窗口标题（与小黄鸭自身规则一致）</summary>
@@ -330,8 +384,9 @@ public static class LosslessScalingService
             var hasGame = target != IntPtr.Zero && IsWindow(target);
 
             // 选中的配置要在小黄鸭启动前写进 Settings.xml；已在运行时它不会重读，留待下次启动生效。
-            if (!running && hasGame && !string.IsNullOrWhiteSpace(item.LosslessProfile))
-                ApplyProfile(item.LosslessProfile, app);
+            // 只开了「优化」没选配置时也要写，目标为游戏匹配项或「默认」。
+            if (!running && hasGame && (!string.IsNullOrWhiteSpace(item.LosslessProfile) || item.LosslessOptimize))
+                ApplyProfile(item.LosslessProfile, app, item);
 
             if (!running)
             {

@@ -3876,7 +3876,7 @@ public sealed partial class MainPage : Page
     {
         if (LosslessScalingService.IsActivating)
         {
-            ShowToast("正在启动小黄鸭…", ToastKind.Warning);
+            ShowToast("正在启动 LSFG…", ToastKind.Warning);
             return;
         }
         var result = await LosslessScalingService.ActivateAsync(item);
@@ -3901,19 +3901,19 @@ public sealed partial class MainPage : Page
                 Report("小黄鸭启动失败", ToastKind.Warning);
                 break;
             case LosslessScalingService.ScaleResult.NoGame:
-                Report("未检测到游戏：小黄鸭已打开并最小化，进入游戏后再按 A 开启插帧", ToastKind.Warning);
+                Report("未检测到游戏：小黄鸭已打开并最小化，进入游戏后再按 A 开启 LSFG 插帧", ToastKind.Warning);
                 break;
             case LosslessScalingService.ScaleResult.FocusFailed:
                 Report("切不回游戏窗口：请进入游戏后再按 A", ToastKind.Warning);
                 break;
             case LosslessScalingService.ScaleResult.FrameGenOn:
-                Report("已开启插帧" + minSuffix, minKind, UiSoundKind.Select);
+                Report("已开启 LSFG 插帧" + minSuffix, minKind, UiSoundKind.Select);
                 break;
             case LosslessScalingService.ScaleResult.FrameGenOff:
-                Report("已关闭插帧" + minSuffix, minKind, UiSoundKind.Select);
+                Report("已关闭 LSFG 插帧" + minSuffix, minKind, UiSoundKind.Select);
                 break;
             case LosslessScalingService.ScaleResult.ToggleFailed:
-                Report("未能切换插帧：请在小黄鸭里按 Ctrl+Alt+S 确认热键", ToastKind.Warning);
+                Report("未能切换 LSFG 插帧：请在小黄鸭里按 Ctrl+Alt+S 确认热键", ToastKind.Warning);
                 break;
         }
     }
@@ -4266,6 +4266,9 @@ public sealed partial class MainPage : Page
         var (item, group) = _display[_selected];
         return group is null && item.Kind == LaunchKind.Widget && item.WidgetKind == WidgetKind.Performance;
     }
+
+    /// <summary>光标是否停在性能控制磁贴上（A 键应用/开关，音效与主页开关一致，用 success 音）</summary>
+    public bool IsPerformanceTileSelected => IsPerformanceSelected();
 
     /// <summary>性能磁贴底部提示：按已开启的快捷项动态生成（右摇杆切换项 / LB/RB 动作）</summary>
     private static string PerformanceHintText(LaunchItem item, string head, string tail)
@@ -6573,6 +6576,34 @@ public sealed partial class MainPage : Page
     }
 
     // 下载模式遮罩的鼠标/触摸入口（手柄走 HandleDownloadMode）
+    private void OnDownloadDurationMinusTapped(object sender, TappedRoutedEventArgs e)
+        => AdjustDownloadMinutes(-1);
+
+    private void OnDownloadDurationPlusTapped(object sender, TappedRoutedEventArgs e)
+        => AdjustDownloadMinutes(1);
+
+    /// <summary>触屏调整下载时长（每次 5 分钟，范围 5 分钟–24 小时），并高亮时长行</summary>
+    private void AdjustDownloadMinutes(int dir)
+    {
+        if (!_dlOpen || _dlRunning || _dlBusy) return;
+        _dlFocus = 0;
+        _dlMinutes = Math.Clamp(_dlMinutes + dir * 5, 5, 24 * 60);
+        UpdateDownloadSetupVisuals();
+        PlayDownloadCue(UiSoundKind.Select);
+    }
+
+    /// <summary>触屏切换完成后动作（睡眠 → 休眠 → 关机 → 不操作），并高亮动作行</summary>
+    private void OnDownloadActionSwitchTapped(object sender, TappedRoutedEventArgs e)
+    {
+        if (!_dlOpen || _dlRunning || _dlBusy) return;
+        _dlFocus = 1;
+        var actions = new[] { PowerAction.Sleep, PowerAction.Hibernate, PowerAction.Shutdown };
+        var at = Array.IndexOf(actions, _dlAfter);
+        _dlAfter = actions[(at + 1 + actions.Length) % actions.Length];
+        UpdateDownloadSetupVisuals();
+        PlayDownloadCue(UiSoundKind.Select);
+    }
+
     private void OnDownloadStartTapped(object sender, TappedRoutedEventArgs e)
     {
         PlayDownloadCue(UiSoundKind.Confirm);
@@ -6806,7 +6837,8 @@ public sealed partial class MainPage : Page
         return true;
     }
 
-    /// <summary>全局锁帧按 5 帧步进调整（限制在后端支持范围内）；结果只记为待应用，A 才写入</summary>
+    /// <summary>全局锁帧按 5 帧步进调整（限制在后端支持范围内）；低于下限再往前一档即“关闭”。
+    /// 结果只记为待应用，A 才写入</summary>
     private bool AdjustPerformanceFrame(LaunchItem item, int dir)
     {
         const int step = 5;
@@ -6815,10 +6847,11 @@ public sealed partial class MainPage : Page
 
         var max = state.Maximum - (state.Maximum - state.Minimum) % step;
         var slots = Math.Max(0, (max - state.Minimum) / step);
-        var start = _perfFramePending.TryGetValue(item, out var pending) && pending >= 0 ? pending : state.Fps;
-        if (start <= 0) start = state.Minimum;
-        var slot = (int)Math.Round((start - state.Minimum) / (double)step) + dir;
-        _perfFramePending[item] = state.Minimum + Math.Clamp(slot, 0, slots) * step;
+        var start = _perfFramePending.TryGetValue(item, out var pending) ? pending : state.Fps;
+        // 槽位 -1 = 关闭：在最小帧率处继续往前调就落到关闭，再往回调回到最小帧率
+        var slot = start <= 0 ? -1 : (int)Math.Round((start - state.Minimum) / (double)step);
+        slot = Math.Clamp(slot + dir, -1, slots);
+        _perfFramePending[item] = slot < 0 ? 0 : state.Minimum + slot * step;
         RefreshPerformanceTile(item); // 只改数值，不做滑动动画
         return true;
     }
@@ -7298,7 +7331,9 @@ public sealed partial class MainPage : Page
         else if (IsMonitorSelected())
             HintBar.SetHints("DPAD:切换选择|A:开启/关闭监控|R3:编辑|L3:排列|B:隐藏");
         else if (IsLosslessSelected())
-            HintBar.SetHints("DPAD:切换选择|A:开关插帧|Y:打开小黄鸭|R3:编辑|L3:排列|B:隐藏");
+            HintBar.SetHints("DPAD:切换选择|A:开关LSFG|Y:打开小黄鸭|R3:编辑|L3:排列|B:隐藏");
+        else if (IsProxySelected())
+            HintBar.SetHints("DPAD:切换选择|A:开启代理|Y:测速|R3:编辑|L3:排列|B:隐藏");
         else if (IsWallpaperSelected())
             HintBar.SetHints("DPAD:切换选择|A:应用壁纸|Y:收藏壁纸|R3:编辑|L3:排列|B:隐藏");
         else if (IsFixedSelected())

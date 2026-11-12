@@ -239,6 +239,9 @@ public class LaunchItem
     /// <summary>所属主页页号（0=主主页；副页从 1 开始。磁贴组按组自身页号归属，成员随组显示）</summary>
     public int PageIndex { get; set; }
 
+    /// <summary>副页专属的设置磁贴：跟随所属副页、可删除；主主页的设置磁贴固定在第 0 页且不可删</summary>
+    public bool SubPageSettings { get; set; }
+
     /// <summary>自定义磁贴颜色（#RRGGBB）；为空表示按名称哈希自动配色</summary>
     public string? TileColor { get; set; }
 

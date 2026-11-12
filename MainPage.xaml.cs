@@ -233,7 +233,7 @@ public sealed partial class MainPage : Page
         for (var i = 0; i < _perfCards.Length; i++)
         {
             var index = i;
-            // 点一次选中，再点一次应用（与添加磁贴卡片一致）；手柄 A 才是主要入口
+            // 触屏点卡片直接应用；手柄 A 走单独的立即应用入口
             _perfCards[i].Tapped += (_, e) => { e.Handled = true; ChoosePerformanceCard(index); };
         }
         BuildPerformanceSettingsUi();
@@ -1253,9 +1253,12 @@ public sealed partial class MainPage : Page
     /// <summary>主页总页数（含主主页，至少 1 页）</summary>
     private static int PageCount() => Math.Max(1, SettingsService.Current.HomePageCount);
 
-    /// <summary>项所属页号；设置/电源磁贴固定在第 0 页（保证任意页都能进设置/电源菜单）</summary>
+    /// <summary>项所属页号；主主页的设置/电源磁贴固定在第 0 页（保证任意页都能进设置/电源菜单），
+    /// 副页专属设置磁贴跟随自身页号</summary>
     private static int PageIndexOf(LaunchItem it) =>
-        it.Kind == LaunchKind.Widget && it.WidgetKind is WidgetKind.Settings or WidgetKind.Power ? 0 : it.PageIndex;
+        it.Kind == LaunchKind.Widget && it.WidgetKind is WidgetKind.Settings or WidgetKind.Power
+            && !it.SubPageSettings
+            ? 0 : it.PageIndex;
 
     // ---- 桌面拖入：快捷方式/程序/网站/文件夹 → 自动识别生成磁贴 ----
 
@@ -3541,7 +3544,8 @@ public sealed partial class MainPage : Page
         }
 
         var draggedIsFixed = dragged.Kind == LaunchKind.Widget &&
-                             dragged.WidgetKind is WidgetKind.Settings or WidgetKind.Power;
+                             (dragged.WidgetKind == WidgetKind.Power ||
+                              dragged.WidgetKind == WidgetKind.Settings && !dragged.SubPageSettings);
 
         LaunchItem? tItem = null;
         LaunchItem? tGroup = null;
@@ -4539,7 +4543,7 @@ public sealed partial class MainPage : Page
     private Border? _perfBoostPill;
     private Border? _perfBoostDot;
     private bool? _perfBoostPending;   // null=未改动；true/false=待应用的睿频开关
-    private bool _perfSaving;          // 正在执行 X 保存，防止重复提交
+    private bool _perfSaving;          // 正在写入设置，防止重复提交
     private ComboBox? _perfCoreSelection;
     private ComboBox? _perfCoreMode;
     private bool _perfCoreSyncing;     // 打开面板时回填核心选项，避免误标“待应用”
@@ -4921,6 +4925,7 @@ public sealed partial class MainPage : Page
             if (_perfFrameSlider.IsEnabled && !_perfBusy && !_perfFrameLoading)
                 _perfFrameSlider.Value = Math.Clamp(_perfFrameSlider.Value + dir * _perfFrameState.Step, _perfFrameSlider.Minimum, _perfFrameSlider.Maximum);
         };
+        ApplyOnPointerRelease(_perfFrameSlider);
 
         Section(PerfPowerSettings, "功耗控制");
         _perfPowerPill = (Border)Toggle();
@@ -4940,6 +4945,7 @@ public sealed partial class MainPage : Page
             var row = Row(PerfPowerSettings, title, "CPU 原生限制，不代表整机功耗", body, supported: true);
             _perfPowerControls.Add((row, slider, read));
             slider.ValueChanged += (_, _) => { if (!_perfPowerSyncing) read.Text = $"{slider.Value:0} W · 待应用"; };
+            ApplyOnPointerRelease(slider);
             _perfAdjusters[row] = dir => { if (slider.IsEnabled && !_perfBusy && !_perfPowerLoading) slider.Value = Math.Clamp(slider.Value + dir, slider.Minimum, slider.Maximum); };
         }
 
@@ -4976,6 +4982,7 @@ public sealed partial class MainPage : Page
             if (_perfFrequencySlider.IsEnabled)
                 _perfFrequencySlider.Value = Math.Clamp(_perfFrequencySlider.Value + dir * 0.1, 0.9, 5);
         };
+        ApplyOnPointerRelease(_perfFrequencySlider);
         var topology = GameCpuService.Topology;
         var settings = SettingsService.Current;
         var coreSelection = Options(Enumerable.Range(0, topology.CoreCount + 1)
@@ -5007,17 +5014,47 @@ public sealed partial class MainPage : Page
             if (_perfBusy || _perfCoreSyncing) return;
             _perfRowHints[coreRow].Text = $"待应用 {coreSelection.SelectedItem} · {PerfCoreHint}";
             ShowPerformanceHelp(coreRow);
+            // 触屏/鼠标改选项：直接写入；手柄走 _perfOpenCombo，等 A 收起时统一应用
+            if (_perfOpenCombo is null) _ = SavePerformanceAsync(false);
         };
         coreMode.SelectionChanged += (_, _) =>
         {
             if (_perfBusy || _perfCoreSyncing) return;
             _perfRowHints[modeRow].Text = $"待应用 {coreMode.SelectedItem} · {PerfModeHint}";
             ShowPerformanceHelp(modeRow);
+            if (_perfOpenCombo is null) _ = SavePerformanceAsync(false);
         };
+    }
 
-        PerfSaveButton.Click += (_, _) => _ = SavePerformanceAsync();
-        PerfSaveButton.PointerEntered += (_, _) => PerfControlHelp.Text =
-            "保存所有待应用的修改。";
+    /// <summary>触屏/鼠标松开滑杆后立即写入，不再依赖保存按钮；手柄仍按住 A 统一应用</summary>
+    private void ApplyOnPointerRelease(Slider slider)
+    {
+        // 松手后延时确认：连续拖动/微调期间不断重置，避免每松一次手就写一次硬件
+        var timer = new DispatcherTimer { Interval = TimeSpan.FromMilliseconds(650) };
+        timer.Tick += (_, _) =>
+        {
+            timer.Stop();
+            if (!_perfOpen || _perfSaving || _perfBusy) return;
+            _ = SavePerformanceAsync(false);
+        };
+        void Queue()
+        {
+            if (!_perfOpen) return;
+            timer.Stop();
+            timer.Start();
+        }
+        void Cancel() => timer.Stop();
+        // 触屏拖动的指针由内部 Thumb 捕获，PointerReleased/CaptureLost 会被标记为已处理，
+        // 必须用 handledEventsToo 才能收到，否则松手后一直停留在“待应用”
+        slider.AddHandler(UIElement.PointerReleasedEvent,
+            new PointerEventHandler((_, _) => Queue()), true);
+        slider.AddHandler(UIElement.PointerCaptureLostEvent,
+            new PointerEventHandler((_, _) => Queue()), true);
+        // 拖动过程中取消待确认，只有真正停下才写入
+        slider.AddHandler(UIElement.PointerPressedEvent,
+            new PointerEventHandler((_, _) => Cancel()), true);
+        slider.AddHandler(UIElement.PointerMovedEvent,
+            new PointerEventHandler((_, _) => Cancel()), true);
     }
 
     private void RenderCpuPower()
@@ -5071,6 +5108,9 @@ public sealed partial class MainPage : Page
     {
         var state = await Task.Run(CpuPowerService.Read);
         if (!state.Enabled || state.Limits.Length == 0) return;
+        // 读回值为 0 说明本机 RAPL 寄存器未暴露真实限制（走 MMIO 等），
+        // 不能把 0 当成目标写进设置，否则重启后会丢失接管状态
+        if (state.Limits[0].Watts < 1) return;
         CpuPowerAutoApply.RememberOriginals(state);
         var pl1 = (int)Math.Round(state.Limits[0].Watts);
         var pl2 = state.Limits.Length > 1 ? (int)Math.Round(state.Limits[1].Watts) : 0;
@@ -5203,7 +5243,7 @@ public sealed partial class MainPage : Page
         _perfBoostDot.Margin = on ? new Thickness(0, 0, 2, 0) : new Thickness(2, 0, 0, 0);
     }
 
-    /// <summary>睿频开关只改待应用状态，按 X 保存时才写入</summary>
+    /// <summary>睿频开关：切换后立即写入（触屏点击或手柄 A 都直接生效）</summary>
     private void ToggleBoost()
     {
         if (!_perfOpen || _perfBusy || _perfSaving || _perfCpuLoading) return;
@@ -5214,17 +5254,17 @@ public sealed partial class MainPage : Page
         }
         _perfBoostPending = !(_perfBoostPending ?? (_perfCpuState.BoostMode != 0));
         RenderBoostToggle();
-        if (_perfBoostRow != null) _perfRowHints[_perfBoostRow].Text = "已切换，待保存";
+        if (_perfBoostRow != null) _perfRowHints[_perfBoostRow].Text = "正在写入…";
         if (_perfBoostRow != null) ShowPerformanceHelp(_perfBoostRow);
+        _ = SavePerformanceAsync(false);
     }
 
-    /// <summary>X：一次保存所有待应用修改；全部成功后关闭面板，失败项留在面板提示</summary>
-    private async Task SavePerformanceAsync()
+    /// <summary>一次写入所有待应用修改；closeOnSuccess=false 时（触屏即时生效）不关闭面板</summary>
+    private async Task SavePerformanceAsync(bool closeOnSuccess = true)
     {
         if (!_perfOpen || _perfBusy || _perfSaving || _perfCpuLoading || _perfPowerLoading || _perfFrameLoading) return;
         _perfSaving = true;
         PerfSettingsScroll.IsHitTestVisible = false;
-        PerfSaveButton.IsEnabled = false;
         var failures = new List<string>();
         var changed = 0;
         var boostFailed = false;
@@ -5328,7 +5368,6 @@ public sealed partial class MainPage : Page
             _perfSaving = false;
             if (!boostFailed) _perfBoostPending = null;
             PerfSettingsScroll.IsHitTestVisible = true;
-            PerfSaveButton.IsEnabled = true;
         }
 
         // 读回真实值；失败项保持失败提示，不伪造成功状态
@@ -5342,7 +5381,8 @@ public sealed partial class MainPage : Page
 
         if (changed == 0)
         {
-            // 没有改动：什么都不写入，同样按保存成功处理并关闭面板
+            // 没有改动：触屏随手触发时静默返回；手柄按 A 时按保存成功处理并关闭面板
+            if (!closeOnSuccess) return;
             ShowToast("已保存并生效", ToastKind.Success);
             ClosePerformanceMenu();
             return;
@@ -5354,8 +5394,15 @@ public sealed partial class MainPage : Page
             return;
         }
         RefreshPerformanceTiles();
-        ShowToast("已保存并生效", ToastKind.Success);
-        ClosePerformanceMenu();
+        if (closeOnSuccess)
+        {
+            ShowToast("已保存并生效", ToastKind.Success);
+            ClosePerformanceMenu();
+        }
+        else
+        {
+            ShowPerformanceStatus("已生效", false);
+        }
     }
 
     /// <summary>
@@ -5549,11 +5596,11 @@ public sealed partial class MainPage : Page
         if (combo is not null) combo.IsDropDownOpen = false;
     }
 
-    /// <summary>性能弹窗内手柄按键：三档选模式、设置行调值并标记待应用，X 保存，B/View/Y 关闭</summary>
+    /// <summary>性能弹窗内手柄按键：三档选模式、设置行调值并标记待应用，A 应用，B/View/Y 关闭</summary>
     private bool HandlePerformance(GamepadButtons b)
     {
         if (_perfBusy || _perfSaving) return true;
-        // 下拉框已展开：上下选择，A/B 收起（其余按键吞掉，避免误改其它行）
+        // 下拉框已展开：上下选择，A 收起并应用、B 收起放弃（其余按键吞掉，避免误改其它行）
         if (_perfOpenCombo is not null)
         {
             if (b.HasFlag(GamepadButtons.DPadUp) || b.HasFlag(GamepadButtons.DPadDown))
@@ -5565,7 +5612,9 @@ public sealed partial class MainPage : Page
             }
             if (b.HasFlag(GamepadButtons.A) || b.HasFlag(GamepadButtons.B))
             {
+                var apply = b.HasFlag(GamepadButtons.A);
                 ClosePerformanceCombo();
+                if (apply) _ = SavePerformanceAsync(false);
                 return true;
             }
             return true;
@@ -5594,14 +5643,16 @@ public sealed partial class MainPage : Page
         }
         if (b.HasFlag(GamepadButtons.A))
         {
-            // 模式卡片：A = 立即切换并应用该档电源模式；开关类行照旧切换；其余行不做写入
-            if (_perfFocus is >= 0 and < 3) _ = ApplyPerformanceLevelAtAsync(_perfFocus);
-            else if (_perfActions.TryGetValue(_perfSettingRows[_perfFocus], out var action)) action();
-            return true;
-        }
-        if (b.HasFlag(GamepadButtons.X))
-        {
-            _ = SavePerformanceAsync();
+            // 模式卡片：A = 立即切换并应用该档电源模式
+            if (_perfFocus is >= 0 and < 3)
+            {
+                _ = ApplyPerformanceLevelAtAsync(_perfFocus);
+                return true;
+            }
+            var row = _perfSettingRows[_perfFocus];
+            // 开关/下拉框行：开关自身立即写入，下拉框先展开、选完后按 A 收起并应用
+            if (_perfActions.TryGetValue(row, out var action)) action();
+            else _ = SavePerformanceAsync();   // 滑杆等行：A 应用全部待生效修改
             return true;
         }
         if (b.HasFlag(GamepadButtons.B) || b.HasFlag(GamepadButtons.View) || b.HasFlag(GamepadButtons.Y))
@@ -5666,8 +5717,8 @@ public sealed partial class MainPage : Page
         }
     }
 
-    /// <summary>鼠标/手柄点卡片：只切换待应用档位，统一由 X 保存</summary>
-    private void ChoosePerformanceCard(int index)
+    /// <summary>鼠标/触屏点卡片：选中并立即应用该档 Windows 电源模式</summary>
+    private async void ChoosePerformanceCard(int index)
     {
         if (!_perfOpen || _perfBusy || _perfSaving) return;
         if (!_perfSystemState.Available)
@@ -5676,6 +5727,7 @@ public sealed partial class MainPage : Page
             return;
         }
         FocusPerformanceRow(_perfCards[index]);
+        if ((int)_perfSystemState.Level != index) await ApplyPerformanceLevelAtAsync(index);
     }
 
     /// <summary>A 键在模式卡片上直接切换并应用该档 Windows 电源模式（立即生效）</summary>
@@ -6133,6 +6185,20 @@ public sealed partial class MainPage : Page
     {
         SettingsService.Update(s => s.HomePageCount++);
         _page = Math.Max(0, PageCount() - 1);   // 切到新页
+        // 每个副页默认放一个设置磁贴：功能与主页设置磁贴一致，可删除；
+        // 删除后页面没有任何磁贴/组件时，副页块会自动回收
+        var list = ConfigService.Load();
+        list.Add(new LaunchItem
+        {
+            Name = "设置",
+            Target = "widget:settings",
+            Kind = LaunchKind.Widget,
+            WidgetKind = WidgetKind.Settings,
+            Size = TileSize.Small,
+            PageIndex = _page,
+            SubPageSettings = true
+        });
+        ConfigService.Save(list);
         _expanded = null;
         _grabbed = null;
         _marked.Clear();
@@ -6143,6 +6209,28 @@ public sealed partial class MainPage : Page
         Reload();          // 内部 BuildDisplay/LayoutTiles/UpdateSelection
         LayoutPageDots();
         ShowToast($"已添加副页块（共 {PageCount()} 页）");
+    }
+
+    /// <summary>删除磁贴后回收空副页：后续页整体前移，至少保留主页；返回是否删掉了页</summary>
+    private bool PruneEmptySubPages()
+    {
+        var pruned = false;
+        for (var p = PageCount() - 1; p >= 1; p--)
+        {
+            if (_items.Any(it => !DrawerService.IsDrawer(it) && PageIndexOf(it) == p)) continue;
+            foreach (var it in _items)
+                if (it.PageIndex > p) it.PageIndex--;
+            SettingsService.Update(s => s.HomePageCount = Math.Max(1, s.HomePageCount - 1));
+            if (_page > p) _page--;
+            pruned = true;
+        }
+        if (pruned)
+        {
+            _page = Math.Clamp(_page, 0, PageCount() - 1);
+            if (_expanded is not null && PageIndexOf(_expanded) != _page) _expanded = null;
+            if (App.Main is { } main) main.CurrentHomePage = _page;
+        }
+        return pruned;
     }
 
     /// <summary>刷新所有音乐磁贴的系统媒体状态显示（曲目名/播放暂停按钮/封面）</summary>
@@ -7533,7 +7621,9 @@ public sealed partial class MainPage : Page
     /// <summary>删除指定磁贴（Y 键/拖到设置磁贴上共用）：组=拆分组；成员=移出组；普通=删除</summary>
     private void DeleteItem(LaunchItem item, LaunchItem? group)
     {
-        if (item.Kind == LaunchKind.Widget && item.WidgetKind is WidgetKind.Settings or WidgetKind.Power) return; // 设置/电源磁贴不可删除
+        if (item.Kind == LaunchKind.Widget && item.WidgetKind == WidgetKind.Power) return; // 电源磁贴不可删除
+        if (item.Kind == LaunchKind.Widget && item.WidgetKind == WidgetKind.Settings && !item.SubPageSettings)
+            return; // 主主页设置磁贴不可删除；副页设置磁贴可删
         if (group is not null)
         {
             group.Members.Remove(item);
@@ -7568,11 +7658,13 @@ public sealed partial class MainPage : Page
         }
 
         if (_selected >= _display.Count) _selected = Math.Max(0, _display.Count - 1);
+        var pruned = PruneEmptySubPages();   // 删掉最后一个磁贴后回收空副页
         ConfigService.Save(_items.ToList());
         BuildDisplay();
         LayoutTiles();
         UpdateSelection();
         UpdateHintBar();
+        if (pruned) LayoutPageDots();
     }
 
     /// <summary>启动其他程序后是否自动收起：开始菜单模式下保持常驻，只能手动隐藏</summary>

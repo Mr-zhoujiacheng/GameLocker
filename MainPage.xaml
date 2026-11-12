@@ -425,7 +425,7 @@
         </Grid>
 
         <!-- 性能控制遮罩：性能控制磁贴 A/点击打开 —— Windows 电源模式三档 + 锁帧/功耗/CPU/核心设置。
-             上下切换行、左右在功耗/CPU 两列间切换、右摇杆调值，所有改动先标记“待应用”，按 X 或点“保存”统一生效，B/Y 关闭且不保存 -->
+             触屏改动控件即刻生效；手柄改动先标记“待应用”，按 A 统一应用，B/Y 关闭 -->
         <Grid x:Name="PerformanceOverlay" Grid.Row="0" Grid.RowSpan="3" Visibility="Collapsed">
             <Border x:Name="PerformanceMask" Background="#D80A0C10"/>
 
@@ -649,36 +649,13 @@
                     <!-- 说明条：独立占一行，透明底 + 细线框，便于识别 -->
                     <Border Grid.Row="2" Height="52" CornerRadius="12" Background="Transparent"
                             BorderBrush="#1FFFFFFF" BorderThickness="1" Padding="12,6">
-                        <Grid ColumnSpacing="14">
-                            <Grid.ColumnDefinitions>
-                                <ColumnDefinition Width="*"/>
-                                <ColumnDefinition Width="Auto"/>
-                            </Grid.ColumnDefinitions>
+                        <Grid>
                             <TextBlock x:Name="PerfControlHelp" FontSize="12" FontWeight="SemiBold" Opacity="0.9"
                                        TextWrapping="Wrap" TextTrimming="CharacterEllipsis" VerticalAlignment="Center"/>
                             <!-- 面板内状态提示：保存结果/失败原因（主页 toast 会被性能浮层遮住，必须在这里显示） -->
                             <TextBlock x:Name="PerfStatusText" FontSize="12" FontWeight="SemiBold"
                                        TextWrapping="Wrap" TextTrimming="CharacterEllipsis" VerticalAlignment="Center"
                                        Visibility="Collapsed"/>
-                            <!-- 鼠标/触屏保存入口：与手柄 X 等价，一次写入所有待应用修改 -->
-                            <Button x:Name="PerfSaveButton" Grid.Column="1" Content="保存"
-                                    FontSize="12" FontWeight="SemiBold" Padding="16,5"
-                                    CornerRadius="8" BorderThickness="1"
-                                    VerticalAlignment="Center"
-                                    IsTabStop="False" AllowFocusOnInteraction="False" UseSystemFocusVisuals="False">
-                                <Button.Background>
-                                    <LinearGradientBrush StartPoint="0,0" EndPoint="1,1">
-                                        <GradientStop Color="#FFFFC98A" Offset="0"/>
-                                        <GradientStop Color="#FFFF9A4D" Offset="1"/>
-                                    </LinearGradientBrush>
-                                </Button.Background>
-                                <Button.Foreground>
-                                    <SolidColorBrush Color="#FF241505"/>
-                                </Button.Foreground>
-                                <Button.BorderBrush>
-                                    <SolidColorBrush Color="#66FFFFFF"/>
-                                </Button.BorderBrush>
-                            </Button>
                         </Grid>
                     </Border>
 
@@ -686,7 +663,7 @@
                     <Border Grid.Row="3" HorizontalAlignment="Center" Margin="0"
                             Padding="12,2" CornerRadius="10" Background="#1F0A0C10">
                         <ctl:GamepadHintBar x:Name="PerformanceHintBar" BadgeScale="0.9"
-                                            Hints="UD:选择|LR:切列/选档|A:切换模式|RS:调值|X:保存|B:关闭"/>
+                                            Hints="UD:选择|A:应用|RS:调值|B:关闭"/>
                     </Border>
                 </Grid>
             </Border>

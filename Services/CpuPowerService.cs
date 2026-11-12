@@ -164,6 +164,22 @@ internal static class CpuPowerService
                 // 首次成功接管后记住状态：之后每次启动自动恢复，不再要求点击启用
                 if (!SettingsService.Current.CpuPowerTakeover)
                     SettingsService.Update(s => s.CpuPowerTakeover = true);
+                // 只开了开关、还没拖过滑块时也要把当前限制存成目标，
+                // 否则重启后 Settings 里 Pl1=0，会被当成“未接管”又提示点击启用
+                if (SettingsService.Current.CpuPowerPl1 <= 0 && response.State.Limits.Length > 0
+                    && response.State.Limits[0].Watts >= 1)
+                {
+                    CpuPowerAutoApply.RememberOriginals(response.State);
+                    var pl1 = (int)Math.Round(response.State.Limits[0].Watts);
+                    var pl2 = response.State.Limits.Length > 1 ? (int)Math.Round(response.State.Limits[1].Watts) : 0;
+                    var fppt = response.State.Limits.Length > 2 ? (int)Math.Round(response.State.Limits[2].Watts) : 0;
+                    SettingsService.Update(s =>
+                    {
+                        s.CpuPowerPl1 = pl1;
+                        s.CpuPowerPl2 = pl2;
+                        s.CpuPowerFppt = fppt;
+                    });
+                }
                 return new(response.State.Supported, response.State.Message);
             }
             catch (Exception ex)

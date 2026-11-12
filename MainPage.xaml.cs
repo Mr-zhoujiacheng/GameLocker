@@ -55,7 +55,7 @@ public sealed partial class MainPage : Page
     /// <summary>当前抽屉内磁贴的画布（外壳第 1 行）</summary>
     private Canvas? _drawerInnerCanvas;
     /// <summary>标签条滚动容器（切抽屉后把高亮药丸滚入可见）</summary>
-    private ScrollViewer? _drawerTabStrip;
+    private Canvas? _drawerTabStrip;
     /// <summary>当前抽屉内磁贴元素（与 _drawerOwner.Drawers[_drawerIndex].Items 顺序对齐）</summary>
     private readonly List<Border> _drawerInnerTiles = [];
     /// <summary>区域内手柄焦点序号（-1=焦点在标签条/无）</summary>
@@ -1130,8 +1130,11 @@ public sealed partial class MainPage : Page
         var drawerHeight = DrawerHost.Visibility == Visibility.Visible && !_drawerHidden
             ? DrawerHost.ActualHeight : 0;
         MoveHintBar.Margin = new Thickness(0, 0, 0, bar + (drawerHeight > 0 ? drawerHeight + 8 : 0));
-        // 提示条底边距 18 + 自身高度 + 8 间距，正好等于 barHeight + 26
-        DrawerHost.Margin = new Thickness(12, 6, 12, barHeight > 0 ? bar : 8);
+        // 收起时牌堆铺满页面宽度并始终贴底；展开的大卡才留边距、给提示条让位
+        DrawerHost.Margin = new Thickness(
+            _drawerExpanded ? 12 : 0, 6,
+            _drawerExpanded ? 12 : 0,
+            _drawerExpanded && barHeight > 0 ? bar : 8);
     }
 
     /// <summary>抽屉手势感应区高度（DIP）：抽屉收起（面板不在屏上）时，窗口底部这条窄带内上下划也归抽屉</summary>
@@ -1281,6 +1284,11 @@ public sealed partial class MainPage : Page
             : Windows.ApplicationModel.DataTransfer.DataPackageOperation.None;
         // 落在下方抽屉面板上 → 文件进当前抽屉（不是主页网格）：高亮面板 + 改拖拽提示文案
         var overDrawer = PointInDrawer(e.GetPosition(TileHost));
+        // 收起状态下拖到哪张卡，哪张卡就自动弹起，松手即放进这张卡
+        if (overDrawer && !_drawerExpanded && _drawerTabStrip is { } fan)
+            SetDrawerFanHover(IndexAtFan(e.GetPosition(fan).X));
+        else
+            SetDrawerFanHover(-1);
         HighlightDrawerFileDrop(overDrawer);
         if (e.DragUIOverride != null)
         {
@@ -1294,6 +1302,7 @@ public sealed partial class MainPage : Page
     {
         if (_fileTransferOpen) { HighlightFileTransferDrop(false); return; }
         HighlightDrawerFileDrop(false);
+        SetDrawerFanHover(-1); // 拖出牌堆后恢复原状
     }
 
     /// <summary>文件传输浮层拖动文件时的描边反馈</summary>
@@ -1316,19 +1325,11 @@ public sealed partial class MainPage : Page
         FileTransferDropText.Text = on ? "释放以加入待发送" : (_ftDropped.Count == 0 ? "将文件拖到这里" : "继续拖入文件");
     }
 
-    /// <summary>外部文件拖到（离开）抽屉面板时的描边反馈</summary>
+    /// <summary>外部文件拖到抽屉上时不再画蓝色整圈描边，仅靠卡牌自动弹起作为反馈。</summary>
     private void HighlightDrawerFileDrop(bool on)
     {
         if (_drawerRegion is not { } shell) return;
-        if (on)
-        {
-            shell.BorderBrush = new SolidColorBrush(Windows.UI.Color.FromArgb(0xFF, 0x4C, 0xC2, 0xFF));
-            shell.BorderThickness = new Thickness(3);
-        }
-        else if (!_inDrawer)
-        {
-            ResetDrawerFrame(); // 区域内焦点描边不动，否则恢复默认
-        }
+        if (!on && _drawerExpanded) ResetDrawerFrame();
     }
 
     private async void OnDrop(object sender, Microsoft.UI.Xaml.DragEventArgs e)
@@ -1347,15 +1348,22 @@ public sealed partial class MainPage : Page
             return;
         }
 
-        // 落点在下方抽屉面板上：条目放进当前抽屉；否则照旧进主页当前页
+        // 落点在下方抽屉面板上：条目放进拖拽时弹起的那张卡；否则照旧进主页当前页
         var overDrawer = PointInDrawer(e.GetPosition(TileHost));
+        var dropIndex = _drawerIndex;
+        if (overDrawer && !_drawerExpanded && _drawerTabStrip is { } fan)
+        {
+            var hovered = IndexAtFan(e.GetPosition(fan).X);
+            if (hovered >= 0) dropIndex = hovered;
+        }
         HighlightDrawerFileDrop(false);
+        SetDrawerFanHover(-1); // 拖放结束，卡牌回落到原状
 
         var added = 0;
         var skipped = 0;
         var list = ConfigService.Load();
         var drawerPage = overDrawer && DrawerService.FindDrawer(list)?.Drawers is { Count: > 0 } ds
-            ? ds[Math.Clamp(_drawerIndex, 0, ds.Count - 1)]
+            ? ds[Math.Clamp(dropIndex, 0, ds.Count - 1)]
             : null;
         foreach (var storage in items)
         {
@@ -1525,34 +1533,45 @@ public sealed partial class MainPage : Page
         // ② 内层磁贴层（按 A 之后）：所有按键作用于内层磁贴——DPad 选、A 启动、X 添加、Y 关闭/删除、↑ 或 B 退回抽屉层
         if (_inDrawer)
         {
+            // 手柄一参与卡牌区，焦点交回手柄；鼠标点击选中的临时状态失效
+            _drawerGamepadFocus = true;
+            _drawerClickSelected = -1;
             if (_drawerFocusPos < 0)
             {
-                if (buttons.HasFlag(GamepadButtons.DPadUp)) { ExitDrawer(); return true; }   // ↑：退回磁贴区
+                if (buttons.HasFlag(GamepadButtons.DPadUp)) { if (!_drawerExpanded) ExitDrawer(); return true; }   // 展开页内 ↑ 不收起，只有 B 收起
                 if (buttons.HasFlag(GamepadButtons.DPadDown)) return true;                   // ↓ 不进入内层（只有 A 能进入）
                 if (buttons.HasFlag(GamepadButtons.DPadLeft) || buttons.HasFlag(GamepadButtons.LeftShoulder)) { CycleDrawer(-1); return true; }
                 if (buttons.HasFlag(GamepadButtons.DPadRight) || buttons.HasFlag(GamepadButtons.RightShoulder)) { CycleDrawer(1); return true; }
-                // A：编辑模式=把已标记磁贴移入当前抽屉（无标记则进入内层，编辑模式的加号磁贴在里面）；常规模式=进入抽屉内对焦内层磁贴
+                // A：选中"添加卡牌"=新增抽屉；编辑模式=把已标记磁贴移入当前抽屉；常规模式=进入抽屉内对焦内层磁贴
+                var drawerCount = _drawerOwner?.Drawers?.Count ?? 0;
+                var addSelected = _drawerIndex >= drawerCount;
                 if (buttons.HasFlag(GamepadButtons.A))
                 {
-                    if (_moving && _marked.Count >= 1) MoveMarkedIntoDrawer(_drawerIndex);
+                    if (addSelected) AddDrawerTab();
+                    else if (_moving && _marked.Count >= 1) MoveMarkedIntoDrawer(_drawerIndex);
                     else EnterDrawerInner();
                     return true;
                 }
-                if (buttons.HasFlag(GamepadButtons.X)) { if (!_moving) BeginAddIntoDrawer(); return true; }
+                if (buttons.HasFlag(GamepadButtons.X)) { if (!_moving && !addSelected) BeginAddIntoDrawer(); return true; }
                 if (buttons.HasFlag(GamepadButtons.Y))
                 {
-                    if (_moving) DeleteDrawerItem();   // 编辑模式：删除当前抽屉（最后一个删完则移除整个组件）
-                    else AddDrawerTab();               // 常规模式：新增一个抽屉（等同标签条上的 +）
+                    // 常规模式不再用 Y 新增抽屉；编辑模式 Y 仍是删除当前抽屉
+                    if (_moving && !addSelected) DeleteDrawerItem();
                     return true;
                 }
-                if (buttons.HasFlag(GamepadButtons.RightThumb)) { BeginRenameDrawerTab(); return true; } // R3：重命名当前抽屉
-                if (buttons.HasFlag(GamepadButtons.B)) { ExitDrawer(); return true; }   // 消费 B，避免落 MainWindow 的最小化
+                if (buttons.HasFlag(GamepadButtons.RightThumb)) { if (!addSelected) BeginRenameDrawerTab(); return true; } // R3：重命名当前抽屉
+                if (buttons.HasFlag(GamepadButtons.B))
+                {
+                    // 展开页只有 B 会收起：先回到手牌层，仍在抽屉区内
+                    if (_drawerExpanded) BackToDrawerLevel(); else ExitDrawer();
+                    return true;
+                }   // 消费 B，避免落 MainWindow 的最小化
                 if (buttons.HasFlag(GamepadButtons.LeftThumb)) { ExitDrawer(); EnterEditMode(); return true; }
                 return false; // View（设置）等交 MainWindow
             }
 
-            // 内层磁贴层：最上行再按 ↑（无候选）=退回抽屉层（焦点回到抽屉本身）
-            if (buttons.HasFlag(GamepadButtons.DPadUp)) { if (!MoveInDrawer(0, -1)) BackToDrawerLevel(); return true; }
+            // 内层磁贴层：最上行再按 ↑ 不再收起，保持在内层；只有 B 才缩回卡牌
+            if (buttons.HasFlag(GamepadButtons.DPadUp)) { MoveInDrawer(0, -1); return true; }
             if (buttons.HasFlag(GamepadButtons.DPadDown)) { MoveInDrawer(0, 1); return true; }
             if (buttons.HasFlag(GamepadButtons.DPadLeft)) { MoveInDrawer(-1, 0); return true; }
             if (buttons.HasFlag(GamepadButtons.DPadRight)) { MoveInDrawer(1, 0); return true; }
@@ -2304,22 +2323,59 @@ public sealed partial class MainPage : Page
     }
 
     // ==================== 磁贴抽屉（WidgetKind.Drawer）====================
-    // 主页下方固定区域：顶部一行抽屉标签条（药丸 + "+"），下方是当前抽屉的磁贴。
-    // 宽度铺满软件界面并随窗口自适应，高度随内容增长；磁贴区最底行按 ↓ 进入、区域内最上行按 ↑ 退出。
-    // 分两层焦点：抽屉层（选中框停在抽屉本身，_drawerFocusPos < 0）= 按键只作用于抽屉（←→/LB/RB 切抽屉、X 添加、Y/R3 编辑），
-    // 按 A 才进入内层磁贴层 = 按键作用于内层磁贴（DPad 选、A 启动、Y 关闭、B/↑ 退回抽屉层）。
+    // 收起时是一手扇形卡牌（一张卡 = 一个抽屉）；选中一张后，这张卡展开成大卡，
+    // 其余卡缩成大卡底部一条条“牌边”（悬停显示卡名，点击切换）。手柄：←→/LB/RB 换卡、A 展开、B 收起。
     // 内层磁贴是面板的子元素，不进 _display/_tiles，因此不参与组展开/标记/换位。
 
-    /// <summary>抽屉标签条高度（像素）——一行标签 + 贴底选中下线，下沿即标签条基线</summary>
-    private const double DrawerTabHeight = 34;
+    /// <summary>收起时扇形卡牌区高度</summary>
+    private const double DrawerFanHeight = 240;
+    /// <summary>参考 DropShelf FanPanel：中心间距上限 / 每张倾斜角 / 两侧下沉 / 选中上提 / 选中放大 / 邻居让位</summary>
+    private const double DrawerFanMaxSpacing = 98;
+    private const double DrawerFanTilt = 2.2;
+    private const double DrawerFanEdgeDrop = 34;
+    private const double DrawerFanLift = 60;
+    private const double DrawerFanHotScale = 1.14;
+    private const double DrawerFanPush = 42;
+    /// <summary>卡牌常态顶边（卡底伸出可见区，下面由画布裁掉）</summary>
+    private const double DrawerFanRestTop = 116;
+    private const double DrawerCardHeight = 225;
+    /// <summary>展开大卡下方每条牌边的常态高度 / 悬停多露出高度 / 每条左右递增缩进</summary>
+    private const double DrawerEdgeHeight = 7;
+    private const double DrawerEdgeReveal = 26;
+    private const double DrawerEdgeInset = 16;
     /// <summary>抽屉内容区左右内边距（内容区宽度 = 面板宽度 - 2×该值）</summary>
     private const double DrawerPadH = 12;
     /// <summary>抽屉内容区下内边距</summary>
     private const double DrawerPadV = 10;
 
-    /// <summary>抽屉标签条中当前选中的标签（切抽屉后滚入可见）</summary>
-    private FrameworkElement? _drawerSelectedPill;
-
+    private bool _drawerExpanded;
+    private bool _drawerCardDragging;
+    private long _drawerCardTapBlockedUntil;
+    private int _drawerCardPressedIndex = -1;
+    /// <summary>扇形卡牌元素（按抽屉顺序）</summary>
+    private readonly List<Border> _drawerCards = [];
+    /// <summary>末尾固定的"添加卡牌"卡位</summary>
+    private Border? _drawerAddCard;
+    private bool _drawerAddCardHover;
+    /// <summary>鼠标当前悬停的卡牌下标（-1=没有悬停）。只有悬停/点击选中/手柄聚焦时卡牌才上弹</summary>
+    private int _drawerFanHover = -1;
+    /// <summary>鼠标/触屏第一次点击选中的卡牌（第二次点击才展开）；-1=未选中</summary>
+    private int _drawerClickSelected = -1;
+    /// <summary>当前卡牌焦点是否来自手柄：鼠标参与后置 false，鼠标移开就不再保持上弹</summary>
+    private bool _drawerGamepadFocus;
+    /// <summary>下一次重建手牌时播放"从下方浮起"的入场动画（展开→收起、新增卡牌）</summary>
+    private bool _fanEntrancePending = true;
+    /// <summary>最近一次选中的卡牌（与选中卡交接层级，落下时仍压在邻居上面）</summary>
+    private int _drawerLastHot = -1;
+    /// <summary>各卡牌变换最后一次的目标值：目标没变就不重启动画，正在播放的动画自然播完</summary>
+    private readonly Dictionary<(DependencyObject Target, string Property), double> _drawerFanGoals = [];
+    /// <summary>展开大卡的外框（用于描边/入场动画）</summary>
+    private Border? _drawerSheet;
+    /// <summary>卡牌拖动起点（相对卡牌画布）</summary>
+    private double _drawerCardStartX;
+    private uint _drawerCardPointerId;
+    /// <summary>卡牌指针当前是否按下（避免鼠标悬停移动被误判成拖动）</summary>
+    private bool _drawerCardPressing;
     /// <summary>设置里的抽屉控件色（"none"/空 = 未指定，此时回退到抽屉自身的随机强调色 = 原观感）</summary>
     private static Windows.UI.Color? DrawerColorSetting =>
         TileStyle.ParseTileColor(SettingsService.Current.DrawerColor);
@@ -2330,6 +2386,7 @@ public sealed partial class MainPage : Page
     {
         CancelLongPress();
         CancelPendingTap();
+        if (_drawerCardDragging) return; // 卡牌拖动期间不重建面板，否则画布重建会丢失指针捕获
         // 总开关（设置 → 抽屉）：关闭时与"无抽屉组件"同样折叠隐藏（抽屉内容保留，重开即恢复）
         var owner = SettingsService.Current.DrawerEnabled ? DrawerService.FindDrawer(_items.ToList()) : null;
         if (owner?.Drawers is not { Count: > 0 })
@@ -2341,91 +2398,104 @@ public sealed partial class MainPage : Page
             _drawerTabStrip = null;
             _drawerInnerTiles.Clear();
             _drawerAddTile = null;
-            _drawerSelectedPill = null;
+            _drawerCards.Clear();
+            _drawerAddCard = null;
+            _drawerAddCardHover = false;
+            _drawerSheet = null;
             _drawerOwner = null;
+            _drawerExpanded = false;
+            _drawerCardPressedIndex = -1;
+            _drawerCardPressing = false;
             if (_inDrawer) { _inDrawer = false; _drawerFocusPos = -1; }
             return;
         }
 
         _drawerOwner = owner;
-        if (_drawerIndex >= owner.Drawers.Count) _drawerIndex = owner.Drawers.Count - 1;
+        var maxIndex = _drawerExpanded ? owner.Drawers.Count - 1 : owner.Drawers.Count; // 收起时末尾可选中"添加卡牌"
+        if (_drawerIndex > maxIndex) _drawerIndex = maxIndex;
         if (_drawerIndex < 0) _drawerIndex = 0;
+        if (!_drawerExpanded) _drawerFocusPos = -1;
 
-        var grid = new Grid();
-        grid.RowDefinitions.Add(new RowDefinition { Height = new GridLength(DrawerTabHeight) });
-        grid.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });
+        var root = new StackPanel { Spacing = 0 };
 
-        var strip = new ScrollViewer
+        if (_drawerExpanded)
         {
-            HorizontalScrollMode = ScrollMode.Enabled,
-            HorizontalScrollBarVisibility = ScrollBarVisibility.Hidden,
-            VerticalScrollMode = ScrollMode.Disabled,
-            VerticalScrollBarVisibility = ScrollBarVisibility.Disabled,
-            // 左内边距 2（+ 标签自身 10 的内边距 = 文字与内容区左对齐于 DrawerPadH）；标签贴基线靠下。
-            // 右侧只留少量空隙："+"单独放在标题行最右侧（见下方 header），标签再多也挤不走它
-            Padding = new Thickness(2, 0, 8, 0)
-        };
-        strip.Content = new StackPanel
+            // 展开：一张大卡承载当前抽屉内容，其余抽屉缩成大卡底部的牌边
+            _drawerTabStrip = null;
+            _drawerCards.Clear();
+            _drawerAddCard = null;
+            _drawerAddCardHover = false;
+            root.Children.Add(BuildDrawerSheet(owner));
+            // 展开后只显示大卡，不再显示底部叠压的牌边
+        }
+        else
         {
-            Orientation = Orientation.Horizontal,
-            Spacing = 8,
-            VerticalAlignment = VerticalAlignment.Bottom
-        };
+            // 收起：一手扇形卡牌，右侧浮一个"+"新增卡牌
+            _drawerSheet = null;
+            _drawerInnerCanvas = null;
+            _drawerInnerTiles.Clear();
+            _drawerAddTile = null;
+            var fan = new Canvas { Height = DrawerFanHeight };
+            // 透明背景让整条牌堆区域都能接收指针移动（包括卡牌之间的空隙）
+            fan.Background = new SolidColorBrush(Microsoft.UI.Colors.Transparent);
+            fan.PointerEntered += (_, e) => SetDrawerFanHover(IndexAtFan(e.GetCurrentPoint(fan).Position.X));
+            fan.PointerMoved += (_, e) =>
+            {
+                if (!_drawerCardDragging) SetDrawerFanHover(IndexAtFan(e.GetCurrentPoint(fan).Position.X));
+            };
+            fan.PointerExited += (_, _) =>
+            {
+                if (!_drawerCardDragging) SetDrawerFanHover(-1);
+            };
+            fan.SizeChanged += (_, _) =>
+            {
+                if (ReferenceEquals(_drawerTabStrip, fan) && !_drawerCardDragging) LayoutDrawerTabStrip(owner);
+            };
+            fan.PointerWheelChanged += (_, e) =>
+            {
+                var delta = e.GetCurrentPoint(fan).Properties.MouseWheelDelta;
+                if (delta == 0) return;
+                CycleDrawer(delta > 0 ? -1 : 1);
+                e.Handled = true;
+            };
+            _drawerTabStrip = fan;
+            root.Children.Add(fan);
+        }
 
-        // 标题行：标签条（占满剩余宽度） + 最右侧"+"新增按钮
-        var header = new Grid();
-        header.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
-        header.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
-        Grid.SetRow(header, 0);
-        Grid.SetColumn(strip, 0);
-        header.Children.Add(strip);
-        var addButton = CreateDrawerAddButton();
-        Grid.SetColumn(addButton, 1);
-        addButton.Margin = new Thickness(6, 0, DrawerPadH, 0);
-        addButton.VerticalAlignment = VerticalAlignment.Center;
-        header.Children.Add(addButton);
-
-        // 标签条基线：贴标签条底部、两端留内边距的细分隔线，把抽屉与上方磁贴区分开。
-        // 先加入（在标签条之下），让当前标签的强调色下划线能压在这条线上；
-        // 透明模式下抽屉没有玻璃底，基线与外框一起加重，避免整块区域"糊"进窗口
-        var strong = SettingsService.Current.DrawerTransparent;
-        var divider = new Border
-        {
-            Height = strong ? 2 : 1,
-            Margin = new Thickness(DrawerPadH, 0, DrawerPadH, 0),
-            VerticalAlignment = VerticalAlignment.Bottom,
-            Background = new SolidColorBrush(strong
-                ? Windows.UI.Color.FromArgb(0x5A, 0xFF, 0xFF, 0xFF)
-                : Windows.UI.Color.FromArgb(0x24, 0xFF, 0xFF, 0xFF)),
-            IsHitTestVisible = false
-        };
-        Grid.SetRow(divider, 0);
-        grid.Children.Add(divider);
-        grid.Children.Add(header);
-
-        var inner = new Canvas
-        {
-            // 上边距 14：标签条基线与磁贴之间留出呼吸空间，不贴住
-            Margin = new Thickness(DrawerPadH, 14, DrawerPadH, DrawerPadV),
-            HorizontalAlignment = HorizontalAlignment.Stretch,
-            VerticalAlignment = VerticalAlignment.Top
-        };
-        Grid.SetRow(inner, 1);
-        grid.Children.Add(inner);
-
-        DrawerHost.Child = grid;
-        DrawerHost.Visibility = Visibility.Visible;
-        // 面板整体跟随"磁贴透明度"设置淡出（留 0.6 下限：面板是容器底，过淡会看不清标签）
-        DrawerHost.Opacity = Math.Max(0.6, TileStyle.Opacity);
-        ApplyDrawerSurface(); // 玻璃渐变底 / 透明模式
-        ResetDrawerFrame(); // 面板描边：默认弱描边，或设置里指定的抽屉颜色
-
+        DrawerHost.Child = root;
         _drawerRegion = DrawerHost;
-        _drawerTabStrip = strip;
-        _drawerInnerCanvas = inner;
+        DrawerHost.Visibility = Visibility.Visible;
+        // 面板整体跟随"磁贴透明度"设置淡出（留 0.6 下限）；收起成卡牌时保持完全不透明，
+        // 否则叠压处会透出后面的卡牌
+        DrawerHost.Opacity = _drawerExpanded ? Math.Max(0.6, TileStyle.Opacity) : 1;
+        if (_drawerExpanded)
+        {
+            DrawerHost.Margin = new Thickness(12, 6, 12, 8);
+            DrawerHost.CornerRadius = new CornerRadius(14);
+            // 展开页背景直接用当前卡牌的颜色渐变，不再套黑色/白色外框
+            ApplyDrawerSurface(DrawerColorSetting ?? TileStyle.AccentFor(owner));
+            DrawerHost.BorderThickness = new Thickness(0);
+        }
+        else
+        {
+            // 收起：卡片贴着窗口底边插出来，不再套一层玻璃面板；横向铺满页面宽度
+            DrawerHost.Margin = new Thickness(0, 6, 0, 8);
+            DrawerHost.CornerRadius = new CornerRadius(0);
+            DrawerHost.BorderThickness = new Thickness(0);
+            DrawerHost.Background = new SolidColorBrush(Microsoft.UI.Colors.Transparent);
+            DrawerHost.Shadow = null;
+            DrawerHost.Translation = new System.Numerics.Vector3(0, 0, 0);
+        }
 
-        LayoutDrawerTabStrip(owner);
-        LayoutDrawerContent(owner);
+        if (_drawerExpanded)
+        {
+            LayoutDrawerContent(owner);
+            AnimateDrawerSheetIn();
+        }
+        else
+        {
+            LayoutDrawerTabStrip(owner);
+        }
 
         // 自动隐藏：收起状态下重绘后直接把面板摆回窗口下方（无动画），避免重绘瞬间闪现。
         // 首帧 ActualHeight 可能为 0，故延后到本次布局结束再校正一次位置
@@ -2439,79 +2509,783 @@ public sealed partial class MainPage : Page
         }
     }
 
-    /// <summary>重建标签条：每个抽屉一个标签（名称 + 当前项强调色下划线）。
-    /// 观感：常态标签无底色（干净），悬停微亮，当前项用所选颜色淡底 + 贴基线实色下划线（3px 视觉基线）。
-    /// "+"按钮不在这里，固定在标题行最右侧（见 CreateDrawerAddButton）</summary>
+    /// <summary>重建扇形手牌：每张抽屉一张大卡，中间高、两侧低并略微倾斜；选中卡抬起放大。</summary>
     private void LayoutDrawerTabStrip(LaunchItem item)
     {
-        if (_drawerTabStrip?.Content is not StackPanel row) return;
-        row.Children.Clear();
-        _drawerSelectedPill = null;
+        if (_drawerTabStrip is not { } canvas) return;
+        canvas.Children.Clear();
+        _drawerCards.Clear();
+        _drawerAddCard = null;
+        _drawerAddCardHover = false;
+        _drawerFanHover = -1;
+        _drawerClickSelected = -1;
 
         var drawers = item.Drawers ?? [];
-        // 抽屉控件色：设置里指定了就用它，否则回退到抽屉自身的随机强调色
+        if (drawers.Count == 0) return;
         var accent = DrawerColorSetting ?? TileStyle.AccentFor(item);
-        // 玻璃卡片上的标签：常态无底（只靠文字亮度分层），悬停一层薄高光，当前项=所选颜色较重淡底
-        var idleFill = Windows.UI.Color.FromArgb(0x00, 0xFF, 0xFF, 0xFF);
-        var hoverFill = Windows.UI.Color.FromArgb(0x16, 0xFF, 0xFF, 0xFF);
-        var selectedFill = Windows.UI.Color.FromArgb(0x52, accent.R, accent.G, accent.B);
-        var transparent = Windows.UI.Color.FromArgb(0x00, 0xFF, 0xFF, 0xFF);
-        for (var i = 0; i < drawers.Count; i++)
+        var avail = canvas.ActualWidth > 8
+            ? canvas.ActualWidth
+            : Math.Max(320, Math.Abs(TileArea.ActualWidth) - 24);
+
+        var n = drawers.Count;
+        var slots = n + 1; // 末尾固定一张"添加卡牌"
+        var cardW = Math.Clamp(avail * 0.23, 150, 200);
+        var mid = (slots - 1) / 2.0;
+        // 卡片绕底边旋转会让最外侧卡的顶角向外探出，选中卡还会放大；
+        // 两侧按最大倾斜角 + 放大余量留白，否则抽屉1/添加卡的两边会被画布裁掉
+        var maxTilt = Math.Abs(mid) * DrawerFanTilt * Math.PI / 180;
+        var side = Math.Clamp(
+            DrawerCardHeight * Math.Sin(maxTilt) + cardW * (DrawerFanHotScale - 1) / 2 + 12,
+            12, 76);
+        var usable = Math.Max(120, avail - side * 2);
+        // 参考 DropShelf：中心间距最多 98px，卡多时继续叠压，整手牌始终居中
+        var step = slots > 1
+            ? Math.Clamp((usable - cardW) / (slots - 1), 0, DrawerFanMaxSpacing)
+            : 0;
+        var totalW = step * Math.Max(0, slots - 1) + cardW;
+        var startX = side + Math.Max(0, (usable - totalW) / 2);
+        // 中间高、两侧低：两侧最多下沉 34px
+        double RestY(int slot) => DrawerFanRestTop
+            + (mid > 0 ? Math.Pow(Math.Abs(slot - mid) / mid, 2) * DrawerFanEdgeDrop : 0);
+        // 只显示卡片的上半部分，下半部分裁掉，形成"从窗口底边插出来"的牌堆
+        canvas.Clip = new RectangleGeometry
+        {
+            Rect = new Windows.Foundation.Rect(0, 0, Math.Max(1, avail), DrawerFanHeight)
+        };
+
+        for (var i = 0; i < n; i++)
         {
             var idx = i;
-            var selected = idx == _drawerIndex;
+            var card = BuildDrawerCard(drawers[i], idx, cardW, DrawerCardHeight, accent);
+            Canvas.SetLeft(card, startX + idx * step);
+            Canvas.SetTop(card, RestY(idx));
+            card.RenderTransformOrigin = new Windows.Foundation.Point(0.5, 1);
+            var group = new TransformGroup();
+            group.Children.Add(new ScaleTransform());
+            group.Children.Add(new RotateTransform());
+            group.Children.Add(new TranslateTransform());
+            card.RenderTransform = group;
+            AttachDrawerCardInput(card, idx, canvas);
+            canvas.Children.Add(card);
+            _drawerCards.Add(card);
+        }
 
-            // 淡底胶囊：常态透明 / 悬停薄高光 / 当前项=所选颜色较重淡底（玻璃上更醒目）；
-            // 用 StackPanel 承载以获得 BrushTransition 背景过渡（Border 无该属性）
-            var pill = new StackPanel
+        // 末尾固定一张"添加卡牌"，触发即新增一个抽屉
+        var addCard = BuildDrawerAddCard(cardW, DrawerCardHeight);
+        Canvas.SetLeft(addCard, startX + n * step);
+        Canvas.SetTop(addCard, RestY(n));
+        addCard.RenderTransformOrigin = new Windows.Foundation.Point(0.5, 1);
+        var addGroup = new TransformGroup();
+        addGroup.Children.Add(new ScaleTransform());
+        addGroup.Children.Add(new RotateTransform());
+        addGroup.Children.Add(new TranslateTransform());
+        addCard.RenderTransform = addGroup;
+        AttachDrawerAddCardInput(addCard);
+        canvas.Children.Add(addCard);
+        _drawerAddCard = addCard;
+
+        var entrance = _fanEntrancePending;
+        _fanEntrancePending = false;
+        _drawerFanGoals.Clear();
+        _drawerLastHot = -1;
+        if (entrance)
+        {
+            // 从稍低、略小、透明的位置浮起到扇形位置，和展开动画衔接
+            foreach (var card in _drawerCards) SeedFanEntrance(card);
+            SeedFanEntrance(addCard);
+            ApplyDrawerFanState(animate: true);
+            AnimateFanIn();
+        }
+        else
+        {
+            ApplyDrawerFanState(animate: false);
+        }
+    }
+
+    /// <summary>入场起点：略小、回正、向下偏移。</summary>
+    private static void SeedFanEntrance(Border card)
+    {
+        if (card.RenderTransform is not TransformGroup { Children: [ScaleTransform scale, RotateTransform rotate, TranslateTransform move] })
+            return;
+        scale.ScaleX = scale.ScaleY = 0.94;
+        rotate.Angle = 0;
+        move.X = 0;
+        move.Y = 24;
+    }
+
+    /// <summary>手牌整体淡入（与浮起动画同时进行）。</summary>
+    private void AnimateFanIn()
+    {
+        var board = new Storyboard();
+        var ease = new CubicEase { EasingMode = EasingMode.EaseOut };
+        void Add(Border card)
+        {
+            card.Opacity = 0;
+            var fade = new DoubleAnimation
             {
-                Orientation = Orientation.Horizontal,
-                Padding = new Thickness(10, 4, 10, 4),
-                CornerRadius = new CornerRadius(6),
-                Background = new SolidColorBrush(selected ? selectedFill : idleFill),
-                BackgroundTransition = new BrushTransition { Duration = TimeSpan.FromMilliseconds(140) },
-                VerticalAlignment = VerticalAlignment.Center,
-                IsHitTestVisible = false
+                To = 1,
+                Duration = TimeSpan.FromMilliseconds(240),
+                EasingFunction = ease
             };
-            pill.Children.Add(new TextBlock
+            Storyboard.SetTarget(fade, card);
+            Storyboard.SetTargetProperty(fade, "Opacity");
+            board.Children.Add(fade);
+        }
+        foreach (var card in _drawerCards) Add(card);
+        if (_drawerAddCard is { } add) Add(add);
+        if (board.Children.Count > 0) board.Begin();
+    }
+
+    /// <summary>按当前悬停/抽屉层聚焦刷新整手牌：只有被指向的那张抬起放大，失去指向立即回落到原状。</summary>
+    /// <summary>
+    /// 按当前悬停/抽屉层聚焦刷新整手牌（参考 DropShelf FanPanel）：
+    /// 选中卡回正、放大、上提 92px，相邻卡向两侧让开；其余卡按位置倾斜并下沉。
+    /// 变换用 300ms 缓动动画，目标值未变时不重启动画。
+    /// </summary>
+    private void ApplyDrawerFanState(bool animate = true)
+    {
+        var n = _drawerCards.Count;
+        if (n == 0) return;
+        var slots = n + 1;
+        var mid = (slots - 1) / 2.0;
+        // 优先级：鼠标悬停 → 第一次点击选中 → 手柄焦点；手柄焦点只在手柄操作后生效
+        var hotIndex = _drawerFanHover >= 0
+            ? _drawerFanHover
+            : _drawerClickSelected >= 0 && _drawerClickSelected < n
+                ? _drawerClickSelected
+                : (_drawerGamepadFocus && _inDrawer && _drawerFocusPos < 0 && _drawerIndex < n
+                    ? _drawerIndex
+                    : -1);
+        var lastHot = _drawerLastHot;
+
+        var board = new Storyboard();
+        var moveEase = new CubicEase { EasingMode = EasingMode.EaseOut };
+        var liftEase = new BackEase { EasingMode = EasingMode.EaseOut, Amplitude = 0.3 };
+        void Anim(DependencyObject target, string property, double to, EasingFunctionBase ease)
+        {
+            var key = (target, property);
+            if (animate && _drawerFanGoals.TryGetValue(key, out var goal) && Math.Abs(goal - to) < 0.01) return;
+            _drawerFanGoals[key] = to;
+            if (!animate)
             {
-                Text = drawers[i].Name,
-                FontSize = selected ? 13.5 : 12.5,
-                FontWeight = selected ? Microsoft.UI.Text.FontWeights.SemiBold : Microsoft.UI.Text.FontWeights.Normal,
-                Foreground = new SolidColorBrush(selected
-                    ? Microsoft.UI.Colors.White
-                    : Windows.UI.Color.FromArgb(0x8C, 0xFF, 0xFF, 0xFF)),
-                VerticalAlignment = VerticalAlignment.Center
+                SetFanValue(target, property, to);
+                return;
+            }
+            var animation = new DoubleAnimation
+            {
+                To = to,
+                Duration = TimeSpan.FromMilliseconds(300),
+                EasingFunction = ease
+            };
+            Storyboard.SetTarget(animation, target);
+            Storyboard.SetTargetProperty(animation, property);
+            board.Children.Add(animation);
+        }
+
+        for (var i = 0; i < n; i++)
+        {
+            var card = _drawerCards[i];
+            if (card.RenderTransform is not TransformGroup { Children: [ScaleTransform scale, RotateTransform rotate, TranslateTransform move] })
+                continue;
+            var hot = i == hotIndex;
+            var restY = mid > 0 ? Math.Pow(Math.Abs(i - mid) / mid, 2) * DrawerFanEdgeDrop : 0;
+            // 相邻卡向两侧让开，越远让得越少
+            var push = hotIndex < 0 || hot ? 0
+                : Math.Sign(i - hotIndex) * Math.Max(0, 3 - Math.Abs(i - hotIndex)) / 3.0 * DrawerFanPush;
+            EasingFunctionBase ease = hot ? liftEase : moveEase;
+            Anim(scale, "ScaleX", hot ? DrawerFanHotScale : 1, ease);
+            Anim(scale, "ScaleY", hot ? DrawerFanHotScale : 1, ease);
+            Anim(rotate, "Angle", hot ? 0 : (i - mid) * DrawerFanTilt, moveEase);
+            Anim(move, "X", push, moveEase);
+            Anim(move, "Y", hot ? -DrawerFanLift - restY : 0, ease);
+            card.Opacity = 1; // 卡面保持不透明，叠压时后卡被完全遮住
+            card.BorderThickness = new Thickness(hot ? 3 : 1.5);
+            card.BorderBrush = new SolidColorBrush(hot
+                ? Windows.UI.Color.FromArgb(0xF0, 0xFF, 0xFF, 0xFF)
+                : Windows.UI.Color.FromArgb(0x33, 0xFF, 0xFF, 0xFF));
+            // 选中卡最上；刚落下的卡仍压在邻居上面；其余按离中心远近排层级
+            Canvas.SetZIndex(card, hot ? 1000
+                : i == lastHot ? 999
+                : (int)Math.Max(1, slots - Math.Ceiling(Math.Abs(i - mid))));
+        }
+        // "添加卡牌"卡位：悬停时同样上弹，但不参与抽屉选中
+        if (_drawerAddCard is { } add
+            && add.RenderTransform is TransformGroup { Children: [ScaleTransform addScale, RotateTransform addRotate, TranslateTransform addMove] })
+        {
+            var hotAdd = _drawerAddCardHover
+                || (_drawerGamepadFocus && _drawerFanHover < 0 && _inDrawer && _drawerFocusPos < 0 && _drawerIndex >= n);
+            var addRestY = mid > 0 ? Math.Pow(Math.Abs(n - mid) / mid, 2) * DrawerFanEdgeDrop : 0;
+            Anim(addScale, "ScaleX", hotAdd ? DrawerFanHotScale : 1, liftEase);
+            Anim(addScale, "ScaleY", hotAdd ? DrawerFanHotScale : 1, liftEase);
+            Anim(addRotate, "Angle", (n - mid) * DrawerFanTilt, moveEase);
+            Anim(addMove, "X", 0, moveEase);
+            Anim(addMove, "Y", hotAdd ? -DrawerFanLift - addRestY : 0, liftEase);
+            add.Opacity = hotAdd ? 1 : 0.86;
+            Canvas.SetZIndex(add, hotAdd ? 1001
+                : (int)Math.Max(1, slots - Math.Ceiling(Math.Abs(n - mid))));
+        }
+
+        if (hotIndex >= 0) _drawerLastHot = hotIndex;
+        if (board.Children.Count > 0) board.Begin();
+    }
+
+    /// <summary>不做动画时直接把变换写到目标值（新建牌堆、窗口重排）。</summary>
+    private static void SetFanValue(DependencyObject target, string property, double value)
+    {
+        switch (target)
+        {
+            case ScaleTransform scale when property == "ScaleX": scale.ScaleX = value; break;
+            case ScaleTransform scale when property == "ScaleY": scale.ScaleY = value; break;
+            case RotateTransform rotate when property == "Angle": rotate.Angle = value; break;
+            case TranslateTransform move when property == "X": move.X = value; break;
+            case TranslateTransform move when property == "Y": move.Y = value; break;
+        }
+    }
+
+    /// <summary>横坐标处的卡牌下标（按卡片中心最近邻）；落在"添加卡牌"或空白处返回 -1。</summary>
+    private int IndexAtFan(double x)
+    {
+        if (_drawerAddCard is { } add)
+        {
+            var addLeft = Canvas.GetLeft(add);
+            if (!double.IsNaN(addLeft) && x >= addLeft - 6) return -1;
+        }
+        var best = -1;
+        var bestDist = double.MaxValue;
+        for (var i = 0; i < _drawerCards.Count; i++)
+        {
+            var card = _drawerCards[i];
+            var center = Canvas.GetLeft(card) + card.Width / 2;
+            var dist = Math.Abs(x - center);
+            if (dist < bestDist) { bestDist = dist; best = i; }
+        }
+        return bestDist <= Math.Max(60, (_drawerCards.FirstOrDefault()?.Width ?? 200) * 0.45) ? best : -1;
+    }
+
+    /// <summary>鼠标在牌堆上移动时更新悬停下标；-1 表示离开所有卡牌，全部回落。
+    /// 一旦鼠标参与，卡牌焦点就交给鼠标：移开后不再保持手柄的上弹状态。</summary>
+    private void SetDrawerFanHover(int idx)
+    {
+        var wasGamepad = _drawerGamepadFocus;
+        _drawerGamepadFocus = false;
+        // 悬停到另一张卡时，上一次“点击选中”失效；悬停回原卡则保留选中
+        if (idx >= 0 && idx != _drawerClickSelected) _drawerClickSelected = -1;
+        if (_drawerFanHover == idx)
+        {
+            if (wasGamepad) ApplyDrawerFanState();
+            return;
+        }
+        _drawerFanHover = idx;
+        if (idx >= 0) _drawerIndex = idx;
+        ApplyDrawerFanState();
+        if (_inDrawer && _drawerFocusPos < 0) UpdateHintForSelection();
+    }
+
+    /// <summary>构建一张扇形卡牌：抽屉名 + 项目数 + 内容预览 + 大号抽屉水印。</summary>
+    private Border BuildDrawerCard(DrawerPage page, int idx, double w, double h, Windows.UI.Color accent)
+    {
+        var bg = new LinearGradientBrush { StartPoint = new Windows.Foundation.Point(0, 0), EndPoint = new Windows.Foundation.Point(0, 1) };
+        if (SettingsService.Current.DrawerTransparent)
+        {
+            // 卡片透明：恢复旧的半透明卡面，叠压处会透出后面的卡
+            bg.GradientStops.Add(new GradientStop { Color = Windows.UI.Color.FromArgb(0x3A, accent.R, accent.G, accent.B), Offset = 0 });
+            bg.GradientStops.Add(new GradientStop { Color = Windows.UI.Color.FromArgb(0x14, 0xFF, 0xFF, 0xFF), Offset = 1 });
+        }
+        else
+        {
+            // 不透明卡面：前面的卡要真正遮住后面的卡，不能透出叠压部分
+            byte Tone(double t, byte add) => (byte)Math.Clamp(accent.R * t + add, 0, 255);
+            byte ToneG(double t, byte add) => (byte)Math.Clamp(accent.G * t + add, 0, 255);
+            byte ToneB(double t, byte add) => (byte)Math.Clamp(accent.B * t + add, 0, 255);
+            bg.GradientStops.Add(new GradientStop
+            {
+                Color = Windows.UI.Color.FromArgb(0xFF, Tone(0.46, 30), ToneG(0.46, 30), ToneB(0.46, 30)),
+                Offset = 0
             });
-
-            // 当前项下划线：贴标签条基线（压在基线的细分隔线上），3px 加粗提高辨识；
-            // 未选中用全透明同厚度保证基线不跳
-            var rule = new Border
+            bg.GradientStops.Add(new GradientStop
             {
-                Height = 3,
-                CornerRadius = new CornerRadius(1.5),
-                VerticalAlignment = VerticalAlignment.Bottom,
-                Background = new SolidColorBrush(selected ? accent : transparent),
-                IsHitTestVisible = false
+                Color = Windows.UI.Color.FromArgb(0xFF, Tone(0.24, 18), ToneG(0.24, 18), ToneB(0.24, 18)),
+                Offset = 0.55
+            });
+            bg.GradientStops.Add(new GradientStop
+            {
+                Color = Windows.UI.Color.FromArgb(0xFF, 0x12, 0x14, 0x1A),
+                Offset = 1
+            });
+        }
+        var card = new Border
+        {
+            Width = w,
+            Height = h,
+            CornerRadius = new CornerRadius(12),
+            Background = bg,
+            BorderThickness = new Thickness(1.5),
+            BorderBrush = new SolidColorBrush(Windows.UI.Color.FromArgb(0x40, 0xFF, 0xFF, 0xFF)),
+            Tag = idx
+        };
+
+        var compact = w < 120;
+        var body = new Grid
+        {
+            Padding = compact ? new Thickness(9, 9, 9, 9) : new Thickness(13, 11, 13, 11),
+            IsHitTestVisible = false
+        };
+        // 标题区完全不透明，内容预览逐行变淡：卡牌叠压时标题最清楚
+        body.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });
+        body.RowDefinitions.Add(new RowDefinition { Height = new GridLength(1, GridUnitType.Star) });
+
+        // 标题行：抽屉图标 + 名称 + 项目数
+        var title = new Grid();
+        title.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
+        title.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
+        title.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
+        title.Children.Add(new FontIcon
+        {
+            Glyph = "\uE8F1",
+            FontSize = compact ? 12 : 14,
+            Opacity = 0.9,
+            Foreground = new SolidColorBrush(Microsoft.UI.Colors.White),
+            VerticalAlignment = VerticalAlignment.Center,
+            Margin = new Thickness(0, 0, compact ? 5 : 7, 0)
+        });
+        var name = new TextBlock
+        {
+            Text = string.IsNullOrWhiteSpace(page.Name) ? "未命名卡牌" : page.Name,
+            FontSize = compact ? 12.5 : 15,
+            FontWeight = Microsoft.UI.Text.FontWeights.SemiBold,
+            Foreground = new SolidColorBrush(Microsoft.UI.Colors.White),
+            TextTrimming = TextTrimming.CharacterEllipsis,
+            VerticalAlignment = VerticalAlignment.Center
+        };
+        Grid.SetColumn(name, 1);
+        title.Children.Add(name);
+        var count = new TextBlock
+        {
+            Text = page.Items.Count == 0 ? "空" : $"{page.Items.Count} 项",
+            FontSize = 10.5,
+            Opacity = 0.8,
+            Foreground = new SolidColorBrush(Microsoft.UI.Colors.White),
+            VerticalAlignment = VerticalAlignment.Center,
+            Margin = new Thickness(6, 0, 0, 0)
+        };
+        Grid.SetColumn(count, 2);
+        if (!compact) title.Children.Add(count); // 窄卡优先保证名称完整显示
+        body.Children.Add(title);
+
+        // 内容预览：最多 4 项；越往下越淡，形成自上而下的渐隐
+        var preview = new StackPanel { Spacing = 2, Margin = new Thickness(0, 9, 0, 4) };
+        var previewIndex = 0;
+        foreach (var sub in page.Items.Take(4))
+        {
+            preview.Children.Add(new TextBlock
+            {
+                Text = "· " + (string.IsNullOrWhiteSpace(sub.Name) ? "未命名" : sub.Name),
+                FontSize = compact ? 10 : 11.5,
+                Opacity = Math.Max(0.25, 0.85 - previewIndex * 0.2),
+                Foreground = new SolidColorBrush(Microsoft.UI.Colors.White),
+                TextTrimming = TextTrimming.CharacterEllipsis
+            });
+            previewIndex++;
+        }
+        if (page.Items.Count == 0)
+            preview.Children.Add(new TextBlock
+            {
+                Text = "空卡牌 · 按 X 添加",
+                FontSize = compact ? 9.5 : 11,
+                Opacity = 0.65,
+                Foreground = new SolidColorBrush(Microsoft.UI.Colors.White)
+            });
+        else if (page.Items.Count > 4)
+            preview.Children.Add(new TextBlock
+            {
+                Text = $"等 {page.Items.Count} 项…",
+                FontSize = 10.5,
+                Opacity = 0.38,
+                Foreground = new SolidColorBrush(Microsoft.UI.Colors.White)
+            });
+        Grid.SetRow(preview, 1);
+        body.Children.Add(preview);
+
+        // 右上角大号抽屉水印（卡牌下半部分藏在窗口外，所以放在上半部）
+        var watermark = new FontIcon
+        {
+            Glyph = "\uE8F1",
+            FontSize = 46,
+            Opacity = 0.07,
+            Foreground = new SolidColorBrush(Microsoft.UI.Colors.White),
+            HorizontalAlignment = HorizontalAlignment.Right,
+            VerticalAlignment = VerticalAlignment.Top,
+            Margin = new Thickness(0, 34, 9, 0),
+            IsHitTestVisible = false
+        };
+        var rootGrid = new Grid();
+        rootGrid.Children.Add(body);
+        rootGrid.Children.Add(watermark);
+        card.Child = rootGrid;
+        return card;
+    }
+
+    /// <summary>卡牌输入：第一次点击选中并弹起，再次点击展开成大卡；水平拖动在卡牌间切换（编辑模式=调整顺序）。</summary>
+    private void AttachDrawerCardInput(Border card, int idx, Canvas canvas)
+    {
+        card.PointerPressed += (_, e) =>
+        {
+            if (_drawerCardDragging) return;
+            _drawerCardPressing = true;
+            _drawerCardPressedIndex = idx;
+            _drawerCardPointerId = e.Pointer.PointerId;
+            _drawerCardStartX = e.GetCurrentPoint(canvas).Position.X;
+            card.CapturePointer(e.Pointer);
+        };
+
+        card.PointerMoved += (_, e) =>
+        {
+            if (!_drawerCardPressing || e.Pointer.PointerId != _drawerCardPointerId) return;
+            var dx = e.GetCurrentPoint(canvas).Position.X - _drawerCardStartX;
+            if (!_drawerCardDragging && Math.Abs(dx) < 10) return;
+            _drawerCardDragging = true;
+            _drawerCardTapBlockedUntil = Environment.TickCount64 + 450;
+            // 拖过哪张卡，选中就跟到哪张（与参考仓库扇形手牌一致）
+            var hot = IndexAtFan(e.GetCurrentPoint(canvas).Position.X);
+            if (hot >= 0 && hot != _drawerIndex)
+            {
+                _drawerIndex = hot;
+                ApplyDrawerFanState();
+            }
+        };
+
+        card.PointerReleased += (_, e) =>
+        {
+            if (e.Pointer.PointerId != _drawerCardPointerId) return;
+            var dragging = _drawerCardDragging;
+            var from = _drawerCardPressedIndex;
+            var endX = e.GetCurrentPoint(canvas).Position.X;
+            _drawerCardDragging = false;
+            _drawerCardPressing = false;
+            _drawerCardPressedIndex = -1;
+            card.ReleasePointerCapture(e.Pointer);
+            if (!dragging)
+            {
+                ApplyDrawerFanState();
+                return; // 轻点交给 Tapped
+            }
+            if (_moving && from >= 0) ReorderDrawerCard(from, endX);
+            else
+            {
+                _drawerFanHover = Math.Max(0, _drawerIndex); // 松手后仍停在当前卡上
+                ApplyDrawerFanState(); // 回弹到选中位置
+            }
+        };
+
+        card.PointerCaptureLost += (_, _) =>
+        {
+            _drawerCardPressing = false;
+            if (!_drawerCardDragging) return;
+            _drawerCardDragging = false;
+            _drawerCardPressedIndex = -1;
+            ApplyDrawerFanState();
+        };
+
+        card.Tapped += (_, e) =>
+        {
+            e.Handled = true;
+            if (_drawerCardDragging || Environment.TickCount64 < _drawerCardTapBlockedUntil) return;
+            // 第一次点击只选中并弹起，第二次点击才展开成大卡
+            if (_drawerClickSelected != idx)
+            {
+                _drawerGamepadFocus = false;
+                _drawerClickSelected = idx;
+                _drawerFanHover = idx;
+                _drawerIndex = idx;
+                ApplyDrawerFanState();
+                if (_inDrawer) UpdateHintForSelection();
+                return;
+            }
+            _drawerClickSelected = -1;
+            OpenDrawerCard(idx);
+        };
+    }
+
+    /// <summary>"添加卡牌"卡位：与普通卡同尺寸，触发后新增一个抽屉。</summary>
+    private Border BuildDrawerAddCard(double w, double h)
+    {
+        var stack = new StackPanel
+        {
+            Orientation = Orientation.Vertical,
+            Spacing = 6,
+            HorizontalAlignment = HorizontalAlignment.Center,
+            VerticalAlignment = VerticalAlignment.Top,
+            Margin = new Thickness(0, 30, 0, 0),
+            IsHitTestVisible = false
+        };
+        stack.Children.Add(new FontIcon
+        {
+            Glyph = "\uE710",
+            FontSize = 26,
+            Opacity = 0.8,
+            Foreground = new SolidColorBrush(Microsoft.UI.Colors.White),
+            HorizontalAlignment = HorizontalAlignment.Center
+        });
+        stack.Children.Add(new TextBlock
+        {
+            Text = "添加卡牌",
+            FontSize = 11,
+            Opacity = 0.65,
+            Foreground = new SolidColorBrush(Microsoft.UI.Colors.White),
+            HorizontalAlignment = HorizontalAlignment.Center
+        });
+        return new Border
+        {
+            Width = w,
+            Height = h,
+            CornerRadius = new CornerRadius(12),
+            Background = new SolidColorBrush(Windows.UI.Color.FromArgb(0x16, 0xFF, 0xFF, 0xFF)),
+            BorderThickness = new Thickness(1.5),
+            BorderBrush = new SolidColorBrush(Windows.UI.Color.FromArgb(0x55, 0xFF, 0xFF, 0xFF)),
+            Child = stack
+        };
+    }
+
+    private void AttachDrawerAddCardInput(Border card)
+    {
+        card.PointerEntered += (_, _) =>
+        {
+            _drawerAddCardHover = true;
+            ApplyDrawerFanState();
+        };
+        card.PointerExited += (_, _) =>
+        {
+            _drawerAddCardHover = false;
+            ApplyDrawerFanState();
+        };
+        card.Tapped += (_, e) =>
+        {
+            e.Handled = true;
+            _drawerAddCardHover = false;
+            AddDrawerTab();
+        };
+        card.DoubleTapped += (_, e) => e.Handled = true;
+    }
+
+    /// <summary>编辑模式拖动卡牌：按松手位置换算目标下标，调整 DrawerPage 顺序。</summary>
+    private void ReorderDrawerCard(int from, double endX)
+    {
+        var owner = _drawerOwner ?? DrawerService.FindDrawer(_items.ToList());
+        if (owner?.Drawers is not { Count: > 1 } ds) return;
+        var to = IndexAtFan(endX);
+        if (to < 0) return;
+        to = Math.Clamp(to, 0, ds.Count - 1);
+        if (to == from) { ApplyDrawerFanState(); return; }
+        var page = ds[from];
+        ds.RemoveAt(from);
+        ds.Insert(to, page);
+        _drawerIndex = to;
+        _drawerFocusPos = -1;
+        PersistLayout();
+        RenderDrawerPanel();
+        UpdateSelection();
+        ShowToast($"已调整「{page.Name}」的位置");
+    }
+
+    /// <summary>点击卡牌：选中并展开成大卡。</summary>
+    private void OpenDrawerCard(int idx)
+    {
+        var owner = _drawerOwner ?? DrawerService.FindDrawer(_items.ToList());
+        if (owner?.Drawers is not { Count: > 0 } ds) return;
+        _drawerIndex = Math.Clamp(idx, 0, ds.Count - 1);
+        _inDrawer = true;
+        _drawerGamepadFocus = false;
+        _drawerClickSelected = -1;
+        _drawerFocusPos = -1;
+        SetDrawerExpanded(true);
+    }
+
+    /// <summary>牌边点击：切换到指定抽屉，保持展开。</summary>
+    private void SwitchDrawer(int idx)
+    {
+        var owner = _drawerOwner ?? DrawerService.FindDrawer(_items.ToList());
+        if (owner?.Drawers is not { Count: > 0 } ds) return;
+        _drawerIndex = Math.Clamp(idx, 0, ds.Count - 1);
+        _inDrawer = true;
+        _drawerGamepadFocus = false;
+        _drawerClickSelected = -1;
+        _drawerExpanded = true;
+        RenderDrawerPanel();
+        _drawerFocusPos = _drawerInnerTiles.Count > 0 ? 0 : -1;
+        UpdateSelection();
+    }
+
+    /// <summary>展开/收起当前卡牌：展开=大卡 + 牌边，收起=扇形手牌。</summary>
+    private void SetDrawerExpanded(bool expanded)
+    {
+        var owner = _drawerOwner ?? DrawerService.FindDrawer(_items.ToList());
+        if (owner is null) return;
+        _drawerExpanded = expanded;
+        _drawerFocusPos = -1;
+        RenderDrawerPanel();
+        UpdateSelection();
+    }
+
+    /// <summary>展开大卡：外框 + 内容区淡入，给出"卡牌被抽出来"的反馈。</summary>
+    /// <summary>展开大卡：从略小、略低的位置放大并上浮，同时淡入，和收起时的扇形浮起衔接。</summary>
+    private void AnimateDrawerSheetIn()
+    {
+        if (_drawerSheet is not { } sheet) return;
+        sheet.Opacity = 0;
+        sheet.RenderTransformOrigin = new Windows.Foundation.Point(0.5, 1);
+        var scale = new ScaleTransform { ScaleX = 0.95, ScaleY = 0.95 };
+        var move = new TranslateTransform { Y = 26 };
+        sheet.RenderTransform = new TransformGroup { Children = { scale, move } };
+
+        var board = new Storyboard();
+        var moveEase = new CubicEase { EasingMode = EasingMode.EaseOut };
+        var liftEase = new BackEase { EasingMode = EasingMode.EaseOut, Amplitude = 0.2 };
+        void Add(DependencyObject target, string property, double to, int ms, EasingFunctionBase ease)
+        {
+            var animation = new DoubleAnimation
+            {
+                To = to,
+                Duration = TimeSpan.FromMilliseconds(ms),
+                EasingFunction = ease
             };
+            Storyboard.SetTarget(animation, target);
+            Storyboard.SetTargetProperty(animation, property);
+            board.Children.Add(animation);
+        }
+        Add(sheet, "Opacity", 1, 200, moveEase);
+        Add(scale, "ScaleX", 1, 260, liftEase);
+        Add(scale, "ScaleY", 1, 260, liftEase);
+        Add(move, "Y", 0, 260, liftEase);
+        board.Begin();
+    }
 
-            // 标签容器：给全透明背景才能整块参与命中测试（Grid 无背景时空区不响应点击/悬停）
-            var tab = new Grid
+    /// <summary>展开大卡：标题行（名称/项目数/收起）+ 内容 Canvas。</summary>
+    private Border BuildDrawerSheet(LaunchItem item)
+    {
+        var drawers = item.Drawers ?? [];
+        var page = drawers[Math.Clamp(_drawerIndex, 0, drawers.Count - 1)];
+        var accent = DrawerColorSetting ?? TileStyle.AccentFor(item);
+        var sheet = new Border
+        {
+            Margin = new Thickness(DrawerPadH, 8, DrawerPadH, 0),
+            CornerRadius = new CornerRadius(14),
+            BorderThickness = new Thickness(0),
+            Background = new SolidColorBrush(Microsoft.UI.Colors.Transparent),
+            Padding = new Thickness(14, 10, 14, 12),
+            Tag = _drawerIndex
+        };
+
+        var grid = new Grid();
+        grid.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });
+        grid.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });
+
+        var header = new Grid();
+        header.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
+        header.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
+        header.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
+        header.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
+        header.Children.Add(new FontIcon
+        {
+            Glyph = "\uE8F1",
+            FontSize = 15,
+            Opacity = 0.9,
+            Foreground = new SolidColorBrush(Microsoft.UI.Colors.White), // 固定白色，避免和卡片底色同色看不见
+            VerticalAlignment = VerticalAlignment.Center,
+            Margin = new Thickness(0, 0, 8, 0)
+        });
+        var name = new TextBlock
+        {
+            Text = string.IsNullOrWhiteSpace(page.Name) ? "未命名卡牌" : page.Name,
+            FontSize = 17,
+            FontWeight = Microsoft.UI.Text.FontWeights.SemiBold,
+            Foreground = new SolidColorBrush(Microsoft.UI.Colors.White),
+            TextTrimming = TextTrimming.CharacterEllipsis,
+            VerticalAlignment = VerticalAlignment.Center
+        };
+        Grid.SetColumn(name, 1);
+        header.Children.Add(name);
+        var count = new TextBlock
+        {
+            Text = page.Items.Count == 0 ? "空" : $"{page.Items.Count} 项",
+            FontSize = 11,
+            Opacity = 0.55,
+            Foreground = new SolidColorBrush(Microsoft.UI.Colors.White),
+            VerticalAlignment = VerticalAlignment.Center,
+            Margin = new Thickness(8, 0, 8, 0)
+        };
+        Grid.SetColumn(count, 2);
+        header.Children.Add(count);
+        var collapse = CreateDrawerCollapseButton(accent);
+        Grid.SetColumn(collapse, 3);
+        header.Children.Add(collapse);
+        grid.Children.Add(header);
+
+        var inner = new Canvas { Margin = new Thickness(0, 12, 0, 0), HorizontalAlignment = HorizontalAlignment.Stretch };
+        Grid.SetRow(inner, 1);
+        grid.Children.Add(inner);
+        _drawerInnerCanvas = inner;
+
+        sheet.Child = grid;
+        _drawerSheet = sheet;
+        return sheet;
+    }
+
+    /// <summary>展开大卡下方，其余抽屉按当前卡之后的顺序缩成一条条牌边；悬停露出卡名，点击切换。</summary>
+    private void BuildDrawerEdges(StackPanel root, LaunchItem item)
+    {
+        var drawers = item.Drawers ?? [];
+        if (drawers.Count <= 1) return;
+        var accent = DrawerColorSetting ?? TileStyle.AccentFor(item);
+        var start = (_drawerIndex + 1) % drawers.Count;
+        for (var k = 0; k < drawers.Count - 1; k++)
+        {
+            var idx = (start + k) % drawers.Count;
+            var page = drawers[idx];
+            var inset = DrawerEdgeInset * (k + 1);
+            var edge = new Border
             {
-                Height = DrawerTabHeight,
-                Background = new SolidColorBrush(Windows.UI.Color.FromArgb(0x00, 0xFF, 0xFF, 0xFF)),
+                Height = DrawerEdgeHeight,
+                Margin = new Thickness(DrawerPadH + inset, 0, DrawerPadH + inset, 0),
+                CornerRadius = new CornerRadius(0, 0, 6, 6),
+                Background = new SolidColorBrush(Windows.UI.Color.FromArgb(0x4A, accent.R, accent.G, accent.B)),
+                BorderBrush = new SolidColorBrush(Windows.UI.Color.FromArgb(0x40, 0xFF, 0xFF, 0xFF)),
+                BorderThickness = new Thickness(1, 0, 1, 1),
                 Tag = idx
             };
-            tab.Children.Add(pill);
-            tab.Children.Add(rule);
-            tab.PointerEntered += (_, _) => pill.Background = new SolidColorBrush(hoverFill);
-            tab.PointerExited += (_, _) => pill.Background = new SolidColorBrush(selected ? selectedFill : idleFill);
-            tab.Tapped += (_, e) => { e.Handled = true; SetDrawerIndex(idx); };
-            // 双击标签 = 重命名该抽屉（与抽屉层 R3 同一入口）
-            tab.DoubleTapped += (_, e) => { e.Handled = true; SetDrawerIndex(idx); BeginRenameDrawerTab(); };
-            row.Children.Add(tab);
-            if (selected) _drawerSelectedPill = tab;
+            var label = new TextBlock
+            {
+                Text = $"{page.Name} · {page.Items.Count} 项",
+                FontSize = 11,
+                Opacity = 0,
+                Foreground = new SolidColorBrush(Microsoft.UI.Colors.White),
+                Margin = new Thickness(12, 0, 0, 5),
+                VerticalAlignment = VerticalAlignment.Bottom,
+                IsHitTestVisible = false
+            };
+            edge.Child = label;
+            edge.PointerEntered += (_, _) => { AnimateDrawerEdge(edge, DrawerEdgeHeight + DrawerEdgeReveal); label.Opacity = 1; };
+            edge.PointerExited += (_, _) => { AnimateDrawerEdge(edge, DrawerEdgeHeight); label.Opacity = 0; };
+            edge.Tapped += (_, e) => { e.Handled = true; SwitchDrawer(idx); };
+            edge.DoubleTapped += (_, e) => e.Handled = true;
+            root.Children.Add(edge);
         }
+        root.Children.Add(new Border { Height = 10 });
+    }
+
+    /// <summary>牌边悬停展开/收起（Height 是依赖动画，牌边数量很少，开销可接受）。</summary>
+    private static void AnimateDrawerEdge(Border edge, double height)
+    {
+        var anim = new DoubleAnimation
+        {
+            To = height,
+            Duration = TimeSpan.FromMilliseconds(150),
+            EnableDependentAnimation = true
+        };
+        Storyboard.SetTarget(anim, edge);
+        Storyboard.SetTargetProperty(anim, "Height");
+        var sb = new Storyboard();
+        sb.Children.Add(anim);
+        sb.Begin();
     }
 
     /// <summary>"+"新增抽屉按钮（鼠标/触摸直达；手柄用编辑页增删或 X 添加流程）——中性扁平小按钮，不抢标签。
@@ -2543,6 +3317,46 @@ public sealed partial class MainPage : Page
         return add;
     }
 
+    /// <summary>大卡标题行"收起"按钮：收起内容，把这张卡放回扇形手牌。</summary>
+    private Border CreateDrawerCollapseButton(Windows.UI.Color accent)
+    {
+        var fill = new SolidColorBrush(Windows.UI.Color.FromArgb(0x33, accent.R, accent.G, accent.B));
+        var content = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 4 };
+        content.Children.Add(new TextBlock
+        {
+            Text = "收起",
+            FontSize = 11,
+            Foreground = new SolidColorBrush(Windows.UI.Color.FromArgb(0xCC, 0xFF, 0xFF, 0xFF)),
+            VerticalAlignment = VerticalAlignment.Center
+        });
+        content.Children.Add(new FontIcon
+        {
+            Glyph = "\uE70E",
+            FontSize = 9,
+            Foreground = new SolidColorBrush(Windows.UI.Color.FromArgb(0x99, 0xFF, 0xFF, 0xFF)),
+            VerticalAlignment = VerticalAlignment.Center
+        });
+        var button = new Border
+        {
+            CornerRadius = new CornerRadius(6),
+            Padding = new Thickness(10, 5, 10, 5),
+            Background = fill,
+            Child = content
+        };
+        button.PointerEntered += (_, _) => fill.Color = Windows.UI.Color.FromArgb(0x55, accent.R, accent.G, accent.B);
+        button.PointerExited += (_, _) => fill.Color = Windows.UI.Color.FromArgb(0x33, accent.R, accent.G, accent.B);
+        button.Tapped += (_, e) =>
+        {
+            e.Handled = true;
+            _drawerGamepadFocus = false;
+            _drawerClickSelected = -1;
+            _fanEntrancePending = true;
+            SetDrawerExpanded(false);
+        };
+        button.DoubleTapped += (_, e) => e.Handled = true;
+        return button;
+    }
+
     /// <summary>按当前抽屉重绘内层磁贴：内容区列数随面板宽度自适应，贪心装箱，整块水平居中；面板高度随内容增长。</summary>
     private void LayoutDrawerContent(LaunchItem item)
     {
@@ -2550,18 +3364,20 @@ public sealed partial class MainPage : Page
         canvas.Children.Clear();
         _drawerInnerTiles.Clear();
         _drawerAddTile = null;
+        // 只有展开成大卡时才布局内容
+        if (!_drawerExpanded) return;
+        canvas.Visibility = Visibility.Visible;
 
         var drawers = item.Drawers ?? [];
         if (drawers.Count == 0) return;
         _drawerIndex = Math.Clamp(_drawerIndex, 0, drawers.Count - 1);
         var page = drawers[_drawerIndex];
 
-        // 内容区可用宽度：面板宽度显式指定时（全屏/居中：窗口宽度的 80%）优先用它——避免布局尚未跑完
-        // ActualWidth 仍是旧宽度导致列数按上一形态算；未指定（贴边停靠铺满）时取实测宽度
+        // 内容区可用宽度：大卡宽度 - 两侧面板边距 - 大卡内边距/描边
         var panelW = !double.IsNaN(DrawerHost.Width) && DrawerHost.Width > 0
             ? DrawerHost.Width
             : DrawerHost.ActualWidth > 0 ? DrawerHost.ActualWidth : Math.Max(0, TileArea.ActualWidth - 24);
-        var contentW = Math.Max(Unit, panelW - DrawerPadH * 2 - 2);
+        var contentW = Math.Max(Unit, panelW - DrawerPadH * 2 - 32);
         // 抽屉内层磁贴与主页磁贴同尺寸（Unit），列数按与主页相同的公式由内容区宽度决定——
         // 不再为了多塞一列而缩小磁贴（内层磁贴看起来"默认小"的根因）
         var cols = Math.Max(1, (int)((contentW + Gap) / (Unit + Gap)));
@@ -2839,7 +3655,7 @@ public sealed partial class MainPage : Page
          : TileStyle.IsFixedTile(it) ? (1, 1)
          : CellsOf(it.Size);
 
-    /// <summary>进入抽屉区域：选中框停在"抽屉本身"（抽屉层），此时按键只作用于抽屉；按 A 才进入内层磁贴。无抽屉组件时不做任何事。</summary>
+    /// <summary>进入抽屉区域：焦点停在扇形手牌上（卡牌层），此时按键只作用于卡牌；按 A 才展开成大卡。</summary>
     private void EnterDrawer()
     {
         if (!SettingsService.Current.DrawerEnabled) return;   // 抽屉总开关关闭时不进入
@@ -2848,29 +3664,49 @@ public sealed partial class MainPage : Page
         if (owner?.Drawers is not { Count: > 0 }) return;
         _inDrawer = true;
         _drawerOwner = owner;
+        _drawerGamepadFocus = true;
+        _drawerClickSelected = -1;
         _drawerIndex = Math.Clamp(_drawerIndex, 0, owner.Drawers.Count - 1);
-        _drawerFocusPos = -1; // 抽屉层：焦点不在任何内层磁贴上
+        _drawerFocusPos = -1; // 卡牌层：焦点不在任何内层磁贴上
+        if (!_drawerExpanded) ApplyDrawerFanState();
         UpdateSelection();
         if (_moving) UpdateHintBar(); // 编辑模式内进入区域：提示条切成抽屉操作
     }
 
-    /// <summary>退出抽屉区域：焦点回到磁贴区（_selected 保持不变）</summary>
+    /// <summary>退出抽屉区域：焦点回到磁贴区，同时把展开的大卡收回扇形手牌。</summary>
     private void ExitDrawer()
     {
         if (!_inDrawer) return;
         _inDrawer = false;
+        _drawerGamepadFocus = false;
+        _drawerClickSelected = -1;
         _drawerFocusPos = -1;
+        if (_drawerExpanded)
+        {
+            _drawerExpanded = false;
+            _fanEntrancePending = true;
+            RenderDrawerPanel();
+        }
         UpdateSelection();
         if (_moving) UpdateHintBar(); // 编辑模式内退出区域：提示条恢复编辑提示
     }
 
-    /// <summary>抽屉层 → 内层：焦点落到当前抽屉的第一个内层磁贴（空抽屉则提示，留在抽屉层）</summary>
+    /// <summary>卡牌层 → 内层：把选中的卡展开成大卡，焦点落到第一个内层磁贴（空卡也保持展开）。</summary>
     private void EnterDrawerInner()
     {
+        if (_drawerOwner is null) return;
+        _inDrawer = true;
+        _drawerGamepadFocus = true;
+        _drawerClickSelected = -1;
+        _drawerExpanded = true;
+        RenderDrawerPanel();
         if (_drawerInnerTiles.Count == 0)
         {
+            _drawerFocusPos = -1;
+            UpdateSelection();
+            if (_moving) UpdateHintBar(); else UpdateHintForSelection();
             var name = CurrentDrawerPage()?.Name;
-            ShowToast(string.IsNullOrWhiteSpace(name) ? "抽屉是空的 · 按 X 添加磁贴" : $"「{name}」是空的 · 按 X 添加磁贴", ToastKind.Warning);
+            ShowToast(string.IsNullOrWhiteSpace(name) ? "卡牌是空的 · 按 X 添加磁贴" : $"「{name}」是空的 · 按 X 添加磁贴", ToastKind.Warning);
             return;
         }
         _drawerFocusPos = 0;
@@ -2878,51 +3714,61 @@ public sealed partial class MainPage : Page
         if (_moving) UpdateHintBar(); else UpdateHintForSelection();
     }
 
-    /// <summary>内层 → 抽屉层：焦点收回抽屉本身（再按 B 才退出到磁贴区）</summary>
+    /// <summary>内层 → 卡牌层：大卡收回扇形手牌（再按 B 才退出到磁贴区）。</summary>
     private void BackToDrawerLevel()
     {
-        if (!_inDrawer || _drawerFocusPos < 0) return;
+        if (!_inDrawer) return;
+        _drawerGamepadFocus = true;
+        _drawerClickSelected = -1;
         _drawerFocusPos = -1;
+        if (_drawerExpanded)
+        {
+            _drawerExpanded = false;
+            _fanEntrancePending = true;
+            RenderDrawerPanel();
+        }
         UpdateSelection();
         if (_moving) UpdateHintBar(); else UpdateHintForSelection();
     }
 
-    /// <summary>LB/RB 或 ←→ 换抽屉（环形）：保持当前层级——在内层则落到新抽屉首项（新抽屉为空则退回抽屉层）</summary>
+    /// <summary>LB/RB 或 ←→ 换卡：收起时切换扇形手牌的热卡；展开时整张大卡换成下一张（牌边同步重排）。</summary>
     private void CycleDrawer(int dir)
     {
         var owner = _drawerOwner ?? DrawerService.FindDrawer(_items.ToList());
         if (owner?.Drawers is not { Count: > 0 } ds) return;
-        var keepInner = _drawerFocusPos >= 0;
-        _drawerIndex = ((_drawerIndex + dir) % ds.Count + ds.Count) % ds.Count;
-        _drawerFocusPos = keepInner && ds[_drawerIndex].Items.Count > 0 ? 0 : -1;
-        LayoutDrawerTabStrip(owner);
-        LayoutDrawerContent(owner);
-        UpdateSelection();
-        BringDrawerPillIntoView();
+        // 收起时末尾的"添加卡牌"也参与手柄左右切换；展开时只切真实抽屉
+        var count = _drawerExpanded ? ds.Count : ds.Count + 1;
+        _drawerIndex = ((_drawerIndex + dir) % count + count) % count;
+        if (_drawerExpanded)
+        {
+            RenderDrawerPanel();
+            _drawerFocusPos = _drawerInnerTiles.Count > 0 ? 0 : -1;
+            UpdateSelection();
+        }
+        else
+        {
+            ApplyDrawerFanState();
+            if (_inDrawer) UpdateHintForSelection();
+        }
     }
 
-    /// <summary>切到指定抽屉（点击标签条药丸）：保持当前层级</summary>
+    /// <summary>切到指定卡牌（重命名等入口）：保持当前展开状态</summary>
     private void SetDrawerIndex(int i)
     {
         var owner = _drawerOwner ?? DrawerService.FindDrawer(_items.ToList());
         if (owner?.Drawers is not { Count: > 0 } ds) return;
-        var keepInner = _drawerFocusPos >= 0;
         _drawerIndex = Math.Clamp(i, 0, ds.Count - 1);
-        _drawerFocusPos = keepInner && ds[_drawerIndex].Items.Count > 0 ? 0 : -1;
-        LayoutDrawerTabStrip(owner);
-        LayoutDrawerContent(owner);
-        UpdateSelection();
-        BringDrawerPillIntoView();
-    }
-
-    /// <summary>让当前高亮的抽屉药丸滚入可见（布局完成后再执行）</summary>
-    private void BringDrawerPillIntoView()
-    {
-        if (_drawerSelectedPill is not { } pill) return;
-        DispatcherQueue.TryEnqueue(() =>
+        if (_drawerExpanded)
         {
-            try { pill.StartBringIntoView(); } catch { /* 脱离可视树时忽略 */ }
-        });
+            RenderDrawerPanel();
+            _drawerFocusPos = _drawerInnerTiles.Count > 0 ? 0 : -1;
+            UpdateSelection();
+        }
+        else
+        {
+            ApplyDrawerFanState();
+            UpdateSelection();
+        }
     }
 
     /// <summary>标签条 "+"：给组件新增一个空抽屉（最多 8 个），名称取默认「抽屉N」</summary>
@@ -2936,9 +3782,11 @@ public sealed partial class MainPage : Page
         _drawerIndex = owner.Drawers.Count - 1;
         _drawerFocusPos = -1;
         PersistLayout();
+        _fanEntrancePending = true;
         RenderDrawerPanel();
+        _drawerClickSelected = _drawerIndex;
         UpdateSelection();
-        BringDrawerPillIntoView();
+
         ShowToast($"已新增「{owner.Drawers[_drawerIndex].Name}」");
     }
 
@@ -2976,7 +3824,7 @@ public sealed partial class MainPage : Page
         PersistLayout();
         RenderDrawerPanel();
         UpdateSelection();
-        BringDrawerPillIntoView();
+
         ShowToast($"已重命名为「{name}」");
     }
 
@@ -3106,6 +3954,7 @@ public sealed partial class MainPage : Page
         {
             _inDrawer = false;
             _drawerFocusPos = -1;
+            _drawerExpanded = false;
             DeleteItem(owner, null);
             ShowToast("已移除磁贴抽屉");
             return;
@@ -3120,7 +3969,7 @@ public sealed partial class MainPage : Page
         RenderDrawerPanel();
         UpdateSelection();
         if (_moving) UpdateHintBar();
-        BringDrawerPillIntoView();
+
         ShowToast(string.IsNullOrWhiteSpace(name) ? "已删除抽屉" : $"已删除「{name}」");
     }
 
@@ -3169,33 +4018,15 @@ public sealed partial class MainPage : Page
             Microsoft.UI.Xaml.Controls.Canvas.SetZIndex(t, focused ? 2 : 0);
         }
         SyncPerformanceFocus(); // 抽屉内移动光标同样要还原性能磁贴的待应用档位
-        // 抽屉层（焦点停在抽屉本身、未进内层磁贴）：整个抽屉面板画白色粗描边，
-        // 内层时框落在内层磁贴上，面板恢复默认（拖拽悬停高亮期间不覆盖）
-        if (_dragOverDrawer || _drawerRegion is not { } shell) return;
-        if (_inDrawer && _drawerFocusPos < 0)
-        {
-            shell.BorderThickness = new Thickness(3);
-            shell.BorderBrush = new SolidColorBrush(Windows.UI.Color.FromArgb(0xE6, 0xFF, 0xFF, 0xFF));
-        }
-        else
-        {
-            ResetDrawerFrame();
-        }
+        // 收起成手牌时刷新热卡样式；展开时大卡描边由 BuildDrawerSheet 保持
+        if (!_drawerExpanded) ApplyDrawerFanState();
     }
 
     /// <summary>抽屉面板表面：常态=玻璃渐变底 + 投影；透明模式=与窗口一致的透明底、去掉投影，
     /// 仅靠加重的外框与标签基线区分范围</summary>
-    private void ApplyDrawerSurface()
+    /// <summary>抽屉面板表面：展开时按当前卡牌颜色做渐变底（“卡片透明”只作用于底部卡牌）。</summary>
+    private void ApplyDrawerSurface(Windows.UI.Color accent)
     {
-        if (SettingsService.Current.DrawerTransparent)
-        {
-            // 用 Transparent 而不是 null：空白处仍参与命中测试（点面板空白可进入抽屉区域）
-            DrawerHost.Background = new SolidColorBrush(Microsoft.UI.Colors.Transparent);
-            DrawerHost.Shadow = null;
-            DrawerHost.Translation = new System.Numerics.Vector3(0, 0, 0);
-            return;
-        }
-
         var brush = new LinearGradientBrush
         {
             StartPoint = new Windows.Foundation.Point(0, 0),
@@ -3203,12 +4034,17 @@ public sealed partial class MainPage : Page
         };
         brush.GradientStops.Add(new GradientStop
         {
-            Color = Windows.UI.Color.FromArgb(0x1E, 0xFF, 0xFF, 0xFF),
+            Color = Windows.UI.Color.FromArgb(0x52, accent.R, accent.G, accent.B),
             Offset = 0
         });
         brush.GradientStops.Add(new GradientStop
         {
-            Color = Windows.UI.Color.FromArgb(0x0D, 0xFF, 0xFF, 0xFF),
+            Color = Windows.UI.Color.FromArgb(0x2A, accent.R, accent.G, accent.B),
+            Offset = 0.55
+        });
+        brush.GradientStops.Add(new GradientStop
+        {
+            Color = Windows.UI.Color.FromArgb(0x14, accent.R, accent.G, accent.B),
             Offset = 1
         });
         DrawerHost.Background = brush;
@@ -3217,16 +4053,11 @@ public sealed partial class MainPage : Page
     }
 
     /// <summary>区域描边复位：玻璃浮层的常态 1px 高光描边；透明模式加重到 2px 更亮描边（焦点进入时由 UpdateDrawerSelection 换强调色）</summary>
+    /// <summary>面板不再画外框：展开页只保留按卡牌颜色染色的背景。</summary>
     private void ResetDrawerFrame()
     {
         if (_drawerRegion is { } shell)
-        {
-            var strong = SettingsService.Current.DrawerTransparent;
-            shell.BorderThickness = new Thickness(strong ? 2 : 1);
-            shell.BorderBrush = new SolidColorBrush(strong
-                ? Windows.UI.Color.FromArgb(0x80, 0xFF, 0xFF, 0xFF)
-                : Windows.UI.Color.FromArgb(0x2E, 0xFF, 0xFF, 0xFF));
-        }
+            shell.BorderThickness = new Thickness(0);
     }
 
     /// <summary>拖拽悬停高亮复位：面板描边恢复默认</summary>
@@ -3432,19 +4263,7 @@ public sealed partial class MainPage : Page
                               !DrawerService.IsDrawer(item) &&
                               PointInDrawer(p);
             RefreshSettingsBadge();
-            if (_drawerRegion is { } hoverShell)
-            {
-                if (_dragOverDrawer)
-                {
-                    hoverShell.BorderBrush = new SolidColorBrush(Windows.UI.Color.FromArgb(0xFF, 0x4C, 0xC2, 0xFF));
-                    hoverShell.BorderThickness = new Thickness(3);
-                }
-                else
-                {
-                    // 常态高光描边（玻璃卡片）；只有拖到面板上才出现蓝色整圈提示
-                    ResetDrawerFrame();
-                }
-            }
+            if (!_dragOverDrawer && _drawerExpanded) ResetDrawerFrame();
         }), true);
 
         tile.AddHandler(UIElement.PointerReleasedEvent, new PointerEventHandler((_, e) =>
@@ -7402,13 +8221,21 @@ public sealed partial class MainPage : Page
     {
         if (_moving) return;
         if (_inDrawer)
-            HintBar.SetHints(_drawerFocusPos < 0
-                ? "DPAD:切抽屉|A:进入|X:添加磁贴|Y:添加抽屉|B:退出" // 抽屉层：按键只作用于抽屉
-                : FocusedDrawerItem() is { Kind: LaunchKind.Widget, WidgetKind: WidgetKind.System }
-                    ? "DPAD:选择内层|←→:切换项|A:开关/打开|LB/RB:调整|B:返回抽屉" // 内层系统小组件
-                    : FocusedDrawerItem() is { Kind: LaunchKind.Widget, WidgetKind: WidgetKind.Performance } perfInner
-                        ? PerformanceHintText(perfInner, "DPAD:选择内层|", "B:返回抽屉") // 内层性能控制（按已开启的快捷项生成）
-                        : "DPAD:选择内层|A:启动|X:添加|Y:最小化|B:返回抽屉"); // 内层：按键作用于内层磁贴
+            if (_drawerFocusPos < 0)
+            {
+                var addSelected = _drawerIndex >= (_drawerOwner?.Drawers?.Count ?? 0);
+                HintBar.SetHints(_drawerExpanded
+                    ? "←→:切换卡牌|A:进入|X:添加|B:收起卡牌" // 展开页：只有 B 回到卡牌
+                    : addSelected
+                        ? "←→:切换卡牌|A:添加卡牌|B:退出" // 焦点在末尾“添加卡牌”上
+                        : "←→:切换卡牌|A:展开|X:添加|B:退出"); // 卡牌层：A 展开当前卡
+            }
+            else if (FocusedDrawerItem() is { Kind: LaunchKind.Widget, WidgetKind: WidgetKind.System })
+                HintBar.SetHints("DPAD:选择内层|←→:切换项|A:开关/打开|LB/RB:调整|B:收起卡牌"); // 内层系统小组件
+            else if (FocusedDrawerItem() is { Kind: LaunchKind.Widget, WidgetKind: WidgetKind.Performance } perfInner)
+                HintBar.SetHints(PerformanceHintText(perfInner, "DPAD:选择内层|", "B:收起卡牌")); // 内层性能控制（按已开启的快捷项生成）
+            else
+                HintBar.SetHints("DPAD:选择内层|A:启动|X:添加|Y:最小化|B:收起卡牌"); // 内层：按键作用于内层磁贴
         else if (IsMusicSelected())
             HintBar.SetHints("DPAD:切换选择|A:播放/暂停|LB:上一曲|RB:下一曲");
         else if (IsPhotoSelected())
@@ -7613,10 +8440,10 @@ public sealed partial class MainPage : Page
         if (_inDrawer)
         {
             HintBar.SetHints(_drawerFocusPos < 0
-                ? "DPAD:切抽屉|A:移入标记|Y:删除抽屉|B:退出"
+                ? "←→:切换卡牌|A:展开/移入|Y:删除卡牌|B:退出"
                 : FocusedDrawerIsAddTile()
-                    ? "A:添加磁贴|B:返回抽屉"
-                    : "DPAD:选择内层|A:移入标记|Y:删除磁贴|B:返回抽屉");
+                    ? "A:添加磁贴|B:收起卡牌"
+                    : "DPAD:选择内层|A:移入标记|Y:删除磁贴|B:收起卡牌");
             return;
         }
         // 编辑（移动）模式：底部提示条临时换成编辑操作提示（徽章形式）

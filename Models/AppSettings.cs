@@ -141,7 +141,7 @@ public class AppSettings
     /// 作用于当前标签的淡底与下划线、焦点进入抽屉时的焦点环，以及"+"按钮；面板本身无底色无边框</summary>
     public string DrawerColor { get; set; } = "none";
 
-    /// <summary>抽屉透明：开启后去掉玻璃渐变底与投影，抽屉与窗口背景完全一致，仅靠加重的描边区分范围</summary>
+    /// <summary>卡片透明：开启后主页底部卡牌恢复半透明卡面（旧样式）；关闭为不透明卡面，叠压时后卡被完全遮住</summary>
     public bool DrawerTransparent { get; set; }
 
     /// <summary>抽屉内磁贴统一大小：开启后抽屉内所有磁贴忽略自身设定的大小，一律按小磁贴（1×1）显示</summary>

@@ -201,7 +201,7 @@
                         </Border>
                         <StackPanel Grid.Column="1" Spacing="2" VerticalAlignment="Center">
                             <TextBlock Text="抽屉" FontSize="16" FontWeight="SemiBold"/>
-                            <TextBlock Text="抽屉开关 · 固定在主页下方" FontSize="11"
+                            <TextBlock Text="开启卡片抽屉，主页底部生成一副卡片" FontSize="11"
                                        Opacity="0.55" TextTrimming="CharacterEllipsis"/>
                         </StackPanel>
                         <FontIcon Grid.Column="2" Glyph="&#xE76C;" FontSize="12" Opacity="0.45"

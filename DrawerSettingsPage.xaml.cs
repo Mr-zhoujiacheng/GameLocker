@@ -365,7 +365,7 @@ public sealed partial class DrawerSettingsPage : Page, ISettingsGamepad
     {
         if (!_ready) return;
         SettingsService.Update(s => s.DrawerTransparent = TransparentToggle.IsOn);
-        // 即时应用：切换玻璃底/透明底与描边粗细
+        // 即时应用：重绘底部卡牌（关闭=不透明卡面，打开=之前的半透明卡面）
         App.Main?.ApplyDrawerSettings();
         if (_ready && SettingsService.Current.UiSoundEnabled) UiSound.Play(UiSoundKind.Select);
     }

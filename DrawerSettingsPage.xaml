@@ -145,7 +145,7 @@
                         </Border>
                         <StackPanel Grid.Column="2" Spacing="2" VerticalAlignment="Center">
                             <TextBlock Text="抽屉" FontSize="15" FontWeight="SemiBold"/>
-                            <TextBlock Text="主页下方固定显示抽屉区域，↓ 进入，LB/RB 切换" FontSize="11.5"
+                            <TextBlock Text="开启卡片抽屉，主页底部生成一副卡片" FontSize="11.5"
                                        Opacity="0.55" TextTrimming="CharacterEllipsis"/>
                         </StackPanel>
                         <ToggleSwitch x:Name="DrawerToggle" Grid.Column="3" Style="{StaticResource CleanToggleStyle}"
@@ -209,7 +209,7 @@
                         </Border>
                         <StackPanel Grid.Column="2" Spacing="2" VerticalAlignment="Center">
                             <TextBlock Text="自动隐藏" FontSize="15" FontWeight="SemiBold"/>
-                            <TextBlock Text="平时收在屏幕外：右摇杆或底部上/下划呼出" FontSize="11.5"
+                            <TextBlock Text="平时收在屏幕外：右摇杆往上长按或上下滑动呼出" FontSize="11.5"
                                        Opacity="0.55" TextTrimming="CharacterEllipsis"/>
                         </StackPanel>
                         <ToggleSwitch x:Name="AutoHideToggle" Grid.Column="3" Style="{StaticResource CleanToggleStyle}"
@@ -240,8 +240,8 @@
                             <FontIcon Glyph="&#xE8C8;" FontSize="16"/>
                         </Border>
                         <StackPanel Grid.Column="2" Spacing="2" VerticalAlignment="Center">
-                            <TextBlock Text="透明" FontSize="15" FontWeight="SemiBold"/>
-                            <TextBlock Text="去掉玻璃底与投影，边框加粗以看清范围" FontSize="11.5"
+                            <TextBlock Text="卡片透明" FontSize="15" FontWeight="SemiBold"/>
+                            <TextBlock Text="关闭时卡片不透明；打开后底部卡片恢复半透明" FontSize="11.5"
                                        Opacity="0.55" TextTrimming="CharacterEllipsis"/>
                         </StackPanel>
                         <ToggleSwitch x:Name="TransparentToggle" Grid.Column="3" Style="{StaticResource CleanToggleStyle}"

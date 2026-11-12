@@ -301,6 +301,20 @@ public static class PerformanceService
         }
     }
 
+    /// <summary>读取失败的诊断信息：返回原始错误码和读到的 overlay GUID，便于定位 OEM 自定义档位</summary>
+    public static string DescribeOverlay()
+    {
+        try
+        {
+            var ret = PowerGetEffectiveOverlayScheme(out var guid);
+            return $"PowerGetEffectiveOverlayScheme ret={ret} guid={guid}";
+        }
+        catch (Exception ex)
+        {
+            return "PowerGetEffectiveOverlayScheme 异常：" + ex.Message;
+        }
+    }
+
     /// <summary>仅设置电源模式 overlay，读回有效档位确认成功，不切换基础方案或写入 EPP。</summary>
     public static (bool Ok, string Message) ApplyLevel(PerformanceLevel level)
     {
@@ -312,7 +326,10 @@ public static class PerformanceService
             var current = GetState();
             SetCached(current);
             if (!current.Available)
+            {
+                DebugLog.Write("[电源模式] 当前档位不可用：" + DescribeOverlay());
                 return (false, "当前系统不支持电源模式、返回未知模式或无法读取，未修改设置");
+            }
 
             var guid = level switch
             {
@@ -324,11 +341,20 @@ public static class PerformanceService
             var actual = GetState();
             SetCached(actual);
             if (code != 0)
+            {
+                DebugLog.Write($"[电源模式] 写入失败 code={code} 目标={guid}");
                 return (false, $"应用「{level.Label()}」失败：Windows 返回错误代码 {code}");
+            }
             if (!actual.Available)
+            {
+                DebugLog.Write("[电源模式] 写入后读回不可用：" + DescribeOverlay());
                 return (false, "已请求更改电源模式，但读回不可用，无法确认生效");
+            }
             if (actual.Level != level)
+            {
+                DebugLog.Write($"[电源模式] 读回不一致：请求={level} 实际={actual.Level} {DescribeOverlay()}");
                 return (false, $"电源模式读回验证失败：请求「{level.Label()}」，当前有效模式为「{actual.Level.Label()}」");
+            }
             return (true, $"已应用「{level.Label()}」电源模式");
         }
         catch (Exception ex)

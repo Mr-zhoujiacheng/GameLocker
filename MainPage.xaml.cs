@@ -7086,14 +7086,21 @@ public sealed partial class MainPage : Page
         if (!state.Enabled)
         {
             // 首次使用：拉起管理员助手授权（写入 MSR 需要）
+            DebugLog.Write($"[性能] 磁贴A 功耗：未启用（supported={state.Supported} takeover={CpuPowerService.TakeoverActive}），请求授权");
             var enable = await Task.Run(CpuPowerService.Enable);
+            DebugLog.Write("[性能] 启用功耗助手：" + enable.Message);
             ShowToast(enable.Message, enable.Ok ? ToastKind.Success : ToastKind.Warning);
             if (!enable.Ok) return;
             await CpuPowerService.RefreshCacheAsync();
             RefreshPerformanceTiles();
             return;
         }
-        if (!state.Supported || state.Limits.Length == 0) { ShowToast("当前 CPU 功耗接口不可用", ToastKind.Warning); return; }
+        if (!state.Supported || state.Limits.Length == 0)
+        {
+            DebugLog.Write("[性能] 磁贴A 功耗接口不可用：" + state.Message);
+            ShowToast("当前 CPU 功耗接口不可用", ToastKind.Warning);
+            return;
+        }
 
         var burst = state.Limits.Length > 1 ? state.Limits[1] : null;
         var peak = state.Limits.Length > 2 ? state.Limits[2] : null;
@@ -7109,7 +7116,9 @@ public sealed partial class MainPage : Page
         if (burst is not null) targets.Add((1, Math.Max(pl2, pl1)));
         if (peak is not null) targets.Add((2, Math.Max(fppt, burst is null ? pl1 : Math.Max(pl2, pl1))));
         var current = state.Limits.Select(l => l.Watts).ToArray();
+        DebugLog.Write($"[性能] 磁贴A 功耗：目标 PL1={pl1} 当前={string.Join("/", current.Select(w => w.ToString("0.#")))}");
         var (ok, message) = await ApplyPowerLimitsAsync(targets.ToArray(), current);
+        DebugLog.Write($"[性能] 磁贴A 功耗结果：{ok} {message}");
         if (ok)
         {
             await CpuPowerService.RefreshCacheAsync();
@@ -7155,11 +7164,19 @@ public sealed partial class MainPage : Page
         }
 
         var state = PerformanceService.GetState();
-        if (!state.Available) { ShowToast("当前系统不支持电源模式", ToastKind.Warning); return; }
+        if (!state.Available)
+        {
+            DebugLog.Write("[性能] 磁贴A 电源模式不可用：" + PerformanceService.DescribeOverlay());
+            ShowToast("当前系统不支持电源模式", ToastKind.Warning);
+            return;
+        }
         var pending = PerfPowerPending(item);
-        if (pending < 0) { ShowToast("先用 LB/RB 选择电源模式", ToastKind.Warning); return; }
+        // 重启后运行时选择会清空：直接按当前档位应用，避免卡在“先用 LB/RB 选择”
+        if (pending < 0) pending = (int)state.Level;
 
+        DebugLog.Write($"[性能] 磁贴A 电源模式：请求={pending} 当前={state.Level}");
         var (ok, message) = await Task.Run(() => PerformanceService.ApplyLevel((PerformanceLevel)pending));
+        DebugLog.Write($"[性能] 磁贴A 电源模式结果：{ok} {message}");
         ShowToast(message, ok ? ToastKind.Success : ToastKind.Warning);
         RefreshPerformanceTiles();
     }

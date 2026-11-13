@@ -5942,6 +5942,8 @@ public sealed partial class MainPage : Page
             s.CpuPowerTakeover = true;
         });
         var task = await Task.Run(CpuPowerService.EnsureAutoApplyTask);
+        DebugLog.Write($"[功耗] 保存目标 PL1={pl1} PL2={pl2} FPPT={fppt} 助手={(CpuPowerService.Active ? "已连接" : "未连接")} "
+            + $"开机自动恢复={task.Ok} {task.Message}");
         if (!task.Ok) ShowToast("功耗已保存，但开机自动恢复未注册：" + task.Message, ToastKind.Warning);
     }
 

@@ -232,6 +232,52 @@ public static class PerformanceService
     private static readonly Guid BalancedOverlayGuid = Guid.Empty;
     private static readonly Guid PerformanceOverlayGuid = new("ded574b5-45a0-4f42-8737-46345c09c238");
 
+    // Windows 标准基础电源方案：部分掌机忽略 overlay 写入，只能回退到切换基础方案
+    private static readonly Guid PowerSaverScheme = new("a1841308-3541-4fab-bc81-f71556f20b4a");
+    private static readonly Guid BalancedScheme = new("381b4222-f694-41f0-9685-ff5bb260df2e");
+    private static readonly Guid HighPerformanceScheme = new("8c5e7fda-e8bf-4a96-9a85-a6e23a8c635c");
+
+    private static readonly object SchemeCacheGate = new();
+    private static string _activeScheme = "";
+    private static long _activeSchemeTicks;
+
+    /// <summary>读取当前基础电源方案 GUID（缓存 3 秒，避免磁贴刷新频繁启动 powercfg）</summary>
+    private static string GetActiveSchemeCached()
+    {
+        lock (SchemeCacheGate)
+        {
+            var now = Environment.TickCount64;
+            if (_activeScheme.Length > 0 && now - _activeSchemeTicks < 3000) return _activeScheme;
+            _activeScheme = GetActiveSchemeGuid();
+            _activeSchemeTicks = now;
+            return _activeScheme;
+        }
+    }
+
+    private static void InvalidateActiveSchemeCache()
+    {
+        lock (SchemeCacheGate)
+        {
+            _activeScheme = "";
+            _activeSchemeTicks = 0;
+        }
+    }
+
+    /// <summary>按基础电源方案推断档位；无法识别（OEM 自定义方案）时返回 null。</summary>
+    private static PerformanceLevel? ReadBaseSchemeLevel()
+    {
+        var scheme = GetActiveSchemeCached();
+        if (scheme.Length == 0) return null;
+        if (string.Equals(scheme, HighPerformanceScheme.ToString(), StringComparison.OrdinalIgnoreCase))
+            return PerformanceLevel.Performance;
+        if (string.Equals(scheme, PowerSaverScheme.ToString(), StringComparison.OrdinalIgnoreCase))
+            return PerformanceLevel.Eco;
+        if (string.Equals(scheme, BalancedScheme.ToString(), StringComparison.OrdinalIgnoreCase))
+            return PerformanceLevel.Balanced;
+        return null;
+    }
+
+
     // 获取接口直接写入调用方的 GUID 缓冲区，不返回分配的指针，无需 LocalFree。
     [DllImport("powrprof.dll", ExactSpelling = true)]
     private static extern uint PowerGetEffectiveOverlayScheme(out Guid effectiveOverlayGuid);
@@ -284,16 +330,26 @@ public static class PerformanceService
         return state;
     }
 
-    /// <summary>读取当前有效 overlay；不支持、未知 GUID 或读取失败均返回不可用，不推断基础方案。</summary>
+    /// <summary>读取当前有效 overlay；overlay 为平衡或不可用时用基础电源方案兜底推断。</summary>
     public static PerformanceState GetState()
     {
         try
         {
-            if (PowerGetEffectiveOverlayScheme(out var guid) != 0) return PerformanceState.Unknown;
-            if (guid == EcoOverlayGuid) return new(PerformanceLevel.Eco, true);
-            if (guid == BalancedOverlayGuid) return new(PerformanceLevel.Balanced, true);
-            if (guid == PerformanceOverlayGuid) return new(PerformanceLevel.Performance, true);
-            return PerformanceState.Unknown;
+            var ret = PowerGetEffectiveOverlayScheme(out var guid);
+            if (ret == 0)
+            {
+                if (guid == EcoOverlayGuid) return new(PerformanceLevel.Eco, true);
+                if (guid == PerformanceOverlayGuid) return new(PerformanceLevel.Performance, true);
+            }
+            // 平衡 overlay：部分掌机（如 MSI Claw）会忽略 overlay 写入，实际档位由基础方案决定
+            var baseLevel = ReadBaseSchemeLevel();
+            if (ret == 0 && guid == BalancedOverlayGuid)
+                return new(baseLevel is PerformanceLevel.Performance or PerformanceLevel.Eco
+                    ? baseLevel.Value
+                    : PerformanceLevel.Balanced, true);
+            return baseLevel is { } fallback
+                ? new(fallback, true)
+                : PerformanceState.Unknown;
         }
         catch
         {
@@ -315,7 +371,7 @@ public static class PerformanceService
         }
     }
 
-    /// <summary>仅设置电源模式 overlay，读回有效档位确认成功，不切换基础方案或写入 EPP。</summary>
+    /// <summary>设置电源模式：优先写 Windows overlay，读回不一致时回退为切换基础电源方案。</summary>
     public static (bool Ok, string Message) ApplyLevel(PerformanceLevel level)
     {
         if (level != PerformanceLevel.Eco && level != PerformanceLevel.Balanced && level != PerformanceLevel.Performance)
@@ -325,11 +381,6 @@ public static class PerformanceService
         {
             var current = GetState();
             SetCached(current);
-            if (!current.Available)
-            {
-                DebugLog.Write("[电源模式] 当前档位不可用：" + DescribeOverlay());
-                return (false, "当前系统不支持电源模式、返回未知模式或无法读取，未修改设置");
-            }
 
             var guid = level switch
             {
@@ -338,30 +389,55 @@ public static class PerformanceService
                 _ => PerformanceOverlayGuid
             };
             var code = PowerSetActiveOverlayScheme(guid);
+            // 部分掌机的 overlay 写入由 OEM 服务异步接管，稍等再读回，避免刚写完读到旧值
+            Thread.Sleep(180);
             var actual = GetState();
             SetCached(actual);
-            if (code != 0)
-            {
-                DebugLog.Write($"[电源模式] 写入失败 code={code} 目标={guid}");
-                return (false, $"应用「{level.Label()}」失败：Windows 返回错误代码 {code}");
-            }
-            if (!actual.Available)
-            {
-                DebugLog.Write("[电源模式] 写入后读回不可用：" + DescribeOverlay());
-                return (false, "已请求更改电源模式，但读回不可用，无法确认生效");
-            }
-            if (actual.Level != level)
-            {
-                DebugLog.Write($"[电源模式] 读回不一致：请求={level} 实际={actual.Level} {DescribeOverlay()}");
-                return (false, $"电源模式读回验证失败：请求「{level.Label()}」，当前有效模式为「{actual.Level.Label()}」");
-            }
-            return (true, $"已应用「{level.Label()}」电源模式");
+            if (code == 0 && actual.Level == level)
+                return (true, $"已应用「{level.Label()}」电源模式");
+
+            DebugLog.Write(code == 0
+                ? $"[电源模式] 读回不一致：请求={level} 实际={actual.Level} {DescribeOverlay()} 基础方案={GetActiveSchemeCached()}"
+                : $"[电源模式] 写入失败 code={code} 目标={guid} 基础方案={GetActiveSchemeCached()}");
+
+            // 回退：MSI Claw 等掌机会忽略 Windows 电源模式滑块，改为切换基础电源方案
+            var fallback = ApplyBaseScheme(level);
+            DebugLog.Write($"[电源模式] 回退基础方案：{fallback.Ok} {fallback.Message}");
+            var after = GetState();
+            SetCached(after);
+            if (fallback.Ok && after.Level == level)
+                return (true, $"已应用「{level.Label()}」（此设备不支持 Windows 电源模式滑块，已切换电源方案：{fallback.Message}）");
+
+            var detail = fallback.Ok
+                ? $"切换电源方案后仍读回「{after.Level.Label()}」"
+                : fallback.Message;
+            return (false, (code == 0
+                ? $"电源模式读回验证失败：请求「{level.Label()}」，当前有效模式为「{actual.Level.Label()}」；"
+                : $"应用「{level.Label()}」失败：Windows 返回错误代码 {code}；") + detail);
         }
         catch (Exception ex)
         {
             SetCached(PerformanceState.Unknown);
             return (false, "应用性能档位失败（系统可能不支持电源模式 API）：" + ex.Message);
         }
+    }
+
+    /// <summary>把基础电源方案切到标准档位（overlay 被 OEM 忽略时的回退）。</summary>
+    private static (bool Ok, string Message) ApplyBaseScheme(PerformanceLevel level)
+    {
+        var (target, name) = level switch
+        {
+            PerformanceLevel.Eco => (PowerSaverScheme, "节能"),
+            PerformanceLevel.Performance => (HighPerformanceScheme, "高性能"),
+            _ => (BalancedScheme, "平衡")
+        };
+        var (code, output, error) = Run("powercfg.exe", "/setactive", target.ToString());
+        if (code != 0) return (false, "切换电源方案失败：" + Reason(code, output, error));
+        InvalidateActiveSchemeCache();
+        var active = GetActiveSchemeCached();
+        if (!string.Equals(active, target.ToString(), StringComparison.OrdinalIgnoreCase))
+            return (false, $"切换电源方案后读回不一致：{active}");
+        return (true, name);
     }
 
     /// <summary>把 powercfg 的原始错误压成一行中文提示（空输出时给退出码）</summary>

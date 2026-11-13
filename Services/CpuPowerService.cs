@@ -180,6 +180,16 @@ internal static class CpuPowerService
                         s.CpuPowerFppt = fppt;
                     });
                 }
+                // 授权成功即注册登录任务：不依赖后续保存动作，避免会话断开后提示“未注册”
+                try
+                {
+                    var task = Exchange(new("task")).Result;
+                    DebugLog.Write("[功耗] 授权后注册登录任务：" + task.Message);
+                }
+                catch (Exception ex)
+                {
+                    DebugLog.Write("[功耗] 授权后注册登录任务失败：" + ErrorMessage(ex));
+                }
                 return new(response.State.Supported, response.State.Message);
             }
             catch (Exception ex)
@@ -218,13 +228,51 @@ internal static class CpuPowerService
     {
         lock (Gate)
         {
+            // 助手会话已断开但任务已存在：直接视为已注册，不再弹 UAC
+            if (_pipe is null && TaskExists()) return new(true, "开机自动恢复任务已存在");
+            // 有保存目标但助手没连上（例如刚重启）：先重新授权助手，再注册任务
+            if (_pipe is null && TakeoverActive)
+            {
+                var enabled = Enable();
+                if (!enabled.Ok) return enabled;
+            }
             if (_pipe is null) return new(false, DisabledMessage);
-            try { return Exchange(new("task")).Result; }
+            try
+            {
+                var result = Exchange(new("task")).Result;
+                DebugLog.Write("[功耗] 注册登录任务：" + result.Message);
+                return result;
+            }
             catch (Exception ex)
             {
                 CloseSession();
                 return new(false, "注册开机自动恢复失败：" + ErrorMessage(ex));
             }
+        }
+    }
+
+    /// <summary>查询登录计划任务是否已存在（助手断开时避免重复要求授权）。</summary>
+    private static bool TaskExists()
+    {
+        try
+        {
+            using var process = Process.Start(new ProcessStartInfo("schtasks.exe", "/Query /TN \"" + LogonTaskName + "\"")
+            {
+                UseShellExecute = false,
+                CreateNoWindow = true,
+                RedirectStandardOutput = true,
+                RedirectStandardError = true
+            });
+            if (process is null) return false;
+            var output = process.StandardOutput.ReadToEnd() + process.StandardError.ReadToEnd();
+            return process.WaitForExit(4000) && process.ExitCode == 0
+                && !output.Contains("无法找到", StringComparison.Ordinal)
+                && !output.Contains("cannot find", StringComparison.OrdinalIgnoreCase);
+        }
+        catch (Exception ex)
+        {
+            DebugLog.Write("[功耗] 查询登录任务失败：" + ErrorMessage(ex));
+            return false;
         }
     }
 
@@ -269,7 +317,15 @@ internal static class CpuPowerService
                 RedirectStandardOutput = true,
                 RedirectStandardError = true
             });
-            process?.WaitForExit(5000);
+            if (process is null) return;
+            process.WaitForExit(5000);
+            if (!process.HasExited)
+            {
+                DebugLog.Write("[功耗] 触发登录任务未在 5 秒内退出");
+                return;
+            }
+            DebugLog.Write($"[功耗] 触发登录任务退出码={process.ExitCode} "
+                + (process.StandardOutput.ReadToEnd() + process.StandardError.ReadToEnd()).Trim());
         }
         catch (Exception ex) { DebugLog.Write("[功耗] 触发登录写回任务失败：" + ErrorMessage(ex)); }
     }
@@ -460,12 +516,14 @@ internal static class CpuPowerService
                 RedirectStandardOutput = true,
                 RedirectStandardError = true
             }) ?? throw new InvalidOperationException("无法启动 schtasks");
-            string output = process.StandardOutput.ReadToEnd() + process.StandardError.ReadToEnd();
-            if (!process.WaitForExit(15000))
+            var output = process.StandardOutput.ReadToEnd() + process.StandardError.ReadToEnd();
+            // 必须小于管道 8 秒超时，否则助手响应超时会被主进程当成断线
+            if (!process.WaitForExit(5000))
             {
                 try { process.Kill(); } catch { }
                 return new(false, "注册开机自动恢复任务超时");
             }
+            DebugLog.Write($"[功耗] schtasks 注册退出码={process.ExitCode} 输出={output.Trim()}");
             return process.ExitCode == 0
                 ? new(true, "已注册登录时静默恢复功耗")
                 : new(false, "注册开机自动恢复任务失败：" + output.Trim());

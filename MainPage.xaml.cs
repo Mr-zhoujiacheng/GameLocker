@@ -1121,15 +1121,12 @@ public sealed partial class MainPage : Page
         catch { return root.ActualHeight; }
     }
 
-    /// <summary>底部布局随提示条高度同步：提示条钉在窗口最底部，toast 落在它上方；
-    /// 抽屉为悬浮面板，展开时 toast 再让到面板上方，避免被面板盖住。</summary>
+    /// <summary>底部布局随提示条高度同步：提示条钉在窗口最底部，toast 固定落在它上方，不再随抽屉卡片变高。</summary>
     private void UpdateToastOffset()
     {
         var barHeight = HintBarShell.Visibility == Visibility.Visible ? HintBarShell.ActualHeight : 0;
         var bar = barHeight > 0 ? barHeight + 26 : 20;
-        var drawerHeight = DrawerHost.Visibility == Visibility.Visible && !_drawerHidden
-            ? DrawerHost.ActualHeight : 0;
-        MoveHintBar.Margin = new Thickness(0, 0, 0, bar + (drawerHeight > 0 ? drawerHeight + 8 : 0));
+        MoveHintBar.Margin = new Thickness(0, 0, 0, bar);
         // 收起时牌堆铺满页面宽度并始终贴底；展开的大卡才留边距、给提示条让位
         DrawerHost.Margin = new Thickness(
             _drawerExpanded ? 12 : 0, 6,
@@ -1436,7 +1433,7 @@ public sealed partial class MainPage : Page
         }
         if (_dropToastTimer == null)
         {
-            _dropToastTimer = new Microsoft.UI.Xaml.DispatcherTimer { Interval = TimeSpan.FromMilliseconds(2000) };
+            _dropToastTimer = new Microsoft.UI.Xaml.DispatcherTimer { Interval = TimeSpan.FromMilliseconds(3200) };
             _dropToastTimer.Tick += (_, _) =>
             {
                 _dropToastTimer!.Stop();
@@ -1445,7 +1442,7 @@ public sealed partial class MainPage : Page
             };
         }
         // 下载中每条进度都会重置计时器（正常下载不会中途消失），卡住超过 6 秒才收起
-        _dropToastTimer.Interval = TimeSpan.FromMilliseconds(progress is null ? 2000 : 6000);
+        _dropToastTimer.Interval = TimeSpan.FromMilliseconds(progress is null ? 3200 : 6000);
         _dropToastTimer.Stop();
         _dropToastTimer.Start();
     }

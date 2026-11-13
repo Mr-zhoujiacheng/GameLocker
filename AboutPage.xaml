@@ -317,8 +317,8 @@
         <!-- 悬浮放大的按键提示：浮在内容之上，不占布局行（与主页一致） -->
         <Border Grid.Row="0" Grid.RowSpan="99"
                 HorizontalAlignment="Right" VerticalAlignment="Top"
-                Margin="0,14,20,0" Padding="14,6" CornerRadius="0"
-                Background="#1F0A0C10">
+                Margin="0,14,20,0" Padding="14,9" CornerRadius="12"
+                Background="#4D000000">
             <ctl:GamepadHintBar BadgeScale="1"
                                 Hints="DPAD:选择|A:打开|X:导出日志|B:返回"/>
         </Border>

@@ -76,6 +76,10 @@ public class AppSettings
     /// <summary>接管前固件允许的短时功耗上限（W；0=未记录）</summary>
     public int CpuPowerOriginalPl2 { get; set; }
 
+    /// <summary>首次启动时记录的原始基础电源方案 GUID：掌机上标准“平衡”方案不存在，
+    /// 切回平衡时用它恢复（空=尚未记录）</summary>
+    public string PowerModeBaseScheme { get; set; } = "";
+
     /// <summary>开机自动启动（写入 HKCU Run 键）</summary>
     public bool AutoStart { get; set; }
 

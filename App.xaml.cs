@@ -84,6 +84,8 @@ public partial class App : Application
         var coreResult = GameCpuService.Configure(SettingsService.Current.GameCoreCount, SettingsService.Current.GameCoreMode);
         if (!coreResult.Ok) LaunchService.Diag(coreResult.Message);
 
+        // 记录掌机原始基础电源方案：标准“平衡”方案可能不存在，切回平衡时用它恢复
+        PerformanceService.RememberBaseScheme();
         // 睡眠/休眠唤醒后固件可能复位功耗限制：助手还连着时静默写回
         PowerResumeWatcher.Resumed += CpuPowerAutoApply.ReapplyIfActive;
         PowerResumeWatcher.Start();

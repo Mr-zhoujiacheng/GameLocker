@@ -425,12 +425,25 @@ public static class PerformanceService
     /// <summary>把基础电源方案切到标准档位（overlay 被 OEM 忽略时的回退）。</summary>
     private static (bool Ok, string Message) ApplyBaseScheme(PerformanceLevel level)
     {
-        var (target, name) = level switch
+        Guid target;
+        string name;
+        if (level == PerformanceLevel.Balanced)
         {
-            PerformanceLevel.Eco => (PowerSaverScheme, "节能"),
-            PerformanceLevel.Performance => (HighPerformanceScheme, "高性能"),
-            _ => (BalancedScheme, "平衡")
-        };
+            target = ResolveBalancedScheme();
+            name = "平衡";
+        }
+        else if (level == PerformanceLevel.Eco)
+        {
+            target = PowerSaverScheme;
+            name = "节能";
+        }
+        else
+        {
+            target = HighPerformanceScheme;
+            name = "高性能";
+        }
+        if (target == Guid.Empty) return (false, "无法确定可用的平衡电源方案");
+        DebugLog.Write($"[电源模式] 回退基础方案：{level} -> {target}（{name}）");
         var (code, output, error) = Run("powercfg.exe", "/setactive", target.ToString());
         if (code != 0) return (false, "切换电源方案失败：" + Reason(code, output, error));
         InvalidateActiveSchemeCache();
@@ -439,6 +452,63 @@ public static class PerformanceService
             return (false, $"切换电源方案后读回不一致：{active}");
         return (true, name);
     }
+
+    /// <summary>启动时记录原始基础电源方案；标准方案不记录（避免把回退结果当成原始方案）。</summary>
+    public static void RememberBaseScheme()
+    {
+        try
+        {
+            if (!string.IsNullOrWhiteSpace(SettingsService.Current.PowerModeBaseScheme)) return;
+            var active = GetActiveSchemeGuid();
+            if (active.Length == 0 || IsStandardScheme(active)) return;
+            SettingsService.Update(s => s.PowerModeBaseScheme = active);
+            DebugLog.Write("[电源模式] 记录原始基础方案：" + active);
+        }
+        catch (Exception ex)
+        {
+            DebugLog.Write("[电源模式] 记录原始基础方案失败：" + ex.Message);
+        }
+    }
+
+    /// <summary>掌机上标准“平衡”方案可能不存在，优先用记录的/枚举到的 OEM 原始方案。</summary>
+    private static Guid ResolveBalancedScheme()
+    {
+        var saved = SettingsService.Current.PowerModeBaseScheme;
+        if (Guid.TryParse(saved, out var savedGuid) && !IsStandardScheme(saved)) return savedGuid;
+        if (FindOemScheme() is { } oem)
+        {
+            SettingsService.Update(s => s.PowerModeBaseScheme = oem.ToString());
+            return oem;
+        }
+        return BalancedScheme;
+    }
+
+    /// <summary>从 powercfg /list 里找第一个非 Windows 标准方案的 OEM 方案。</summary>
+    private static Guid? FindOemScheme()
+    {
+        try
+        {
+            var (code, output, _) = Run("powercfg.exe", "/list");
+            if (code != 0) return null;
+            foreach (Match match in Regex.Matches(output, GuidPattern))
+            {
+                if (IsStandardScheme(match.Value)) continue;
+                if (Guid.TryParse(match.Value, out var guid)) return guid;
+            }
+        }
+        catch (Exception ex)
+        {
+            DebugLog.Write("[电源模式] 枚举基础方案失败：" + ex.Message);
+        }
+        return null;
+    }
+
+    private static bool IsStandardScheme(string guid) =>
+        string.Equals(guid, BalancedScheme.ToString(), StringComparison.OrdinalIgnoreCase)
+        || string.Equals(guid, HighPerformanceScheme.ToString(), StringComparison.OrdinalIgnoreCase)
+        || string.Equals(guid, PowerSaverScheme.ToString(), StringComparison.OrdinalIgnoreCase)
+        || string.Equals(guid, EcoOverlayGuid.ToString(), StringComparison.OrdinalIgnoreCase)
+        || string.Equals(guid, PerformanceOverlayGuid.ToString(), StringComparison.OrdinalIgnoreCase);
 
     /// <summary>把 powercfg 的原始错误压成一行中文提示（空输出时给退出码）</summary>
     private static string Reason(int code, string output, string error)

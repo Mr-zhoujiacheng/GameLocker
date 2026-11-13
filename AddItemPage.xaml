@@ -977,7 +977,67 @@
 
                 <!-- 小黄鸭小组件：程序路径 / 补帧热键 / 自动补帧（仅小黄鸭编辑时显示） -->
                 <StackPanel x:Name="LosslessRow" Spacing="14" Visibility="Collapsed">
+                    <!-- 插帧引擎：默认 LSFG；XeSS / FSR3 走内置 Magpie 后端，启动/停止仍共用 A 键 -->
                     <StackPanel Spacing="4">
+                        <TextBlock Text="插帧引擎" FontSize="15" Opacity="0.9"/>
+                        <ComboBox x:Name="LosslessEngineCombo" HorizontalAlignment="Stretch"
+                                  SelectionChanged="OnLosslessEngineChanged"
+                                  ToolTipService.ToolTip="LSFG=小黄鸭；XeSS FG / FSR3 FG=内置 Magpie 后端（WGC 捕获 + 外部光流）。">
+                            <ComboBoxItem Content="LSFG（小黄鸭）" Tag="LSFG"/>
+                            <ComboBoxItem Content="XeSS FG（Magpie）" Tag="XESS"/>
+                            <ComboBoxItem Content="FSR3 FG（Magpie）" Tag="FSR3"/>
+                        </ComboBox>
+                        <TextBlock x:Name="LosslessEngineHint" FontSize="12" Opacity="0.55" TextWrapping="Wrap"
+                                   Text="LSFG 会打开小黄鸭并发送 Ctrl+Alt+S；游戏需无边框窗口化。"/>
+                    </StackPanel>
+
+                    <!-- Magpie 后端参数：仅 XeSS / FSR3 显示 -->
+                    <StackPanel x:Name="LosslessMagpiePanel" Spacing="10" Visibility="Collapsed">
+                        <StackPanel Spacing="4">
+                            <TextBlock Text="插帧 GPU" FontSize="15" Opacity="0.9"/>
+                            <ComboBox x:Name="FgGpuCombo" HorizontalAlignment="Stretch"
+                                      SelectionChanged="OnFgGpuChanged"
+                                      ToolTipService.ToolTip="默认优先 NVIDIA，否则选择第一张硬件 GPU；所选设备不可用时需重新选择。"/>
+                        </StackPanel>
+                        <StackPanel Spacing="4">
+                            <TextBlock Text="捕获方式" FontSize="15" Opacity="0.9"/>
+                            <ComboBox x:Name="FgCaptureCombo" HorizontalAlignment="Stretch"
+                                      ToolTipService.ToolTip="WGC 抓单个窗口；DXGI 抓整个显示器（兼容部分独占全屏）；DWM 兼容层。">
+                                <ComboBoxItem Content="窗口捕获 WGC（推荐）" Tag="WGC"/>
+                                <ComboBoxItem Content="桌面复制 DXGI（需游戏全屏）" Tag="DXGI"/>
+                                <ComboBoxItem Content="DWM 共享表面" Tag="DWM"/>
+                            </ComboBox>
+                        </StackPanel>
+
+                        <StackPanel x:Name="FgMultiplierPanel" Spacing="4">
+                            <TextBlock Text="XeSS 倍率" FontSize="15" Opacity="0.9"/>
+                            <ComboBox x:Name="FgMultiplierCombo" HorizontalAlignment="Stretch"
+                                      ToolTipService.ToolTip="Intel GPU 可选 2×/3×/4×；非 Intel GPU 仅支持 2×。">
+                                <ComboBoxItem Content="2×" Tag="2"/>
+                            </ComboBox>
+                        </StackPanel>
+
+                        <StackPanel Spacing="4">
+                            <TextBlock Text="光流方式" FontSize="15" Opacity="0.9"/>
+                            <ComboBox x:Name="FgFlowCombo" HorizontalAlignment="Stretch"
+                                      ToolTipService.ToolTip="FSR3 / XeSS 都依赖外部光流；NVIDIA 的 NVOF 仅 RTX 显卡可用。">
+                                <ComboBoxItem Content="AMD（跨厂商，推荐）" Tag="AMD"/>
+                                <ComboBoxItem Content="NVIDIA（仅 RTX）" Tag="NVIDIA"/>
+                            </ComboBox>
+                        </StackPanel>
+
+                        <StackPanel Spacing="4">
+                            <TextBlock Text="帧同步" FontSize="15" Opacity="0.9"/>
+                            <ComboBox x:Name="FgSyncCombo" HorizontalAlignment="Stretch"
+                                      ToolTipService.ToolTip="前置同步延迟最低；异步更平滑；Reflex 需要 NVIDIA 驱动支持。">
+                                <ComboBoxItem Content="前置帧同步（推荐）" Tag="FRONT_EDGE"/>
+                                <ComboBoxItem Content="异步" Tag="ASYNC"/>
+                                <ComboBoxItem Content="Reflex（NVIDIA）" Tag="REFLEX"/>
+                            </ComboBox>
+                        </StackPanel>
+                    </StackPanel>
+
+                    <StackPanel x:Name="LosslessPathPanel" Spacing="4">
                         <TextBlock Text="LosslessScaling.exe" FontSize="15" Opacity="0.9"/>
                         <Grid>
                             <Grid.ColumnDefinitions>
@@ -1007,7 +1067,7 @@
                                    FontSize="12" Opacity="0.55" TextWrapping="Wrap"/>
                     </StackPanel>
 
-                    <StackPanel Spacing="4">
+                    <StackPanel x:Name="LosslessProfilePanel" Spacing="4">
                         <TextBlock Text="小黄鸭配置" FontSize="15" Opacity="0.9"/>
                         <Grid ColumnSpacing="8">
                             <Grid.ColumnDefinitions>
@@ -1030,7 +1090,7 @@
                                    Text="下拉框读取小黄鸭的配置；「新建配置」会打开小黄鸭，配置建好后重新展开下拉框即可选择。"/>
                     </StackPanel>
 
-                    <StackPanel Spacing="6">
+                    <StackPanel x:Name="LosslessOptimizeWrap" Spacing="6">
                         <StackPanel.Resources>
                             <SolidColorBrush x:Key="LosslessOptHoverBrush" Color="#1AFFFFFF"/>
                             <SolidColorBrush x:Key="LosslessOptPressedBrush" Color="#26FFFFFF"/>
@@ -2074,7 +2134,7 @@
         <Border Grid.Row="0" Grid.RowSpan="99"
                 HorizontalAlignment="Right" VerticalAlignment="Top"
                 Margin="0,14,20,0" Padding="14,9" CornerRadius="12"
-                Background="#4D000000">
+                Background="#26000000">
             <ctl:GamepadHintBar x:Name="HintBar" BadgeScale="1"/>
         </Border>
     </Grid>

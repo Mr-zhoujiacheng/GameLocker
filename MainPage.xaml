@@ -212,7 +212,7 @@
         <Border x:Name="HintBarShell" Grid.Row="0" Grid.RowSpan="3"
                 HorizontalAlignment="Center" VerticalAlignment="Bottom"
                 Margin="0,0,0,20" Padding="14,9" CornerRadius="12" BorderThickness="0"
-                Background="#4D000000"
+                Background="#26000000"
                 Visibility="{x:Bind HintBar.Visibility, Mode=OneWay}">
             <ctl:GamepadHintBar x:Name="HintBar" BadgeScale="1" Highlight="True"/>
         </Border>

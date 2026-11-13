@@ -400,6 +400,25 @@ public class LaunchItem
     /// <summary>手动指定的 LosslessScaling.exe 路径（仅 WidgetKind.LosslessScaling 使用；空=按 Steam 库自动检测）</summary>
     public string? LosslessPath { get; set; }
 
+    /// <summary>插帧引擎：LSFG（小黄鸭，默认）/ XESS / FSR3（后两者走内置 Magpie 后端）</summary>
+    public string FrameGenEngine { get; set; } = "LSFG";
+
+    public int FgGpuIndex { get; set; } = -1;
+    public uint FgGpuVendorId { get; set; }
+    public uint FgGpuDeviceId { get; set; }
+
+    /// <summary>Magpie 捕获方式：WGC（窗口）/ DXGI（桌面复制）/ DWM（共享表面）</summary>
+    public string FgCaptureMode { get; set; } = "WGC";
+
+    /// <summary>XeSS FG 倍率：2 / 3 / 4（FSR3 固定 2×，此值会被忽略）</summary>
+    public int FgXeSSMultiplier { get; set; } = 2;
+
+    /// <summary>外部光流：AMD / NVIDIA</summary>
+    public string FgOpticalFlow { get; set; } = "AMD";
+
+    /// <summary>帧同步：FRONT_EDGE / ASYNC / REFLEX</summary>
+    public string FgFrameSync { get; set; } = "FRONT_EDGE";
+
     /// <summary>选中的小黄鸭配置名（Settings.xml 中 Game Profiles 的 Title，仅 WidgetKind.LosslessScaling 使用；
     /// 空=不指定，完全跟随小黄鸭自己的匹配）</summary>
     public string? LosslessProfile { get; set; }
@@ -511,6 +530,14 @@ public class LaunchItem
         FileTransferSendFolder = FileTransferSendFolder,
         FileTransferRecvFolder = FileTransferRecvFolder,
         LosslessPath = LosslessPath,
+        FrameGenEngine = FrameGenEngine,
+        FgGpuIndex = FgGpuIndex,
+        FgGpuVendorId = FgGpuVendorId,
+        FgGpuDeviceId = FgGpuDeviceId,
+        FgCaptureMode = FgCaptureMode,
+        FgXeSSMultiplier = FgXeSSMultiplier,
+        FgOpticalFlow = FgOpticalFlow,
+        FgFrameSync = FgFrameSync,
         LosslessProfile = LosslessProfile,
         LosslessOptimize = LosslessOptimize,
         LosslessOptQueue = LosslessOptQueue,

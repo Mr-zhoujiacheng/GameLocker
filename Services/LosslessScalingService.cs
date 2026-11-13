@@ -48,6 +48,45 @@ public static class LosslessScalingService
     private static bool _detectedOnce;
     private static int _activating;
 
+    // ---- 插帧引擎 ----
+    public const string EngineLsfg = "LSFG";
+    public const string EngineXess = "XESS";
+    public const string EngineFsr3 = "FSR3";
+
+    /// <summary>该组件是否走内置 Magpie 后端（XeSS FG / FSR3 FG）</summary>
+    public static bool UsesMagpie(LaunchItem item) =>
+        !string.Equals(item.FrameGenEngine ?? EngineLsfg, EngineLsfg, StringComparison.OrdinalIgnoreCase);
+
+    /// <summary>内置 Magpie 宿主进程（FGHost.exe）</summary>
+    private static Process? _magpieHost;
+    private static int _magpieState;
+    private static int _cancelMagpie;
+    public static string MagpieTargetName { get; private set; } = "";
+    public static string MagpieFailureReason { get; private set; } = "";
+
+    public static void CancelMagpieStart() => Volatile.Write(ref _cancelMagpie, 1);
+
+    /// <summary>FGHost.exe 所在目录（随 GameLocker 一起分发到 FG 子目录）</summary>
+    private static string FgHostDirectory =>
+        Environment.GetEnvironmentVariable("GAMELOCKER_FG_DIR") is { Length: > 0 } dir
+            ? dir
+            : Path.Combine(AppContext.BaseDirectory, "FG");
+
+    public static string FgHostPath => Path.Combine(FgHostDirectory, "FGHost.exe");
+
+    /// <summary>Magpie 后端是否可用（FGHost.exe 存在）</summary>
+    public static bool IsMagpieInstalled => File.Exists(FgHostPath);
+
+    /// <summary>Magpie 宿主是否在运行</summary>
+    public static bool IsMagpieRunning
+    {
+        get
+        {
+            try { return _magpieHost is { HasExited: false }; }
+            catch { return false; }
+        }
+    }
+
     /// <summary>小黄鸭开始插帧后 GPU 占用会明显升高（实测约 65%），空闲时为 0；用作真实状态判据</summary>
     private const double GpuBusyThreshold = 5.0;
 
@@ -75,7 +114,11 @@ public static class LosslessScalingService
     /// 是否处于插帧中（供磁贴显示）：能看到覆盖层就是开；看不到时回落到上次成功切换的状态，
     /// 避免回到启动器时覆盖层被销毁而把磁贴误显示成"运行中"。
     /// </summary>
-    public static bool IsScaling => IsRunning && (IsOverlayVisible || _frameGenState);
+    public static bool IsMagpieScaling => IsMagpieRunning && Volatile.Read(ref _magpieState) is 2 or 4;
+    public static bool IsScaling => IsMagpieScaling || IsLsfgScaling;
+
+    /// <summary>仅小黄鸭 LSFG 的插帧状态（磁贴按引擎区分显示）</summary>
+    public static bool IsLsfgScaling => IsRunning && (IsOverlayVisible || _frameGenState);
 
     /// <summary>
     /// 覆盖层当前是否可见。注意：只有目标游戏处于前台时它才存在，
@@ -365,6 +408,7 @@ public static class LosslessScalingService
             return IsScaling ? ScaleResult.FrameGenOn : ScaleResult.FrameGenOff;
         try
         {
+            if (UsesMagpie(item)) return await ActivateMagpieAsync(item);
             if (!IsInstalled(item)) return ScaleResult.NotInstalled;
 
             // 刚切换完的一瞬间再按 A：GPU 计数还停留在旧值上，此时切换方向会算错，
@@ -457,6 +501,212 @@ public static class LosslessScalingService
             return ScaleResult.LaunchFailed;
         }
         finally { Volatile.Write(ref _activating, 0); }
+    }
+
+    /// <summary>
+    /// Magpie 后端（XeSS FG / FSR3 FG）：与 LSFG 共用同一个 A 键切换。
+    /// 未运行则解析游戏窗口并拉起 FGHost，已运行则结束进程；游戏退出后 FGHost 会自行退出。
+    /// </summary>
+    private static async Task<ScaleResult> ActivateMagpieAsync(LaunchItem item)
+    {
+        var restoreLauncher = false;
+        try
+        {
+            if (IsMagpieRunning)
+                return StopMagpie() ? ScaleResult.FrameGenOff : ScaleResult.ToggleFailed;
+            if (!IsMagpieInstalled) return ScaleResult.NotInstalled;
+            Volatile.Write(ref _cancelMagpie, 0);
+            Volatile.Write(ref _magpieState, 0);
+            MagpieFailureReason = "";
+
+            ForegroundWatcherService.RefreshFrameGenTarget();
+            var target = ForegroundWatcherService.FrameGenTargetWindow;
+            var targetName = "";
+            if (target != IntPtr.Zero)
+            {
+                GetWindowThreadProcessId(target, out var pid);
+                try
+                {
+                    using var process = Process.GetProcessById((int)pid);
+                    targetName = $"{process.MainWindowTitle}（{process.ProcessName}）";
+                    if (pid == Environment.ProcessId || !TrainerService.IsGameLikeProcess(target, process.ProcessName))
+                        target = IntPtr.Zero;
+                }
+                catch { target = IntPtr.Zero; }
+            }
+            if (target == IntPtr.Zero || !IsWindow(target) || !IsWindowVisible(target) || IsIconic(target))
+            {
+                DebugLog.Write($"Magpie: 未找到游戏窗口（目标={targetName}）");
+                return ScaleResult.NoGame;
+            }
+
+            var fg = string.Equals(item.FrameGenEngine, EngineXess, StringComparison.OrdinalIgnoreCase)
+                ? "xess" : "fsr3";
+            var capture = item.FgCaptureMode switch
+            {
+                "DXGI" => "dd",
+                "DWM" => "dwm",
+                _ => "wgc"
+            };
+            var flow = string.Equals(item.FgOpticalFlow, "NVIDIA", StringComparison.OrdinalIgnoreCase)
+                ? "nv" : "amd";
+            var sync = item.FgFrameSync switch
+            {
+                "ASYNC" => "async",
+                "REFLEX" => "reflex",
+                _ => "frontedge"
+            };
+            GpuAdapter gpu;
+            try
+            {
+                gpu = GpuAdapterService.Resolve(GpuAdapterService.Enumerate(),
+                    item.FgGpuIndex, item.FgGpuVendorId, item.FgGpuDeviceId);
+            }
+            catch (Exception ex)
+            {
+                MagpieFailureReason = $"GPU 选择失败：{ex.Message}";
+                DebugLog.Write($"Magpie: {MagpieFailureReason}");
+                return ScaleResult.LaunchFailed;
+            }
+            var multiplier = gpu.VendorId == 0x8086 ? Math.Clamp(item.FgXeSSMultiplier, 2, 4) : 2;
+            var psi = new ProcessStartInfo
+            {
+                FileName = FgHostPath,
+                WorkingDirectory = FgHostDirectory,
+                UseShellExecute = false,
+                CreateNoWindow = true,
+                RedirectStandardOutput = true,
+                RedirectStandardError = true
+            };
+            psi.ArgumentList.Add("--gpu-index");
+            psi.ArgumentList.Add(gpu.Index.ToString());
+            psi.ArgumentList.Add("--gpu-vendor");
+            psi.ArgumentList.Add(gpu.VendorId.ToString());
+            psi.ArgumentList.Add("--gpu-device");
+            psi.ArgumentList.Add(gpu.DeviceId.ToString());
+            psi.ArgumentList.Add("--hwnd");
+            psi.ArgumentList.Add($"0x{target.ToInt64():X}");
+            psi.ArgumentList.Add("--fg");
+            psi.ArgumentList.Add(fg);
+            psi.ArgumentList.Add("--multiplier");
+            psi.ArgumentList.Add(multiplier.ToString());
+            psi.ArgumentList.Add("--flow");
+            psi.ArgumentList.Add(flow);
+            psi.ArgumentList.Add("--capture");
+            psi.ArgumentList.Add(capture);
+            psi.ArgumentList.Add("--sync");
+            psi.ArgumentList.Add(sync);
+            psi.ArgumentList.Add("--fps");
+            var hz = FrameLimitService.ReadDisplayHz();
+            psi.ArgumentList.Add((hz >= 30 ? hz : 60).ToString());
+
+            MagpieTargetName = targetName;
+            FloatingToastService.Show($"已识别窗口：{targetName}，正在初始化插帧…");
+            restoreLauncher = App.Main?.IsShown == true;
+            App.Main?.HideToTray();
+            // HideToTray 有 260ms 滑出动画，结束前焦点和任务栏 Z 序仍会变化。
+            await Task.Delay(350);
+            if (Volatile.Read(ref _cancelMagpie) != 0) return ScaleResult.FrameGenOff;
+            BringToForeground(target);
+            await Task.Delay(150);
+            if (GetForegroundWindow() != target)
+            {
+                BringToForeground(target);
+                await Task.Delay(150);
+            }
+            if (GetForegroundWindow() != target)
+            {
+                DebugLog.Write($"Magpie: 聚焦失败 target=0x{target.ToInt64():X} foreground=0x{GetForegroundWindow().ToInt64():X} 目标={targetName}");
+                return ScaleResult.FocusFailed;
+            }
+            var host = Process.Start(psi);
+            if (host is null) return ScaleResult.LaunchFailed;
+            _magpieHost = host;
+            host.OutputDataReceived += (_, e) =>
+            {
+                if (!string.IsNullOrWhiteSpace(e.Data)) DebugLog.Write($"[FGHost] {e.Data}");
+                if (ReferenceEquals(_magpieHost, host) && e.Data is { } line)
+                {
+                    if (line.Contains("[error] code=6 ") || line.TrimEnd().EndsWith("[error] code=6"))
+                        MagpieFailureReason = "游戏处于全屏或最大化，请改为未铺满屏幕的窗口模式后重试";
+                    else if (line.Contains("[error] code=7 ") || line.TrimEnd().EndsWith("[error] code=7"))
+                        MagpieFailureReason = "游戏权限高于启动器，请以相同权限运行";
+                }
+                if (ReferenceEquals(_magpieHost, host) && e.Data?.StartsWith("[state] ") == true
+                    && int.TryParse(e.Data.AsSpan(8), out var state))
+                    Volatile.Write(ref _magpieState, state);
+            };
+            host.ErrorDataReceived += (_, e) =>
+            {
+                if (!string.IsNullOrWhiteSpace(e.Data)) DebugLog.Write($"[FGHost:err] {e.Data}");
+            };
+            host.BeginOutputReadLine();
+            host.BeginErrorReadLine();
+
+            // 必须收到 Scaling 状态才算开启；初始化期间再次按 A 可取消。
+            for (var i = 0; i < 120; i++)
+            {
+                await Task.Delay(250);
+                if (Volatile.Read(ref _cancelMagpie) != 0)
+                    return StopMagpie() ? ScaleResult.FrameGenOff : ScaleResult.ToggleFailed;
+                if (Volatile.Read(ref _magpieState) == 2 && !host.HasExited)
+                {
+                    restoreLauncher = false;
+                    return ScaleResult.FrameGenOn;
+                }
+                try
+                {
+                    if (host.HasExited)
+                    {
+                        DebugLog.Write($"Magpie: FGHost 提前退出 code={host.ExitCode} fg={fg} 目标={targetName}");
+                        await host.WaitForExitAsync();
+                        _magpieHost = null;
+                        Volatile.Write(ref _magpieState, 0);
+                        host.Dispose();
+                        return ScaleResult.LaunchFailed;
+                    }
+                }
+                catch { }
+            }
+
+            DebugLog.Write($"Magpie: 初始化超时 fg={fg} 目标={targetName}");
+            StopMagpie();
+            return ScaleResult.LaunchFailed;
+        }
+        catch (Exception ex)
+        {
+            DebugLog.Write($"Magpie: 启动失败：{ex.Message}");
+            StopMagpie();
+            return ScaleResult.LaunchFailed;
+        }
+        finally
+        {
+            if (restoreLauncher) App.Main?.ShowFromTray();
+        }
+    }
+
+    /// <summary>结束后端进程；下一次按 A 会重新拉起并重新初始化 FG</summary>
+    private static bool StopMagpie()
+    {
+        try
+        {
+            var host = _magpieHost;
+            if (host is not null && !host.HasExited)
+            {
+                host.Kill(entireProcessTree: true);
+                if (!host.WaitForExit(5000)) return false;
+            }
+            _magpieHost = null;
+            Volatile.Write(ref _magpieState, 0);
+            host?.Dispose();
+            DebugLog.Write("Magpie: 已确认 FGHost 停止");
+            return true;
+        }
+        catch (Exception ex)
+        {
+            DebugLog.Write($"Magpie: 停止失败：{ex.Message}");
+            return false;
+        }
     }
 
     /// <summary>

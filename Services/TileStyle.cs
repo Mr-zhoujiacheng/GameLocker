@@ -1937,6 +1937,10 @@ public static class TileStyle
         public Microsoft.UI.Xaml.Shapes.Ellipse Dot = null!; // 状态圆点
         public TextBlock Status = null!;          // 安装/运行状态文字
         public TextBlock Summary = null!;         // 操作摘要（长/大尺寸才有）
+        public ContentControl Icon = null!;       // 引擎图标容器（切引擎时换内容）
+        public TextBlock? Title;                  // 标题（长/大尺寸才有）
+        public double IconSize;                   // 当前图标尺寸
+        public Func<double, FrameworkElement>? DuckFactory; // LSFG 默认图标绘制器
     }
 
     /// <summary>
@@ -1948,7 +1952,6 @@ public static class TileStyle
         LaunchItem item, double width, double height, Windows.UI.Color accent, bool noColor)
     {
         var white = new SolidColorBrush(Microsoft.UI.Colors.White);
-        var label = string.IsNullOrWhiteSpace(item.Name) ? "小黄鸭" : item.Name;
         // 小黄鸭图标：简约线条风格（白描边），与界面整体一致
         static Viewbox Duck(double size)
         {
@@ -1997,6 +2000,24 @@ public static class TileStyle
 
         var refs = new LosslessTileRefs();
 
+        // 图标容器：LSFG=小黄鸭线条图，XeSS=intel 字标，FSR3=AMD 字标
+        ContentControl IconHost(double size)
+        {
+            var host = new ContentControl
+            {
+                Content = EngineIcon(item, size, Duck),
+                IsHitTestVisible = false,
+                HorizontalAlignment = HorizontalAlignment.Center,
+                VerticalAlignment = VerticalAlignment.Center,
+                HorizontalContentAlignment = HorizontalAlignment.Center,
+                VerticalContentAlignment = VerticalAlignment.Center
+            };
+            refs.Icon = host;
+            refs.IconSize = size;
+            refs.DuckFactory = Duck;
+            return host;
+        }
+
         Grid StatusRow(LosslessTileRefs refs, double fontSize)
         {
             var host = new Grid { HorizontalAlignment = HorizontalAlignment.Center };
@@ -2038,7 +2059,7 @@ public static class TileStyle
                 HorizontalAlignment = HorizontalAlignment.Center,
                 VerticalAlignment = VerticalAlignment.Center
             };
-            stack.Children.Add(Duck(34));
+            stack.Children.Add(IconHost(34));
             stack.Children.Add(StatusRow(refs, 10));
             grid.Children.Add(stack);
         }
@@ -2051,18 +2072,19 @@ public static class TileStyle
                 HorizontalAlignment = HorizontalAlignment.Center,
                 VerticalAlignment = VerticalAlignment.Center
             };
-            row.Children.Add(Duck(42));
+            row.Children.Add(IconHost(42));
             var col = new StackPanel { Spacing = 4, VerticalAlignment = VerticalAlignment.Center };
-            col.Children.Add(new TextBlock
+            refs.Title = new TextBlock
             {
-                Text = label,
+                Text = EngineTitle(item),
                 FontSize = 16,
                 FontWeight = Microsoft.UI.Text.FontWeights.SemiBold,
                 Foreground = white,
                 TextTrimming = TextTrimming.CharacterEllipsis,
                 MaxWidth = width - 96,
                 IsHitTestVisible = false
-            });
+            };
+            col.Children.Add(refs.Title);
             col.Children.Add(StatusRow(refs, 12));
             row.Children.Add(col);
             grid.Children.Add(row);
@@ -2077,10 +2099,10 @@ public static class TileStyle
                 HorizontalAlignment = HorizontalAlignment.Center,
                 VerticalAlignment = VerticalAlignment.Center
             };
-            stack.Children.Add(Duck(54));
-            stack.Children.Add(new TextBlock
+            stack.Children.Add(IconHost(54));
+            refs.Title = new TextBlock
             {
-                Text = label,
+                Text = EngineTitle(item),
                 FontSize = 20,
                 FontWeight = Microsoft.UI.Text.FontWeights.SemiBold,
                 Foreground = white,
@@ -2088,7 +2110,8 @@ public static class TileStyle
                 TextTrimming = TextTrimming.CharacterEllipsis,
                 MaxWidth = width - 28,
                 IsHitTestVisible = false
-            });
+            };
+            stack.Children.Add(refs.Title);
             stack.Children.Add(StatusRow(refs, 13));
             refs.Summary = new TextBlock
             {
@@ -2120,12 +2143,61 @@ public static class TileStyle
         return (tile, refs);
     }
 
+    /// <summary>按插帧引擎决定磁贴标题：LSFG 用自定义名称，XeSS/FSR3 显示引擎名</summary>
+    private static string EngineTitle(LaunchItem item)
+    {
+        if (string.Equals(item.FrameGenEngine, LosslessScalingService.EngineXess, StringComparison.OrdinalIgnoreCase))
+            return "XeSS FG";
+        if (string.Equals(item.FrameGenEngine, LosslessScalingService.EngineFsr3, StringComparison.OrdinalIgnoreCase))
+            return "FSR FG";
+        return string.IsNullOrWhiteSpace(item.Name) ? "小黄鸭" : item.Name;
+    }
+
+    /// <summary>按插帧引擎决定磁贴图标：LSFG=小黄鸭，XeSS=intel 字标，FSR3=AMD 字标</summary>
+    private static FrameworkElement EngineIcon(
+        LaunchItem item, double size, Func<double, FrameworkElement> duck)
+    {
+        if (string.Equals(item.FrameGenEngine, LosslessScalingService.EngineXess, StringComparison.OrdinalIgnoreCase))
+            return BrandMarkIcon("intel", size);
+        if (string.Equals(item.FrameGenEngine, LosslessScalingService.EngineFsr3, StringComparison.OrdinalIgnoreCase))
+            return BrandMarkIcon("AMD", size);
+        return duck(size);
+    }
+
+    /// <summary>品牌字标图标：白字，等比缩放到磁贴图标尺寸</summary>
+    private static Viewbox BrandMarkIcon(string text, double size) => new()
+    {
+        Width = size,
+        Height = size,
+        Stretch = Microsoft.UI.Xaml.Media.Stretch.Uniform,
+        HorizontalAlignment = HorizontalAlignment.Center,
+        VerticalAlignment = VerticalAlignment.Center,
+        IsHitTestVisible = false,
+        Child = new TextBlock
+        {
+            Text = text,
+            FontSize = 12,
+            FontWeight = Microsoft.UI.Text.FontWeights.Bold,
+            Foreground = new SolidColorBrush(Microsoft.UI.Colors.White),
+            IsHitTestVisible = false
+        }
+    };
+
     /// <summary>把安装/运行状态、插帧状态与操作摘要写入磁贴引用</summary>
     public static void FillLosslessState(LosslessTileRefs refs, LaunchItem item)
     {
-        var installed = LosslessScalingService.IsInstalled(item);
-        var running = installed && LosslessScalingService.IsRunning;
-        var scaling = running && LosslessScalingService.IsScaling;
+        var magpie = LosslessScalingService.UsesMagpie(item);
+        var installed = magpie ? LosslessScalingService.IsMagpieInstalled : LosslessScalingService.IsInstalled(item);
+        var running = installed && (magpie ? LosslessScalingService.IsMagpieRunning : LosslessScalingService.IsRunning);
+        var scaling = magpie ? LosslessScalingService.IsMagpieScaling : running && LosslessScalingService.IsLsfgScaling;
+        var engineName = !magpie ? "LSFG"
+            : string.Equals(item.FrameGenEngine, LosslessScalingService.EngineXess, StringComparison.OrdinalIgnoreCase)
+                ? "XeSS FG" : "FSR FG";
+
+        // 编辑页切换引擎后，磁贴可能只做状态刷新，这里同步图标与标题
+        if (refs.Icon is not null && refs.DuckFactory is not null)
+            refs.Icon.Content = EngineIcon(item, refs.IconSize, refs.DuckFactory);
+        if (refs.Title is not null) refs.Title.Text = EngineTitle(item);
 
         refs.Dot.Fill = new SolidColorBrush(
             !installed ? Windows.UI.Color.FromArgb(0x66, 0xFF, 0xFF, 0xFF)   // 灰白：未安装
@@ -2138,9 +2210,10 @@ public static class TileStyle
             : "未运行";
 
         if (refs.Summary.Visibility == Visibility.Collapsed) return;
-        refs.Summary.Text = !installed ? "R3:编辑 · 指定程序"
-            : scaling ? "A:关闭插帧"
-            : "A:开启插帧";
+        refs.Summary.Text = !installed
+            ? (magpie ? "R3:编辑 · 缺少 FG" : "R3:编辑 · 指定程序")
+            : scaling ? $"A:关闭{engineName}"
+            : $"A:开启{engineName}";
     }
 
     /// <summary>屏幕翻译磁贴的可刷新元素引用（开关状态变化时只改文字/状态点，不重建磁贴）</summary>

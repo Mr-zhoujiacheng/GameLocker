@@ -27,6 +27,70 @@ namespace GameLocker.Services;
     /// <summary>当前监测到的前台应用（null=尚未检测到任何应用）</summary>
     public static ForegroundApp? Current { get; private set; }
 
+    private static readonly object _frameGenLock = new();
+    private static readonly object _lifecycleLock = new();
+    private static IntPtr _frameGenTargetWindow;
+    private static readonly WinEventProc _foregroundCallback = OnForegroundChanged;
+    private static Thread? _foregroundThread;
+    private static uint _foregroundThreadId;
+    private static IntPtr _foregroundHook;
+    private static System.Threading.Timer? _frameGenFallbackTimer;
+    private static bool _watching;
+
+    /// <summary>独立于冻结目标的插帧候选窗口；零表示当前没有可用候选。</summary>
+    public static IntPtr FrameGenTargetWindow
+    {
+        get { lock (_frameGenLock) return _frameGenTargetWindow; }
+    }
+
+    /// <summary>以当前前台 HWND 刷新插帧候选；启动器自身前台时保留上一个候选。</summary>
+    public static void RefreshFrameGenTarget()
+    {
+        lock (_frameGenLock) UpdateFrameGenTarget(GetForegroundWindow());
+    }
+
+    private static void UpdateFrameGenTarget(IntPtr hwnd)
+    {
+        // 调用方持有 _frameGenLock；先识别自身，避免启动器覆盖或清空候选。
+        GetWindowThreadProcessId(hwnd, out var pid);
+        if (hwnd != IntPtr.Zero && pid == (uint)Environment.ProcessId) return;
+
+        _frameGenTargetWindow = IntPtr.Zero;
+        if (hwnd == IntPtr.Zero || pid == 0 || !IsWindow(hwnd)
+            || !IsWindowVisible(hwnd) || IsIconic(hwnd) || GetAncestor(hwnd, 2) != hwnd) return;
+        var className = ClassName(hwnd);
+        if (string.IsNullOrEmpty(className)
+            || className is "Progman" or "WorkerW" or "Shell_TrayWnd" or "Shell_SecondaryTrayWnd"
+            || className.Contains("Magpie", StringComparison.OrdinalIgnoreCase)
+            || className.Contains("FGHost", StringComparison.OrdinalIgnoreCase)) return;
+        if (string.IsNullOrWhiteSpace(WindowTitle(hwnd))) return;
+        var (name, _) = Describe(pid);
+        if (name is null || name.ToLowerInvariant() is
+            "explorer" or "startmenuexperiencehost" or "searchhost" or "searchapp"
+            or "textinputhost" or "shellexperiencehost" or "applicationframehost"
+            or "sihost" or "dwm" or "lockapp" or "logonui" or "shellhost"
+            or "fghost" or "magpie" or "gamelocker") return;
+        if (IsWindow(hwnd)) _frameGenTargetWindow = hwnd;
+    }
+
+    private static void OnForegroundChanged(IntPtr hook, uint eventType, IntPtr hwnd,
+        int objectId, int childId, uint threadId, uint eventTime)
+    {
+        try
+        {
+            // 使用事件携带的 HWND，不重新采样，避免漏掉“桌面 -> 启动器”的短暂切换。
+            lock (_frameGenLock)
+            {
+                if (_watching) UpdateFrameGenTarget(hwnd);
+            }
+        }
+        catch (Exception ex)
+        {
+            lock (_frameGenLock) _frameGenTargetWindow = IntPtr.Zero;
+            Debug.WriteLine($"[Foreground] 插帧候选刷新失败: {ex.Message}");
+        }
+    }
+
     /// <summary>已被本小组件挂起的进程号集合：系统没有"是否被挂起"的查询接口，由本服务记录；
     /// 按进程号而非单个标记记录，避免"冻结 A 后切到 B，A 再也无法解冻"（多进程访问，加锁保护）</summary>
     private static readonly HashSet<int> _frozen = [];
@@ -49,21 +113,84 @@ namespace GameLocker.Services;
     private static int _polling;   // 重入保护：上一轮未结束则跳过本轮
 
     /// <summary>启动轮询（重复调用无副作用；由主页进入时调用）</summary>
-    public static void Start() => _timer ??= new System.Threading.Timer(_ => Poll(), null, 0, _pollMs);
+    public static void Start()
+    {
+        lock (_lifecycleLock)
+        {
+            if (_timer is not null) return;
+            lock (_frameGenLock) _watching = true;
+            using var ready = new ManualResetEventSlim();
+            _foregroundThread = new Thread(() =>
+            {
+                // OUTOFCONTEXT 事件必须在注册线程泵消息，不能依赖调用方是 UI 线程。
+                _foregroundThreadId = GetCurrentThreadId();
+                PeekMessage(out _, IntPtr.Zero, 0, 0, 0);
+                _foregroundHook = SetWinEventHook(3, 3, IntPtr.Zero, _foregroundCallback, 0, 0, 0);
+                ready.Set();
+                if (_foregroundHook == IntPtr.Zero) return;
+                try
+                {
+                    while (GetMessage(out var message, IntPtr.Zero, 0, 0) > 0)
+                    {
+                        TranslateMessage(ref message);
+                        DispatchMessage(ref message);
+                    }
+                }
+                finally
+                {
+                    UnhookWinEvent(_foregroundHook);
+                    _foregroundHook = IntPtr.Zero;
+                }
+            }) { IsBackground = true, Name = "ForegroundWindowEvents" };
+            _foregroundThread.Start();
+            ready.Wait();
+            if (_foregroundHook == IntPtr.Zero)
+            {
+                Debug.WriteLine("[Foreground] 前台事件注册失败，插帧候选降级为 400ms 采样，可能漏掉短暂桌面切换");
+                _frameGenFallbackTimer = new System.Threading.Timer(_ =>
+                {
+                    lock (_frameGenLock)
+                    {
+                        if (_watching) RefreshFrameGenTarget();
+                    }
+                }, null, 0, PollMsForeground);
+            }
+            _timer = new System.Threading.Timer(_ => Poll(), null, 0, _pollMs);
+        }
+    }
 
     /// <summary>暂停轮询，保留冻结记录，恢复后仍可解冻原来的应用。</summary>
     public static void Pause()
     {
+        lock (_lifecycleLock) PauseCore();
+    }
+
+    private static void PauseCore()
+    {
+        lock (_frameGenLock) _watching = false;
         _timer?.Dispose();
         _timer = null;
+        _frameGenFallbackTimer?.Dispose();
+        _frameGenFallbackTimer = null;
+        if (_foregroundThread is not null)
+        {
+            if (_foregroundThread.IsAlive) PostThreadMessage(_foregroundThreadId, 0x0012, UIntPtr.Zero, IntPtr.Zero);
+            _foregroundThread.Join();
+            _foregroundThread = null;
+            _foregroundThreadId = 0;
+        }
     }
 
     /// <summary>停止轮询并清除当前状态（退出时调用）</summary>
     public static void Stop()
     {
-        Pause();
-        Current = null;
-        lock (_frozen) _frozen.Clear();
+        lock (_lifecycleLock)
+        {
+            PauseCore();
+            lock (_frameGenLock) _frameGenTargetWindow = IntPtr.Zero;
+            Current = null;
+            lock (_frozen) _frozen.Clear();
+        }
     }
 
     /// <summary>主窗口切换前台/后台时动态调整轮询间隔：
@@ -131,6 +258,10 @@ namespace GameLocker.Services;
         if (Interlocked.Exchange(ref _polling, 1) == 1) return;   // 上一轮未结束：跳过
         try
         {
+            lock (_frameGenLock)
+            {
+                if (_watching) RefreshFrameGenTarget();
+            }
             PruneFrozen();
             var hwnd = GetForegroundWindow();
             if (hwnd == IntPtr.Zero) return;
@@ -205,6 +336,47 @@ namespace GameLocker.Services;
     }
 
     // ---- P/Invoke ----
+    private delegate void WinEventProc(IntPtr hook, uint eventType, IntPtr hwnd,
+        int objectId, int childId, uint threadId, uint eventTime);
+
+    [StructLayout(LayoutKind.Sequential)]
+    private struct NativeMessage
+    {
+        public IntPtr Hwnd;
+        public uint Message;
+        public UIntPtr WParam;
+        public IntPtr LParam;
+        public uint Time;
+        public int X;
+        public int Y;
+        public uint Private;
+    }
+
+    [DllImport("user32.dll")]
+    private static extern IntPtr SetWinEventHook(uint eventMin, uint eventMax, IntPtr module,
+        WinEventProc callback, uint processId, uint threadId, uint flags);
+    [DllImport("user32.dll")]
+    private static extern bool UnhookWinEvent(IntPtr hook);
+    [DllImport("kernel32.dll")]
+    private static extern uint GetCurrentThreadId();
+    [DllImport("user32.dll")]
+    private static extern int GetMessage(out NativeMessage message, IntPtr hwnd, uint min, uint max);
+    [DllImport("user32.dll")]
+    private static extern bool PeekMessage(out NativeMessage message, IntPtr hwnd, uint min, uint max, uint remove);
+    [DllImport("user32.dll")]
+    private static extern bool TranslateMessage(ref NativeMessage message);
+    [DllImport("user32.dll")]
+    private static extern IntPtr DispatchMessage(ref NativeMessage message);
+    [DllImport("user32.dll")]
+    private static extern bool PostThreadMessage(uint threadId, uint message, UIntPtr wParam, IntPtr lParam);
+    [DllImport("user32.dll")]
+    private static extern bool IsWindow(IntPtr hwnd);
+    [DllImport("user32.dll")]
+    private static extern bool IsWindowVisible(IntPtr hwnd);
+    [DllImport("user32.dll")]
+    private static extern bool IsIconic(IntPtr hwnd);
+    [DllImport("user32.dll")]
+    private static extern IntPtr GetAncestor(IntPtr hwnd, uint flags);
 
     private const uint ProcessTerminate = 0x0001;
     private const uint ProcessSuspendResume = 0x0800;

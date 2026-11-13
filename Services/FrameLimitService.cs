@@ -76,7 +76,7 @@ internal static class FrameLimitService
     private static extern bool EnumDisplaySettings(string? deviceName, int modeNum, ref DevMode devMode);
 
     /// <summary>当前主显示器刷新率（Hz）；读取失败返回 0</summary>
-    private static int ReadDisplayHz()
+    internal static int ReadDisplayHz()
     {
         try
         {

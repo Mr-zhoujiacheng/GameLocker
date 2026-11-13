@@ -4694,15 +4694,24 @@ public sealed partial class MainPage : Page
     /// <summary>小黄鸭一键补帧：按结果给出提示，并刷新磁贴状态</summary>
     private async Task ActivateLosslessAsync(LaunchItem item)
     {
+        var magpie = LosslessScalingService.UsesMagpie(item);
+        var engineName = !magpie ? "LSFG"
+            : string.Equals(item.FrameGenEngine, LosslessScalingService.EngineXess, StringComparison.OrdinalIgnoreCase)
+                ? "XeSS FG" : "FSR3 FG";
         if (LosslessScalingService.IsActivating)
         {
-            ShowToast("正在启动 LSFG…", ToastKind.Warning);
+            if (magpie)
+            {
+                LosslessScalingService.CancelMagpieStart();
+                FloatingToastService.Show($"正在取消 {engineName} 插帧…");
+            }
+            else ShowToast($"正在启动 {engineName}…", ToastKind.Warning);
             return;
         }
         var result = await LosslessScalingService.ActivateAsync(item);
         RefreshLosslessTiles();
         // 小黄鸭以管理员身份运行时，普通权限的启动器无法收起它的窗口，提示里说明一下
-        var minSuffix = LosslessScalingService.MinimizeBlocked ? "（小黄鸭以管理员运行，窗口无法最小化）" : "";
+        var minSuffix = !magpie && LosslessScalingService.MinimizeBlocked ? "（小黄鸭以管理员运行，窗口无法最小化）" : "";
         var minKind = minSuffix.Length > 0 ? ToastKind.Warning : ToastKind.Success;
         // 游戏里按 A 时启动器已收进托盘，页面内的提示根本看不见，改用独立悬浮提示。
         void Report(string text, ToastKind kind = ToastKind.Success, UiSoundKind? sound = null)
@@ -4715,25 +4724,33 @@ public sealed partial class MainPage : Page
         switch (result)
         {
             case LosslessScalingService.ScaleResult.NotInstalled:
-                Report("未检测到小黄鸭：请先安装，或按 R3 指定程序", ToastKind.Warning);
+                Report(magpie
+                    ? "内置补帧后端缺失：请确认 FG 目录完整"
+                    : "未检测到小黄鸭：请先安装，或按 R3 指定程序", ToastKind.Warning);
                 break;
             case LosslessScalingService.ScaleResult.LaunchFailed:
-                Report("小黄鸭启动失败", ToastKind.Warning);
+                Report(magpie
+                    ? $"{engineName} 启动失败：{(string.IsNullOrEmpty(LosslessScalingService.MagpieFailureReason) ? "请查看日志" : LosslessScalingService.MagpieFailureReason)}"
+                    : "小黄鸭启动失败", ToastKind.Warning);
                 break;
             case LosslessScalingService.ScaleResult.NoGame:
-                Report("未检测到游戏：小黄鸭已打开并最小化，进入游戏后再按 A 开启 LSFG 插帧", ToastKind.Warning);
+                Report(magpie
+                    ? $"未识别到有效游戏窗口：桌面和系统窗口不支持插帧，请先切到游戏，再打开启动器按 A"
+                    : "未检测到游戏：小黄鸭已打开并最小化，进入游戏后再按 A 开启 LSFG 插帧", ToastKind.Warning);
                 break;
             case LosslessScalingService.ScaleResult.FocusFailed:
                 Report("切不回游戏窗口：请进入游戏后再按 A", ToastKind.Warning);
                 break;
             case LosslessScalingService.ScaleResult.FrameGenOn:
-                Report("已开启 LSFG 插帧" + minSuffix, minKind, UiSoundKind.Select);
+                Report($"已开启 {engineName} 插帧" + (magpie ? $" · {LosslessScalingService.MagpieTargetName}" : minSuffix), minKind, UiSoundKind.Select);
                 break;
             case LosslessScalingService.ScaleResult.FrameGenOff:
-                Report("已关闭 LSFG 插帧" + minSuffix, minKind, UiSoundKind.Select);
+                Report($"已关闭 {engineName} 插帧" + minSuffix, minKind, UiSoundKind.Select);
                 break;
             case LosslessScalingService.ScaleResult.ToggleFailed:
-                Report("未能切换 LSFG 插帧：请在小黄鸭里按 Ctrl+Alt+S 确认热键", ToastKind.Warning);
+                Report(magpie
+                    ? $"未能切换 {engineName}：后端可能未停止，请查看日志后重试"
+                    : "未能切换 LSFG 插帧：请在小黄鸭里按 Ctrl+Alt+S 确认热键", ToastKind.Warning);
                 break;
         }
     }

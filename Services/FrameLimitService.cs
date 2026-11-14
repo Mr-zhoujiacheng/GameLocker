@@ -37,7 +37,9 @@ internal static class FrameLimitService
         {
             try
             {
-                var state = ReadNative(out var reason) ?? ReadFallback(reason);
+                var state = SettingsService.Current.FrameLimitBackend == "RTSS"
+                    ? RtssFrameLimit.Read()
+                    : ReadNative(out var reason) ?? new State(false, "", 0, "显卡厂商锁帧不可用：" + reason);
                 // 驱动默认上限通常是 144；按当前显示器刷新率放宽，避免 165/240Hz 屏幕设不到更高
                 var hz = ReadDisplayHz();
                 if (hz > state.Maximum) state = state with { Maximum = Math.Clamp(hz, state.Minimum + 1, 480) };
@@ -114,12 +116,19 @@ internal static class FrameLimitService
         var result = ApplyCore(selected, fps);
         LastApply = $"backend={selected.Backend} supported={selected.Supported} fps={fps} → ok={result.Ok} msg={result.Message}";
         DebugLog.Write("[锁帧] 应用：" + LastApply);
+        if (result.Ok)
+        {
+            SetCached(selected with { Fps = fps });
+            SettingsService.Update(_ => PowerProfileService.Active.FrameLimitFps = fps);
+        }
         return result;
     }
 
     private static (bool Ok, string Message) ApplyCore(State selected, int fps)
     {
         if (!selected.Supported) return (false, "没有可用的限帧后端");
+        if ((selected.Backend == "RTSS") != (SettingsService.Current.FrameLimitBackend == "RTSS"))
+            return (false, "锁帧后端已变化，请刷新性能面板");
         if (fps != 0 && (fps < selected.Minimum || fps > selected.Maximum || (fps - selected.Minimum) % selected.Step != 0))
             return (false, $"锁帧范围为 {selected.Minimum}–{selected.Maximum} FPS，步长 {selected.Step}，或关闭");
         lock (Gate)
@@ -189,7 +198,32 @@ internal static class FrameLimitService
         return null;
     }
 
-    private static State ReadFallback(string reason) => RtssFrameLimit.Read(reason);
+    public static (bool Ok, string Message) Configure(string backend, string directory)
+    {
+        if (backend != "Vendor" && backend != "RTSS") return (false, "请选择锁帧后端");
+        directory = directory.Trim().Trim('"');
+        if (backend == "RTSS" && (!System.IO.File.Exists(System.IO.Path.Combine(directory, "RTSS.exe"))
+            || !System.IO.File.Exists(System.IO.Path.Combine(directory, "RTSSHooks64.dll"))))
+            return (false, "请选择同时包含 RTSS.exe 和 RTSSHooks64.dll 的 RTSS 安装目录");
+        lock (Gate)
+        {
+            var settings = SettingsService.Current;
+            if (settings.FrameLimitBackend == backend && settings.RtssDirectory == directory) return (true, "设置未变化");
+            if (settings.FrameLimitBackend != backend || (backend == "RTSS" && settings.RtssDirectory != directory))
+            {
+                var previous = Read();
+                if (previous.Supported && previous.Fps > 0)
+                {
+                    var result = Apply(previous, 0);
+                    if (!result.Ok) return (false, "旧锁帧未能关闭，未切换后端：" + result.Message);
+                }
+            }
+            SettingsService.Update(s => { s.FrameLimitBackend = backend; s.RtssDirectory = directory; });
+            Read();
+            return (true, "锁帧后端已保存，请在性能面板设置目标帧率");
+        }
+    }
+
     private static (bool Ok, string Message) ApplyFallback(State state, int fps) => RtssFrameLimit.Apply(state, fps);
 
     private sealed class RtssFrameLimit : IDisposable
@@ -201,17 +235,10 @@ internal static class FrameLimitService
         private T Function<T>(string name) where T : Delegate => Marshal.GetDelegateForFunctionPointer<T>(NativeLibrary.GetExport(_library, name));
         private RtssFrameLimit()
         {
-            // RTSS must already be running: never install or silently start injection software.
-            string? directory = null;
-            foreach (var process in System.Diagnostics.Process.GetProcessesByName("RTSS"))
-            {
-                using (process)
-                {
-                    try { directory = System.IO.Path.GetDirectoryName(process.MainModule?.FileName); } catch { }
-                }
-                if (directory != null) break;
-            }
-            if (directory == null) throw new InvalidOperationException("请先安装并启动 RTSS（当前驱动未提供可用的原生限帧）");
+            var directory = SettingsService.Current.RtssDirectory;
+            if (string.IsNullOrWhiteSpace(directory)
+                || !System.IO.File.Exists(System.IO.Path.Combine(directory, "RTSS.exe")))
+                throw new InvalidOperationException("请在性能组件编辑页指定 RTSS 运行程序所在目录");
             try
             {
                 _library = NativeLibrary.Load(System.IO.Path.Combine(directory, "RTSSHooks64.dll"));
@@ -234,23 +261,50 @@ internal static class FrameLimitService
             Function<Update>("UpdateProfiles")();
             Function<Profile>("LoadProfile")("");
         }
-        public static State Read(string reason)
+        public static State Read()
         {
             try
             {
                 using var api = new RtssFrameLimit();
                 uint value = api.Get();
                 if (value > int.MaxValue) throw new InvalidOperationException("RTSS 使用特殊限帧格式，请在 RTSS 中调整");
-                return new(true, "RTSS", (int)value, "厂商后端不可用：" + reason + "；使用 RTSS 全局默认配置，专属配置可覆盖；需保持 RTSS 运行");
+                return new(true, "RTSS", (int)value, "RTSS 全局默认配置 · 启用锁帧时自动启动 RTSS，专属程序配置可覆盖");
             }
-            catch (Exception ex) { return new(false, "", 0, "厂商后端不可用：" + reason + "；" + ex.Message); }
+            catch (Exception ex) { return new(false, "RTSS", 0, ex.Message); }
+        }
+
+        private static void EnsureRunning()
+        {
+            var directory = SettingsService.Current.RtssDirectory;
+            var executable = System.IO.Path.GetFullPath(System.IO.Path.Combine(directory, "RTSS.exe"));
+            bool running = false;
+            foreach (var process in System.Diagnostics.Process.GetProcessesByName("RTSS"))
+            {
+                using (process)
+                {
+                    string? path;
+                    try { path = process.MainModule?.FileName; }
+                    catch { throw new InvalidOperationException("无法确认正在运行的 RTSS 所在目录，请检查权限"); }
+                    if (!string.Equals(path, executable, StringComparison.OrdinalIgnoreCase))
+                        throw new InvalidOperationException("另一目录的 RTSS 正在运行，请先退出它或选择其安装目录");
+                    running = true;
+                }
+            }
+            if (running) return;
+            using var started = System.Diagnostics.Process.Start(new System.Diagnostics.ProcessStartInfo(executable)
+            {
+                WorkingDirectory = directory,
+                UseShellExecute = true,
+                WindowStyle = System.Diagnostics.ProcessWindowStyle.Minimized
+            }) ?? throw new InvalidOperationException("RTSS 未能启动");
+            try { started.WaitForInputIdle(5000); }
+            catch (InvalidOperationException) { }
+            if (started.HasExited) throw new InvalidOperationException("RTSS 启动后已退出，请检查安装及权限");
         }
         public static (bool Ok, string Message) Apply(State state, int fps)
         {
             if (state.Backend != "RTSS") return (false, "没有可用的限帧后端");
-            // Do not fall back if a vendor backend has become available since the last read.
-            var native = ReadNative(out _);
-            if (native != null) return (false, $"{native.Backend} 后端已可用，请刷新后使用驱动限帧");
+            if (fps > 0) EnsureRunning();
             using var api = new RtssFrameLimit();
             uint old = api.Get();
             api.Set((uint)fps);

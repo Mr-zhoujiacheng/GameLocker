@@ -2789,6 +2789,10 @@ public static class TileStyle
         public FontIcon Icon = null!;     // 当前查看项图标
         public TextBlock Name = null!;    // 查看项名称（电源模式 / 全局锁帧）
         public TextBlock Reading = null!; // 当前读数（档位名 / 锁帧 FPS）
+        /// <summary>右上角供电状态胶囊（AC=绿 / DC=橙）</summary>
+        public Border PowerBadge = null!;
+        /// <summary>右上角供电状态文字（AC 插电 / DC 电池）</summary>
+        public TextBlock PowerSource = null!;
         public Grid SlideRow = null!;     // 内容整体（切换查看项时左右滑动 + 淡入的动画载体）
         public TextBlock Hint = null!;    // 底部状态（当前生效 / 待应用）
         public Microsoft.UI.Xaml.Shapes.Path ModeIcon = null!; // 当前快捷项的图形
@@ -2843,7 +2847,7 @@ public static class TileStyle
             },
             Name = new TextBlock
             {
-                FontSize = 19,
+                FontSize = 17,
                 FontWeight = Microsoft.UI.Text.FontWeights.Bold,
                 Foreground = white,
                 TextTrimming = TextTrimming.CharacterEllipsis,
@@ -2859,8 +2863,8 @@ public static class TileStyle
                 TextTrimming = TextTrimming.CharacterEllipsis,
                 MaxLines = 2,
                 HorizontalAlignment = HorizontalAlignment.Center,
-                VerticalAlignment = VerticalAlignment.Top,
-                Margin = new Thickness(0),
+                VerticalAlignment = VerticalAlignment.Center,
+                Margin = new Thickness(0, -30, 0, 0),
                 IsHitTestVisible = false
             }
         };
@@ -2868,23 +2872,43 @@ public static class TileStyle
         var grid = new Grid { Padding = new Thickness(16) };
         grid.RowDefinitions.Add(new RowDefinition { Height = new GridLength(1, GridUnitType.Star) });
         grid.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });
-        refs.Name.MaxWidth = width - 64;
-        refs.Reading.MaxWidth = width - 32;
+        // 固定宽度 + 居中对齐：文字与数值（不同字号）切换时始终在同一位置水平居中
+        refs.Reading.Width = width - 32;
 
-        var title = new StackPanel
+        // 右上角供电状态：AC=插电，DC=电池
+        refs.PowerSource = new TextBlock
         {
-            Orientation = Orientation.Horizontal,
-            Spacing = 8,
-            HorizontalAlignment = HorizontalAlignment.Center
+            FontSize = 9,
+            Opacity = 0.8,
+            Foreground = white,
+            IsHitTestVisible = false
         };
-        title.Children.Add(refs.Icon);
-        title.Children.Add(refs.Name);
+        var sourceBadge = new Border
+        {
+            CornerRadius = new CornerRadius(5),
+            BorderThickness = new Thickness(1),
+            BorderBrush = new SolidColorBrush(Windows.UI.Color.FromArgb(0x35, 0xFF, 0xFF, 0xFF)),
+            Padding = new Thickness(4, 0, 4, 0),
+            HorizontalAlignment = HorizontalAlignment.Right,
+            VerticalAlignment = VerticalAlignment.Center,
+            Child = refs.PowerSource,
+            IsHitTestVisible = false
+        };
+        refs.PowerBadge = sourceBadge;
+        var titleRow = new Grid { Margin = new Thickness(-10, -12, -10, 0), ColumnSpacing = 8 };
+        titleRow.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
+        titleRow.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
+        refs.Name.HorizontalAlignment = HorizontalAlignment.Left;
+        refs.Name.VerticalAlignment = VerticalAlignment.Center;
+        titleRow.Children.Add(refs.Name);
+        Grid.SetColumn(sourceBadge, 1);
+        titleRow.Children.Add(sourceBadge);
 
         // 标题固定不动；只有下方档位内容在 LB/RB 切换时左右滑动
         var content = new Grid();
         content.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });
         content.RowDefinitions.Add(new RowDefinition { Height = new GridLength(1, GridUnitType.Star) });
-        content.Children.Add(title);
+        content.Children.Add(titleRow);
 
         var slide = new Grid
         {
@@ -2941,7 +2965,7 @@ public static class TileStyle
             IsHitTestVisible = false,
             Visibility = Visibility.Collapsed
         };
-        // 数值槽：固定 44 高、内容顶端对齐；读数与睿频胶囊二选一，同一位置、与上方图标固定间距
+        // 数值槽：固定 44 高；读数与睿频胶囊二选一，同一槽位
         var valueSlot = new Grid { Height = 44 };
         valueSlot.Children.Add(refs.Reading);
         valueSlot.Children.Add(refs.BoostPill);
@@ -3013,6 +3037,17 @@ public static class TileStyle
     public static void FillPerformanceTile(PerformanceTileRefs refs, LaunchItem item)
     {
         var quick = CurrentQuickItem(item);
+        // 右上角供电状态随插拔即时更新：AC=插电（绿），DC=电池（橙）
+        var onAc = PowerProfileService.OnAc;
+        var sourceColor = onAc
+            ? Windows.UI.Color.FromArgb(0xFF, 0x66, 0xE0, 0x8A)
+            : Windows.UI.Color.FromArgb(0xFF, 0xFF, 0xB3, 0x66);
+        refs.PowerSource.Text = onAc ? "AC" : "DC";
+        refs.PowerSource.Foreground = new SolidColorBrush(sourceColor);
+        refs.PowerBadge.BorderBrush = new SolidColorBrush(
+            Windows.UI.Color.FromArgb(0x66, sourceColor.R, sourceColor.G, sourceColor.B));
+        refs.PowerBadge.Background = new SolidColorBrush(
+            Windows.UI.Color.FromArgb(0x1F, sourceColor.R, sourceColor.G, sourceColor.B));
         refs.Reading.Visibility = Visibility.Visible;
         refs.BoostPill.Visibility = Visibility.Collapsed;
         // 图标与数值都由固定槽位居中排布，不在此处做位移

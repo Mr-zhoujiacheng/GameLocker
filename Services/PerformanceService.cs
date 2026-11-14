@@ -29,6 +29,248 @@ public static class PerformanceService
     private const string PerfBoostMode = "be337238-0d82-4146-a960-4f3749d470c7";
     private const string ProcFreqMax = "75b0ae3f-bce0-45a7-8c89-c9611c25e100";
     private static readonly object CpuGate = new();
+    private const string CoreParkingMin = "0cc5b647-c1df-4637-891a-dec35c318583";
+    private const string CoreParkingMax = "ea062031-0e34-4ff1-9b6d-eb1059334028";
+    private const string CoreParkingMin1 = "0cc5b647-c1df-4637-891a-dec35c318584";
+    private const string CoreParkingMax1 = "ea062031-0e34-4ff1-9b6d-eb1059334029";
+
+    public record CoreSelectionState(bool Supported, int CoreCount, int SelectedCount, string Message);
+
+    public static CoreSelectionState GetCoreSelection()
+    {
+        lock (CpuGate)
+        {
+            var topology = GameCpuService.Topology;
+            if (!topology.Supported || topology.CoreCount <= 0)
+                return new(false, topology.CoreCount, 0, topology.Message);
+            try
+            {
+                var scheme = GetActiveSchemeGuid();
+                if (scheme.Length == 0) return new(false, topology.CoreCount, 0, "无法确定当前电源方案");
+                var current = QueryCoreParking(scheme);
+                var settings = SettingsService.Current;
+                int selected = settings.GlobalCoreSelection;
+                bool matches = selected > 0 && selected <= topology.CoreCount
+                    && current.Where(x => IsCoreParkingMax(x.Key)).All(x =>
+                        x.Value.Ac == CoreParkingCap(selected, topology.CoreCount)
+                        && x.Value.Dc == CoreParkingCap(selected, topology.CoreCount));
+                if (selected == 0 && settings.CoreParkingOriginals != null
+                    && settings.CoreParkingOriginals.TryGetValue(scheme, out var originals) && originals != null
+                    && originals.Keys.All(current.ContainsKey)
+                    && current.All(x => originals.TryGetValue(x.Key, out var values) && values != null
+                        && values.Length == 2 && x.Value.Ac == values[0] && x.Value.Dc == values[1]))
+                    return new(true, topology.CoreCount, 0, "系统自动（已恢复原核心停放设置）");
+                if (matches)
+                    return new(true, topology.CoreCount, selected, $"全局目标 {selected} 个物理核心（核心停放策略，非硬性绑定）");
+
+                bool dc = false;
+                try { dc = GetSystemPowerStatus(out var status) && status.AcLineStatus == 0; }
+                catch { /* 无法判断供电类型时按交流供电显示。 */ }
+                int cap = dc ? current[CoreParkingMax].Dc : current[CoreParkingMax].Ac;
+                selected = cap == 100 ? 0 : Math.Clamp(
+                    (int)Math.Round(cap * (double)topology.CoreCount / 100, MidpointRounding.AwayFromZero), 1, topology.CoreCount);
+                return new(true, topology.CoreCount, selected, selected == 0
+                    ? "系统自动（当前供电类型最大核心比例为 100%）"
+                    : $"当前供电类型最大核心比例 {cap}%，约 {selected} 个物理核心（非硬性绑定）");
+            }
+            catch (Exception ex)
+            {
+                return new(false, topology.CoreCount, 0, "核心选择不可用：" + ex.Message);
+            }
+        }
+    }
+
+    public static (bool Ok, string Message) ApplyCoreSelection(int count)
+    {
+        lock (CpuGate)
+        {
+            var topology = GameCpuService.Topology;
+            if (!topology.Supported || topology.CoreCount <= 0) return (false, topology.Message);
+            if (count < 0 || count > topology.CoreCount)
+                return (false, $"物理核心数必须为 0 至 {topology.CoreCount}，未修改设置");
+
+            string scheme = "";
+            Dictionary<string, CpuSetting>? before = null;
+            var target = new Dictionary<string, CpuSetting>();
+            bool attempted = false;
+            bool selectionSaveAttempted = false;
+            int previousSelection = SettingsService.Current.GlobalCoreSelection;
+            try
+            {
+                scheme = GetActiveSchemeGuid();
+                if (scheme.Length == 0) return (false, "无法确定当前电源方案 GUID，未修改设置");
+                var settings = SettingsService.Current;
+                var saved = settings.CoreParkingOriginals;
+                Dictionary<string, int[]>? originals = null;
+                bool hasBackup = saved != null && saved.TryGetValue(scheme, out originals);
+                if (count == 0 && !hasBackup)
+                    return (true, "当前方案没有原值备份，保留系统现有核心停放设置，未修改设置");
+                if (hasBackup && (originals == null || !originals.ContainsKey(CoreParkingMin)
+                    || !originals.ContainsKey(CoreParkingMax)
+                    || originals.Any(x => !IsCoreParkingSetting(x.Key) || x.Value == null || x.Value.Length != 2)))
+                    return (false, "当前方案的核心停放备份不完整，未修改设置");
+
+                before = QueryCoreParking(scheme);
+                if (count == 0 && originals!.Keys.Any(key => !before.ContainsKey(key)))
+                    return (false, "备份中的核心停放设置目前不可读取，无法完整恢复，未修改设置");
+                var backup = originals == null ? new Dictionary<string, int[]>()
+                    : originals.ToDictionary(x => x.Key, x => (int[])x.Value.Clone());
+                if (count > 0)
+                    foreach (var item in before)
+                        if (!backup.ContainsKey(item.Key)) backup[item.Key] = new[] { item.Value.Ac, item.Value.Dc };
+
+                ValidateCoreParkingPairs(before, before);
+                int cap = count == 0 ? 0 : CoreParkingCap(count, topology.CoreCount);
+                foreach (var item in before)
+                {
+                    if (!backup.TryGetValue(item.Key, out var value)) continue;
+                    int ac = count == 0 ? value[0] : IsCoreParkingMax(item.Key) ? cap : Math.Min(value[0], cap);
+                    int dc = count == 0 ? value[1] : IsCoreParkingMax(item.Key) ? cap : Math.Min(value[1], cap);
+                    if (ac < 0 || ac > 100 || dc < 0 || dc > 100
+                        || !IsCpuValueAllowed(item.Value.Details, false, ac)
+                        || !IsCpuValueAllowed(item.Value.Details, false, dc))
+                        return (false, "核心停放设置的可用范围不包含请求值或备份原值，未修改设置");
+                    target[item.Key] = new(ac, dc, item.Value.Details);
+                }
+                ValidateCoreParkingPairs(target, before);
+
+                // 先完整落盘，保存失败时撤回内存变更，绝不继续写电源方案。
+                if (count > 0 && (!hasBackup || backup.Count != originals!.Count))
+                {
+                    var updated = saved == null ? new Dictionary<string, Dictionary<string, int[]>>()
+                        : new Dictionary<string, Dictionary<string, int[]>>(saved);
+                    updated[scheme] = backup;
+                    try { SettingsService.Update(s => s.CoreParkingOriginals = updated); }
+                    catch (Exception ex)
+                    {
+                        settings.CoreParkingOriginals = saved!;
+                        return (false, "核心停放原值保存失败，未修改电源设置：" + ex.Message);
+                    }
+                }
+
+                attempted = true;
+                WriteCoreParking(scheme, before, target);
+                ActivateCpuScheme(scheme);
+                VerifyCoreParking(scheme, target);
+                selectionSaveAttempted = true;
+                SettingsService.Update(s => s.GlobalCoreSelection = count);
+                return (true, count == 0
+                    ? "已恢复当前方案原交流/直流核心停放设置，交由系统自动调度"
+                    : $"已将全局核心停放目标设为 {count} 个物理核心（最大 {cap}%，交流及直流；非硬性绑定）");
+            }
+            catch (Exception ex)
+            {
+                if (!attempted || before == null)
+                    return (false, "应用核心选择失败，未修改电源设置：" + ex.Message);
+                var failures = new List<string>();
+                // 部分写入或超时后不依赖再次查询：新旧最小值中较小者对两套最大值均安全。
+                try
+                {
+                    var bridge = before.ToDictionary(x => x.Key, x => target.TryGetValue(x.Key, out var value)
+                        ? new CpuSetting(Math.Min(x.Value.Ac, value.Ac), Math.Min(x.Value.Dc, value.Dc), x.Value.Details)
+                        : x.Value);
+                    WriteCoreParking(scheme, bridge, before, failures);
+                }
+                catch (Exception restore) { failures.Add("恢复写入：" + restore.Message); }
+                try { ActivateCpuScheme(scheme); }
+                catch (Exception restore) { failures.Add("激活方案：" + restore.Message); }
+                try { VerifyCoreParking(scheme, before); }
+                catch (Exception restore) { failures.Add("恢复验证：" + restore.Message); }
+                if (selectionSaveAttempted)
+                {
+                    SettingsService.Current.GlobalCoreSelection = previousSelection;
+                    try { SettingsService.Update(s => s.GlobalCoreSelection = previousSelection); }
+                    catch (Exception restore) { failures.Add("恢复选择记录：" + restore.Message); }
+                }
+                return (false, "应用核心选择失败：" + ex.Message + (failures.Count == 0
+                    ? "；已恢复本次操作前全部交流/直流设置并重新激活方案"
+                    : "；回滚失败或无法确认完整恢复：" + string.Join("；", failures)));
+            }
+        }
+    }
+
+    private static int CoreParkingCap(int count, int total) => (int)Math.Ceiling(count * 100.0 / total);
+
+    private static bool IsCoreParkingMax(string setting) => setting == CoreParkingMax || setting == CoreParkingMax1;
+
+    private static bool IsCoreParkingSetting(string setting) => IsCoreParkingMax(setting)
+        || setting == CoreParkingMin || setting == CoreParkingMin1;
+
+    private static Dictionary<string, CpuSetting> QueryCoreParking(string scheme)
+    {
+        var result = new Dictionary<string, CpuSetting>();
+        foreach (var key in new[] { CoreParkingMin, CoreParkingMax, CoreParkingMin1, CoreParkingMax1 })
+        {
+            var value = QueryCpuSetting(scheme, key);
+            if (value == null)
+            {
+                if (key == CoreParkingMin || key == CoreParkingMax)
+                    throw new InvalidOperationException("无法读取基本核心停放设置的交流/直流值");
+                continue;
+            }
+            if (value.Ac < 0 || value.Ac > 100 || value.Dc < 0 || value.Dc > 100
+                || !IsCpuValueAllowed(value.Details, false, value.Ac)
+                || !IsCpuValueAllowed(value.Details, false, value.Dc))
+                throw new InvalidOperationException("核心停放值或可用范围无法确认");
+            result[key] = value;
+        }
+        return result;
+    }
+
+    private static void ValidateCoreParkingPairs(Dictionary<string, CpuSetting> target, Dictionary<string, CpuSetting> current)
+    {
+        foreach (var pair in new[] { (CoreParkingMin, CoreParkingMax), (CoreParkingMin1, CoreParkingMax1) })
+        {
+            var min = target.GetValueOrDefault(pair.Item1) ?? current.GetValueOrDefault(pair.Item1);
+            var max = target.GetValueOrDefault(pair.Item2) ?? current.GetValueOrDefault(pair.Item2);
+            if (min != null && max != null && (min.Ac > max.Ac || min.Dc > max.Dc))
+                throw new InvalidOperationException("核心停放最小值不能超过最大值");
+        }
+    }
+
+    private static void WriteCoreParking(string scheme, Dictionary<string, CpuSetting> current,
+        Dictionary<string, CpuSetting> target, List<string>? failures = null)
+    {
+        void Write(string key, bool dc, int value)
+        {
+            try { SetCpuValue(scheme, key, dc, value); }
+            catch (Exception ex)
+            {
+                if (failures == null) throw;
+                failures.Add($"{key} {(dc ? "直流" : "交流")}：{ex.Message}");
+            }
+        }
+        // 先降低最小值，再修改最大值，最后恢复/提升目标最小值。
+        foreach (var item in target.Where(x => !IsCoreParkingMax(x.Key)))
+        {
+            var old = current[item.Key];
+            Write(item.Key, false, Math.Min(old.Ac, item.Value.Ac));
+            Write(item.Key, true, Math.Min(old.Dc, item.Value.Dc));
+        }
+        foreach (var item in target.Where(x => IsCoreParkingMax(x.Key)))
+        {
+            Write(item.Key, false, item.Value.Ac);
+            Write(item.Key, true, item.Value.Dc);
+        }
+        foreach (var item in target.Where(x => !IsCoreParkingMax(x.Key)))
+        {
+            Write(item.Key, false, item.Value.Ac);
+            Write(item.Key, true, item.Value.Dc);
+        }
+    }
+
+    private static void VerifyCoreParking(string scheme, Dictionary<string, CpuSetting> expected)
+    {
+        var failures = new List<string>();
+        foreach (var item in expected)
+        {
+            var actual = QueryCpuSetting(scheme, item.Key);
+            if (actual == null || actual.Ac != item.Value.Ac || actual.Dc != item.Value.Dc)
+                failures.Add(item.Key);
+        }
+        if (failures.Count > 0)
+            throw new InvalidOperationException("交流/直流核心停放读回验证失败：" + string.Join("、", failures));
+    }
 
     public sealed record CpuSettingsState(bool BoostSupported, int BoostMode, bool FrequencySupported, int MaxFrequencyMhz);
 

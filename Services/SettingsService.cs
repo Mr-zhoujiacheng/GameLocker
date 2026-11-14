@@ -32,6 +32,10 @@ public static class SettingsService
                 // 旧默认（单 Start）升级为 Start+Select，避免老配置继续用旧快捷键
                 if (loaded.FullscreenCombo == GamepadButtons.Menu)
                     loaded.FullscreenCombo = GamepadButtons.Menu | GamepadButtons.View;
+                MigratePowerProfiles(loaded);
+                using var document = JsonDocument.Parse(File.ReadAllText(FilePath));
+                if (!document.RootElement.TryGetProperty(nameof(AppSettings.SharedProfile), out _))
+                    loaded.SharedProfile = (PowerProfileService.OnAc ? loaded.AcProfile : loaded.BatteryProfile).Copy();
                 DebugLog.Enabled = loaded.DiagnosticLog;
                 return loaded;
             }
@@ -43,6 +47,33 @@ public static class SettingsService
         var def = new AppSettings();
         Save(def);
         return def;
+    }
+
+    /// <summary>旧配置只有一套全局功耗/核心设置：首次升级时复制成插电与电池两套参数，
+    /// 其余面板参数保持“未保存”，等用户在面板里保存一次后生效。</summary>
+    private static void MigratePowerProfiles(AppSettings settings)
+    {
+        if (settings.PowerProfilesMigrated) return;
+        settings.PowerProfilesMigrated = true;
+        Seed(settings.AcProfile);
+        Seed(settings.BatteryProfile);
+        Seed(settings.SharedProfile);
+
+        void Seed(PowerProfile profile)
+        {
+            if (settings.CpuPowerTakeover && settings.CpuPowerPl1 > 0)
+            {
+                profile.CpuPowerEnabled = true;
+                profile.CpuPowerPl1 = settings.CpuPowerPl1;
+                profile.CpuPowerPl2 = settings.CpuPowerPl2;
+                profile.CpuPowerFppt = settings.CpuPowerFppt;
+            }
+            if (settings.GameCoreMode != GameCoreMode.Auto)
+            {
+                profile.CoreMode = settings.GameCoreMode;
+                profile.CoreModeCaptured = true;
+            }
+        }
     }
 
     public static void Save(AppSettings settings)

@@ -153,33 +153,6 @@
                         HorizontalAlignment="Center" VerticalAlignment="Bottom"
                         Margin="0,0,0,8" IsHitTestVisible="False" Visibility="Collapsed"/>
 
-            <!-- 临时提示条（关闭反馈/删除反馈/拖入结果 toast）：玻璃质感药丸 + 状态图标徽章，
-                 画布底部居中 —— 紧贴手柄提示条上方（页码圆点之上）；图标/强调色由 ShowToast 按消息语义
-                 （成功=青色对勾 / 警告=琥珀感叹号）切换，入场淡入并自下方归位 -->
-            <Border x:Name="MoveHintBar" Grid.Row="0" HorizontalAlignment="Center" VerticalAlignment="Bottom"
-                    Margin="0,0,0,30" IsHitTestVisible="False"
-                    CornerRadius="12" Padding="12,7,16,7"
-                    Background="#E6242424" BorderBrush="#33FFFFFF" BorderThickness="1.5"
-                    Visibility="Collapsed">
-                <Border.RenderTransform>
-                    <TranslateTransform x:Name="MoveHintSlide"/>
-                </Border.RenderTransform>
-                <StackPanel Spacing="8">
-                    <StackPanel Orientation="Horizontal" Spacing="9">
-                        <Border x:Name="MoveHintBadge" Width="22" Height="22" CornerRadius="6"
-                                Background="#2A4CC2FF" VerticalAlignment="Center">
-                            <FontIcon x:Name="MoveHintIcon" Glyph="&#xE73E;" FontSize="11" Foreground="#4CC2FF"/>
-                        </Border>
-                        <TextBlock x:Name="MoveHintText" Text="" FontSize="13" VerticalAlignment="Center"
-                                   FontFamily="Segoe UI Variable Text, Segoe UI"
-                                   TextWrapping="Wrap" MaxWidth="500"/>
-                    </StackPanel>
-                    <!-- 联网下载时的细进度条：文案下方，仅下载期间显示（由 ShowToast 的 progress 参数驱动） -->
-                    <ProgressBar x:Name="MoveHintProgress" Height="4" MinWidth="180" Minimum="0" Maximum="100"
-                                 Value="0" Visibility="Collapsed" Background="#26FFFFFF"/>
-                </StackPanel>
-            </Border>
-
             <!-- 磁贴抽屉：固定在主页下方的独立区域，宽度随窗口自适应铺满；内容（标签条 + 内层磁贴）由
                  MainPage.RenderDrawerPanel 代码构建；无抽屉组件时折叠隐藏，不占高度。
                  注意：必须显式给一个背景（不能省略），否则空白处不参与命中测试，点面板空白无法进入区域 -->
@@ -531,9 +504,38 @@
                                 </StackPanel>
                             </Border>
 
-                            <StackPanel Orientation="Horizontal" Spacing="6" Margin="4,0,0,0">
-                                <Border Width="3" Height="11" CornerRadius="1.5" Background="#FF9A4D" VerticalAlignment="Center"/>
-                                <TextBlock Text="电源模式" FontSize="11.5" Opacity="0.6" FontWeight="SemiBold" CharacterSpacing="40"/>
+                            <!-- 电源模式标题行：标题右侧紧邻显示当前供电方式（插电=插头图标 / 电池=电量图标），只显示当前一项 -->
+                            <StackPanel Orientation="Horizontal" Spacing="6" Margin="4,0,0,0"
+                                        VerticalAlignment="Center">
+                                <Border Width="3" Height="16" CornerRadius="1.5" Background="#FF9A4D" VerticalAlignment="Center"/>
+                                <TextBlock Text="电源模式" FontSize="15" Opacity="0.6" FontWeight="SemiBold" CharacterSpacing="40"
+                                           VerticalAlignment="Center"/>
+                                <StackPanel Orientation="Horizontal" Spacing="5" Margin="4,0,0,0"
+                                            VerticalAlignment="Center">
+                                    <Border x:Name="PerfAcBadge" Width="24" Height="22" CornerRadius="7"
+                                            Background="#3366E08A" BorderBrush="#1FFFFFFF" BorderThickness="1"
+                                            Visibility="Collapsed" ToolTipService.ToolTip="已接电源">
+                                        <Viewbox Width="13" Height="13" HorizontalAlignment="Center" VerticalAlignment="Center">
+                                            <Canvas Width="24" Height="24">
+                                                <!-- 插脚 -->
+                                                <Path Stroke="#66E08A" StrokeThickness="2"
+                                                      StrokeStartLineCap="Round" StrokeEndLineCap="Round"
+                                                      Data="M8.6,2.8 V6.2 M15.4,2.8 V6.2"/>
+                                                <!-- 插头主体（下半圆收底） -->
+                                                <Path Fill="#66E08A" Data="M7,6.2 H17 V11 A5,5 0 0 1 7,11 Z"/>
+                                                <!-- 线缆 -->
+                                                <Path Stroke="#66E08A" StrokeThickness="2"
+                                                      StrokeStartLineCap="Round" StrokeEndLineCap="Round"
+                                                      Data="M12,16 V21.2"/>
+                                            </Canvas>
+                                        </Viewbox>
+                                    </Border>
+                                    <Border x:Name="PerfBatteryBadge" Width="24" Height="22" CornerRadius="7"
+                                            Background="#14FFFFFF" BorderBrush="#1FFFFFFF" BorderThickness="1"
+                                            Visibility="Collapsed" ToolTipService.ToolTip="电池供电">
+                                        <FontIcon x:Name="PerfBatteryIcon" Glyph="&#xE850;" FontSize="12" Foreground="#55FFFFFF"/>
+                                    </Border>
+                                </StackPanel>
                             </StackPanel>
 
                             <Grid ColumnSpacing="8">
@@ -1022,5 +1024,34 @@
                 </StackPanel>
             </Border>
         </Grid>
+
+        <!-- 临时提示条（关闭反馈/删除反馈/拖入结果 toast）：玻璃质感药丸 + 状态图标徽章。
+             放在根 Grid 最后一个子元素，只为保证层级最高、不会被卡片或浮层遮住；
+             位置仍是原来的底部居中（手柄提示条上方）。图标/强调色由 ShowToast 按消息语义
+             （成功=青色对勾 / 警告=琥珀感叹号）切换 -->
+        <Border x:Name="MoveHintBar" Grid.Row="0" Grid.RowSpan="3"
+                HorizontalAlignment="Center" VerticalAlignment="Bottom"
+                Margin="0,0,0,30" IsHitTestVisible="False"
+                CornerRadius="12" Padding="12,7,16,7"
+                Background="#E6242424" BorderBrush="#33FFFFFF" BorderThickness="1.5"
+                Visibility="Collapsed">
+            <Border.RenderTransform>
+                <TranslateTransform x:Name="MoveHintSlide"/>
+            </Border.RenderTransform>
+            <StackPanel Spacing="8">
+                <StackPanel Orientation="Horizontal" Spacing="9">
+                    <Border x:Name="MoveHintBadge" Width="22" Height="22" CornerRadius="6"
+                            Background="#2A4CC2FF" VerticalAlignment="Center">
+                        <FontIcon x:Name="MoveHintIcon" Glyph="&#xE73E;" FontSize="11" Foreground="#4CC2FF"/>
+                    </Border>
+                    <TextBlock x:Name="MoveHintText" Text="" FontSize="13" VerticalAlignment="Center"
+                               FontFamily="Segoe UI Variable Text, Segoe UI"
+                               TextWrapping="Wrap" MaxWidth="500"/>
+                </StackPanel>
+                <!-- 联网下载时的细进度条：文案下方，仅下载期间显示（由 ShowToast 的 progress 参数驱动） -->
+                <ProgressBar x:Name="MoveHintProgress" Height="4" MinWidth="180" Minimum="0" Maximum="100"
+                             Value="0" Visibility="Collapsed" Background="#26FFFFFF"/>
+            </StackPanel>
+        </Border>
     </Grid>
 </Page>

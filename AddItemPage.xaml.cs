@@ -144,6 +144,9 @@ public sealed partial class AddItemPage : Page, ISettingsGamepad
     /// <summary>当前浏览是否为"小黄鸭选程序"（区别于普通程序项，结果不写入 TargetBox）</summary>
     private bool _pickingLosslessPath;
 
+    private string? _pendingRtssDirectory;
+    private bool _pickingRtssDirectory;
+
     /// <summary>上次载入的小黄鸭配置列表指纹（标题+路径）；展开下拉时据此判断是否需要重读 Settings.xml</summary>
     private string _losslessProfileSignature = "";
 
@@ -689,7 +692,17 @@ public sealed partial class AddItemPage : Page, ISettingsGamepad
         // 组件标题（仅手柄映射，位于类型/大小/颜色行上方）/ 系统小组件的启用项 / 类型 / 磁贴大小 / 磁贴颜色（各自容器隐藏时跳过）
         if (TitleColumn.Visibility == vis) list.Add(WidgetTitleBox);
         if (SystemOptionsPanel.Visibility == vis) list.AddRange(_sysOptBoxes);
-        if (PerformanceOptionsPanel.Visibility == vis) list.AddRange(_perfOptBoxes);
+        if (PerformanceOptionsPanel.Visibility == vis)
+        {
+            list.AddRange(_perfOptBoxes);
+            list.Add(PerfSeparateProfilesToggle);
+            list.Add(PerfFrameLimitBackendCombo);
+            if (PerfRtssDirectoryRow.Visibility == vis)
+            {
+                list.Add(PerfRtssDirectoryBox);
+                list.Add(PerfRtssBrowseButton);
+            }
+        }
         if (KindColumn.Visibility == vis) { list.Add(AppRadio); list.Add(UrlRadio); list.Add(FolderRadio); }
         if (SizeColumn.Visibility == vis) { list.Add(SmallSizeRadio); list.Add(WideSizeRadio); list.Add(LargeSizeRadio); }
         if (ColorColumn.Visibility == vis) list.AddRange(ColorRadios);
@@ -1041,6 +1054,12 @@ public sealed partial class AddItemPage : Page, ISettingsGamepad
                 ApplySysChipVisual(PerfOptCpuFrequency, PerfOptCpuFrequencyMark, item.PerformanceCpuFrequency);
                 PerfOptCpuBoost.IsChecked = item.PerformanceCpuBoost;
                 ApplySysChipVisual(PerfOptCpuBoost, PerfOptCpuBoostMark, item.PerformanceCpuBoost);
+                PerfSeparateProfilesToggle.IsOn = SettingsService.Current.SeparatePowerProfiles;
+                PerfRtssDirectoryBox.Text = SettingsService.Current.RtssDirectory ?? "";
+                _pendingRtssDirectory = null;
+                _pickingRtssDirectory = false;
+                SelectComboByTag(PerfFrameLimitBackendCombo, SettingsService.Current.FrameLimitBackend);
+                UpdatePerfRtssDirectoryRow();
             }
             if (isMapping)
             {
@@ -1665,6 +1684,9 @@ public sealed partial class AddItemPage : Page, ISettingsGamepad
                 _pickingFtRecvFolder = true;
                 EnterBrowse(BrowseMode.Folder);
                 break;
+            case Button btn when ReferenceEquals(btn, PerfRtssBrowseButton):
+                OnPerfRtssBrowseClick(btn, new RoutedEventArgs());
+                break;
             // 小黄鸭：选择程序 / 恢复自动检测
             case Button btn when ReferenceEquals(btn, LosslessBrowseButton):
                 _pickingLosslessPath = true;
@@ -2215,6 +2237,25 @@ public sealed partial class AddItemPage : Page, ISettingsGamepad
                 }
                 else if (it.WidgetKind == WidgetKind.Performance)
                 {
+                    var backend = ComboTag(PerfFrameLimitBackendCombo, "Vendor");
+                    var directory = (_pendingRtssDirectory ?? PerfRtssDirectoryBox.Text).Trim();
+                    if (backend == "RTSS"
+                        && (string.IsNullOrWhiteSpace(directory)
+                            || !Directory.Exists(directory)
+                            || !File.Exists(Path.Combine(directory, "RTSS.exe"))
+                            || !File.Exists(Path.Combine(directory, "RTSSHooks64.dll"))))
+                    {
+                        PageTitle.Text = "RTSS 目录必须包含 RTSS.exe 和 RTSSHooks64.dll";
+                        return;
+                    }
+                    var result = await Task.Run(() => FrameLimitService.Configure(backend, directory));
+                    if (!result.Ok)
+                    {
+                        PageTitle.Text = result.Message;
+                        return;
+                    }
+                    PowerProfileService.SetSeparateProfiles(PerfSeparateProfilesToggle.IsOn);
+
                     // 性能控制：大小固定"大"（2×2）；改颜色与快捷项开关（电源模式 / 全局锁帧）
                     it.Size = TileSize.Large;
                     it.TileColor = SelectedColor();
@@ -2400,6 +2441,36 @@ public sealed partial class AddItemPage : Page, ISettingsGamepad
         var (_, message) = WallpaperService.ClearCache(target);
         ShowWallpaperPreview(target);
         WpStatusText.Text = message;
+    }
+
+    private void OnPerfFrameLimitBackendChanged(object sender, SelectionChangedEventArgs e)
+        => UpdatePerfRtssDirectoryRow();
+
+    /// <summary>整张卡片可点：自绘开关不参与命中测试，触屏/鼠标点卡片任意位置切换</summary>
+    private void OnPerfSeparateCardTapped(object sender, Microsoft.UI.Xaml.Input.TappedRoutedEventArgs e)
+    {
+        var wasOn = PerfSeparateProfilesToggle.IsOn;
+        PerfSeparateProfilesToggle.IsOn = !wasOn;
+        if (wasOn != PerfSeparateProfilesToggle.IsOn && SettingsService.Current.UiSoundEnabled)
+            UiSound.Play(UiSoundKind.Select);
+    }
+
+    private void UpdatePerfRtssDirectoryRow()
+    {
+        if (PerfRtssDirectoryRow is null) return;
+        PerfRtssDirectoryRow.Visibility = ComboTag(PerfFrameLimitBackendCombo, "Vendor") == "RTSS"
+            ? Microsoft.UI.Xaml.Visibility.Visible
+            : Microsoft.UI.Xaml.Visibility.Collapsed;
+        RebuildFormControls();
+    }
+
+    private void OnPerfRtssDirectoryChanged(object sender, TextChangedEventArgs e)
+        => _pendingRtssDirectory = PerfRtssDirectoryBox.Text;
+
+    private void OnPerfRtssBrowseClick(object sender, RoutedEventArgs e)
+    {
+        _pickingRtssDirectory = true;
+        EnterBrowse(BrowseMode.Folder);
     }
 
     private void OnSaveClick(object sender, Microsoft.UI.Xaml.RoutedEventArgs e) => _ = SaveAsync();
@@ -3554,6 +3625,7 @@ public sealed partial class AddItemPage : Page, ISettingsGamepad
         _pickingFtSendFolder = false;
         _pickingFtRecvFolder = false;
         _pickingLosslessPath = false;
+        _pickingRtssDirectory = false;
         BrowsePanel.Visibility = Microsoft.UI.Xaml.Visibility.Collapsed;
         FormScroll.Visibility = Microsoft.UI.Xaml.Visibility.Visible;
         FooterBar.Visibility = Microsoft.UI.Xaml.Visibility.Visible;
@@ -3749,6 +3821,14 @@ public sealed partial class AddItemPage : Page, ISettingsGamepad
     /// <summary>选文件夹：填入当前浏览目录并置类型为文件夹</summary>
     private void SelectFolder(string dir)
     {
+        if (_pickingRtssDirectory)
+        {
+            _pendingRtssDirectory = dir;
+            PerfRtssDirectoryBox.Text = dir;
+            _pickingRtssDirectory = false;
+            ExitBrowse();
+            return;
+        }
         // 游戏存档选目标文件夹：只记录到 _pendingBackupFolder，不改 TargetBox/类型（Target 是组件标识）
         if (_pickingBackupFolder)
         {

@@ -302,6 +302,69 @@
                 </Setter.Value>
             </Setter>
         </Style>
+        <!-- 性能编辑页开关：自绘胶囊开关（卡片内右侧使用，标题与说明由卡片承载） -->
+        <Style x:Key="PerfSeparateToggleStyle" TargetType="ToggleSwitch">
+            <Setter Property="Template">
+                <Setter.Value>
+                    <ControlTemplate TargetType="ToggleSwitch">
+                        <Grid Width="44" Height="22" Background="Transparent">
+                            <Border Width="40" Height="20" CornerRadius="10" Background="#2AFFFFFF"
+                                    BorderThickness="1" BorderBrush="#4DFFFFFF"
+                                    HorizontalAlignment="Center" VerticalAlignment="Center"/>
+                            <Border x:Name="Fill" Width="40" Height="20" CornerRadius="10" Background="#C64CC2FF"
+                                    Opacity="0" HorizontalAlignment="Center" VerticalAlignment="Center"/>
+                            <Ellipse x:Name="Knob" Width="14" Height="14" Fill="#FFFFFF"
+                                     HorizontalAlignment="Left" VerticalAlignment="Center" Margin="3,0,0,0">
+                                <Ellipse.RenderTransform>
+                                    <CompositeTransform/>
+                                </Ellipse.RenderTransform>
+                            </Ellipse>
+                            <Border x:Name="FocusRing" Width="44" Height="22" CornerRadius="11"
+                                    BorderThickness="2" BorderBrush="Transparent"/>
+                            <VisualStateManager.VisualStateGroups>
+                                <VisualStateGroup x:Name="ToggleStates">
+                                    <VisualState x:Name="Off">
+                                        <VisualState.Setters>
+                                            <Setter Target="Knob.Fill" Value="#FFFFFF"/>
+                                        </VisualState.Setters>
+                                        <Storyboard>
+                                            <DoubleAnimation Storyboard.TargetName="Knob"
+                                                             Storyboard.TargetProperty="(UIElement.RenderTransform).(CompositeTransform.TranslateX)"
+                                                             To="0" Duration="0:0:0.12"/>
+                                            <DoubleAnimation Storyboard.TargetName="Fill"
+                                                             Storyboard.TargetProperty="Opacity"
+                                                             To="0" Duration="0:0:0.12"/>
+                                        </Storyboard>
+                                    </VisualState>
+                                    <VisualState x:Name="On">
+                                        <VisualState.Setters>
+                                            <Setter Target="Knob.Fill" Value="#1F1F1F"/>
+                                        </VisualState.Setters>
+                                        <Storyboard>
+                                            <DoubleAnimation Storyboard.TargetName="Knob"
+                                                             Storyboard.TargetProperty="(UIElement.RenderTransform).(CompositeTransform.TranslateX)"
+                                                             To="20" Duration="0:0:0.12"/>
+                                            <DoubleAnimation Storyboard.TargetName="Fill"
+                                                             Storyboard.TargetProperty="Opacity"
+                                                             To="1" Duration="0:0:0.12"/>
+                                        </Storyboard>
+                                    </VisualState>
+                                </VisualStateGroup>
+                                <VisualStateGroup x:Name="FocusStates">
+                                    <VisualState x:Name="Unfocused"/>
+                                    <VisualState x:Name="PointerFocused"/>
+                                    <VisualState x:Name="Focused">
+                                        <VisualState.Setters>
+                                            <Setter Target="FocusRing.BorderBrush" Value="#B3FFFFFF"/>
+                                        </VisualState.Setters>
+                                    </VisualState>
+                                </VisualStateGroup>
+                            </VisualStateManager.VisualStateGroups>
+                        </Grid>
+                    </ControlTemplate>
+                </Setter.Value>
+            </Setter>
+        </Style>
     </Page.Resources>
 
     <Grid Background="Transparent"
@@ -1902,6 +1965,34 @@
                                 </Grid>
                             </ToggleButton>
                         </StackPanel>
+                    </StackPanel>
+                    <Border Background="#14FFFFFF" BorderBrush="#1FFFFFFF" BorderThickness="1"
+                            CornerRadius="12" Padding="14,10" Margin="0,4,0,0"
+                            Tapped="OnPerfSeparateCardTapped">
+                        <Grid ColumnSpacing="12">
+                            <Grid.ColumnDefinitions>
+                                <ColumnDefinition Width="*"/>
+                                <ColumnDefinition Width="Auto"/>
+                            </Grid.ColumnDefinitions>
+                            <StackPanel Grid.Column="0" Spacing="2" VerticalAlignment="Center">
+                                <TextBlock Text="电池和插电分别保存" FontSize="14"/>
+                                <TextBlock Text="开启后电池和插电各存一套性能设置；关闭时共用一套。"
+                                           FontSize="12" Opacity="0.55" TextWrapping="Wrap"/>
+                            </StackPanel>
+                            <ToggleSwitch x:Name="PerfSeparateProfilesToggle" Grid.Column="1" IsHitTestVisible="False"
+                                          VerticalAlignment="Center" Style="{StaticResource PerfSeparateToggleStyle}"/>
+                        </Grid>
+                    </Border>
+                    <ComboBox x:Name="PerfFrameLimitBackendCombo" Header="全局锁帧技术"
+                              HorizontalAlignment="Stretch" SelectionChanged="OnPerfFrameLimitBackendChanged">
+                        <ComboBoxItem Content="显卡厂商" Tag="Vendor"/>
+                        <ComboBoxItem Content="RTSS" Tag="RTSS"/>
+                    </ComboBox>
+                    <StackPanel x:Name="PerfRtssDirectoryRow" Spacing="8" Visibility="Collapsed">
+                        <TextBox x:Name="PerfRtssDirectoryBox" Header="RTSS 目录"
+                                 PlaceholderText="包含 RTSS.exe 和 RTSSHooks64.dll 的目录"
+                                 TextChanged="OnPerfRtssDirectoryChanged"/>
+                        <Button x:Name="PerfRtssBrowseButton" Content="选择目录…" Click="OnPerfRtssBrowseClick"/>
                     </StackPanel>
                 </StackPanel>
 

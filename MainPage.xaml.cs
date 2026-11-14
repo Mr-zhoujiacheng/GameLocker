@@ -163,10 +163,18 @@ public sealed partial class MainPage : Page
         };
 
         // 顶栏时钟：每秒刷新（页面离开时停止，避免后台空转）
+        _lastOnAc = PowerProfileService.OnAc;
         _clockTimer = new DispatcherTimer { Interval = TimeSpan.FromSeconds(1) };
         _clockTimer.Tick += (_, _) =>
         {
             UpdateClock();
+            var onAc = PowerProfileService.OnAc;
+            if (onAc != _lastOnAc)
+            {
+                _lastOnAc = onAc;
+                RefreshPerformanceTiles();
+                _ = ApplyPowerProfileAsync();
+            }
             if (_perfOpen)
             {
                 UpdatePerformanceCursor();
@@ -264,6 +272,7 @@ public sealed partial class MainPage : Page
 
     private readonly DispatcherTimer _clockTimer;
     private readonly DispatcherTimer _sysTimer;
+    private bool _lastOnAc;           // 上一次采样到的供电方式（插电/电池），用于检测切换
     private bool _pageWorkActive;
     private bool _sysRefreshBusy;
     private bool _perfRefreshBusy;
@@ -433,6 +442,28 @@ public sealed partial class MainPage : Page
         var (glyph, color) = BatteryService.Describe(pct.Value);
         BatteryIcon.Glyph = glyph;
         BatteryIcon.Foreground = new SolidColorBrush(color);
+    }
+
+    /// <summary>插拔电源应用参数串行化：连续插拔时排队执行，避免并发写硬件</summary>
+    private readonly SemaphoreSlim _powerProfileGate = new(1, 1);
+
+    /// <summary>插拔电源：后台应用该供电方式保存的性能面板参数；面板开着时同步刷新读数</summary>
+    private async Task ApplyPowerProfileAsync()
+    {
+        await _powerProfileGate.WaitAsync();
+        try
+        {
+            await PowerProfileService.ApplyActiveAsync();
+            if (_perfOpen)
+            {
+                await RefreshPerformanceStateAsync();
+                await RefreshFrameLimitAsync();
+                await RefreshCpuPowerAsync();
+                await RefreshCpuControlsAsync();
+            }
+        }
+        catch (Exception ex) { DebugLog.Write("[供电] 后台应用性能参数失败：" + ex.Message); }
+        finally { _powerProfileGate.Release(); }
     }
 
     private void TileHost_SizeChanged(object sender, SizeChangedEventArgs e)
@@ -1121,7 +1152,7 @@ public sealed partial class MainPage : Page
         catch { return root.ActualHeight; }
     }
 
-    /// <summary>底部布局随提示条高度同步：提示条钉在窗口最底部，toast 固定落在它上方，不再随抽屉卡片变高。</summary>
+    /// <summary>底部布局随提示条高度同步：toast 固定在底部手柄提示条上方，抽屉卡片再给整条底部让位。</summary>
     private void UpdateToastOffset()
     {
         var barHeight = HintBarShell.Visibility == Visibility.Visible ? HintBarShell.ActualHeight : 0;
@@ -1394,8 +1425,9 @@ public sealed partial class MainPage : Page
     private enum ToastKind { Success, Warning }
 
     /// <summary>临时提示条：玻璃质感药丸，2 秒后自动隐藏（关闭反馈、删除反馈、拖入结果等复用）。
-    /// 成功=青色对勾，警告=琥珀感叹号；位置在磁贴画布底部（手柄提示条上方），首次出现时淡入 + 自下方归位。
-    /// progress 非空表示这是一条联网下载进度：文案下方显示细进度条，且只要还有进度上报就不自动收起。</summary>
+    /// 成功=青色对勾，警告=琥珀感叹号；位置在磁贴画布底部（手柄提示条上方），但层级最高、可覆盖卡片，
+    /// 首次出现时淡入 + 自下方归位。progress 非空表示这是一条联网下载进度：文案下方显示细进度条，
+    /// 且只要还有进度上报就不自动收起。</summary>
     private Microsoft.UI.Xaml.DispatcherTimer? _dropToastTimer;
     private Storyboard? _toastIn;
 
@@ -5377,13 +5409,18 @@ public sealed partial class MainPage : Page
     private Border? _perfBoostDot;
     private bool? _perfBoostPending;   // null=未改动；true/false=待应用的睿频开关
     private bool _perfSaving;          // 正在写入设置，防止重复提交
-    private ComboBox? _perfCoreSelection;
     private ComboBox? _perfCoreMode;
     private bool _perfCoreSyncing;     // 打开面板时回填核心选项，避免误标“待应用”
-    private Border? _perfCoreRow;
     private Border? _perfModeRow;
-    private const string PerfCoreHint = "仅对本启动器新启动的进程生效，保留所选核的超线程";
-    private const string PerfModeHint = "按性能或能效排序选核；全部核心时仅选对应类别";
+    private Slider? _perfCoreSelectionSlider;
+    private TextBlock? _perfCoreSelectionRead;
+    private Border? _perfCoreSelectionRow;
+    private int[] _perfCoreSelectionSteps = [0];
+    private PerformanceService.CoreSelectionState _perfCoreSelectionState = new(false, 0, 0, "正在读取核心停放设置…");
+    private bool _perfCoreSelectionSyncing;
+    private bool _perfCoreSelectionPending;
+    private const string PerfCoreSelectionHint = "限制全局可用的 CPU 核心数量，最右端为不限制（系统自动）。";
+    private const string PerfModeHint = "自动=系统分配；性能优先=只用性能核；效率优先=只用能效核（对启动器启动的游戏生效）";
     private readonly Dictionary<Border, Action> _perfActions = [];
     /// <summary>当前用手柄展开了下拉框的 ComboBox（展开期间方向键上下选、A/B 收起）</summary>
     private ComboBox? _perfOpenCombo;
@@ -5457,6 +5494,7 @@ public sealed partial class MainPage : Page
             Stamp(PerfTelemetryGpuFreq, sample.GpuMhz, "MHz", TelemetryGpuFreqBrush);
             PerfTelemetryBatteryLabel.Text = sample.Charging ? "电池充电功率" : "电池功耗";
             Stamp(PerfTelemetryBatteryPower, sample.BatteryPower, "W", TelemetryBatteryBrush);
+            UpdatePowerSourceIcons(sample.OnAc, sample.Charging, sample.BatteryPercent);
             var topology = GameCpuService.Topology;
             if (topology.CoreCount > 0)
             {
@@ -5493,6 +5531,38 @@ public sealed partial class MainPage : Page
             }
         }
         finally { _perfTelemetryLoading = false; }
+    }
+
+    /// <summary>电源来源图标：只显示当前供电方式——插电显示插头图标，电池供电显示电池图标（按电量分档着色）；
+    /// 随设备状态遥测每秒刷新，插拔电源时实时切换。</summary>
+    private void UpdatePowerSourceIcons(bool onAc, bool charging, double percent)
+    {
+        var dim = Windows.UI.Color.FromArgb(0x55, 0xFF, 0xFF, 0xFF);
+        var baseFill = Windows.UI.Color.FromArgb(0x14, 0xFF, 0xFF, 0xFF);
+        int? pct = double.IsFinite(percent) ? (int)Math.Round(Math.Clamp(percent, 0, 100)) : null;
+
+        PerfAcBadge.Visibility = onAc ? Visibility.Visible : Visibility.Collapsed;
+        PerfBatteryBadge.Visibility = onAc ? Visibility.Collapsed : Visibility.Visible;
+
+        if (pct is { } value)
+        {
+            var (glyph, color) = BatteryService.Describe(value);
+            PerfBatteryIcon.Glyph = glyph;
+            PerfBatteryIcon.Foreground = new SolidColorBrush(color);
+            PerfBatteryBadge.Background = new SolidColorBrush(
+                Windows.UI.Color.FromArgb(0x33, color.R, color.G, color.B));
+        }
+        else
+        {
+            PerfBatteryIcon.Glyph = "\uE850";
+            PerfBatteryIcon.Foreground = new SolidColorBrush(dim);
+            PerfBatteryBadge.Background = new SolidColorBrush(baseFill);
+        }
+
+        string battery = pct is { } p ? $"电池 {p}%" : "电池电量未知";
+        ToolTipService.SetToolTip(PerfAcBadge,
+            charging ? $"已接电源 · 充电中（{battery}）" : $"已接电源（{battery}）");
+        ToolTipService.SetToolTip(PerfBatteryBadge, $"正在使用电池供电 · {battery}");
     }
 
     private void ShowPerformanceHelp(Border row)
@@ -5607,12 +5677,12 @@ public sealed partial class MainPage : Page
                 {
                     new Border
                     {
-                        Width = 3, Height = 12, CornerRadius = new CornerRadius(1.5),
+                        Width = 3, Height = 16, CornerRadius = new CornerRadius(1.5),
                         Background = accent, VerticalAlignment = VerticalAlignment.Center
                     },
                     new TextBlock
                     {
-                        Text = title, FontSize = 11.5, Opacity = 0.6,
+                        Text = title, FontSize = 15, Opacity = 0.6,
                         FontWeight = Microsoft.UI.Text.FontWeights.SemiBold, CharacterSpacing = 40,
                         VerticalAlignment = VerticalAlignment.Center
                     }
@@ -5818,45 +5888,52 @@ public sealed partial class MainPage : Page
         ApplyOnPointerRelease(_perfFrequencySlider);
         var topology = GameCpuService.Topology;
         var settings = SettingsService.Current;
-        var coreSelection = Options(Enumerable.Range(0, topology.CoreCount + 1)
-            .Select(n => n == 0 ? "全部核心" : $"{n} 个物理核").ToArray());
-        coreSelection.SelectedIndex = Math.Clamp(settings.GameCoreCount, 0, topology.CoreCount);
         var coreMode = Options("自动", "性能优先", "效率优先");
         coreMode.SelectedIndex = topology.Hybrid && Enum.IsDefined(settings.GameCoreMode) ? (int)settings.GameCoreMode : 0;
-        var coreRow = Row(PerfCpuSettings, "游戏可用核心", topology.Supported ? PerfCoreHint : topology.Message, coreSelection, supported: topology.Supported);
-        var modeRow = Row(PerfCpuSettings, "核心调度模式", topology.Hybrid ? PerfModeHint : "未检测到异构核心，仅支持自动模式", coreMode, supported: topology.Supported && topology.Hybrid);
-        _perfCoreSelection = coreSelection;
+        var modeRow = Row(PerfCpuSettings, "核心调度", topology.Hybrid ? PerfModeHint : "当前设备只有同类核心，仅支持自动", coreMode, supported: topology.Supported && topology.Hybrid);
         _perfCoreMode = coreMode;
-        _perfCoreRow = coreRow;
         _perfModeRow = modeRow;
-        _perfAdjusters[coreRow] = dir =>
-        {
-            if (coreSelection.IsEnabled && !_perfBusy && !_perfCpuLoading)
-                coreSelection.SelectedIndex = Math.Clamp(coreSelection.SelectedIndex + dir, 0, topology.CoreCount);
-        };
         _perfAdjusters[modeRow] = dir =>
         {
             if (coreMode.IsEnabled && !_perfBusy && !_perfCpuLoading)
                 coreMode.SelectedIndex = Math.Clamp(coreMode.SelectedIndex + dir, 0, 2);
         };
         // A 键打开下拉框（展开后方向键上下选、A/B 收起）
-        if (topology.Supported) _perfActions[coreRow] = () => OpenPerformanceCombo(coreSelection);
         if (topology.Supported && topology.Hybrid) _perfActions[modeRow] = () => OpenPerformanceCombo(coreMode);
-        coreSelection.SelectionChanged += (_, _) =>
-        {
-            if (_perfBusy || _perfCoreSyncing) return;
-            _perfRowHints[coreRow].Text = $"待应用 {coreSelection.SelectedItem} · {PerfCoreHint}";
-            ShowPerformanceHelp(coreRow);
-            // 触屏/鼠标改选项：直接写入；手柄走 _perfOpenCombo，等 A 收起时统一应用
-            if (_perfOpenCombo is null) _ = SavePerformanceAsync(false);
-        };
         coreMode.SelectionChanged += (_, _) =>
         {
             if (_perfBusy || _perfCoreSyncing) return;
-            _perfRowHints[modeRow].Text = $"待应用 {coreMode.SelectedItem} · {PerfModeHint}";
+            _perfRowHints[modeRow].Text = $"待应用 {coreMode.SelectedItem}";
             ShowPerformanceHelp(modeRow);
             if (_perfOpenCombo is null) _ = SavePerformanceAsync(false);
         };
+
+        _perfCoreSelectionSlider = new Slider
+        {
+            Minimum = 0, Maximum = 0, Value = 0, StepFrequency = 1,
+            IsTabStop = false, UseSystemFocusVisuals = false, IsEnabled = false
+        };
+        StyleSlider(_perfCoreSelectionSlider);
+        _perfCoreSelectionRead = new TextBlock { Text = "读取中…", FontSize = 11, Opacity = 0.7, HorizontalAlignment = HorizontalAlignment.Right };
+        var coreSelectionBody = new StackPanel { Spacing = 2 };
+        coreSelectionBody.Children.Add(_perfCoreSelectionRead);
+        coreSelectionBody.Children.Add(_perfCoreSelectionSlider);
+        _perfCoreSelectionRow = Row(PerfCpuSettings, "核心选择", PerfCoreSelectionHint, coreSelectionBody, supported: true);
+        _perfCoreSelectionSlider.ValueChanged += (_, _) =>
+        {
+            if (_perfCoreSelectionSyncing) return;
+            _perfCoreSelectionPending = true;
+            int count = _perfCoreSelectionSteps[(int)Math.Round(_perfCoreSelectionSlider.Value)];
+            _perfCoreSelectionRead.Text = (count == 0 ? "全部（系统自动）" : $"{count} 个物理核心") + " · 待应用";
+            ShowPerformanceHelp(_perfCoreSelectionRow);
+        };
+        _perfAdjusters[_perfCoreSelectionRow] = dir =>
+        {
+            if (_perfCoreSelectionSlider.IsEnabled && !_perfBusy && !_perfSaving && !_perfCpuLoading)
+                _perfCoreSelectionSlider.Value = Math.Clamp(_perfCoreSelectionSlider.Value + dir,
+                    _perfCoreSelectionSlider.Minimum, _perfCoreSelectionSlider.Maximum);
+        };
+        ApplyOnPointerRelease(_perfCoreSelectionSlider);
     }
 
     /// <summary>触屏/鼠标松开滑杆后立即写入，不再依赖保存按钮；手柄仍按住 A 统一应用</summary>
@@ -6040,9 +6117,34 @@ public sealed partial class MainPage : Page
         if (_perfCpuLoading) return;
         _perfCpuLoading = true;
         if (_perfFrequencySlider != null) _perfFrequencySlider.IsEnabled = false;
+        if (_perfCoreSelectionSlider != null) _perfCoreSelectionSlider.IsEnabled = false;
         try
         {
             _perfCpuState = await Task.Run(PerformanceService.GetCpuSettings);
+            _perfCoreSelectionState = await Task.Run(PerformanceService.GetCoreSelection);
+            _perfCoreSelectionSyncing = true;
+            try
+            {
+                int total = _perfCoreSelectionState.CoreCount;
+                _perfCoreSelectionSteps = Enumerable.Range(1, Math.Max(0, (total - 1) / 2))
+                    .Select(i => i * 2).Append(0).ToArray();
+                int selected = _perfCoreSelectionState.SelectedCount;
+                if (selected > 0 && selected < total && !_perfCoreSelectionSteps.Contains(selected))
+                    _perfCoreSelectionSteps = _perfCoreSelectionSteps.Where(n => n > 0).Append(selected).OrderBy(n => n).Append(0).ToArray();
+                if (_perfCoreSelectionSlider != null)
+                {
+                    _perfCoreSelectionSlider.Maximum = _perfCoreSelectionSteps.Length - 1;
+                    _perfCoreSelectionSlider.Value = Math.Max(0, Array.IndexOf(_perfCoreSelectionSteps, selected >= total ? 0 : selected));
+                }
+                if (_perfCoreSelectionRead != null)
+                    _perfCoreSelectionRead.Text = !_perfCoreSelectionState.Supported ? "不可用"
+                        : selected == 0 || selected >= total ? $"全部 {total} 核（系统自动）" : $"目标 {selected} / {total} 个物理核心";
+                if (_perfCoreSelectionRow != null)
+                    _perfRowHints[_perfCoreSelectionRow].Text = _perfCoreSelectionState.Supported
+                        ? PerfCoreSelectionHint : _perfCoreSelectionState.Message;
+                _perfCoreSelectionPending = false;
+            }
+            finally { _perfCoreSelectionSyncing = false; }
             _perfFrequencyMhz = _perfCpuState.MaxFrequencyMhz;
             _perfCpuSyncing = true;
             if (_perfFrequencySlider != null)
@@ -6062,6 +6164,7 @@ public sealed partial class MainPage : Page
             _perfCpuSyncing = false;
             _perfCpuLoading = false;
             if (_perfFrequencySlider != null) _perfFrequencySlider.IsEnabled = _perfCpuState.FrequencySupported && !_perfBusy;
+            if (_perfCoreSelectionSlider != null) _perfCoreSelectionSlider.IsEnabled = _perfCoreSelectionState.Supported && _perfCoreSelectionSteps.Length > 1 && !_perfBusy;
         }
     }
 
@@ -6094,6 +6197,33 @@ public sealed partial class MainPage : Page
         _ = SavePerformanceAsync(false);
     }
 
+    /// <summary>把面板当前显示的所有参数保存到当前供电方式（插电 / 电池）的配置里</summary>
+    private void CapturePowerProfile()
+    {
+        var powerMode = _perfSystemState.Available && _perfIndex is >= 0 and <= 2 ? _perfIndex : -1;
+        var frameFps = _perfFrameState.Supported && _perfFrameSlider is not null
+            ? (_perfFrameSlider.Value < _perfFrameState.Minimum ? 0 : (int)Math.Round(_perfFrameSlider.Value))
+            : -1;
+
+        var powerEnabled = _perfPowerState.Enabled && _perfPowerState.Limits.Length > 0;
+        var pl1 = powerEnabled && _perfPowerControls.Count > 0 ? (int)Math.Round(_perfPowerControls[0].Slider.Value) : 0;
+        var pl2 = powerEnabled && _perfPowerControls.Count > 1 ? (int)Math.Round(_perfPowerControls[1].Slider.Value) : 0;
+        var fppt = powerEnabled && _perfPowerControls.Count > 2 ? (int)Math.Round(_perfPowerControls[2].Slider.Value) : 0;
+
+        var boost = _perfCpuState.BoostSupported
+            ? ((_perfBoostPending ?? (_perfCpuState.BoostMode != 0)) ? 2 : 0)
+            : -1;
+        var frequency = _perfCpuState.FrequencySupported ? _perfFrequencyMhz : -1;
+
+        var topology = GameCpuService.Topology;
+        var coreModeCaptured = topology.Supported && topology.Hybrid && _perfCoreMode is { SelectedIndex: >= 0 };
+        var coreMode = coreModeCaptured ? (GameCoreMode)_perfCoreMode!.SelectedIndex : GameCoreMode.Auto;
+
+        PowerProfileService.CaptureFromPanel(powerMode, frameFps, powerEnabled, pl1, pl2, fppt,
+            boost, frequency, coreMode, coreModeCaptured,
+            _perfCoreSelectionState.Supported ? _perfCoreSelectionSteps[(int)Math.Round(_perfCoreSelectionSlider?.Value ?? 0)] : -1);
+    }
+
     /// <summary>一次写入所有待应用修改；closeOnSuccess=false 时（触屏即时生效）不关闭面板</summary>
     private async Task SavePerformanceAsync(bool closeOnSuccess = true)
     {
@@ -6105,6 +6235,9 @@ public sealed partial class MainPage : Page
         var boostFailed = false;
         try
         {
+            // 0) 按设置保存到共用配置或当前供电配置，供插拔电源时后台重放
+            CapturePowerProfile();
+
             // 1) Windows 电源模式
             if (_perfSystemState.Available && _perfIndex is >= 0 and <= 2 && (int)_perfSystemState.Level != _perfIndex)
             {
@@ -6117,7 +6250,7 @@ public sealed partial class MainPage : Page
             if (_perfFrameState.Supported && _perfFrameSlider is not null)
             {
                 var fps = _perfFrameSlider.Value < _perfFrameState.Minimum ? 0 : (int)Math.Round(_perfFrameSlider.Value);
-                if (fps != _perfFrameState.Fps)
+                if (fps != _perfFrameState.Fps || (fps > 0 && _perfFrameState.Backend == "RTSS"))
                 {
                     changed++;
                     var (ok, message) = await Task.Run(() => FrameLimitService.Apply(_perfFrameState, fps));
@@ -6181,18 +6314,29 @@ public sealed partial class MainPage : Page
                 if (!ok) failures.Add(message);
             }
 
-            // 5) 游戏可用核心
-            var topology = GameCpuService.Topology;
-            if (topology.Supported && _perfCoreSelection is { SelectedIndex: >= 0 } core && _perfCoreMode is not null)
+            if (_perfCoreSelectionState.Supported && _perfCoreSelectionPending && _perfCoreSelectionSlider != null)
             {
-                var count = core.SelectedIndex;
-                var mode = (GameCoreMode)_perfCoreMode.SelectedIndex;
+                changed++;
+                int count = _perfCoreSelectionSteps[(int)Math.Round(_perfCoreSelectionSlider.Value)];
+                var result = await Task.Run(() => PerformanceService.ApplyCoreSelection(count));
+                if (!result.Ok)
+                {
+                    failures.Add(result.Message);
+                    SettingsService.Update(s => PowerProfileService.Active.CoreSelection = -1);
+                }
+            }
+
+            // 5) 核心调度（仅对启动器管理的进程生效）
+            var topology = GameCpuService.Topology;
+            if (topology.Supported && topology.Hybrid && _perfCoreMode is { SelectedIndex: >= 0 } modeCombo)
+            {
+                var mode = (GameCoreMode)modeCombo.SelectedIndex;
                 var settings = SettingsService.Current;
-                if (count != settings.GameCoreCount || (topology.Hybrid && mode != settings.GameCoreMode))
+                if (mode != settings.GameCoreMode)
                 {
                     changed++;
-                    SettingsService.Update(s => { s.GameCoreCount = count; s.GameCoreMode = mode; });
-                    var result = await Task.Run(() => GameCpuService.Configure(count, mode));
+                    SettingsService.Update(s => s.GameCoreMode = mode);
+                    var result = await Task.Run(() => GameCpuService.Configure(settings.GameCoreCount, mode));
                     if (!result.Ok) failures.Add(result.Message);
                 }
             }
@@ -6336,8 +6480,6 @@ public sealed partial class MainPage : Page
         _perfCoreSyncing = true;
         try
         {
-            if (_perfCoreSelection is not null && _perfCoreSelection.Items.Count > 0)
-                _perfCoreSelection.SelectedIndex = Math.Clamp(saved.GameCoreCount, 0, _perfCoreSelection.Items.Count - 1);
             if (_perfCoreMode is not null && _perfCoreMode.Items.Count > 0)
                 _perfCoreMode.SelectedIndex = GameCpuService.Topology.Hybrid && Enum.IsDefined(saved.GameCoreMode)
                     ? Math.Clamp((int)saved.GameCoreMode, 0, _perfCoreMode.Items.Count - 1) : 0;

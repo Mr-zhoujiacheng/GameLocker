@@ -50,11 +50,60 @@ public enum CloudProvider
     Baidu
 }
 
+/// <summary>性能控制面板的一套参数，可共用或按供电方式分别保存</summary>
+public sealed class PowerProfile
+{
+    public PowerProfile Copy() => (PowerProfile)MemberwiseClone();
+    /// <summary>0=节能 1=平衡 2=高性能；-1=未保存</summary>
+    public int PowerMode { get; set; } = -1;
+
+    /// <summary>全局锁帧 FPS；0=关闭；-1=未保存</summary>
+    public int FrameLimitFps { get; set; } = -1;
+
+    public bool CpuPowerEnabled { get; set; }
+    public int CpuPowerPl1 { get; set; }
+    public int CpuPowerPl2 { get; set; }
+    public int CpuPowerFppt { get; set; }
+
+    /// <summary>0=关闭 2=开启；-1=未保存</summary>
+    public int Boost { get; set; } = -1;
+
+    /// <summary>最高频率 MHz；0=不限制；-1=未保存</summary>
+    public int MaxFrequencyMhz { get; set; } = -1;
+
+    public GameCoreMode CoreMode { get; set; } = GameCoreMode.Auto;
+    public bool CoreModeCaptured { get; set; }
+
+    /// <summary>全局核心停放目标；0=全部（系统自动）；-1=未保存</summary>
+    public int CoreSelection { get; set; } = -1;
+
+}
+
 /// <summary>应用设置（JSON 持久化，见 SettingsService）</summary>
 public class AppSettings
 {
     public int GameCoreCount { get; set; }
     public GameCoreMode GameCoreMode { get; set; } = GameCoreMode.Auto;
+
+    /// <summary>全局核心停放目标：0=系统自动，其余为物理核心数；不影响游戏 CPU Sets 设置。</summary>
+    public int GlobalCoreSelection { get; set; }
+
+    /// <summary>首次接管前的核心停放值：电源方案 GUID → 设置 GUID → [交流, 直流]。</summary>
+    public Dictionary<string, Dictionary<string, int[]>> CoreParkingOriginals { get; set; } = new();
+
+    public bool SeparatePowerProfiles { get; set; }
+    public PowerProfile SharedProfile { get; set; } = new();
+    public string FrameLimitBackend { get; set; } = "Vendor";
+    public string RtssDirectory { get; set; } = "";
+
+    /// <summary>插电时的性能面板参数</summary>
+    public PowerProfile AcProfile { get; set; } = new();
+
+    /// <summary>电池供电时的性能面板参数</summary>
+    public PowerProfile BatteryProfile { get; set; } = new();
+
+    /// <summary>旧配置迁移标记：把全局功耗/核心设置复制到两套性能参数</summary>
+    public bool PowerProfilesMigrated { get; set; }
 
     /// <summary>已保存的 CPU 持续功耗（PL1，W；0=未保存）。重启后由登录计划任务写回硬件</summary>
     public int CpuPowerPl1 { get; set; }

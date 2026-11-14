@@ -51,7 +51,11 @@ internal static class CpuPowerAutoApply
             var state = CpuPowerService.Read();
             if (!state.Supported || state.Limits.Length == 0) return;
             var targets = BuildTargets(state, settings.CpuPowerPl1, settings.CpuPowerPl2, settings.CpuPowerFppt);
-            if (targets.Length == 0) return;
+            if (targets.Length == 0)
+            {
+                DebugLog.Write($"[功耗] 无需写回：保存目标={settings.CpuPowerPl1}/{settings.CpuPowerPl2}/{settings.CpuPowerFppt}W，当前={string.Join("/", state.Limits.Select(l => l.Watts.ToString("0.##")))}W");
+                return;
+            }
             ApplyAll(targets, state.Limits.Select(l => l.Watts).ToArray(), CpuPowerService.Apply);
             _ = CpuPowerService.RefreshCacheAsync();
         }

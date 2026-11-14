@@ -1966,7 +1966,7 @@
                             </ToggleButton>
                         </StackPanel>
                     </StackPanel>
-                    <Border Background="#14FFFFFF" BorderBrush="#1FFFFFFF" BorderThickness="1"
+                    <Border x:Name="PerfSeparateCard" Background="#14FFFFFF" BorderBrush="#1FFFFFFF" BorderThickness="1"
                             CornerRadius="12" Padding="14,10" Margin="0,4,0,0"
                             Tapped="OnPerfSeparateCardTapped">
                         <Grid ColumnSpacing="12">
@@ -1975,7 +1975,7 @@
                                 <ColumnDefinition Width="Auto"/>
                             </Grid.ColumnDefinitions>
                             <StackPanel Grid.Column="0" Spacing="2" VerticalAlignment="Center">
-                                <TextBlock Text="电池和插电分别保存" FontSize="14"/>
+                                <TextBlock Text="电源参数" FontSize="14"/>
                                 <TextBlock Text="开启后电池和插电各存一套性能设置；关闭时共用一套。"
                                            FontSize="12" Opacity="0.55" TextWrapping="Wrap"/>
                             </StackPanel>

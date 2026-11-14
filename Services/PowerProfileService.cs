@@ -82,7 +82,9 @@ internal static class PowerProfileService
     public static async Task<string> ApplyActiveAsync()
     {
         var onAc = OnAc;
-        var profile = Active.Copy();
+        var settings = SettingsService.Current;
+        var profile = (!settings.SeparatePowerProfiles ? settings.SharedProfile
+            : onAc ? settings.AcProfile : settings.BatteryProfile).Copy();
         if (!HasAny(profile)) return "该供电方式尚未保存性能参数";
         var applied = new List<string>();
 
@@ -101,9 +103,10 @@ internal static class PowerProfileService
                 var state = FrameLimitService.Read();
                 if (state.Supported)
                 {
-                    var (ok, message) = FrameLimitService.Apply(state, profile.FrameLimitFps);
+                    var (ok, message) = FrameLimitService.Apply(state, profile.FrameLimitFps, persistProfile: false);
                     applied.Add(ok ? $"锁帧{profile.FrameLimitFps}" : $"锁帧失败({message})");
                 }
+                else applied.Add($"锁帧不可用({state.Message})");
             }
 
             // 3) CPU 功耗：先把目标写成“已保存值”，再交给助手或登录任务静默写回硬件
@@ -116,26 +119,27 @@ internal static class PowerProfileService
                     s.CpuPowerPl2 = profile.CpuPowerPl2;
                     s.CpuPowerFppt = profile.CpuPowerFppt;
                 });
+                DebugLog.Write($"[供电] {(onAc ? "插电" : "电池")}功耗目标 PL1={profile.CpuPowerPl1} PL2={profile.CpuPowerPl2} FPPT={profile.CpuPowerFppt}");
                 CpuPowerAutoApply.ReapplyIfActive();
-                applied.Add("CPU功耗");
+                applied.Add($"CPU功耗请求{profile.CpuPowerPl1}/{profile.CpuPowerPl2}W");
             }
 
             // 4) 睿频 / 最高频率
             if (profile.Boost is 0 or 2)
             {
-                var (ok, message) = PerformanceService.ApplyCpuSetting(true, profile.Boost);
+                var (ok, message) = PerformanceService.ApplyCpuSetting(true, profile.Boost, onAc);
                 applied.Add(ok ? "睿频" : $"睿频失败({message})");
             }
             if (profile.MaxFrequencyMhz >= 0)
             {
-                var (ok, message) = PerformanceService.ApplyCpuSetting(false, profile.MaxFrequencyMhz);
+                var (ok, message) = PerformanceService.ApplyCpuSetting(false, profile.MaxFrequencyMhz, onAc);
                 applied.Add(ok ? "最高频率" : $"频率失败({message})");
             }
 
             if (profile.CoreSelection >= 0)
             {
                 var count = profile.CoreSelection >= GameCpuService.Topology.CoreCount ? 0 : profile.CoreSelection;
-                var result = PerformanceService.ApplyCoreSelection(count);
+                var result = PerformanceService.ApplyCoreSelection(count, onAc);
                 applied.Add(result.Ok ? "核心选择" : $"核心选择失败({result.Message})");
             }
 

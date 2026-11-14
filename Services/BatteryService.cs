@@ -28,6 +28,13 @@ public static class BatteryService
         return s.BatteryLifePercent;
     }
 
+    /// <summary>当前是否接入交流电（插电）；读取失败返回 null</summary>
+    public static bool? GetOnAc()
+    {
+        if (!GetSystemPowerStatus(out var s)) return null;
+        return s.ACLineStatus == 1;
+    }
+
     /// <summary>电量对应的字形与颜色（主页顶栏与设置页预览共用同一套分档）：
     /// 每 10% 一格，Battery0~9 = E850~E859 / Battery10 = E83F；≥80% 绿、≥20% 黄、其余红</summary>
     public static (string glyph, Windows.UI.Color color) Describe(int percent)

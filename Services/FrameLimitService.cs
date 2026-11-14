@@ -111,15 +111,16 @@ internal static class FrameLimitService
         catch { return 0; }
     }
 
-    public static (bool Ok, string Message) Apply(State selected, int fps)
+    public static (bool Ok, string Message) Apply(State selected, int fps, bool persistProfile = true)
     {
+        var profile = PowerProfileService.Active;
         var result = ApplyCore(selected, fps);
         LastApply = $"backend={selected.Backend} supported={selected.Supported} fps={fps} → ok={result.Ok} msg={result.Message}";
         DebugLog.Write("[锁帧] 应用：" + LastApply);
         if (result.Ok)
         {
             SetCached(selected with { Fps = fps });
-            SettingsService.Update(_ => PowerProfileService.Active.FrameLimitFps = fps);
+            if (persistProfile) SettingsService.Update(_ => profile.FrameLimitFps = fps);
         }
         return result;
     }

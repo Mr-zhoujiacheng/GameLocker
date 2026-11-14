@@ -428,7 +428,8 @@ public sealed partial class MainPage : Page
             : Visibility.Collapsed;
     }
 
-    /// <summary>顶栏电池图标：每 10% 一格（Segoe MDL2 Battery0~10），颜色按电量分档；无电池设备/关闭开关时隐藏</summary>
+    /// <summary>顶栏电池图标：电池供电时每 10% 一格（Segoe MDL2 Battery0~10），颜色按电量分档；
+    /// 插电时换成绿色插头图标。无电池设备/关闭开关时隐藏</summary>
     private void UpdateBattery()
     {
         var pct = BatteryService.GetPercent();
@@ -439,9 +440,24 @@ public sealed partial class MainPage : Page
         }
         BatteryBubble.Visibility = Visibility.Visible;
 
+        var onAc = BatteryService.GetOnAc() == true;
+        BatteryPlugIcon.Visibility = onAc ? Visibility.Visible : Visibility.Collapsed;
+        BatteryIcon.Visibility = onAc ? Visibility.Collapsed : Visibility.Visible;
+        if (onAc)
+        {
+            // 插头与电池用同一套电量分档颜色
+            var plugBrush = new SolidColorBrush(BatteryService.Describe(pct.Value).color);
+            BatteryPlugProngs.Stroke = plugBrush;
+            BatteryPlugBody.Fill = plugBrush;
+            BatteryPlugCable.Stroke = plugBrush;
+            ToolTipService.SetToolTip(BatteryBubble, $"已接电源 · 电池 {pct.Value}%");
+            return;
+        }
+
         var (glyph, color) = BatteryService.Describe(pct.Value);
         BatteryIcon.Glyph = glyph;
         BatteryIcon.Foreground = new SolidColorBrush(color);
+        ToolTipService.SetToolTip(BatteryBubble, $"电池供电 · {pct.Value}%");
     }
 
     /// <summary>插拔电源应用参数串行化：连续插拔时排队执行，避免并发写硬件</summary>
@@ -6014,8 +6030,9 @@ public sealed partial class MainPage : Page
     }
 
     /// <summary>保存当前生效的功耗限制，并注册登录时静默写回硬件的计划任务（重启后自动恢复）</summary>
-    private async Task SaveCpuPowerSettingsAsync()
+    private async Task SaveCpuPowerSettingsAsync(PowerProfile? profile = null)
     {
+        profile ??= PowerProfileService.Active;
         var state = await Task.Run(CpuPowerService.Read);
         if (!state.Enabled || state.Limits.Length == 0) return;
         // 读回值为 0 说明本机 RAPL 寄存器未暴露真实限制（走 MMIO 等），
@@ -6031,6 +6048,10 @@ public sealed partial class MainPage : Page
             s.CpuPowerPl2 = pl2;
             s.CpuPowerFppt = fppt;
             s.CpuPowerTakeover = true;
+            profile.CpuPowerPl1 = pl1;
+            profile.CpuPowerPl2 = pl2;
+            profile.CpuPowerFppt = fppt;
+            profile.CpuPowerEnabled = true;
         });
         var task = await Task.Run(CpuPowerService.EnsureAutoApplyTask);
         DebugLog.Write($"[功耗] 保存目标 PL1={pl1} PL2={pl2} FPPT={fppt} 助手={(CpuPowerService.Active ? "已连接" : "未连接")} "
@@ -6058,6 +6079,7 @@ public sealed partial class MainPage : Page
 
     private async void ApplyCpuPower(int index)
     {
+        var profile = PowerProfileService.Active;
         if (!_perfOpen || _perfBusy || _perfPowerLoading) return;
         if (index >= _perfPowerState.Limits.Length || !_perfPowerState.Limits[index].Writable)
         { ShowToast("当前 CPU 功耗接口不可写，请先启用或检查固件限制", ToastKind.Warning); return; }
@@ -6071,7 +6093,7 @@ public sealed partial class MainPage : Page
             bool confirmed = result.Ok && index < _perfPowerState.Limits.Length
                 && Math.Abs(_perfPowerState.Limits[index].Watts - watts) <= 0.25;
             ShowToast(confirmed || !result.Ok ? result.Message : "写入后再次读取未能确认目标值，请检查固件覆盖或助手状态", confirmed ? ToastKind.Success : ToastKind.Warning);
-            if (confirmed) await SaveCpuPowerSettingsAsync();
+            if (confirmed) await SaveCpuPowerSettingsAsync(profile);
         }
         finally { _perfBusy = false; RenderCpuPower(); }
     }
@@ -6227,6 +6249,8 @@ public sealed partial class MainPage : Page
     /// <summary>一次写入所有待应用修改；closeOnSuccess=false 时（触屏即时生效）不关闭面板</summary>
     private async Task SavePerformanceAsync(bool closeOnSuccess = true)
     {
+        var profile = PowerProfileService.Active;
+        var onAc = PowerProfileService.OnAc;
         if (!_perfOpen || _perfBusy || _perfSaving || _perfCpuLoading || _perfPowerLoading || _perfFrameLoading) return;
         _perfSaving = true;
         PerfSettingsScroll.IsHitTestVisible = false;
@@ -6253,7 +6277,7 @@ public sealed partial class MainPage : Page
                 if (fps != _perfFrameState.Fps || (fps > 0 && _perfFrameState.Backend == "RTSS"))
                 {
                     changed++;
-                    var (ok, message) = await Task.Run(() => FrameLimitService.Apply(_perfFrameState, fps));
+                    var (ok, message) = await Task.Run(() => FrameLimitService.Apply(_perfFrameState, fps, false));
                     if (!ok) failures.Add(message);
                 }
             }
@@ -6296,21 +6320,21 @@ public sealed partial class MainPage : Page
                 var (powerOk, powerMessage) = await ApplyPowerLimitsAsync(
                     targets, limits.Select(l => l.Watts).ToArray());
                 if (!powerOk) failures.Add(powerMessage);
-                else if (targets.Length > 0) await SaveCpuPowerSettingsAsync(); // 记住目标值，重启后自动写回
+                else if (targets.Length > 0) await SaveCpuPowerSettingsAsync(profile); // 记住目标值，重启后自动写回
             }
 
             // 4) CPU 睿频 / 最高频率
             if (_perfBoostPending is bool boostWanted && (boostWanted ? 2 : 0) != _perfCpuState.BoostMode)
             {
                 changed++;
-                var (ok, message) = await Task.Run(() => PerformanceService.ApplyCpuSetting(true, boostWanted ? 2 : 0));
+                var (ok, message) = await Task.Run(() => PerformanceService.ApplyCpuSetting(true, boostWanted ? 2 : 0, onAc));
                 boostFailed = !ok;
                 if (!ok) failures.Add(message);
             }
             if (_perfCpuState.FrequencySupported && _perfFrequencyMhz != _perfCpuState.MaxFrequencyMhz)
             {
                 changed++;
-                var (ok, message) = await Task.Run(() => PerformanceService.ApplyCpuSetting(false, _perfFrequencyMhz));
+                var (ok, message) = await Task.Run(() => PerformanceService.ApplyCpuSetting(false, _perfFrequencyMhz, onAc));
                 if (!ok) failures.Add(message);
             }
 
@@ -6318,11 +6342,11 @@ public sealed partial class MainPage : Page
             {
                 changed++;
                 int count = _perfCoreSelectionSteps[(int)Math.Round(_perfCoreSelectionSlider.Value)];
-                var result = await Task.Run(() => PerformanceService.ApplyCoreSelection(count));
+                var result = await Task.Run(() => PerformanceService.ApplyCoreSelection(count, onAc));
                 if (!result.Ok)
                 {
                     failures.Add(result.Message);
-                    SettingsService.Update(s => PowerProfileService.Active.CoreSelection = -1);
+                    SettingsService.Update(s => profile.CoreSelection = -1);
                 }
             }
 
@@ -6710,6 +6734,7 @@ public sealed partial class MainPage : Page
     /// <summary>A 键在模式卡片上直接切换并应用该档 Windows 电源模式（立即生效）</summary>
     private async Task ApplyPerformanceLevelAtAsync(int index)
     {
+        var profile = PowerProfileService.Active;
         if (_perfBusy || _perfSaving) return;
         if (_perfSystemState.Available && (int)_perfSystemState.Level == index)
         {
@@ -6720,6 +6745,7 @@ public sealed partial class MainPage : Page
         var (ok, message) = await Task.Run(() => PerformanceService.ApplyLevel((PerformanceLevel)index));
         ShowToast(message, ok ? ToastKind.Success : ToastKind.Warning);
         if (!ok) return;
+        SettingsService.Update(s => profile.PowerMode = index);
         await PerformanceService.RefreshCacheAsync();
         _perfTouched = false;
         await RefreshPerformanceStateAsync();
@@ -8017,16 +8043,19 @@ public sealed partial class MainPage : Page
     /// <summary>应用 CPU 最高频率（0=不限制）；写入当前电源方案的交流/直流值</summary>
     private async Task ApplyPerformanceCpuFrequencyAsync(LaunchItem item)
     {
+        var profile = PowerProfileService.Active;
+        var onAc = PowerProfileService.OnAc;
         var cpu = PerformanceService.CachedCpu;
         // 缓存未就绪时先补读一次，避免误判“不可用”
         if (!cpu.FrequencySupported) cpu = await PerformanceService.RefreshCpuCacheAsync();
         if (!cpu.FrequencySupported) { ShowToast("当前系统未提供 CPU 频率设置", ToastKind.Warning); return; }
         var mhz = _perfCpuMhzPending.TryGetValue(item, out var pending) && pending >= 0
             ? pending : cpu.MaxFrequencyMhz;
-        var (ok, message) = await Task.Run(() => PerformanceService.ApplyCpuSetting(false, mhz));
+        var (ok, message) = await Task.Run(() => PerformanceService.ApplyCpuSetting(false, mhz, onAc));
         ShowToast(message, ok ? ToastKind.Success : ToastKind.Warning);
         if (ok)
         {
+            SettingsService.Update(s => profile.MaxFrequencyMhz = mhz);
             await PerformanceService.RefreshCpuCacheAsync();
             RefreshPerformanceTiles();
         }
@@ -8035,16 +8064,19 @@ public sealed partial class MainPage : Page
     /// <summary>应用 CPU 睿频：A 键直接取反并保存（当前开启→关闭，当前关闭→开启）</summary>
     private async Task ApplyPerformanceCpuBoostAsync(LaunchItem item)
     {
+        var profile = PowerProfileService.Active;
+        var onAc = PowerProfileService.OnAc;
         var cpu = PerformanceService.CachedCpu;
         if (!cpu.BoostSupported) cpu = await PerformanceService.RefreshCpuCacheAsync();
         if (!cpu.BoostSupported) { ShowToast("当前系统未提供睿频设置", ToastKind.Warning); return; }
         var mode = cpu.BoostMode == 0 ? 2 : 0; // 取反：0=关闭，2=开启
         _perfBoostTilePending[item] = mode;
         RefreshPerformanceTile(item);          // 先给出即时反馈，再写入系统
-        var (ok, message) = await Task.Run(() => PerformanceService.ApplyCpuSetting(true, mode));
+        var (ok, message) = await Task.Run(() => PerformanceService.ApplyCpuSetting(true, mode, onAc));
         ShowToast(message, ok ? ToastKind.Success : ToastKind.Warning);
         if (ok)
         {
+            SettingsService.Update(s => profile.Boost = mode);
             await PerformanceService.RefreshCpuCacheAsync();
             RefreshPerformanceTiles();
         }
@@ -8059,6 +8091,7 @@ public sealed partial class MainPage : Page
     /// 并各自限制在硬件可写范围内（与面板里只调持续功耗的语义一致）</summary>
     private async Task ApplyPerformancePowerLimitAsync(LaunchItem item)
     {
+        var profile = PowerProfileService.Active;
         var state = CpuPowerService.Cached;
         if (!state.Enabled)
         {
@@ -8101,7 +8134,7 @@ public sealed partial class MainPage : Page
             await CpuPowerService.RefreshCacheAsync();
             RefreshPerformanceTiles();
             ShowToast($"持续功耗 {pl1} W（短时 {pl2} W / 瞬时 {fppt} W）", ToastKind.Success);
-            await SaveCpuPowerSettingsAsync(); // 记住目标值，重启后自动写回
+            await SaveCpuPowerSettingsAsync(profile); // 记住目标值，重启后自动写回
         }
         else
         {
@@ -8112,6 +8145,7 @@ public sealed partial class MainPage : Page
     /// <summary>A：应用磁贴上选好的快捷项（电源模式写入 Windows / 全局锁帧写入限帧后端 / 功耗控制写入持续功耗 / CPU 频率与睿频写入当前方案）</summary>
     private async void ApplyPerformancePowerMode(LaunchItem item)
     {
+        var profile = PowerProfileService.Active;
         if (TileStyle.CurrentQuickItem(item) == TileStyle.PerformanceQuickItem.CpuBoost && item.PerformanceCpuBoost)
         {
             await ApplyPerformanceCpuBoostAsync(item);
@@ -8133,9 +8167,13 @@ public sealed partial class MainPage : Page
             if (!frameState.Supported) { ShowToast("没有可用的限帧后端", ToastKind.Warning); return; }
             var fps = _perfFramePending.TryGetValue(item, out var pendingFrame) && pendingFrame >= 0
                 ? pendingFrame : frameState.Fps;
-            var (frameOk, frameMessage) = await Task.Run(() => FrameLimitService.Apply(frameState, fps));
+            var (frameOk, frameMessage) = await Task.Run(() => FrameLimitService.Apply(frameState, fps, false));
             ShowToast(frameMessage, frameOk ? ToastKind.Success : ToastKind.Warning);
-            if (frameOk) await FrameLimitService.RefreshCacheAsync();
+            if (frameOk)
+            {
+                SettingsService.Update(s => profile.FrameLimitFps = fps);
+                await FrameLimitService.RefreshCacheAsync();
+            }
             RefreshPerformanceTiles();
             return;
         }
@@ -8155,6 +8193,7 @@ public sealed partial class MainPage : Page
         var (ok, message) = await Task.Run(() => PerformanceService.ApplyLevel((PerformanceLevel)pending));
         DebugLog.Write($"[性能] 磁贴A 电源模式结果：{ok} {message}");
         ShowToast(message, ok ? ToastKind.Success : ToastKind.Warning);
+        if (ok) SettingsService.Update(s => profile.PowerMode = pending);
         RefreshPerformanceTiles();
     }
 

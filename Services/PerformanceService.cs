@@ -80,8 +80,10 @@ public static class PerformanceService
         }
     }
 
-    public static (bool Ok, string Message) ApplyCoreSelection(int count)
+    public static (bool Ok, string Message) ApplyCoreSelection(int count, bool? onAc = null)
     {
+        var separate = SettingsService.Current.SeparatePowerProfiles;
+        var targetOnAc = onAc ?? PowerProfileService.OnAc;
         lock (CpuGate)
         {
             var topology = GameCpuService.Topology;
@@ -126,6 +128,11 @@ public static class PerformanceService
                     if (!backup.TryGetValue(item.Key, out var value)) continue;
                     int ac = count == 0 ? value[0] : IsCoreParkingMax(item.Key) ? cap : Math.Min(value[0], cap);
                     int dc = count == 0 ? value[1] : IsCoreParkingMax(item.Key) ? cap : Math.Min(value[1], cap);
+                    if (separate)
+                    {
+                        if (targetOnAc) dc = item.Value.Dc;
+                        else ac = item.Value.Ac;
+                    }
                     if (ac < 0 || ac > 100 || dc < 0 || dc > 100
                         || !IsCpuValueAllowed(item.Value.Details, false, ac)
                         || !IsCpuValueAllowed(item.Value.Details, false, dc))
@@ -154,9 +161,10 @@ public static class PerformanceService
                 VerifyCoreParking(scheme, target);
                 selectionSaveAttempted = true;
                 SettingsService.Update(s => s.GlobalCoreSelection = count);
+                var source = separate ? (targetOnAc ? "插电" : "电池") : "交流及直流";
                 return (true, count == 0
-                    ? "已恢复当前方案原交流/直流核心停放设置，交由系统自动调度"
-                    : $"已将全局核心停放目标设为 {count} 个物理核心（最大 {cap}%，交流及直流；非硬性绑定）");
+                    ? $"已恢复当前方案原核心停放设置（{source}），交由系统自动调度"
+                    : $"已将全局核心停放目标设为 {count} 个物理核心（最大 {cap}%，{source}；非硬性绑定）");
             }
             catch (Exception ex)
             {
@@ -346,9 +354,11 @@ public static class PerformanceService
         }
     }
 
-    /// <summary>只修改当前方案的睿频模式或最高频率，同时写入并验证交流、直流值。</summary>
-    public static (bool Ok, string Message) ApplyCpuSetting(bool boost, int value)
+    /// <summary>修改当前方案的睿频或最高频率；分供电保存时仅写入目标供电侧。</summary>
+    public static (bool Ok, string Message) ApplyCpuSetting(bool boost, int value, bool? onAc = null)
     {
+        var separate = SettingsService.Current.SeparatePowerProfiles;
+        var targetOnAc = onAc ?? PowerProfileService.OnAc;
         if (boost ? value != 0 && value != 2 : value != 0 && (value < 1000 || value > 5000 || value % 100 != 0))
             return (false, boost ? "睿频模式只允许 0 或 2，未修改设置" : "最高频率只允许 0（不限制）或 1000–5000 MHz（步长 100），未修改设置");
 
@@ -369,25 +379,35 @@ public static class PerformanceService
                     return (false, "该 CPU 设置的可用范围无法确认或不包含请求值，未修改设置");
 
                 // 命令超时也可能已写入，因此从尝试写入起就纳入恢复范围。
-                acAttempted = true;
-                SetCpuValue(scheme, setting, false, value);
-                dcAttempted = true;
-                SetCpuValue(scheme, setting, true, value);
+                if (!separate || targetOnAc)
+                {
+                    acAttempted = true;
+                    SetCpuValue(scheme, setting, false, value);
+                }
+                if (!separate || !targetOnAc)
+                {
+                    dcAttempted = true;
+                    SetCpuValue(scheme, setting, true, value);
+                }
                 ActivateCpuScheme(scheme);
                 var actual = QueryCpuSetting(scheme, setting);
-                if (actual == null || actual.Ac != value || actual.Dc != value)
-                    throw new InvalidOperationException("交流/直流设置读回验证失败");
-                return (true, boost ? $"已应用睿频模式 {value}（交流及直流）"
-                    : value == 0 ? "已取消最高频率限制（交流及直流）" : $"已将最高频率设为 {value} MHz（交流及直流）");
+                if (actual == null || (acAttempted && actual.Ac != value) || (dcAttempted && actual.Dc != value))
+                    throw new InvalidOperationException("目标供电设置读回验证失败");
+                var source = separate ? (targetOnAc ? "插电" : "电池") : "交流及直流";
+                return (true, boost ? $"已应用睿频模式 {value}（{source}）"
+                    : value == 0 ? $"已取消最高频率限制（{source}）" : $"已将最高频率设为 {value} MHz（{source}）");
             }
             catch (Exception ex)
             {
-                if (original == null || !acAttempted)
+                if (original == null || (!acAttempted && !dcAttempted))
                     return (false, "应用 CPU 设置失败，未修改设置：" + ex.Message);
 
                 var failures = new List<string>();
-                try { SetCpuValue(scheme, setting, false, original.Ac); }
-                catch (Exception restore) { failures.Add("交流：" + restore.Message); }
+                if (acAttempted)
+                {
+                    try { SetCpuValue(scheme, setting, false, original.Ac); }
+                    catch (Exception restore) { failures.Add("交流：" + restore.Message); }
+                }
                 if (dcAttempted)
                 {
                     try { SetCpuValue(scheme, setting, true, original.Dc); }

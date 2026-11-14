@@ -95,7 +95,25 @@
                         <FontIcon x:Name="BluetoothIcon" Glyph="&#xE702;" FontSize="26"/>
                     </Border>
                     <Border x:Name="BatteryBubble" Style="{StaticResource StatusBubbleStyle}">
-                        <FontIcon x:Name="BatteryIcon" Glyph="&#xE850;" FontSize="26"/>
+                        <Grid Width="26" Height="28">
+                            <FontIcon x:Name="BatteryIcon" Glyph="&#xE850;" FontSize="26"
+                                      HorizontalAlignment="Center" VerticalAlignment="Center"/>
+                            <!-- 插电：竖向插头图标（插脚朝上、线缆朝下），颜色随电量分档（绿/黄/红） -->
+                            <Viewbox x:Name="BatteryPlugIcon" Width="22" Height="28"
+                                     HorizontalAlignment="Center" VerticalAlignment="Center"
+                                     Visibility="Collapsed">
+                                <Canvas Width="24" Height="28">
+                                    <Path x:Name="BatteryPlugProngs" Stroke="#66E08A" StrokeThickness="2.4"
+                                          StrokeStartLineCap="Round" StrokeEndLineCap="Round"
+                                          Data="M8.5,1.5 V7.5 M15.5,1.5 V7.5"/>
+                                    <Path x:Name="BatteryPlugBody" Fill="#66E08A"
+                                          Data="M4,7.5 H20 V12 A2.5,2.5 0 0 1 17.5,14.5 H6.5 A2.5,2.5 0 0 1 4,12 Z"/>
+                                    <Path x:Name="BatteryPlugCable" Stroke="#66E08A" StrokeThickness="2.4"
+                                          StrokeStartLineCap="Round" StrokeEndLineCap="Round"
+                                          Data="M12,14.5 V26.5"/>
+                                </Canvas>
+                            </Viewbox>
+                        </Grid>
                     </Border>
                     <Border x:Name="GamepadBubble" Style="{StaticResource StatusBubbleStyle}">
                         <FontIcon x:Name="GamepadIcon" Glyph="&#xE7FC;" FontSize="26"/>

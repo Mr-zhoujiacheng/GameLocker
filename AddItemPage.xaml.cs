@@ -283,6 +283,8 @@ public sealed partial class AddItemPage : Page, ISettingsGamepad
 
     // 手柄导航光标描边（白色 0xCC，与全局卡片式控件的光标高亮一致）
     private readonly Microsoft.UI.Xaml.Media.SolidColorBrush CursorBrush = MakeBrush(0xCC, 0xFF, 0xFF, 0xFF);
+    /// <summary>电源参数卡片的默认描边（光标移走时恢复）</summary>
+    private readonly Microsoft.UI.Xaml.Media.Brush _perfSeparateCardBorder;
 
     private static Microsoft.UI.Xaml.Media.SolidColorBrush MakeBrush(byte r, byte g, byte b)
         => new(Windows.UI.Color.FromArgb(255, r, g, b));
@@ -293,6 +295,7 @@ public sealed partial class AddItemPage : Page, ISettingsGamepad
     public AddItemPage()
     {
         InitializeComponent();
+        _perfSeparateCardBorder = PerfSeparateCard.BorderBrush;
         HintBar.HintTapped += key =>
         {
             if (_browsing)
@@ -1820,13 +1823,19 @@ public sealed partial class AddItemPage : Page, ISettingsGamepad
         }
     }
 
-    /// <summary>高亮光标所在开关（描边）</summary>
+    /// <summary>高亮光标所在开关（描边）；自绘开关没有边框，改用外层卡片描边</summary>
     private void UpdateToggleCursor(ToggleSwitch? cursor)
     {
         foreach (var ctl in _formControls)
         {
             if (ctl is not ToggleSwitch t) continue;
-            if (ReferenceEquals(t, cursor)) t.BorderBrush = CursorBrush;
+            var on = ReferenceEquals(t, cursor);
+            if (ReferenceEquals(t, PerfSeparateProfilesToggle))
+            {
+                PerfSeparateCard.BorderBrush = on ? CursorBrush : _perfSeparateCardBorder;
+                PerfSeparateCard.BorderThickness = new Thickness(on ? 2 : 1);
+            }
+            if (on) t.BorderBrush = CursorBrush;
             else t.ClearValue(ToggleSwitch.BorderBrushProperty);
         }
     }

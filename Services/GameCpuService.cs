@@ -23,6 +23,12 @@ public static class GameCpuService
     private static readonly GameCpuTopology Hardware = ReadTopology();
     private static Timer? _timer;
     private static uint[] _selection = Array.Empty<uint>();
+    private static uint[] _preferredSelection = Array.Empty<uint>();
+    private static uint[] _expandedSelection = Array.Empty<uint>();
+    private static CpuCoreLoadSampler? _preferredLoad, _totalLoad;
+    private static CorePriorityPolicy? _priorityPolicy;
+    private static bool _loadFailureReported;
+    private static bool _priorityIdle;
     private static int _generation;
     private static bool _stopped;
     private static string _message = Hardware.Message;
@@ -30,7 +36,7 @@ public static class GameCpuService
     public static GameCpuTopology Topology => Hardware;
     public static string Message { get { lock (Gate) return _message; } }
 
-    private sealed record Core(ushort Group, byte Index, byte Efficiency, uint[] Sets);
+    private sealed record Core(ushort Group, byte Index, byte Efficiency, uint[] Sets, byte[] LogicalProcessors);
     private sealed class Target(int pid, ulong created)
     {
         public int Pid { get; } = pid;
@@ -58,10 +64,23 @@ public static class GameCpuService
                 GameCoreMode.EfficiencyFirst => Cores.OrderBy(c => c.Efficiency).ThenBy(c => c.Group).ThenBy(c => c.Index),
                 _ => Cores.OrderBy(c => c.Group).ThenBy(c => c.Index)
             };
-            // count=0 in priority modes is a hard class filter, not a scheduling hint.
-            _selection = count == 0 && mode == GameCoreMode.Auto ? Array.Empty<uint>()
-                : (count > 0 ? ordered.Take(count) : ordered.Where(c => c.Efficiency == ordered.First().Efficiency))
+            DisposeLoadSamplers();
+            _priorityPolicy = null;
+            _priorityIdle = false;
+            var eligible = (count > 0 ? ordered.Take(count) : ordered).ToArray();
+            _expandedSelection = eligible.SelectMany(c => c.Sets).OrderBy(id => id).ToArray();
+            _preferredSelection = mode == GameCoreMode.Auto ? Array.Empty<uint>()
+                : eligible.Where(c => c.Efficiency == eligible[0].Efficiency)
                     .SelectMany(c => c.Sets).OrderBy(id => id).ToArray();
+            _selection = count == 0 && mode == GameCoreMode.Auto ? Array.Empty<uint>() : _expandedSelection;
+            if (mode != GameCoreMode.Auto && _preferredSelection.Length < _expandedSelection.Length)
+            {
+                var preferred = eligible.Where(c => c.Efficiency == eligible[0].Efficiency).ToArray();
+                _preferredLoad = new CpuCoreLoadSampler(preferred.SelectMany(c => c.LogicalProcessors.Select(n => (c.Group, n))));
+                _totalLoad = new CpuCoreLoadSampler(eligible.SelectMany(c => c.LogicalProcessors.Select(n => (c.Group, n))));
+                _priorityPolicy = new CorePriorityPolicy();
+                _loadFailureReported = false;
+            }
             _generation++;
             DiscoveryFailures.Clear();
             Discover();
@@ -96,6 +115,7 @@ public static class GameCpuService
                 Report($"注册 PID {pid} 失败：无法验证存活身份（{Error()}）。");
                 return;
             }
+            if (_priorityIdle) ResetPrioritySampling();
             if (!Targets.TryGetValue(pid, out var target) || target.Created != created)
                 Targets[pid] = target = new Target(pid, created);
             if (target.Attempt != _generation) Apply(handle, target);
@@ -111,6 +131,7 @@ public static class GameCpuService
             _stopped = true;
             _timer?.Dispose();
             _timer = null;
+            DisposeLoadSamplers();
             int restored = 0, failed = 0;
             foreach (var target in Targets.Values)
             {
@@ -127,7 +148,59 @@ public static class GameCpuService
     }
 
     private static string SelectionText() => _selection.Length == 0
-        ? "恢复系统默认 CPU Sets。" : $"选中 {_selection.Length} 个逻辑处理器，保留所选物理核的全部可用 SMT 线程；CPU Sets 不覆盖线程显式设置。";
+        ? "恢复系统默认 CPU Sets。"
+        : _priorityPolicy != null
+            ? $"动态核心优先：优先 {_preferredSelection.Length} 个逻辑处理器，持续繁忙时开放至 {_expandedSelection.Length} 个；采样预热/失败时全部开放。CPU Sets 不覆盖线程显式设置。"
+            : $"选中 {_selection.Length} 个逻辑处理器，保留所选物理核的全部可用 SMT 线程；CPU Sets 不覆盖线程显式设置。";
+
+    private static void DisposeLoadSamplers()
+    {
+        _preferredLoad?.Dispose();
+        _totalLoad?.Dispose();
+        _preferredLoad = _totalLoad = null;
+    }
+
+    private static void ResetPrioritySampling()
+    {
+        if (_priorityPolicy == null) return;
+        DisposeLoadSamplers();
+        var preferred = Cores.Where(c => c.Sets.Any(_preferredSelection.Contains)).ToArray();
+        var eligible = Cores.Where(c => c.Sets.Any(_expandedSelection.Contains)).ToArray();
+        _preferredLoad = new CpuCoreLoadSampler(preferred.SelectMany(c => c.LogicalProcessors.Select(n => (c.Group, n))));
+        _totalLoad = new CpuCoreLoadSampler(eligible.SelectMany(c => c.LogicalProcessors.Select(n => (c.Group, n))));
+        _priorityPolicy = new CorePriorityPolicy();
+        _selection = _expandedSelection;
+        _generation++;
+        _priorityIdle = _loadFailureReported = false;
+    }
+
+    private static void UpdatePrioritySelection()
+    {
+        if (_priorityPolicy == null) return;
+        if (Targets.Count == 0)
+        {
+            DisposeLoadSamplers();
+            _priorityIdle = true;
+            return;
+        }
+        if (_priorityIdle) ResetPrioritySampling();
+        double preferred = 0, total = 0;
+        var preferredOk = _preferredLoad?.TryRead(out preferred) == true;
+        var totalOk = _totalLoad?.TryRead(out total) == true;
+        var changed = _priorityPolicy.Update(preferredOk ? preferred : null, totalOk ? total : null,
+            _preferredSelection.Length, _expandedSelection.Length);
+        if ((!preferredOk || !totalOk) && !_loadFailureReported)
+        {
+            Report("核心负载采样预热或不可用，暂开放全部可用核心。");
+            _loadFailureReported = true;
+        }
+        if (preferredOk && totalOk) _loadFailureReported = false;
+        if (!changed) return;
+        _selection = _priorityPolicy.Expanded ? _expandedSelection : _preferredSelection;
+        _generation++;
+        Report(_priorityPolicy.Expanded ? "优先核心持续繁忙，已开放另一类核心共同运行。"
+            : "总负载持续回落，已回到优先类别核心。");
+    }
 
     private static (bool Ok, string Message) Result(bool ok, string message)
     {
@@ -159,6 +232,7 @@ public static class GameCpuService
             try
             {
                 Discover();
+                UpdatePrioritySelection();
                 foreach (var target in Targets.Values.ToArray())
                 {
                     using var handle = OpenProcess(Access, false, target.Pid);
@@ -371,7 +445,8 @@ public static class GameCpuService
                     }
                     var cores = logical.GroupBy(c => (c.Group, c.Core)).Select(group =>
                         new Core(group.Key.Group, group.Key.Core, group.Max(c => c.Efficiency),
-                            group.Select(c => c.Id).Distinct().OrderBy(id => id).ToArray())).ToList();
+                            group.Select(c => c.Id).Distinct().OrderBy(id => id).ToArray(),
+                            group.Select(c => c.Logical).Distinct().OrderBy(id => id).ToArray())).ToList();
                     if (cores.Count == 0) throw new InvalidOperationException("没有可用物理核心。");
                     Cores.AddRange(cores);
                     bool hybrid = cores.Select(c => c.Efficiency).Distinct().Count() > 1;

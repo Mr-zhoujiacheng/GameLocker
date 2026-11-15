@@ -63,141 +63,44 @@ public sealed partial class MainWindow : Window
     /// <summary>启动器当前是否处于呼出显示状态（供屏幕翻译的覆盖层避让）</summary>
     public bool IsShown => _shown;
 
-    private IntPtr _revealedTaskbar;
-    /// <summary>呼出期间被临时排到任务栏之后的窗口，收起时恢复其置顶状态</summary>
-    private readonly List<(IntPtr Hwnd, bool WasTopmost)> _sunkWindows = new();
     /// <summary>进入游戏窗口时最小化其他窗口：避免 Steam 等页面叠在游戏上方，呼出启动器时遮挡画面</summary>
     private readonly DispatcherTimer _gameEnterWatch =
         new() { Interval = TimeSpan.FromMilliseconds(800) };
     /// <summary>已整理过的游戏窗口：同一次进入只做一次，避免每 800ms 反复最小化</summary>
     private IntPtr _minimizedForGame;
-    private NativeRect _taskbarRestoreRect;
-    private bool _taskbarWasTopmost;
-    private bool _taskbarWasVisible;
-    private IntPtr _taskbarPreviousWindow;
     private readonly DispatcherTimer _taskbarRevealWatch =
         new() { Interval = TimeSpan.FromMilliseconds(250) };
 
     private void RevealTaskbar()
     {
-        if (_revealedTaskbar == IntPtr.Zero)
-        {
-            var bar = FindWindow("Shell_TrayWnd", null);
-            if (bar == IntPtr.Zero || !GetWindowRect(bar, out _taskbarRestoreRect))
-            {
-                DebugLog.Write($"任务栏联动: 未找到任务栏或无法读取矩形 hwnd={bar}");
-                return;
-            }
-            _taskbarWasTopmost = (GetWindowLongPtr(bar, GWL_EXSTYLE).ToInt64() & 0x8) != 0;
-            _taskbarWasVisible = IsWindowVisibleForLaunch(bar);
-            _taskbarPreviousWindow = GetWindow(bar, 3);
-            _revealedTaskbar = bar;
-            DebugLog.Write($"任务栏联动: 开始 hwnd={bar} visible={_taskbarWasVisible} topmost={_taskbarWasTopmost} rect={_taskbarRestoreRect.Left},{_taskbarRestoreRect.Top},{_taskbarRestoreRect.Right},{_taskbarRestoreRect.Bottom}");
-        }
-        RefreshRevealedTaskbar(raise: true);
+        // 只维护软件自己的 Z 序，不再移动/抬高任务栏，避免双方反复抢占。
+        RefreshRevealedTaskbar();
         _taskbarRevealWatch.Start();
     }
 
-    private void RefreshRevealedTaskbar(bool raise = false)
-    {
-        // 键盘优先：不要与键盘的置顶维护反复交换层级，关闭键盘后由下一次 Tick 恢复。
-        if (OnScreenKeyboard.IsVisible) return;
-        var bar = _revealedTaskbar;
-        if (bar == IntPtr.Zero) return;
-        if (FindWindow("Shell_TrayWnd", null) != bar)
-        {
-            // Explorer 重建了任务栏，不再把旧窗口的状态写到新窗口。
-            ReleaseTaskbar();
-            return;
-        }
-        if (!GetWindowRect(bar, out var rect)) return;
-        var bounds = DisplayArea.Primary.OuterBounds;
-        var width = rect.Right - rect.Left;
-        var height = rect.Bottom - rect.Top;
-        var edge = TaskbarEdge();
-        var x = edge == SummonEdge.Right ? bounds.X + bounds.Width - width : bounds.X;
-        var y = edge == SummonEdge.Bottom ? bounds.Y + bounds.Height - height : bounds.Y;
-        // 自动隐藏时任务栏可能已经移出屏幕，临时移回，但不改 Shell 的自动隐藏配置。
-        // Explorer 可在不移动窗口的情况下隐藏任务栏或撤销置顶，不能只检查坐标。
-        var visible = IsWindowVisibleForLaunch(bar);
-        var topmost = (GetWindowLongPtr(bar, GWL_EXSTYLE).ToInt64() & 0x8) != 0;
-        // TOPMOST 只表示所在层级，不保证排在游戏或其他置顶窗口前面。
-        // 目标层级：启动器与任务栏在最上 → 呼出前的游戏（可聚焦页面）→ 其他窗口。
-        // 任何压住任务栏的外部窗口一律排到任务栏之后；只改一次，避免 250ms 轮询反复改 z 序造成闪烁。
-        var coveringWindow = TaskbarCoveringWindow(bar, x, y, width, height);
-        if (coveringWindow != IntPtr.Zero)
-        {
-            GetWindowThreadProcessId(coveringWindow, out var coveringPid);
-            if (coveringPid != OwnProcessId)
-            {
-                RememberSunkWindow(coveringWindow);
-                SetWindowPos(coveringWindow, bar, 0, 0, 0, 0,
-                    SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE);
-                coveringWindow = TaskbarCoveringWindow(bar, x, y, width, height);
-            }
-        }
-        if (raise || !visible || coveringWindow != IntPtr.Zero || rect.Left != x || rect.Top != y)
-        {
-            // topmost 位被 Explorer 撤销时不要每轮都重设：任务栏已可见且无遮挡就保持现状，
-            // 反复 SetWindowPos 会让任务栏和窗口持续重合成。
-            var raiseBar = raise || !visible || coveringWindow != IntPtr.Zero;
-            // Shell 对移动并显示的请求可能重新计算层级；先处理位置，再独立置顶。
-            var ok = true;
-            var error = 0;
-            if (!visible || rect.Left != x || rect.Top != y)
-            {
-                ok = SetWindowPos(bar, IntPtr.Zero, x, y, 0, 0,
-                    SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE | SWP_SHOWWINDOW | SWP_NOSENDCHANGING);
-                if (!ok) error = Marshal.GetLastWin32Error();
-            }
-            if (raiseBar)
-            {
-                var raised = SetWindowPos(bar, HWND_TOPMOST, 0, 0, 0, 0,
-                    SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE | SWP_NOSENDCHANGING);
-                if (!raised) error = Marshal.GetLastWin32Error();
-                ok &= raised;
-                // 全屏游戏存在时 Explorer 会撤掉任务栏的 TOPMOST：SetWindowPos 返回成功但样式位没变。
-                // 这时直接补上样式位并重算窗口框架，否则 250ms 轮询会一直做无效调用。
-                if ((GetWindowLongPtr(bar, GWL_EXSTYLE).ToInt64() & 0x8) == 0)
-                {
-                    SetWindowLongPtr(bar, GWL_EXSTYLE,
-                        (IntPtr)(GetWindowLongPtr(bar, GWL_EXSTYLE).ToInt64() | 0x8));
-                    SetWindowPos(bar, HWND_TOPMOST, 0, 0, 0, 0,
-                        SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE | SWP_FRAMECHANGED);
-                }
-            }
-            if (raise || !ok || coveringWindow != IntPtr.Zero || !topmost)
-            {
-                GetWindowRect(bar, out var actual);
-                var actualTopmost = (GetWindowLongPtr(bar, GWL_EXSTYLE).ToInt64() & 0x8) != 0;
-                DebugLog.Write($"任务栏联动: 显示 result={ok} error={error} visible={IsWindowVisibleForLaunch(bar)} topmost={actualTopmost} " +
-                               $"coverBefore={WindowBrief(coveringWindow)} coverAfter={WindowBrief(TaskbarCoveringWindow(bar, x, y, width, height))} " +
-                               $"target={x},{y} actual={actual.Left},{actual.Top},{actual.Right},{actual.Bottom} " +
-                               $"barEx=0x{GetWindowLongPtr(bar, GWL_EXSTYLE).ToInt64():X} fg={WindowBrief(GetForegroundWindow())}");
-            }
-        }
-    }
+    private void RefreshRevealedTaskbar() => EnsureLauncherAboveTaskbar();
 
-    /// <summary>诊断用：窗口句柄 + 所属进程 + 扩展样式 + 是否被 DWM 隐去 + 屏幕矩形</summary>
-    private static string WindowBrief(IntPtr h)
+    /// <summary>侧边栏覆盖任务栏区域：任务栏被 Shell 重新提起时，仅校正双方顺序，不抢键盘焦点。</summary>
+    private void EnsureLauncherAboveTaskbar()
     {
-        if (h == IntPtr.Zero) return "0";
-        GetWindowThreadProcessId(h, out var pid);
-        GetWindowRect(h, out var r);
-        var cloaked = 0;
-        DwmGetWindowAttribute(h, 14, out cloaked, sizeof(int));
-        return $"{h}(pid={pid},{KeyboardHookService.ProcessImageName(pid)},ex=0x{GetWindowLongPtr(h, GWL_EXSTYLE).ToInt64():X}," +
-               $"cloaked={cloaked},rect={r.Left},{r.Top},{r.Right},{r.Bottom})";
-    }
-
-    /// <summary>记住被临时排到任务栏之后的窗口及其原置顶状态（只记一次）。</summary>
-    private void RememberSunkWindow(IntPtr hwnd)
-    {
-        foreach (var sunk in _sunkWindows)
+        if (!_shown || _exiting
+            || OnScreenKeyboard.IsVisible || _hwnd == IntPtr.Zero || !IsWindowVisibleForLaunch(_hwnd)) return;
+        var sidebarTopmost = (GetWindowLongPtr(_hwnd, GWL_EXSTYLE).ToInt64() & 0x8) != 0;
+        var barAbove = false;
+        for (var window = GetWindow(_hwnd, 3); window != IntPtr.Zero; window = GetWindow(window, 3))
         {
-            if (sunk.Hwnd == hwnd) return;
+            if (IsWindowVisibleForLaunch(window) && WindowClass(window) is "Shell_TrayWnd" or "Shell_SecondaryTrayWnd")
+            {
+                barAbove = true;
+                break;
+            }
         }
-        _sunkWindows.Add((hwnd, (GetWindowLongPtr(hwnd, GWL_EXSTYLE).ToInt64() & 0x8) != 0));
+        if (!sidebarTopmost || barAbove)
+        {
+            var ok = SetWindowPos(_hwnd, HWND_TOPMOST, 0, 0, 0, 0,
+                SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE | SWP_NOSENDCHANGING);
+            DebugLog.Write($"窗口层级：校正软件置顶 success={ok} taskbarAbove={barAbove}");
+        }
     }
 
     [DllImport("user32.dll")]
@@ -226,6 +129,25 @@ public sealed partial class MainWindow : Window
         _minimizedForGame = fg;
         MinimizeOtherWindows(fg);
     }
+
+    /// <summary>前台全屏游戏若由外部启动，也纳入核心调度；只接受已验证为游戏的窗口。</summary>
+    private void RegisterForegroundGameForCpu()
+    {
+        var fg = GetForegroundWindow();
+        if (fg == IntPtr.Zero || fg == _hwnd) return;
+        GetWindowThreadProcessId(fg, out var pid);
+        if ((int)pid == OwnProcessId || !IsFullscreenGameWindow(fg, pid)) return;
+        var known = _cpuRegisteredGame;
+        if (known is { } prior)
+        {
+            try { using var p = System.Diagnostics.Process.GetProcessById(prior); if (!p.HasExited && p.MainWindowHandle == fg) return; }
+            catch { }
+        }
+        _cpuRegisteredGame = (int)pid;
+        GameCpuService.Register((int)pid);
+    }
+
+    private int? _cpuRegisteredGame;
 
     /// <summary>是否"正在全屏运行的游戏"：窗口必须盖满所在显示器，且出现游戏强证据
     /// （D3D 独占全屏 / 游戏库路径 / 游戏引擎窗口类 / 本启动器启动过的进程），
@@ -263,59 +185,53 @@ public sealed partial class MainWindow : Window
         return GetClassName(hwnd, sb, sb.Capacity) > 0 ? sb.ToString() : "";
     }
 
-    private static IntPtr TaskbarCoveringWindow(IntPtr bar, int x, int y, int width, int height)
+    private void ReleaseTaskbar() => _taskbarRevealWatch.Stop();
+
+    private bool _edgePolicyReady;
+    private bool _edgePolicyChanging;
+    private bool _exitAfterEdgePolicy;
+    public string? EdgeGesturePolicyError { get; private set; }
+
+    public async Task<bool> SetEdgeGestureEnabledAsync(bool enabled)
     {
-        for (var above = GetWindow(bar, 3); above != IntPtr.Zero; above = GetWindow(above, 3))
+        if (_edgePolicyChanging || _exiting) return false;
+        _edgePolicyChanging = true;
+        var previous = SettingsService.Current.EdgeGestureSummon;
+        try
         {
-            if (!IsWindowVisibleForLaunch(above) || !GetWindowRect(above, out var rect)) continue;
-            // 忽略已被 DWM 隐去的窗口和只覆盖开始按钮的透明输入覆盖窗。
-            if (DwmGetWindowAttribute(above, 14, out var cloaked, sizeof(int)) == 0 && cloaked != 0) continue;
-            if ((GetWindowLongPtr(above, GWL_EXSTYLE).ToInt64() & WS_EX_LAYERED) != 0
-                && GetLayeredWindowAttributes(above, out _, out var alpha, out var flags)
-                && (flags & LWA_ALPHA) != 0 && alpha <= 1) continue;
-            if (rect.Left < x + width && rect.Right > x && rect.Top < y + height && rect.Bottom > y)
-                return above;
+            var result = await SystemEdgeSwipePolicy.SetAsync(enabled);
+            EdgeGesturePolicyError = result.Ok ? null : result.Message;
+            if (!result.Ok) return false;
+            try
+            {
+                SettingsService.Update(s => s.EdgeGestureSummon = enabled);
+            }
+            catch (Exception ex)
+            {
+                SettingsService.Current.EdgeGestureSummon = previous;
+                var rollback = await SystemEdgeSwipePolicy.SetAsync(previous);
+                EdgeGesturePolicyError = rollback.Ok
+                    ? "设置保存失败，已恢复原系统策略，请检查磁盘后重试"
+                    : "设置保存失败且系统策略恢复未完成，请重新授权后重试";
+                DebugLog.Write($"边缘策略设置保存失败：{ex}");
+                return false;
+            }
+            _edgePolicyReady = enabled;
+            SyncEdgeGesture();
+            return true;
         }
-        return IntPtr.Zero;
+        finally
+        {
+            _edgePolicyChanging = false;
+            if (_exitAfterEdgePolicy) ExitApp();
+        }
     }
 
-    private void ReleaseTaskbar()
-    {
-        _taskbarRevealWatch.Stop();
-        var bar = _revealedTaskbar;
-        _revealedTaskbar = IntPtr.Zero;
-        // 把呼出期间临时压到任务栏之后的窗口恢复原置顶状态，避免改变用户的窗口层级设置。
-        foreach (var sunk in _sunkWindows)
-        {
-            if (sunk.WasTopmost && IsWindow(sunk.Hwnd))
-                SetWindowPos(sunk.Hwnd, HWND_TOPMOST, 0, 0, 0, 0,
-                    SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE);
-        }
-        _sunkWindows.Clear();
-        if (bar == IntPtr.Zero || FindWindow("Shell_TrayWnd", null) != bar) return;
-        DebugLog.Write($"任务栏联动: 释放 hwnd={bar}");
-        var topmost = (GetWindowLongPtr(bar, GWL_EXSTYLE).ToInt64() & 0x8) != 0;
-        // 原本就是置顶时不要再调用 HWND_TOPMOST 将它提到游戏前面。
-        var zFlags = topmost == _taskbarWasTopmost ? SWP_NOZORDER : 0u;
-        SetWindowPos(bar, _taskbarWasTopmost ? HWND_TOPMOST : new IntPtr(-2),
-            _taskbarRestoreRect.Left, _taskbarRestoreRect.Top, 0, 0,
-            SWP_NOSIZE | SWP_NOACTIVATE | zFlags | (_taskbarWasVisible ? 0u : SWP_HIDEWINDOW));
-        var previous = _taskbarPreviousWindow;
-        _taskbarPreviousWindow = IntPtr.Zero;
-        if (previous != IntPtr.Zero && previous != _hwnd && IsWindow(previous)
-            && ((GetWindowLongPtr(previous, GWL_EXSTYLE).ToInt64() & 0x8) != 0) == _taskbarWasTopmost)
-            SetWindowPos(bar, previous, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE);
-    }
-
-    /// <summary>
-    /// 按当前设置同步边缘手势监听：开关开启则启动并把窄条定位到对应边缘
-    /// （全屏=顶边，左/右停靠=左/右边缘），关闭则仅停止本应用监听。
-    /// 停靠侧/全屏状态变化后也需调用以重新定位窄条。
-    /// </summary>
+    /// <summary>只有系统策略已确认后才启动边缘监听；布局变化仅调整呼出方向，不重复提权。</summary>
     public void SyncEdgeGesture()
     {
         if (_edgeGesture == null) return;
-        if (!SettingsService.Current.EdgeGestureSummon)
+        if (!SettingsService.Current.EdgeGestureSummon || !_edgePolicyReady)
         {
             _edgeGesture.Stop();
             return;
@@ -328,6 +244,23 @@ public sealed partial class MainWindow : Window
     /// 抽屉面板按窗口宽度的固定比例居中显示，避免横向拉满显得过长（见 MainPage.ApplyDrawerWidth）</summary>
     public bool IsWideOverlay =>
         _fullscreen || SettingsService.Current.SidebarSide == DockSide.Center;
+
+    private async void OnFirstEdgePolicyActivation(object sender, WindowActivatedEventArgs args)
+    {
+        Activated -= OnFirstEdgePolicyActivation;
+        try
+        {
+            var enabled = SettingsService.Current.EdgeGestureSummon;
+            if (!await SetEdgeGestureEnabledAsync(enabled) && enabled)
+            {
+                SettingsService.Current.EdgeGestureSummon = false;
+                SettingsService.Save(SettingsService.Current);
+                SyncEdgeGesture();
+                FloatingToastService.Show(EdgeGesturePolicyError ?? "边缘呼出未启用，请在设置中重新授权", warning: true);
+            }
+        }
+        catch (Exception ex) { DebugLog.Write($"启动边缘策略检查失败：{ex}"); }
+    }
 
     private SummonEdge CurrentSummonEdge()
     {
@@ -553,7 +486,8 @@ public sealed partial class MainWindow : Window
         _edgeGesture.DismissTriggered += () => DispatcherQueue.TryEnqueue(OnDismissGesture);
         // 向下滑：返回上一级（主页则最小化）
         _edgeGesture.BackTriggered += () => DispatcherQueue.TryEnqueue(OnBackGesture);
-        SyncEdgeGesture();
+        // 首次激活后检查持久化策略；旧配置开启但尚未授权时弹出 UAC。
+        Activated += OnFirstEdgePolicyActivation;
 
         // 前台游戏进程采样（常驻运行：窗口隐藏期间也要能记录到正在玩的游戏）
         _trainerTracker.Tick += (_, _) => TrainerService.CaptureForeground();
@@ -565,6 +499,7 @@ public sealed partial class MainWindow : Window
         {
             HideForMaximizedForeground();
             MinimizeOthersOnGameForeground();
+            RegisterForegroundGameForCpu();
         };
         _gameEnterWatch.Start();
 
@@ -635,13 +570,9 @@ public sealed partial class MainWindow : Window
                 ForegroundWatcherService.SetForeground(false);
                 _trainerTracker.Interval = TimeSpan.FromMilliseconds(5000);
                 _taskbarWatch.Interval = TimeSpan.FromMilliseconds(5000);
-                // 开始菜单模式：启动其他程序后保持显示（只能手动隐藏），同时取消置顶，
-                // 避免面板盖在新启动的程序上面；仍做一次失焦复查，用于抢回被系统开始菜单夺走的前台
+                // 显示期间保持置顶；失焦不降级，避免与层级维护定时器反复切换 TOPMOST。
                 if (SettingsService.Current.StartMenuMode && _shown)
-                {
-                    SetAlwaysOnTop(false);
                     _startMenuAutoHide.Start();
-                }
                 // 任何其他应用成为前台（含被最小化/遮盖）：恢复边缘条，保证任意前台都能触摸呼出
                 _edgeGesture?.SetStripVisible(true);
             }
@@ -1353,9 +1284,8 @@ public sealed partial class MainWindow : Window
             _summonPending = false;
             return;
         }
-        // 开始菜单模式：滑入期间临时取消置顶，让任务栏压住窗口下沿，形成"从任务栏后方升起"的观感；
-        // 动画结束由 ShowFromTray 的完成回调恢复置顶
-        if (SettingsService.Current.StartMenuMode) SetAlwaysOnTop(false);
+        // 动画期间也保持软件置顶，避免下沿与任务栏交换层级。
+        SetAlwaysOnTop(true);
         _summonStart = OffscreenPos(_summonTarget, size);
         MoveWindowTo(_summonStart);
         _summonPending = true;
@@ -1481,9 +1411,8 @@ public sealed partial class MainWindow : Window
         Activate();
         // 所有呼出入口共用，避免系统开始菜单回调先显示启动器后，边缘事件被显隐门控跳过。
         RevealTaskbar();
-        // 开始菜单模式的滑入要保持在任务栏后方：先把置顶/前台抢回推迟到动画结束（OnSummonDone），
-        // 否则 BringToForeground 会立刻把窗口提到任务栏之上，失去"从任务栏后方升起"的观感
-        if (!SettingsService.Current.StartMenuMode) BringToForeground();
+        // 所有显示模式均从呼出开始保持在任务栏上方。
+        BringToForeground();
         // 窗口已处于激活状态时 Activated 不会再触发，这里兜底启动滑入动画
         if (_summonPending)
         {
@@ -1612,7 +1541,7 @@ public sealed partial class MainWindow : Window
             SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE);
         if (GetForegroundWindow() == _hwnd)
         {
-            RefreshRevealedTaskbar(raise: true);
+            RefreshRevealedTaskbar();
             return;
         }
 
@@ -1625,13 +1554,18 @@ public sealed partial class MainWindow : Window
         SetActiveWindow(_hwnd);
         BringWindowToTop(_hwnd);
         if (attached) AttachThreadInput(fgThread, cur, false);
-        RefreshRevealedTaskbar(raise: true);
+        RefreshRevealedTaskbar();
     }
 
     /// <summary>托盘菜单退出</summary>
     public void ExitApp()
     {
         if (_exiting) return;
+        if (_edgePolicyChanging)
+        {
+            _exitAfterEdgePolicy = true;
+            return; // 等已授权的策略事务与设置落盘完成，再退出。
+        }
         _exiting = true;
         (Root.Content as MainPage)?.CancelPendingLaunch();
         CpuPowerService.Shutdown();
@@ -1682,8 +1616,7 @@ public sealed partial class MainWindow : Window
         var target = AppWindow.Position;
         var size = AppWindow.Size;
         var off = OffscreenPos(target, size);
-        // 开始菜单模式：滑出期间临时取消置顶，让窗口从任务栏后方消失（任务栏压住下沿）
-        if (SettingsService.Current.StartMenuMode) SetAlwaysOnTop(false);
+        // 滑出期间同样保持层级，完全隐藏后停止维护。
         AnimateMove(target, off, 260, easeOut: false, () =>
         {
             if (_shown) return;

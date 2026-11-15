@@ -14,7 +14,7 @@ public enum SummonEdge { Left, Right, Top, Bottom }
 ///    此前透明边缘条方案失败原因：shell 边缘预留地窗压在 TOPMOST 带上吞掉命中测试，WM_POINTER 永不投递。
 /// 接收窗口为屏外 1x1 不可交互 sink，不再遮挡/吞掉任何边缘点击。两通道共用 600ms 冷却去重。
 /// 钩子+sink 运行在独立 MTA 线程消息循环上；事件在该线程触发，订阅方需 marshal 回 UI 线程。
-/// 只监听本应用呼出手势，不修改 Windows 原生边缘手势及任务栏设置。
+/// 仅监听手势；系统边缘滑动策略由设置开关通过独立提权助手管理。
 /// 诊断：边缘附近事件与 HID 触摸帧写入 %APPDATA%\GameLocker\edge.log。
 /// </summary>
 public sealed class EdgeGestureService : IDisposable
@@ -104,8 +104,8 @@ public sealed class EdgeGestureService : IDisposable
     public void Start()
     {
         if (_disposed || _running || _thread?.IsAlive == true) return;
-        _tracking = _tDown = false;
         _running = true;
+        _tracking = _tDown = false;
         var t = new Thread(Run) { IsBackground = true, Name = "EdgeGesture" };
         // 钩子线程必须 MTA：STA 与 WinUI3 CoreMessaging/COM 公寓冲突（WH_MOUSE_LL 只需消息泵，不需要 STA）
         t.SetApartmentState(ApartmentState.MTA);

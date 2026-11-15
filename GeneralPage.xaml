@@ -286,8 +286,8 @@
                         </Border>
                         <StackPanel Grid.Column="2" Spacing="2" VerticalAlignment="Center">
                             <TextBlock Text="边缘手势呼出" FontSize="15" FontWeight="SemiBold"/>
-                            <TextBlock Text="从屏幕边缘向中心滑动唤起" FontSize="11.5"
-                                       Opacity="0.55" TextTrimming="CharacterEllipsis"/>
+                            <TextBlock x:Name="EdgeGestureHint" Text="开启时需管理员授权，屏蔽系统边缘滑动" FontSize="11.5"
+                                       Opacity="0.55" TextWrapping="Wrap"/>
                         </StackPanel>
                         <ToggleSwitch x:Name="EdgeGestureToggle" Grid.Column="3" Style="{StaticResource CleanToggleStyle}"
                                       IsHitTestVisible="False" VerticalAlignment="Center"

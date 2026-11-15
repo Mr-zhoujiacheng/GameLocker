@@ -31,6 +31,7 @@ public sealed partial class GeneralPage : Page, ISettingsGamepad
         AnimationToggle.IsOn = s.SummonAnimation;
         UiSoundToggle.IsOn = s.UiSoundEnabled;
         EdgeGestureToggle.IsOn = s.EdgeGestureSummon;
+        UpdateEdgeGestureHint();
         TabletModeToggle.IsOn = s.TabletMode;
         StartMenuToggle.IsOn = s.StartMenuMode;
         if (s.SidebarSide == DockSide.Right) RightRadio.IsChecked = true;
@@ -345,13 +346,38 @@ public sealed partial class GeneralPage : Page, ISettingsGamepad
         if (SettingsService.Current.UiSoundEnabled) UiSound.Play(UiSoundKind.Select);
     }
 
-    /// <summary>边缘手势呼出开关 → 立即启停边缘监听</summary>
-    private void OnEdgeGestureChanged(object sender, Microsoft.UI.Xaml.RoutedEventArgs e)
+    /// <summary>先申请管理员授权写入策略，成功后才保存并启停边缘监听。</summary>
+    private async void OnEdgeGestureChanged(object sender, Microsoft.UI.Xaml.RoutedEventArgs e)
     {
         if (!_ready) return;
-        SettingsService.Update(s => s.EdgeGestureSummon = EdgeGestureToggle.IsOn);
-        App.Main?.SyncEdgeGesture();
+        var enabled = EdgeGestureToggle.IsOn;
+        EdgeGestureRow.IsEnabled = false;
+        EdgeGestureHint.Text = "正在请求管理员授权…";
+        try
+        {
+            if (App.Main != null) await App.Main.SetEdgeGestureEnabledAsync(enabled);
+        }
+        catch (Exception ex)
+        {
+            DebugLog.Write($"边缘手势开关失败：{ex}");
+        }
+        finally
+        {
+            _ready = false;
+            EdgeGestureToggle.IsOn = SettingsService.Current.EdgeGestureSummon;
+            _ready = true;
+            EdgeGestureRow.IsEnabled = true;
+            UpdateEdgeGestureHint();
+        }
         if (SettingsService.Current.UiSoundEnabled) UiSound.Play(UiSoundKind.Select);
+    }
+
+    private void UpdateEdgeGestureHint()
+    {
+        var error = App.Main?.EdgeGesturePolicyError;
+        EdgeGestureHint.Text = error ?? (SettingsService.Current.EdgeGestureSummon
+            ? "已写入系统边缘滑动策略；部分系统需重新登录生效，关闭时需授权恢复"
+            : "开启时需管理员授权，屏蔽 Windows 小组件和通知中心的边缘滑动");
     }
 
     /// <summary>操作音效开关 → 关闭前或启用后播放一次选择音效</summary>

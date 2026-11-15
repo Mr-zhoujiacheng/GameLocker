@@ -8,9 +8,9 @@ using Microsoft.UI.Xaml.Navigation;
 namespace GameLocker;
 
 /// <summary>
-/// 设置主页：两列分类卡片（常规 / 外观 / 顶栏 / 控制 / 抽屉 / 关于）。
+/// 设置主页：左右侧边栏单列，居中/全屏双列分类卡片（常规 / 外观 / 顶栏 / 控制 / 抽屉 / 关于）。
 /// 云端备份不在此列出，只能从「游戏存档小组件」编辑页进入 CloudPage。
-/// 手柄：方向=两列网格里移动光标，A=进入子页，View(Select)/B=返回主页。
+/// 手柄：方向跟随列数移动光标，A=进入子页，View(Select)/B=返回主页。
 /// </summary>
 public sealed partial class SettingsPage : Page, ISettingsGamepad
 {
@@ -18,6 +18,7 @@ public sealed partial class SettingsPage : Page, ISettingsGamepad
     private Control[] _cards = [];
     private int _index;
     private bool _ready;
+    private bool _twoColumn = true;
 
     public SettingsPage()
     {
@@ -34,14 +35,29 @@ public sealed partial class SettingsPage : Page, ISettingsGamepad
         };
     }
 
-    /// <summary>分类网格宽度 = min(720, 可用宽度)；侧边栏（窄）顶部对齐，全屏/居中（宽）上下居中</summary>
+    /// <summary>分类网格宽度 = min(720, 可用宽度)；左右侧边栏固定单列，居中/全屏保留双列。</summary>
     private void LayoutCategories()
     {
         if (CategoryPanel is null || CategoryScroll is null) return;
         var avail = CategoryScroll.ViewportWidth;   // 已扣除 ScrollViewer 的 Padding
         if (avail <= 0) return;
+        _twoColumn = App.Main?.IsWideOverlay != false;
+        CategoryPanel.ColumnDefinitions[1].Width = _twoColumn
+            ? new GridLength(1, GridUnitType.Star)
+            : new GridLength(0);
+        CategoryPanel.ColumnSpacing = _twoColumn ? 12 : 0;
+        var rowCount = _twoColumn ? (_cards.Length + 1) / 2 : _cards.Length;
+        while (CategoryPanel.RowDefinitions.Count < rowCount)
+            CategoryPanel.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });
+        while (CategoryPanel.RowDefinitions.Count > rowCount)
+            CategoryPanel.RowDefinitions.RemoveAt(CategoryPanel.RowDefinitions.Count - 1);
+        for (var i = 0; i < _cards.Length; i++)
+        {
+            Grid.SetRow(_cards[i], _twoColumn ? i / 2 : i);
+            Grid.SetColumn(_cards[i], _twoColumn ? i % 2 : 0);
+        }
         CategoryPanel.Width = Math.Min(720, avail);
-        CategoryPanel.VerticalAlignment = avail >= 640
+        CategoryPanel.VerticalAlignment = _twoColumn && avail >= 640
             ? VerticalAlignment.Center
             : VerticalAlignment.Top;
     }
@@ -50,6 +66,7 @@ public sealed partial class SettingsPage : Page, ISettingsGamepad
     {
         base.OnNavigatedTo(e);
         _ready = true;
+        LayoutCategories();
         UpdateCursor();
     }
 
@@ -63,12 +80,12 @@ public sealed partial class SettingsPage : Page, ISettingsGamepad
     {
         if (!_ready) return;
 
-        // 两列网格：左右同一行内挪一格，上下跨两格
+        // 单列上下逐项移动；双列左右换列、上下换行。
         var col = _index % 2;
-        if (buttons.HasFlag(GamepadButtons.DPadLeft) && col == 1) Move(-1);
-        else if (buttons.HasFlag(GamepadButtons.DPadRight) && col == 0) Move(1);
-        else if (buttons.HasFlag(GamepadButtons.DPadUp)) Move(-2);
-        else if (buttons.HasFlag(GamepadButtons.DPadDown)) Move(2);
+        if (_twoColumn && buttons.HasFlag(GamepadButtons.DPadLeft) && col == 1) Move(-1);
+        else if (_twoColumn && buttons.HasFlag(GamepadButtons.DPadRight) && col == 0) Move(1);
+        else if (buttons.HasFlag(GamepadButtons.DPadUp)) Move(_twoColumn ? -2 : -1);
+        else if (buttons.HasFlag(GamepadButtons.DPadDown)) Move(_twoColumn ? 2 : 1);
         else if (buttons.HasFlag(GamepadButtons.A)) OpenCategory(_index);
     }
 
@@ -103,6 +120,7 @@ public sealed partial class SettingsPage : Page, ISettingsGamepad
             AnimateLift(_cards[i], on ? -3 : 0);
         }
         FocusRing.HideCurrent(XamlRoot);
+        if (_ready) _cards[_index].StartBringIntoView();
     }
 
     private static void AnimateLift(Control c, double to)

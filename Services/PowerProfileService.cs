@@ -136,19 +136,14 @@ internal static class PowerProfileService
                 applied.Add(ok ? "最高频率" : $"频率失败({message})");
             }
 
-            if (profile.CoreSelection >= 0)
+            if (profile.CoreSelection >= 0 || profile.CoreModeCaptured)
             {
                 var count = profile.CoreSelection >= GameCpuService.Topology.CoreCount ? 0 : profile.CoreSelection;
-                var result = PerformanceService.ApplyCoreSelection(count, onAc);
-                applied.Add(result.Ok ? "核心选择" : $"核心选择失败({result.Message})");
-            }
-
-            // 5) 核心调度
-            if (profile.CoreModeCaptured)
-            {
-                SettingsService.Update(s => s.GameCoreMode = profile.CoreMode);
-                var result = GameCpuService.Configure(SettingsService.Current.GameCoreCount, profile.CoreMode);
-                applied.Add(result.Ok ? "核心调度" : $"核心调度失败({result.Message})");
+                if (profile.CoreSelection >= 0) SettingsService.Update(s => s.GameCoreCount = count);
+                if (profile.CoreModeCaptured) SettingsService.Update(s => s.GameCoreMode = profile.CoreMode);
+                var result = GameCpuService.Configure(SettingsService.Current.GameCoreCount,
+                    SettingsService.Current.GameCoreMode);
+                applied.Add(result.Ok ? "CPU 核心" : $"CPU 核心失败({result.Message})");
             }
         });
 

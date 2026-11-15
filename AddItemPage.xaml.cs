@@ -1309,14 +1309,19 @@ public sealed partial class AddItemPage : Page, ISettingsGamepad
         }
     }
 
+    /// <summary>整行开关以外层卡片作为导航范围，避免右侧小开关被向下导航跳过。</summary>
+    private FrameworkElement FormNavigationTarget(Control control) =>
+        ReferenceEquals(control, PerfSeparateProfilesToggle) ? PerfSeparateCard : control;
+
     private bool TryRect(Control c, out Windows.Foundation.Rect rect)
     {
         rect = default;
-        if (c.ActualWidth <= 0 || c.ActualHeight <= 0) return false;
+        var target = FormNavigationTarget(c);
+        if (target.ActualWidth <= 0 || target.ActualHeight <= 0) return false;
         try
         {
-            rect = c.TransformToVisual(FormPanel)
-                     .TransformBounds(new Windows.Foundation.Rect(0, 0, c.ActualWidth, c.ActualHeight));
+            rect = target.TransformToVisual(FormPanel)
+                     .TransformBounds(new Windows.Foundation.Rect(0, 0, target.ActualWidth, target.ActualHeight));
             return true;
         }
         catch { return false; }
@@ -1756,6 +1761,16 @@ public sealed partial class AddItemPage : Page, ISettingsGamepad
         UpdateLosslessCheckCursor(c as CheckBox);
         // 先清掉上一项的系统焦点框：页面用自绘光标/选框，残留的焦点框不会跟着光标走
         FocusRing.HideCurrent(XamlRoot);
+        // 自绘光标控件先把实际焦点移到页面，避免下拉框模板仍处于 Focused，
+        // 导致电源参数卡片与上一项/下一项下拉框同时亮框。
+        if (c is ToggleButton or ToggleSwitch or ComboBox)
+        {
+            IsTabStop = true;
+            UseSystemFocusVisuals = false;
+            Focus(FocusState.Programmatic);
+        }
+        UpdateToggleCursor(c as ToggleSwitch);
+        UpdateComboCursor(c as ComboBox);
         if (c is RadioButton rb)
         {
             // 单选按钮：移动只移动光标（高亮），不聚焦——WinUI 键盘聚焦会自动勾选，
@@ -1826,16 +1841,14 @@ public sealed partial class AddItemPage : Page, ISettingsGamepad
     /// <summary>高亮光标所在开关（描边）；自绘开关没有边框，改用外层卡片描边</summary>
     private void UpdateToggleCursor(ToggleSwitch? cursor)
     {
+        var separateSelected = ReferenceEquals(cursor, PerfSeparateProfilesToggle);
+        PerfSeparateCard.BorderBrush = separateSelected ? CursorBrush : _perfSeparateCardBorder;
+        PerfSeparateCard.BorderThickness = new Thickness(separateSelected ? 2 : 1);
         foreach (var ctl in _formControls)
         {
             if (ctl is not ToggleSwitch t) continue;
             var on = ReferenceEquals(t, cursor);
-            if (ReferenceEquals(t, PerfSeparateProfilesToggle))
-            {
-                PerfSeparateCard.BorderBrush = on ? CursorBrush : _perfSeparateCardBorder;
-                PerfSeparateCard.BorderThickness = new Thickness(on ? 2 : 1);
-            }
-            if (on) t.BorderBrush = CursorBrush;
+            if (on && !ReferenceEquals(t, PerfSeparateProfilesToggle)) t.BorderBrush = CursorBrush;
             else t.ClearValue(ToggleSwitch.BorderBrushProperty);
         }
     }
@@ -1908,12 +1921,14 @@ public sealed partial class AddItemPage : Page, ISettingsGamepad
                 FormScroll.ChangeView(null, FormScroll.ScrollableHeight, null, true);
                 return;
             }
-            var p = c.TransformToVisual(FormScroll).TransformPoint(new Windows.Foundation.Point(0, 0));
+            var targetElement = FormNavigationTarget(c);
+            var p = targetElement.TransformToVisual(FormScroll).TransformPoint(new Windows.Foundation.Point(0, 0));
             var vh = FormScroll.ViewportHeight;
             const double topMargin = 44;
             double? target;
             if (p.Y < topMargin) target = FormScroll.VerticalOffset + p.Y - topMargin;
-            else if (p.Y + c.ActualHeight > vh - 8) target = FormScroll.VerticalOffset + p.Y + c.ActualHeight - vh + 8;
+            else if (p.Y + targetElement.ActualHeight > vh - 8)
+                target = FormScroll.VerticalOffset + p.Y + targetElement.ActualHeight - vh + 8;
             else return;
             FormScroll.ChangeView(null, Math.Clamp(target.Value, 0, FormScroll.ScrollableHeight), null, true);
         }

@@ -205,7 +205,9 @@
                 Margin="0,0,0,20" Padding="14,9" CornerRadius="12" BorderThickness="0"
                 Background="#26000000"
                 Visibility="{x:Bind HintBar.Visibility, Mode=OneWay}">
-            <ctl:GamepadHintBar x:Name="HintBar" BadgeScale="1" Highlight="True"/>
+            <Viewbox x:Name="HintBarScaleHost" Stretch="None" StretchDirection="DownOnly">
+                <ctl:GamepadHintBar x:Name="HintBar" BadgeScale="1" Highlight="True"/>
+            </Viewbox>
         </Border>
 
         <!-- 添加方式选择遮罩：X 键 / 编辑模式"添加磁贴"弹出，三选一（自定义 / 小组件 / 副页块），手柄可操作。

@@ -210,8 +210,10 @@ public sealed partial class MainPage : Page
         SizeChanged += (_, _) =>
         {
             ApplyDrawerWidth();
+            UpdateHintBarScale();
             QueueResizeLayout();
         };
+        Loaded += (_, _) => UpdateHintBarScale();
 
         // 添加方式遮罩：鼠标点击选项/面板外空白（遮罩层）
         // 自绘卡片不是标准控件：点中即标记已处理，全局点击音效据此发声（点遮罩空白仍安静）
@@ -1166,6 +1168,25 @@ public sealed partial class MainPage : Page
             return Math.Max(h, root.ActualHeight - (r.Y - y));
         }
         catch { return root.ActualHeight; }
+    }
+
+    /// <summary>仅左右侧边栏按可用宽度缩小主页手柄提示；居中、全屏和开始菜单模式保持原尺寸。</summary>
+    private void UpdateHintBarScale()
+    {
+        var sidebar = App.Main?.IsWideOverlay == false && !SettingsService.Current.StartMenuMode;
+        HintBarScaleHost.Stretch = sidebar ? Stretch.Uniform : Stretch.None;
+        if (sidebar && ActualWidth > 0)
+        {
+            // 两侧保留 12 DIP，并扣除提示条底板的 Padding；DownOnly 保证宽窗口不放大。
+            HintBarShell.MaxWidth = Math.Max(1, ActualWidth - 24);
+            HintBarScaleHost.MaxWidth = Math.Max(1, HintBarShell.MaxWidth
+                - HintBarShell.Padding.Left - HintBarShell.Padding.Right);
+        }
+        else
+        {
+            HintBarShell.MaxWidth = double.PositiveInfinity;
+            HintBarScaleHost.MaxWidth = double.PositiveInfinity;
+        }
     }
 
     /// <summary>底部布局随提示条高度同步：toast 固定在底部手柄提示条上方，抽屉卡片再给整条底部让位。</summary>
@@ -5429,14 +5450,14 @@ public sealed partial class MainPage : Page
     private bool _perfCoreSyncing;     // 打开面板时回填核心选项，避免误标“待应用”
     private Border? _perfModeRow;
     private Slider? _perfCoreSelectionSlider;
-    private TextBlock? _perfCoreSelectionRead;
+    private Canvas? _perfCoreSelectionTicks;
     private Border? _perfCoreSelectionRow;
     private int[] _perfCoreSelectionSteps = [0];
     private PerformanceService.CoreSelectionState _perfCoreSelectionState = new(false, 0, 0, "正在读取核心停放设置…");
     private bool _perfCoreSelectionSyncing;
     private bool _perfCoreSelectionPending;
-    private const string PerfCoreSelectionHint = "限制全局可用的 CPU 核心数量，最右端为不限制（系统自动）。";
-    private const string PerfModeHint = "自动=系统分配；性能优先=只用性能核；效率优先=只用能效核（对启动器启动的游戏生效）";
+    private const string PerfCoreSelectionHint = "限制游戏最多可用的物理核心数，与核心调度重叠生效；最右端为自动。";
+    private const string PerfModeHint = "自动=系统分配；性能/效率优先=优先用对应核心，繁忙时再开放另一类。";
     private readonly Dictionary<Border, Action> _perfActions = [];
     /// <summary>当前用手柄展开了下拉框的 ComboBox（展开期间方向键上下选、A/B 收起）</summary>
     private ComboBox? _perfOpenCombo;
@@ -5927,20 +5948,23 @@ public sealed partial class MainPage : Page
         _perfCoreSelectionSlider = new Slider
         {
             Minimum = 0, Maximum = 0, Value = 0, StepFrequency = 1,
+            SnapsTo = Microsoft.UI.Xaml.Controls.Primitives.SliderSnapsTo.StepValues,
+            IsThumbToolTipEnabled = false,
             IsTabStop = false, UseSystemFocusVisuals = false, IsEnabled = false
         };
         StyleSlider(_perfCoreSelectionSlider);
-        _perfCoreSelectionRead = new TextBlock { Text = "读取中…", FontSize = 11, Opacity = 0.7, HorizontalAlignment = HorizontalAlignment.Right };
         var coreSelectionBody = new StackPanel { Spacing = 2 };
-        coreSelectionBody.Children.Add(_perfCoreSelectionRead);
         coreSelectionBody.Children.Add(_perfCoreSelectionSlider);
+        _perfCoreSelectionTicks = new Canvas { Height = 24, IsHitTestVisible = false };
+        coreSelectionBody.Children.Add(_perfCoreSelectionTicks);
+        _perfCoreSelectionSlider.Loaded += (_, _) => RenderCoreSelectionTicks();
+        _perfCoreSelectionTicks.SizeChanged += (_, _) => RenderCoreSelectionTicks();
         _perfCoreSelectionRow = Row(PerfCpuSettings, "核心选择", PerfCoreSelectionHint, coreSelectionBody, supported: true);
-        _perfCoreSelectionSlider.ValueChanged += (_, _) =>
+        _perfCoreSelectionSlider.ValueChanged += (_, e) =>
         {
             if (_perfCoreSelectionSyncing) return;
             _perfCoreSelectionPending = true;
-            int count = _perfCoreSelectionSteps[(int)Math.Round(_perfCoreSelectionSlider.Value)];
-            _perfCoreSelectionRead.Text = (count == 0 ? "全部（系统自动）" : $"{count} 个物理核心") + " · 待应用";
+            UpdateCoreSelectionHint(_perfCoreSelectionSteps[(int)Math.Round(e.NewValue)]);
             ShowPerformanceHelp(_perfCoreSelectionRow);
         };
         _perfAdjusters[_perfCoreSelectionRow] = dir =>
@@ -5950,6 +5974,62 @@ public sealed partial class MainPage : Page
                     _perfCoreSelectionSlider.Minimum, _perfCoreSelectionSlider.Maximum);
         };
         ApplyOnPointerRelease(_perfCoreSelectionSlider);
+    }
+
+    /// <summary>核心选择走 CPU Sets：显示所选物理核心数，并说明与核心调度联动。</summary>
+    private void UpdateCoreSelectionHint(int count)
+    {
+        if (_perfCoreSelectionRow is null || !_perfRowHints.TryGetValue(_perfCoreSelectionRow, out var hint)) return;
+        var total = _perfCoreSelectionState.CoreCount;
+        hint.Text = count <= 0 || count >= total
+            ? "自动=不限制核心数，由系统调度游戏可用核心。"
+            : $"限制游戏最多使用 {count} 个物理核心（CPU Sets，与核心调度共同生效）。";
+    }
+
+    /// <summary>按真实滑块档位绘制核心数；首末刻度以滑块手柄中心对齐。</summary>
+    private void RenderCoreSelectionTicks()
+    {
+        if (_perfCoreSelectionTicks == null || _perfCoreSelectionSlider == null) return;
+        var host = _perfCoreSelectionTicks;
+        host.Children.Clear();
+        var width = host.ActualWidth;
+        if (width <= 0 || !_perfCoreSelectionState.Supported) return;
+        var inset = 10.0; // WinUI 默认手柄宽度20；模板已加载时取实际值。
+        FrameworkElement? FindThumb(DependencyObject root)
+        {
+            for (var i = 0; i < VisualTreeHelper.GetChildrenCount(root); i++)
+            {
+                var child = VisualTreeHelper.GetChild(root, i);
+                if (child is FrameworkElement { Name: "HorizontalThumb" } thumb) return thumb;
+                var found = FindThumb(child);
+                if (found != null) return found;
+            }
+            return null;
+        }
+        if (FindThumb(_perfCoreSelectionSlider) is { ActualWidth: > 0 } thumb)
+            inset = thumb.ActualWidth / 2;
+        var count = _perfCoreSelectionSteps.Length;
+        for (var i = 0; i < count; i++)
+        {
+            var x = count == 1 ? width / 2 : inset + (width - 2 * inset) * i / (count - 1);
+            var mark = new Border
+            {
+                Width = 1, Height = 5,
+                Background = new SolidColorBrush(Windows.UI.Color.FromArgb(0x80, 0xFF, 0xFF, 0xFF))
+            };
+            Canvas.SetLeft(mark, x - 0.5);
+            host.Children.Add(mark);
+            var cores = _perfCoreSelectionSteps[i];
+            var label = new TextBlock
+            {
+                Text = cores == 0 ? "自动" : $"{cores}核",
+                FontSize = 10, Opacity = 0.7, TextAlignment = TextAlignment.Center
+            };
+            label.Measure(new Windows.Foundation.Size(double.PositiveInfinity, double.PositiveInfinity));
+            Canvas.SetLeft(label, Math.Clamp(x - label.DesiredSize.Width / 2, 0, Math.Max(0, width - label.DesiredSize.Width)));
+            Canvas.SetTop(label, 7);
+            host.Children.Add(label);
+        }
     }
 
     /// <summary>触屏/鼠标松开滑杆后立即写入，不再依赖保存按钮；手柄仍按住 A 统一应用</summary>
@@ -6143,24 +6223,29 @@ public sealed partial class MainPage : Page
         try
         {
             _perfCpuState = await Task.Run(PerformanceService.GetCpuSettings);
-            _perfCoreSelectionState = await Task.Run(PerformanceService.GetCoreSelection);
+            var topology = GameCpuService.Topology;
+            _perfCoreSelectionState = new(topology.Supported, topology.CoreCount,
+                SettingsService.Current.GameCoreCount, topology.Message);
             _perfCoreSelectionSyncing = true;
             try
             {
                 int total = _perfCoreSelectionState.CoreCount;
-                _perfCoreSelectionSteps = Enumerable.Range(1, Math.Max(0, (total - 1) / 2))
-                    .Select(i => i * 2).Append(0).ToArray();
+                var steps = new List<int>();
+                for (long cores = 1; cores < total; cores *= 2) steps.Add((int)cores);
+                steps.Add(0); // 最右端只表示自动，不重复列出最大核心数。
+                _perfCoreSelectionSteps = steps.ToArray();
                 int selected = _perfCoreSelectionState.SelectedCount;
-                if (selected > 0 && selected < total && !_perfCoreSelectionSteps.Contains(selected))
-                    _perfCoreSelectionSteps = _perfCoreSelectionSteps.Where(n => n > 0).Append(selected).OrderBy(n => n).Append(0).ToArray();
                 if (_perfCoreSelectionSlider != null)
                 {
                     _perfCoreSelectionSlider.Maximum = _perfCoreSelectionSteps.Length - 1;
-                    _perfCoreSelectionSlider.Value = Math.Max(0, Array.IndexOf(_perfCoreSelectionSteps, selected >= total ? 0 : selected));
+                    var selectedIndex = Array.IndexOf(_perfCoreSelectionSteps, selected >= total ? 0 : selected);
+                    if (selectedIndex < 0)
+                        selectedIndex = Enumerable.Range(0, _perfCoreSelectionSteps.Length)
+                            .OrderBy(i => Math.Abs((_perfCoreSelectionSteps[i] == 0 ? total : _perfCoreSelectionSteps[i]) - selected)).First();
+                    _perfCoreSelectionSlider.Value = selectedIndex;
                 }
-                if (_perfCoreSelectionRead != null)
-                    _perfCoreSelectionRead.Text = !_perfCoreSelectionState.Supported ? "不可用"
-                        : selected == 0 || selected >= total ? $"全部 {total} 核（系统自动）" : $"目标 {selected} / {total} 个物理核心";
+                RenderCoreSelectionTicks();
+                UpdateCoreSelectionHint(selected);
                 if (_perfCoreSelectionRow != null)
                     _perfRowHints[_perfCoreSelectionRow].Text = _perfCoreSelectionState.Supported
                         ? PerfCoreSelectionHint : _perfCoreSelectionState.Message;
@@ -6338,29 +6423,21 @@ public sealed partial class MainPage : Page
                 if (!ok) failures.Add(message);
             }
 
-            if (_perfCoreSelectionState.Supported && _perfCoreSelectionPending && _perfCoreSelectionSlider != null)
-            {
-                changed++;
-                int count = _perfCoreSelectionSteps[(int)Math.Round(_perfCoreSelectionSlider.Value)];
-                var result = await Task.Run(() => PerformanceService.ApplyCoreSelection(count, onAc));
-                if (!result.Ok)
-                {
-                    failures.Add(result.Message);
-                    SettingsService.Update(s => profile.CoreSelection = -1);
-                }
-            }
-
-            // 5) 核心调度（仅对启动器管理的进程生效）
+            // 5) 核心调度与核心选择共用 CPU Sets：核心选择是物理核心数上限，核心调度决定先用哪类核心。
             var topology = GameCpuService.Topology;
-            if (topology.Supported && topology.Hybrid && _perfCoreMode is { SelectedIndex: >= 0 } modeCombo)
+            if (topology.Supported)
             {
-                var mode = (GameCoreMode)modeCombo.SelectedIndex;
                 var settings = SettingsService.Current;
-                if (mode != settings.GameCoreMode)
+                var mode = topology.Hybrid && _perfCoreMode is { SelectedIndex: >= 0 } modeCombo
+                    ? (GameCoreMode)modeCombo.SelectedIndex : settings.GameCoreMode;
+                var coreCount = _perfCoreSelectionPending && _perfCoreSelectionSlider != null
+                    ? _perfCoreSelectionSteps[(int)Math.Round(_perfCoreSelectionSlider.Value)] : settings.GameCoreCount;
+                if (coreCount >= _perfCoreSelectionState.CoreCount) coreCount = 0;
+                if (mode != settings.GameCoreMode || coreCount != settings.GameCoreCount || _perfCoreSelectionPending)
                 {
                     changed++;
-                    SettingsService.Update(s => s.GameCoreMode = mode);
-                    var result = await Task.Run(() => GameCpuService.Configure(settings.GameCoreCount, mode));
+                    SettingsService.Update(s => { s.GameCoreMode = mode; s.GameCoreCount = coreCount; });
+                    var result = await Task.Run(() => GameCpuService.Configure(coreCount, mode));
                     if (!result.Ok) failures.Add(result.Message);
                 }
             }

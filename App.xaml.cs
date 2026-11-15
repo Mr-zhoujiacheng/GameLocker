@@ -50,6 +50,18 @@ public partial class App : Application
         // 提权监控助手模式（--monitor-helper <父进程PID>）：只跑 ETW 帧率采集并写共享内存，
         // 不创建主窗口，父进程退出或发出停止事件后自行结束。
         var argv = Environment.GetCommandLineArgs();
+        var edgePolicyIndex = Array.IndexOf(argv, SystemEdgeSwipePolicy.HelperArgument);
+        if (edgePolicyIndex >= 0)
+        {
+            var operation = edgePolicyIndex + 1 < argv.Length ? argv[edgePolicyIndex + 1] : "";
+            var validParent = edgePolicyIndex + 3 < argv.Length
+                && int.TryParse(argv[edgePolicyIndex + 2], out _)
+                && long.TryParse(argv[edgePolicyIndex + 3], out _);
+            Environment.Exit(validParent
+                ? SystemEdgeSwipePolicy.RunHelper(operation, int.Parse(argv[edgePolicyIndex + 2]), long.Parse(argv[edgePolicyIndex + 3]))
+                : 2);
+            return;
+        }
         // 登录计划任务模式（--apply-cpu-power）：以管理员权限把已保存的 CPU 功耗写回硬件后退出，
         // 不创建窗口。放在单实例检查之前，避免开机自启已经在跑时任务被吞掉。
         if (Array.IndexOf(argv, "--apply-cpu-power") >= 0)

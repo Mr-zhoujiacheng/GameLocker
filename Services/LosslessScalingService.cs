@@ -87,6 +87,37 @@ public static class LosslessScalingService
         }
     }
 
+    /// <summary>
+    /// 内置插帧（Magpie/FGHost）的输出端进程号：插帧后的合成画面由它呈现，
+    /// 帧率监控要按这个进程统计输出帧率；未在插帧时返回 0。
+    /// </summary>
+    public static int ActiveMagpiePresenterPid()
+    {
+        if (!IsMagpieRunning) return 0;
+        var hostPid = 0;
+        try { hostPid = _magpieHost?.Id ?? 0; } catch { }
+        var presenter = 0;
+        EnumWindows((h, _) =>
+        {
+            if (!IsWindowVisible(h)) return true;
+            GetWindowThreadProcessId(h, out var owner);
+            var pid = (int)owner;
+            var cls = new StringBuilder(64);
+            GetClassNameW(h, cls, cls.Capacity);
+            var name = cls.ToString();
+            // 宿主的输出窗（Magpie 系类名），或宿主进程自己的可见窗口都算输出端。
+            if (name.Contains("Magpie", StringComparison.OrdinalIgnoreCase)
+                || name.Contains("FGHost", StringComparison.OrdinalIgnoreCase)
+                || (hostPid > 0 && pid == hostPid))
+            {
+                presenter = pid;
+                return false;
+            }
+            return true;
+        }, IntPtr.Zero);
+        return presenter > 0 ? presenter : hostPid;
+    }
+
     /// <summary>小黄鸭开始插帧后 GPU 占用会明显升高（实测约 65%），空闲时为 0；用作真实状态判据</summary>
     private const double GpuBusyThreshold = 5.0;
 

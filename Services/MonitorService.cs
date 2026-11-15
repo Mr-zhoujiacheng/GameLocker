@@ -515,9 +515,20 @@ public static class MonitorService
         var n = ++_tickCount;
         var s = new MonitorSnapshot();
         var targetPid = NeedsFrameStats() ? ForegroundPid() : 0;
-        var losslessPid = NeedsFrameStats() ? LosslessScalingService.ActiveOutputPid() : 0;
-        var outputPid = losslessPid > 0 ? losslessPid : targetPid;
-        s.FrameGenerationDetected = losslessPid > 0;
+        var duckPid = NeedsFrameStats() ? LosslessScalingService.ActiveOutputPid() : 0;
+        // 内置插帧（XeSS / FSR3）：Magpie 输出窗会占住前台，要回指到它下面真正在跑的游戏
+        var magpiePid = NeedsFrameStats() ? LosslessScalingService.ActiveMagpiePresenterPid() : 0;
+        if (magpiePid > 0 && (targetPid == magpiePid || targetPid <= 0))
+        {
+            var gameHwnd = ForegroundWatcherService.FrameGenTargetWindow;
+            if (gameHwnd != IntPtr.Zero)
+            {
+                GetWindowThreadProcessId(gameHwnd, out var gamePid);
+                if ((int)gamePid > 4) targetPid = (int)gamePid;
+            }
+        }
+        var outputPid = magpiePid > 0 ? magpiePid : duckPid > 0 ? duckPid : targetPid;
+        s.FrameGenerationDetected = magpiePid > 0 || duckPid > 0;
         if (outputPid > 0 && IsElevated() && _losslessOutput is null)
         {
             _losslessOutput = new LosslessOutputListener();
@@ -626,10 +637,11 @@ public static class MonitorService
             s.OutputFps = _lastOutputFps;
             s.FrameGenerationDetected |= _lastOutputGenerated;
         }
-        if (losslessPid > 0)
+        if (outputPid > 0 && outputPid == targetPid)
         {
             // 外部插帧输入是游戏的 ETW 原始帧率；内置插帧则保留 ETW 的原始帧分类结果。
-            s.OriginalFps = targetPid != losslessPid && s.Fps > 0 ? s.Fps : double.NaN;
+            // 这里只在输出端就是游戏本身（未插帧/小黄鸭同进程）时才标注原始帧率。
+            s.OriginalFps = targetPid != outputPid && s.Fps > 0 ? s.Fps : s.OriginalFps;
         }
         return s;
     }

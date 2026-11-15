@@ -17,5 +17,9 @@ dist/
 # dotnet publish 产物（不含 GameLocker.pri，不参与打包）
 publish/
 
+# 内置插帧后端（Magpie 宿主 + XeSS/FSR 运行库，约 157MB）：体积过大不入库，
+# 放在仓库根 FG 目录，构建时会自动复制到输出的 FG 子目录
+FG/
+
 # 日志
 *.log

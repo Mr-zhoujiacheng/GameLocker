@@ -13,7 +13,7 @@
     <EnableMsixTooling>false</EnableMsixTooling>
     <ApplicationManifest>app.manifest</ApplicationManifest>
     <AssemblyName>GameLocker</AssemblyName>
-    <Version>3.3.4</Version>
+    <Version>3.3.5</Version>
     <ApplicationIcon>Assets\GameLocker.ico</ApplicationIcon>
     <NoWarn>$(NoWarn);CA1416</NoWarn>
     <!-- dotnet CLI 构建时指向 VS BuildTools 的 AppxPackage 任务目录（生成 PRI 所需） -->
@@ -53,6 +53,9 @@
     <Content Include="Resources\RyzenAdj\*" Exclude="Resources\RyzenAdj\WinRing0x64.sys" Link="RyzenAdj\%(Filename)%(Extension)" CopyToOutputDirectory="PreserveNewest" />
     <!-- WinRing0 按 helper EXE 目录寻找驱动文件 -->
     <Content Include="Resources\RyzenAdj\WinRing0x64.sys" Link="WinRing0x64.sys" CopyToOutputDirectory="PreserveNewest" Condition="Exists('Resources\RyzenAdj\WinRing0x64.sys')" />
+    <!-- 内置插帧后端（Magpie 宿主 FGHost.exe + XeSS/FSR 运行库，约 157MB）：
+         体积过大不入库，放在仓库根的 FG 目录；由下方 CopyFrameGenBackend 目标在构建后复制到输出的 FG 子目录。
+         不能作为 Content 参与构建：FG 内含 resources.pri 与各语言目录，会让 PRI 索引报重复条目。 -->
     <!-- IntelMSR 签名模块（PawnIO 驱动校验签名后执行） -->
     <EmbeddedResource Include="Resources\IntelMSR.bin" />
     <!-- LpcACPIEC 签名模块：ACPI EC 端口访问，用于探测厂商 EC 里的 GPU 温度 -->
@@ -73,5 +76,16 @@
     <!-- 屏幕键盘的五笔（86 版）码表（编码 → 候选字词，按字频排序） -->
     <EmbeddedResource Include="Resources\wubi.tsv" />
   </ItemGroup>
+
+  <!-- 构建后把仓库根的 FG（内置插帧后端）原样复制到输出目录的 FG 子目录。
+       放在 Target 里而不是 Content，避免 FG 自带的 resources.pri / 语言目录进入本工程的 PRI 索引。 -->
+  <Target Name="CopyFrameGenBackend" AfterTargets="Build" Condition="Exists('$(MSBuildProjectDirectory)\FG')">
+    <ItemGroup>
+      <_FgBackendFiles Include="$(MSBuildProjectDirectory)\FG\**\*" />
+    </ItemGroup>
+    <Copy SourceFiles="@(_FgBackendFiles)"
+          DestinationFiles="@(_FgBackendFiles->'$(OutDir)FG\%(RecursiveDir)%(Filename)%(Extension)')"
+          SkipUnchangedFiles="true" />
+  </Target>
 
 </Project>

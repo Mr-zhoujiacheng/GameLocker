@@ -256,7 +256,7 @@ public sealed partial class MainWindow : Window
                 SettingsService.Current.EdgeGestureSummon = false;
                 SettingsService.Save(SettingsService.Current);
                 SyncEdgeGesture();
-                FloatingToastService.Show(EdgeGesturePolicyError ?? "边缘呼出未启用，请在设置中重新授权", warning: true);
+                FloatingToastService.Show(EdgeGesturePolicyError ?? "边缘呼出未启用，请重新授权", warning: true);
             }
         }
         catch (Exception ex) { DebugLog.Write($"启动边缘策略检查失败：{ex}"); }

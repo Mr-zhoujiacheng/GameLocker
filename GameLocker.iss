@@ -5,11 +5,16 @@
 ;       故打包统一取 build 产物，并排除 publish 与 *.pdb
 
 #define AppName "Game Locker"
-#define AppVersion "3.3.4"
+#define AppVersion "3.3.5"
 #define AppPublisher "Mr-zhoujiacheng"
 #define AppUrl "https://github.com/Mr-zhoujiacheng/GameLocker"
 #ifndef SrcDir
 #define SrcDir "bin\Release\net8.0-windows10.0.19041.0\win-x64"
+#endif
+
+; 发布包必须包含内置插帧后端，缺失时直接停止打包，避免再次发布不完整安装包。
+#if !FileExists(SrcDir + "\FG\FGHost.exe")
+#error "Missing FG backend: FG\FGHost.exe"
 #endif
 
 [Setup]

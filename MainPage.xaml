@@ -98,19 +98,25 @@
                         <Grid Width="26" Height="28">
                             <FontIcon x:Name="BatteryIcon" Glyph="&#xE850;" FontSize="26"
                                       HorizontalAlignment="Center" VerticalAlignment="Center"/>
-                            <!-- 插电：竖向插头图标（插脚朝上、线缆朝下），颜色随电量分档（绿/黄/红） -->
+                            <!-- 插电：插头图标（粗圆插脚朝上 + 宽扁主体，闪电嵌在主体内、窄柄朝下）；颜色随电量分档（绿/黄/红） -->
                             <Viewbox x:Name="BatteryPlugIcon" Width="22" Height="28"
                                      HorizontalAlignment="Center" VerticalAlignment="Center"
                                      Visibility="Collapsed">
                                 <Canvas Width="24" Height="28">
-                                    <Path x:Name="BatteryPlugProngs" Stroke="#66E08A" StrokeThickness="2.4"
+                                    <!-- 插脚：两根粗圆头竖线 -->
+                                    <Path x:Name="BatteryPlugProngs" Stroke="#66E08A" StrokeThickness="3.2"
                                           StrokeStartLineCap="Round" StrokeEndLineCap="Round"
-                                          Data="M8.5,1.5 V7.5 M15.5,1.5 V7.5"/>
+                                          Data="M8.6,2 V7.4 M15.4,2 V7.4"/>
+                                    <!-- 插头主体：宽扁圆角块 -->
                                     <Path x:Name="BatteryPlugBody" Fill="#66E08A"
-                                          Data="M4,7.5 H20 V12 A2.5,2.5 0 0 1 17.5,14.5 H6.5 A2.5,2.5 0 0 1 4,12 Z"/>
-                                    <Path x:Name="BatteryPlugCable" Stroke="#66E08A" StrokeThickness="2.4"
+                                          Data="M5.8,7.4 H18.2 A2.8,2.8 0 0 1 21,10.2 V12.4 A2.8,2.8 0 0 1 18.2,15.2 H5.8 A2.8,2.8 0 0 1 3,12.4 V10.2 A2.8,2.8 0 0 1 5.8,7.4 Z"/>
+                                    <!-- 闪电：嵌在主体中央，用气泡底色挖空 -->
+                                    <Path x:Name="BatteryPlugBolt" Fill="#0A0C10"
+                                          Data="M13.2,8.6 L9.9,12.9 H11.9 L10.8,14.4 H14.1 L12.1,11.9 Z"/>
+                                    <!-- 柄：主体下方较窄的圆头竖线 -->
+                                    <Path x:Name="BatteryPlugHandle" Stroke="#66E08A" StrokeThickness="4.4"
                                           StrokeStartLineCap="Round" StrokeEndLineCap="Round"
-                                          Data="M12,14.5 V26.5"/>
+                                          Data="M12,15 V21.6"/>
                                 </Canvas>
                             </Viewbox>
                         </Grid>
@@ -908,8 +914,8 @@
         <Grid x:Name="FileTransferOverlay" Grid.Row="0" Grid.RowSpan="3" Visibility="Collapsed">
             <Border x:Name="FileTransferMask" Background="#D80A0C10"/>
 
-            <Border x:Name="FileTransferPanel" HorizontalAlignment="Center" VerticalAlignment="Center"
-                    CornerRadius="24" Padding="18,18,18,0"
+            <Border x:Name="FileTransferPanel" HorizontalAlignment="Stretch" VerticalAlignment="Center"
+                    CornerRadius="24" Padding="18,18,18,0" Margin="16,10,16,10" MaxWidth="540"
                     BorderBrush="#2EFFFFFF" BorderThickness="1.2"
                     RenderTransformOrigin="0.5,0.5">
                 <Border.Background>
@@ -922,7 +928,10 @@
                     <CompositeTransform x:Name="FileTransferPanelTransform" ScaleX="1" ScaleY="1"/>
                 </Border.RenderTransform>
 
-                <StackPanel Width="520" Spacing="10">
+                <ScrollViewer x:Name="FileTransferScroller" VerticalScrollBarVisibility="Auto"
+                              HorizontalScrollMode="Disabled" HorizontalScrollBarVisibility="Disabled"
+                              VerticalScrollMode="Auto">
+                <StackPanel x:Name="FileTransferContent" Spacing="10">
                     <!-- 标题：蓝色传输徽章 + 标题/状态 -->
                     <StackPanel Orientation="Horizontal" Spacing="12" Margin="2,0,0,2">
                         <Border Width="44" Height="44" CornerRadius="22" Background="#264CC2FF" VerticalAlignment="Center">
@@ -931,7 +940,7 @@
                         <StackPanel VerticalAlignment="Center" Spacing="1">
                             <TextBlock Text="文件传输" FontSize="21" FontWeight="SemiBold"/>
                             <TextBlock x:Name="FileTransferStatusText" Text="正在搜索局域网设备…"
-                                       FontSize="12" Opacity="0.6" TextTrimming="CharacterEllipsis" MaxWidth="430"/>
+                                       FontSize="12" Opacity="0.6" TextWrapping="Wrap"/>
                         </StackPanel>
                     </StackPanel>
 
@@ -973,6 +982,7 @@
                                         HorizontalAlignment="Center" Margin="0,8,0,0"
                                         Hints="DPAD:选择|A:连接|X:发送|Y:清空|B:关闭"/>
                 </StackPanel>
+                </ScrollViewer>
             </Border>
         </Grid>
 
@@ -1066,7 +1076,7 @@
                     </Border>
                     <TextBlock x:Name="MoveHintText" Text="" FontSize="13" VerticalAlignment="Center"
                                FontFamily="Segoe UI Variable Text, Segoe UI"
-                               TextWrapping="Wrap" MaxWidth="500"/>
+                               TextWrapping="Wrap" TextTrimming="CharacterEllipsis" MaxLines="2" MaxWidth="500"/>
                 </StackPanel>
                 <!-- 联网下载时的细进度条：文案下方，仅下载期间显示（由 ShowToast 的 progress 参数驱动） -->
                 <ProgressBar x:Name="MoveHintProgress" Height="4" MinWidth="180" Minimum="0" Maximum="100"

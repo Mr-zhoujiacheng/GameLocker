@@ -525,6 +525,10 @@ public static class PerformanceService
         }
     }
 
+    /// <summary>是否为厂商自定义（非 Windows 标准）的基础电源方案，例如掌机的「Silent」。</summary>
+    private static bool IsVendorScheme(string guid) =>
+        guid.Length > 0 && !IsStandardScheme(guid);
+
     /// <summary>按基础电源方案推断档位；无法识别（OEM 自定义方案）时返回 null。</summary>
     private static PerformanceLevel? ReadBaseSchemeLevel()
     {
@@ -536,7 +540,8 @@ public static class PerformanceService
             return PerformanceLevel.Eco;
         if (string.Equals(scheme, BalancedScheme.ToString(), StringComparison.OrdinalIgnoreCase))
             return PerformanceLevel.Balanced;
-        return null;
+        // 厂商自定义方案就是该机器的“日常/平衡”方案：overlay 不可用时按平衡展示。
+        return IsVendorScheme(scheme) ? PerformanceLevel.Balanced : null;
     }
 
 
@@ -603,12 +608,11 @@ public static class PerformanceService
                 if (guid == EcoOverlayGuid) return new(PerformanceLevel.Eco, true);
                 if (guid == PerformanceOverlayGuid) return new(PerformanceLevel.Performance, true);
             }
-            // 平衡 overlay：部分掌机（如 MSI Claw）会忽略 overlay 写入，实际档位由基础方案决定
+            // 平衡 overlay：部分掌机（如 MSI Claw）会忽略 overlay 写入，实际档位由基础方案决定。
+            // 厂商自定义方案（如 Silent）也按平衡处理，避免读回空 GUID 时被判成未知而失败。
             var baseLevel = ReadBaseSchemeLevel();
             if (ret == 0 && guid == BalancedOverlayGuid)
-                return new(baseLevel is PerformanceLevel.Performance or PerformanceLevel.Eco
-                    ? baseLevel.Value
-                    : PerformanceLevel.Balanced, true);
+                return new(baseLevel ?? PerformanceLevel.Balanced, true);
             return baseLevel is { } fallback
                 ? new(fallback, true)
                 : PerformanceState.Unknown;
@@ -657,6 +661,16 @@ public static class PerformanceService
             SetCached(actual);
             if (code == 0 && actual.Level == level)
                 return (true, $"已应用「{level.Label()}」电源模式");
+
+            // 平衡档在厂商方案机器上以基础方案为准：OEM 服务可能把 overlay 改回其它档，
+            // 只要基础方案仍是该机的日常方案（厂商方案或标准平衡），就认为平衡已生效。
+            if (code == 0 && level == PerformanceLevel.Balanced && IsVendorScheme(GetActiveSchemeCached()))
+            {
+                var restored = new PerformanceState(PerformanceLevel.Balanced, true);
+                SetCached(restored);
+                DebugLog.Write($"[电源模式] 厂商方案机器按基础方案判定平衡：{DescribeOverlay()} 基础方案={GetActiveSchemeCached()}");
+                return (true, "已应用「平衡」（此设备以厂商电源方案为准）");
+            }
 
             DebugLog.Write(code == 0
                 ? $"[电源模式] 读回不一致：请求={level} 实际={actual.Level} {DescribeOverlay()} 基础方案={GetActiveSchemeCached()}"
@@ -737,6 +751,13 @@ public static class PerformanceService
     {
         var saved = SettingsService.Current.PowerModeBaseScheme;
         if (Guid.TryParse(saved, out var savedGuid) && !IsStandardScheme(saved)) return savedGuid;
+        // 当前正运行厂商方案时直接切回它，避免退到标准平衡后丢失 OEM 调校。
+        var active = GetActiveSchemeCached();
+        if (Guid.TryParse(active, out var activeGuid) && IsVendorScheme(active))
+        {
+            SettingsService.Update(s => s.PowerModeBaseScheme = active);
+            return activeGuid;
+        }
         if (FindOemScheme() is { } oem)
         {
             SettingsService.Update(s => s.PowerModeBaseScheme = oem.ToString());

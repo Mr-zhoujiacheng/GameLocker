@@ -36,6 +36,8 @@ public static class LaunchService
     private sealed class LaunchRecord
     {
         public readonly Dictionary<int, ProcessIdentity> Processes = new();
+        // 短命引导进程退出后仍需发现它已启动的子进程。
+        public readonly Dictionary<int, long> ExitedBefore = new();
     }
     private sealed record TargetState(HashSet<int> Pids, bool Uncertain);
     private static readonly ConcurrentDictionary<string, LaunchRecord> Records = new(StringComparer.OrdinalIgnoreCase);
@@ -44,26 +46,20 @@ public static class LaunchService
     public static async Task<LaunchResult> LaunchOrActivateAsync(LaunchItem item, CancellationToken token)
     {
         if (!InFlight.TryAdd(item.Target, 0)) return new(LaunchOutcome.Failed, "该程序正在处理中，请稍候");
+        var started = false;
         try
         {
             token.ThrowIfCancellationRequested();
+            var shortcut = Path.GetExtension(item.Target).Equals(".lnk", StringComparison.OrdinalIgnoreCase);
             var shellTarget = item.Kind is LaunchKind.Folder or LaunchKind.Url || IsDirectoryTarget(item.Target);
             var path = ResolveExecutable(item.Target);
-            if (shellTarget || (path is null && !IsExecutableTarget(item.Target)))
+            if (shellTarget || (path is null && (!IsExecutableTarget(item.Target) || shortcut)))
             {
-                var existing = FindShellWindow(item);
-                if (existing != 0) return await ActivateResultAsync(existing, token);
+                // URL、文档、商店快捷方式由 Shell/共享进程接管，标题不能可靠验证是否打开。
+                // 每次点击都交给 Shell，避免只激活同网站旧标签而没有打开本次链接。
                 token.ThrowIfCancellationRequested();
                 Start(item, null);
-                for (var i = 0; i < 65; i++)
-                {
-                    await Task.Delay(200, token);
-                    existing = FindShellWindow(item);
-                    if (existing == 0) continue;
-                    var activated = await ActivateResultAsync(existing, token);
-                    return activated.Success ? new(LaunchOutcome.Launched) : activated;
-                }
-                return new(LaunchOutcome.Failed, "已发出打开请求，但未能确认目标窗口；无法验证最大化状态");
+                return new(LaunchOutcome.Launched);
             }
 
             var state = CollectTargetProcesses(item, path);
@@ -73,10 +69,12 @@ public static class LaunchService
             if (hwnd != 0) return await ActivateResultAsync(hwnd, token);
             if (state.Pids.Count > 0) return await WakeTrayAsync(item, path, token);
             if (state.Uncertain || path is null)
-                return new(LaunchOutcome.Failed, "无法确认程序身份或读取进程路径，已避免重复启动；请检查快捷方式或权限");
+                return new(LaunchOutcome.Failed, "无法读取程序路径，请检查入口或权限");
 
             token.ThrowIfCancellationRequested();
             Start(item, path);
+            started = true;
+            CollectTargetProcesses(item, path); // 尽早记录引导进程及子进程。
             // 等待启动页切换到稳定窗口，只观察已验证进程，不捕获无关前台窗口。
             IntPtr pendingWindow = 0;
             var stableSince = Stopwatch.StartNew();
@@ -92,14 +90,18 @@ public static class LaunchService
                 }
                 if (hwnd == 0 || i < 9 || stableSince.ElapsedMilliseconds < 1000) continue;
                 var result = await ActivateResultAsync(hwnd, token);
-                return result.Success ? new(LaunchOutcome.Launched) : result;
+                // 启动请求已成功，窗口暂时忙或拒绝抢焦点不等于启动失败。
+                if (!result.Success) Diag($"已启动 {item.Name}，窗口切换未确认: {result.Message}");
+                return new(LaunchOutcome.Launched);
             }
-            return new(LaunchOutcome.Failed, "已发出启动请求，但未检测到可切换窗口；程序可能仍在加载、等待授权或仅驻留托盘");
+            Diag($"已启动 {item.Name}，等待窗口结束（可能仍在加载或驻留后台）");
+            return new(LaunchOutcome.Launched);
         }
         catch (OperationCanceledException)
         {
             Diag($"打开 {item.Name}: 超时/取消");
-            return new(LaunchOutcome.Failed, "操作超时，已停止后续切换；不会重复启动程序");
+            return started ? new(LaunchOutcome.Launched)
+                : new(LaunchOutcome.Failed, "操作已取消或超时");
         }
         catch (Exception ex)
         {
@@ -112,8 +114,8 @@ public static class LaunchService
     private static async Task<LaunchResult> WakeTrayAsync(LaunchItem item, string? path, CancellationToken token)
     {
         var names = new[] { item.Name, path is null ? null : Path.GetFileNameWithoutExtension(path) };
-        // 单击/默认动作无效后再试一次双击；每轮都先检查，避免窗口已经出现后再点回托盘。
-        for (var attempt = 0; attempt < 2; attempt++)
+        // 先尝试一次托盘默认动作；无效时让原启动入口处理唤醒。
+        for (var attempt = 0; attempt < 1; attempt++)
         {
             token.ThrowIfCancellationRequested();
             var state = CollectTargetProcesses(item, path);
@@ -130,20 +132,36 @@ public static class LaunchService
                 if (hwnd != 0) return await ActivateResultAsync(hwnd, token);
             }
         }
-        return new(LaunchOutcome.Failed, "程序已运行，但托盘图标未能恢复窗口；请手动打开一次，或检查双方权限是否一致");
+        // 浏览器后台模式、单实例应用和托盘应用可能没有可操作的托盘图标。
+        // 按用户本次点击重新交给原入口一次，由应用自身处理激活/新窗口请求。
+        token.ThrowIfCancellationRequested();
+        Diag($"重新打开入口 {item.Name}: 后台进程存在但无窗口");
+        Start(item, path);
+        return new(LaunchOutcome.Launched);
     }
 
     private static void Start(LaunchItem item, string? path)
     {
         using var process = Process.Start(new ProcessStartInfo
         {
-            FileName = item.Target, UseShellExecute = true, WindowStyle = ProcessWindowStyle.Maximized
+            FileName = item.Target, UseShellExecute = true, WindowStyle = ProcessWindowStyle.Maximized,
+            WorkingDirectory = path is not null ? Path.GetDirectoryName(path) ?? "" : ""
         });
-        var record = new LaunchRecord();
+        var record = Records.GetOrAdd(item.Target, _ => new LaunchRecord());
         if (process is not null && ReadIdentity(process.Id) is { } identity)
-            record.Processes[identity.Pid] = identity;
-        Records[item.Target] = record;
-        if (path is not null && process is not null) GameCpuService.Register(process.Id);
+        {
+            lock (record)
+            {
+                record.Processes[identity.Pid] = identity;
+                record.ExitedBefore.Remove(identity.Pid);
+            }
+        }
+        // CPU 调度登记失败不能把已成功的 Shell 启动反报为失败（引导进程可能已经退出）。
+        if (path is not null && process is not null)
+        {
+            try { GameCpuService.Register(process.Id); }
+            catch (Exception ex) { Diag($"调度登记跳过 {item.Name}: {ex.Message}"); }
+        }
         Diag($"启动 {item.Name}: pid={process?.Id} executable={path is not null}");
     }
 
@@ -158,7 +176,14 @@ public static class LaunchService
             {
                 var current = ReadIdentity(known.Pid);
                 if (current == known) pids.Add(known.Pid);
-                else record.Processes.Remove(known.Pid);
+                else if (current is not null)
+                {
+                    // PID 已复用：不能再用这个父 PID 发现后代。
+                    record.Processes.Remove(known.Pid);
+                    record.ExitedBefore.Remove(known.Pid);
+                }
+                else if (!record.ExitedBefore.ContainsKey(known.Pid))
+                    record.ExitedBefore[known.Pid] = DateTime.UtcNow.ToFileTimeUtc();
             }
             var leaf = path is null ? Path.GetFileNameWithoutExtension(item.Target) : Path.GetFileNameWithoutExtension(path);
             foreach (var process in Process.GetProcesses())
@@ -196,11 +221,14 @@ public static class LaunchService
                         added = false;
                         foreach (var e in entries)
                         {
-                            if (pids.Contains(e.Pid) || e.Pid == Environment.ProcessId || !pids.Contains(e.Parent)) continue;
-                            var parent = record.Processes[e.Parent];
-                            if (ReadIdentity(parent.Pid) != parent) continue;
+                            if (pids.Contains(e.Pid) || e.Pid == Environment.ProcessId
+                                || !record.Processes.TryGetValue(e.Parent, out var parent)) continue;
+                            var liveParent = ReadIdentity(parent.Pid);
+                            if (liveParent is not null && liveParent != parent) continue;
                             var child = ReadIdentity(e.Pid);
                             if (child is null || child.Started < parent.Started) continue;
+                            if (record.ExitedBefore.TryGetValue(parent.Pid, out var exitedBefore)
+                                && child.Started > exitedBefore) continue;
                             pids.Add(child.Pid);
                             record.Processes[child.Pid] = child;
                             added = true;
@@ -253,8 +281,19 @@ public static class LaunchService
             if (Path.GetExtension(target).Equals(".lnk", StringComparison.OrdinalIgnoreCase))
                 target = DropImportService.ResolveShortcutTarget(target) ?? "";
             if (!Path.GetExtension(target).Equals(".exe", StringComparison.OrdinalIgnoreCase)) return null;
-            if (!Path.IsPathFullyQualified(target) || !File.Exists(target)) return null;
-            return Path.GetFullPath(target);
+            if (Path.IsPathFullyQualified(target))
+                return File.Exists(target) ? Path.GetFullPath(target) : null;
+            // 系统磁贴可能只保存 notepad.exe / calc.exe，Shell 能打开，身份解析也应支持。
+            var directories = new[] { AppContext.BaseDirectory, Environment.SystemDirectory,
+                Environment.GetFolderPath(Environment.SpecialFolder.Windows) }
+                .Concat((Environment.GetEnvironmentVariable("PATH") ?? "").Split(Path.PathSeparator));
+            foreach (var directory in directories)
+            {
+                if (string.IsNullOrWhiteSpace(directory)) continue;
+                var candidate = Path.Combine(directory.Trim().Trim('"'), target);
+                if (File.Exists(candidate)) return Path.GetFullPath(candidate);
+            }
+            return null;
         }
         catch { return null; }
     }
@@ -309,7 +348,12 @@ public static class LaunchService
         {
             token.ThrowIfCancellationRequested();
             if (!IsUsableWindow(hwnd)) break;
-            if (IsHungAppWindow(hwnd)) return new(LaunchOutcome.Failed, "目标程序暂时无响应，未强制操作其窗口");
+            if (IsHungAppWindow(hwnd))
+            {
+                // 加载期间可能暂时被 Windows 标记为忙，短暂等待，避免第一次采样就误报。
+                await Task.Delay(350, token);
+                continue;
+            }
             // 最大化主窗口，模态对话框仍保留焦点与原尺寸；不强显托盘隐藏窗。
             var main = GetAncestor(hwnd, 3);
             if (!IsUsableWindow(main)) main = hwnd;
@@ -321,12 +365,21 @@ public static class LaunchService
             else if (IsIconic(main)) ShowWindowAsync(main, 9);
             if (hwnd != main && IsIconic(hwnd)) ShowWindowAsync(hwnd, 9);
             SetForegroundWindow(hwnd);
+            if (GetForegroundWindow() != hwnd)
+            {
+                var foreground = GetForegroundWindow();
+                var foregroundThread = foreground != 0 ? GetWindowThreadProcessId(foreground, out _) : 0;
+                var currentThread = GetCurrentThreadId();
+                var attached = foregroundThread != 0 && foregroundThread != currentThread
+                    && AttachThreadInput(currentThread, foregroundThread, true);
+                try { SetForegroundWindow(hwnd); }
+                finally { if (attached) AttachThreadInput(currentThread, foregroundThread, false); }
+            }
             await Task.Delay(180, token);
             var fg = GetForegroundWindow();
             var success = fg == hwnd || (IsUsableWindow(fg) && GetAncestor(fg, 3) == GetAncestor(hwnd, 3));
-            var maximized = !canMaximize || (IsZoomed(main) && !IsIconic(main));
             Diag($"激活 hwnd=0x{hwnd.ToInt64():X} attempt={attempt + 1} foreground=0x{fg.ToInt64():X} success={success} canMaximize={canMaximize} maximized={IsZoomed(main)}");
-            if (success && maximized) return new(LaunchOutcome.Activated);
+            if (success) return new(LaunchOutcome.Activated);
         }
         return new(LaunchOutcome.Failed, "窗口存在，但未能完成前台切换或最大化；请检查程序权限或手动点击任务栏");
     }
@@ -437,6 +490,8 @@ public static class LaunchService
     [DllImport("user32.dll")] private static extern bool IsHungAppWindow(IntPtr hwnd);
     [DllImport("user32.dll")] private static extern bool ShowWindowAsync(IntPtr hwnd, int command);
     [DllImport("user32.dll")] private static extern bool SetForegroundWindow(IntPtr hwnd);
+    [DllImport("kernel32.dll")] private static extern uint GetCurrentThreadId();
+    [DllImport("user32.dll")] private static extern bool AttachThreadInput(uint current, uint foreground, bool attach);
     [DllImport("user32.dll")] private static extern IntPtr GetForegroundWindow();
     [DllImport("user32.dll")] private static extern IntPtr GetWindow(IntPtr hwnd, uint command);
     [DllImport("user32.dll")] private static extern IntPtr GetAncestor(IntPtr hwnd, uint flags);

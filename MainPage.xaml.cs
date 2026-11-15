@@ -447,11 +447,13 @@ public sealed partial class MainPage : Page
         BatteryIcon.Visibility = onAc ? Visibility.Collapsed : Visibility.Visible;
         if (onAc)
         {
-            // 插头与电池用同一套电量分档颜色
+            // 插头与电池用同一套电量分档颜色（绿/黄/红）
             var plugBrush = new SolidColorBrush(BatteryService.Describe(pct.Value).color);
             BatteryPlugProngs.Stroke = plugBrush;
             BatteryPlugBody.Fill = plugBrush;
-            BatteryPlugCable.Stroke = plugBrush;
+            BatteryPlugHandle.Stroke = plugBrush;
+            // 闪电用气泡底色挖空：跟随背景色，保持“透出”的观感
+            BatteryPlugBolt.Fill = new SolidColorBrush(Windows.UI.Color.FromArgb(0xFF, 0x1A, 0x1D, 0x23));
             ToolTipService.SetToolTip(BatteryBubble, $"已接电源 · 电池 {pct.Value}%");
             return;
         }
@@ -1481,6 +1483,9 @@ public sealed partial class MainPage : Page
         MoveHintBadge.Background = new SolidColorBrush(
             Windows.UI.Color.FromArgb(0x2A, accent.R, accent.G, accent.B));
         MoveHintText.Text = text;
+        // 窄侧边栏下不撑破窗口：提示文本宽度跟随可用宽度，最多两行
+        var toastWidth = ActualWidth > 0 ? Math.Max(160, ActualWidth - 84) : 500;
+        MoveHintText.MaxWidth = Math.Min(500, toastWidth);
 
         // 下载进度 → 细进度条（0..1 折算成 0..100）；下载结束/失败的报告不带进度，条随即收起
         if (progress is { } p)
@@ -1541,10 +1546,10 @@ public sealed partial class MainPage : Page
     {
         if (added == 0)
         {
-            ShowToast(skipped > 0 ? "拖入项已存在或不支持，未添加" : "未识别到可添加项", ToastKind.Warning);
+            ShowToast(skipped > 0 ? "已存在或不支持，未添加" : "未识别到可添加项", ToastKind.Warning);
             return;
         }
-        ShowToast(skipped > 0 ? $"已添加 {added} 个磁贴（跳过 {skipped} 个重复/不支持）" : $"已添加 {added} 个磁贴");
+        ShowToast(skipped > 0 ? $"已添加 {added} 个（跳过 {skipped} 个）" : $"已添加 {added} 个磁贴");
     }
 
     /// <summary>
@@ -3772,7 +3777,7 @@ public sealed partial class MainPage : Page
             UpdateSelection();
             if (_moving) UpdateHintBar(); else UpdateHintForSelection();
             var name = CurrentDrawerPage()?.Name;
-            ShowToast(string.IsNullOrWhiteSpace(name) ? "卡牌是空的 · 按 X 添加磁贴" : $"「{name}」是空的 · 按 X 添加磁贴", ToastKind.Warning);
+            ShowToast(string.IsNullOrWhiteSpace(name) ? "卡牌是空的 · 按 X 添加" : $"「{name}」是空的 · 按 X 添加", ToastKind.Warning);
             return;
         }
         _drawerFocusPos = 0;
@@ -4849,7 +4854,7 @@ public sealed partial class MainPage : Page
     {
         if (!LosslessScalingService.IsInstalled(item))
         {
-            ShowToast("未检测到小黄鸭：请先安装，或按 R3 指定程序", ToastKind.Warning);
+            ShowToast("未检测到小黄鸭：请先安装，或按 R3 指定", ToastKind.Warning);
             return;
         }
         var ok = await LosslessScalingService.LaunchMinimizedAsync(item);
@@ -4874,7 +4879,7 @@ public sealed partial class MainPage : Page
         if (app is null) { ShowToast("未检测到前台应用", ToastKind.Warning); return; }
         if (ForegroundWatcherService.IsProtected(app)) { ShowToast($"{app.ProcessName} 为系统关键进程，不可操作", ToastKind.Warning); return; }
         var (ok, frozen) = ForegroundWatcherService.ToggleFreeze();
-        if (!ok) { ShowToast("冻结/解冻失败：权限不足或应用已退出", ToastKind.Warning); return; }
+        if (!ok) { ShowToast("冻结/解冻失败：权限不足", ToastKind.Warning); return; }
         ShowToast(frozen ? $"已冻结 {app.ProcessName}" : $"已解冻 {app.ProcessName}", ToastKind.Success, sound: UiSoundKind.Select);
     }
 
@@ -4885,7 +4890,7 @@ public sealed partial class MainPage : Page
         if (app is null) { ShowToast("未检测到前台应用", ToastKind.Warning); return; }
         if (ForegroundWatcherService.IsProtected(app)) { ShowToast($"{app.ProcessName} 为系统关键进程，不可操作", ToastKind.Warning); return; }
         if (ForegroundWatcherService.Kill()) ShowToast($"已结束 {app.ProcessName}", ToastKind.Success);
-        else ShowToast("结束失败：应用可能已退出或权限不足", ToastKind.Warning);
+        else ShowToast("结束失败：权限不足或已退出", ToastKind.Warning);
     }
 
     /// <summary>映射触发中（防止"手柄键=A"这类映射递归触发自身）</summary>
@@ -5069,7 +5074,7 @@ public sealed partial class MainPage : Page
         if (item.Kind == LaunchKind.Widget && item.WidgetKind == WidgetKind.Backup) { SaveBackupService.Sync(item); return; }
         if (item.Kind == LaunchKind.Widget && item.WidgetKind == WidgetKind.RecycleBin) { EmptyRecycleBin(); return; }
         if (item.Kind == LaunchKind.Widget && item.WidgetKind == WidgetKind.Foreground) { CloseForegroundApp(); return; }
-        if (item.Kind == LaunchKind.Widget && item.WidgetKind == WidgetKind.System) { ShowToast("系统小组件：右摇杆←→切换 · A 开关 · LB/RB 调整"); return; }
+        if (item.Kind == LaunchKind.Widget && item.WidgetKind == WidgetKind.System) { ShowToast("摇杆←→切换 · A 开关 · LB/RB 调"); return; }
         if (item.Kind == LaunchKind.Widget && item.WidgetKind == WidgetKind.Performance) { OpenPerformanceMenu(); return; } // 性能控制：Y=打开性能面板
         if (item.Kind == LaunchKind.Widget && item.WidgetKind == WidgetKind.Clash) { _ = RefreshFastestProxyAsync(item); return; }
         if (item.Kind == LaunchKind.Widget && item.WidgetKind == WidgetKind.Wallpaper) { LikeWallpaper(item); return; }
@@ -6136,7 +6141,7 @@ public sealed partial class MainPage : Page
         var task = await Task.Run(CpuPowerService.EnsureAutoApplyTask);
         DebugLog.Write($"[功耗] 保存目标 PL1={pl1} PL2={pl2} FPPT={fppt} 助手={(CpuPowerService.Active ? "已连接" : "未连接")} "
             + $"开机自动恢复={task.Ok} {task.Message}");
-        if (!task.Ok) ShowToast("功耗已保存，但开机自动恢复未注册：" + task.Message, ToastKind.Warning);
+        if (!task.Ok) ShowToast("已保存，但开机恢复未注册：" + task.Message, ToastKind.Warning);
     }
 
     private async void ToggleCpuPower()
@@ -6162,7 +6167,7 @@ public sealed partial class MainPage : Page
         var profile = PowerProfileService.Active;
         if (!_perfOpen || _perfBusy || _perfPowerLoading) return;
         if (index >= _perfPowerState.Limits.Length || !_perfPowerState.Limits[index].Writable)
-        { ShowToast("当前 CPU 功耗接口不可写，请先启用或检查固件限制", ToastKind.Warning); return; }
+        { ShowToast("功耗接口不可写，请先启用或检查固件", ToastKind.Warning); return; }
         double watts = _perfPowerControls[index].Slider.Value;
         _perfBusy = true;
         RenderCpuPower();
@@ -6172,7 +6177,7 @@ public sealed partial class MainPage : Page
             _perfPowerState = await Task.Run(CpuPowerService.Read);
             bool confirmed = result.Ok && index < _perfPowerState.Limits.Length
                 && Math.Abs(_perfPowerState.Limits[index].Watts - watts) <= 0.25;
-            ShowToast(confirmed || !result.Ok ? result.Message : "写入后再次读取未能确认目标值，请检查固件覆盖或助手状态", confirmed ? ToastKind.Success : ToastKind.Warning);
+            ShowToast(confirmed || !result.Ok ? result.Message : "未读到目标值，请检查固件或助手", confirmed ? ToastKind.Success : ToastKind.Warning);
             if (confirmed) await SaveCpuPowerSettingsAsync(profile);
         }
         finally { _perfBusy = false; RenderCpuPower(); }
@@ -6801,7 +6806,7 @@ public sealed partial class MainPage : Page
         if (!_perfOpen || _perfBusy || _perfSaving) return;
         if (!_perfSystemState.Available)
         {
-            ShowToast("当前系统不支持电源模式，未修改设置", ToastKind.Warning);
+            ShowToast("系统不支持电源模式，未修改", ToastKind.Warning);
             return;
         }
         FocusPerformanceRow(_perfCards[index]);
@@ -6983,6 +6988,9 @@ public sealed partial class MainPage : Page
         _ftDropped.Clear();
         HighlightFileTransferDrop(false);
         FileTransferOverlay.Visibility = Visibility.Visible;
+        FileTransferOverlay.SizeChanged -= OnFileTransferOverlaySizeChanged;
+        FileTransferOverlay.SizeChanged += OnFileTransferOverlaySizeChanged;
+        FitFileTransferPanel();
         PlayFileTransferIn();
         FileTransferService.StateChanged += OnFileTransferChanged;
         FileTransferService.Start(item.FileTransferSendFolder, item.FileTransferRecvFolder);
@@ -6993,6 +7001,7 @@ public sealed partial class MainPage : Page
     {
         if (!_fileTransferOpen) return;
         _fileTransferOpen = false;
+        FileTransferOverlay.SizeChanged -= OnFileTransferOverlaySizeChanged;
         FileTransferService.StateChanged -= OnFileTransferChanged;
         FileTransferService.Stop();
         _ftDropped.Clear();
@@ -7001,6 +7010,19 @@ public sealed partial class MainPage : Page
 
     private void OnFileTransferChanged() =>
         DispatcherQueue.TryEnqueue(() => { if (_fileTransferOpen) RenderFileTransfer(); });
+
+    private void OnFileTransferOverlaySizeChanged(object sender, SizeChangedEventArgs e) =>
+        FitFileTransferPanel();
+
+    /// <summary>面板随窗口自适应：宽度由 XAML 的 Stretch + Margin 决定，这里只限制高度以免超出窗口。</summary>
+    private void FitFileTransferPanel()
+    {
+        if (!_fileTransferOpen) return;
+        var height = FileTransferOverlay.ActualHeight;
+        if (height <= 0) height = ActualHeight;
+        // 上下各留 10 边距；内容超长时由内部 ScrollViewer 滚动。
+        if (height > 0) FileTransferPanel.MaxHeight = Math.Max(200, height - 20);
+    }
 
     /// <summary>入场：遮罩淡入 + 面板轻微放大并自下而上归位（与电源菜单一致的手感）</summary>
     private Storyboard? _ftIn;
@@ -8028,7 +8050,7 @@ public sealed partial class MainPage : Page
     private bool AdjustPerformancePowerLimit(LaunchItem item, int dir)
     {
         var state = CpuPowerService.Cached;
-        if (!state.Enabled) { ShowToast("按 A 启用功耗控制（需要管理员授权）", ToastKind.Warning); return true; }
+        if (!state.Enabled) { ShowToast("按 A 启用功耗控制（需授权）", ToastKind.Warning); return true; }
         if (!state.Supported || state.Limits.Length == 0 || !state.Limits[0].Writable)
         { ShowToast("当前 CPU 功耗接口不可写", ToastKind.Warning); return true; }
 
@@ -8804,8 +8826,8 @@ public sealed partial class MainPage : Page
         try
         {
             if (App.Main is { } main) await main.HideForLaunchAsync(timeout.Token);
-            var work = Task.Run(() => LaunchService.LaunchOrActivateAsync(item, token));
-            var result = await work.WaitAsync(timeout.Token);
+            // 等服务完成取消清理，避免界面先报超时，而后台仍在打开程序或占着同一目标。
+            var result = await Task.Run(() => LaunchService.LaunchOrActivateAsync(item, token));
             if (!result.Success)
             {
                 App.Main?.ShowFromTray();
@@ -8816,7 +8838,7 @@ public sealed partial class MainPage : Page
         {
             timeout.Cancel();
             App.Main?.ShowFromTray();
-            ShowToast("切换已取消或超时；不会重复启动程序", ToastKind.Warning);
+            ShowToast("已取消或超时，不会重复启动", ToastKind.Warning);
         }
         catch (Exception ex)
         {
@@ -8849,7 +8871,7 @@ public sealed partial class MainPage : Page
         // 系统小组件：一个磁贴里没有"可关闭的程序"，Y 交给上层做提示（避免提示"未找到运行中的程序"）
         if (item.Kind == LaunchKind.Widget && item.WidgetKind == WidgetKind.System)
         {
-            ShowToast("系统小组件：右摇杆←→切换项 · A 开关/打开 · LB/RB 调整");
+            ShowToast("摇杆←→切换项 · A 开关 · LB/RB 调整");
             return;
         }
         if (item.Kind == LaunchKind.Widget && item.WidgetKind == WidgetKind.Trainer)

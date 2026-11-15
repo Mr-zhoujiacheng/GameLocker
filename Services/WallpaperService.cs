@@ -32,6 +32,7 @@ public static class WallpaperService
     private sealed class State
     {
         public string Source = "bing";
+        public string DownloadDir = CacheDir;
         public int IntervalSeconds = 600;
         public int Elapsed;
         public List<string> Files = [];
@@ -45,6 +46,9 @@ public static class WallpaperService
 
     private static readonly Dictionary<string, State> _states = new(StringComparer.OrdinalIgnoreCase);
     private static readonly Dictionary<string, ImageSource?> _imageCache = new(StringComparer.OrdinalIgnoreCase);
+
+    private static bool _dailyRefreshing;
+    private static readonly Dictionary<string, DateTime> DailyRetryAt = new();
 
     private static DispatcherTimer? _timer;
     private static DispatcherQueue? _uiQueue;
@@ -108,7 +112,8 @@ public static class WallpaperService
         st.IntervalSeconds = interval;
         st.Liked = new HashSet<string>(item.WallpaperLiked, StringComparer.OrdinalIgnoreCase);
         st.Blocked = new HashSet<string>(item.WallpaperBlocked, StringComparer.OrdinalIgnoreCase);
-        if (sourceChanged || prefsChanged) Rescan(st);
+        if (sourceChanged || prefsChanged || st.Files.Count == 0) Rescan(st);
+        if (TryDailyRefresh()) return;
         if (st.Files.Count == 0 && !st.Busy) _ = FillAsync(st);
         else if (!st.Busy && st.Files.Count - st.Index <= 1) _ = FillAsync(st);
     }
@@ -269,10 +274,15 @@ public static class WallpaperService
     /// <summary>定时推进：按每个小组件自己的速度换下一张，并在快用完时补下载</summary>
     private static void Tick()
     {
+        TryDailyRefresh();
         var changed = false;
         foreach (var st in _states.Values)
         {
-            if (st.Files.Count == 0) continue;
+            if (st.Files.Count == 0)
+            {
+                if (!st.Busy && !_dailyRefreshing) _ = FillAsync(st);
+                continue;
+            }
             st.Elapsed++;
             if (st.Elapsed < st.IntervalSeconds) continue;
             st.Elapsed = 0;
@@ -281,6 +291,80 @@ public static class WallpaperService
             if (st.Files.Count - st.Index <= 1 && !st.Busy) _ = FillAsync(st);
         }
         if (changed) Changed?.Invoke();
+    }
+
+    private static string DailyMarker(string source) => Path.Combine(CacheDir, source + "-refresh-date.txt");
+
+    /// <summary>按来源每天刷新一次；先下载到临时目录，成功后再替换，断网时保留旧图。</summary>
+    private static bool TryDailyRefresh()
+    {
+        if (_dailyRefreshing) return true;
+        var today = DateTime.Today.ToString("yyyy-MM-dd");
+        foreach (var st in _states.Values)
+        {
+            if (_states.Values.Any(s => s.Source == st.Source && s.Busy)) continue;
+            if (DailyRetryAt.TryGetValue(st.Source, out var retry) && DateTime.UtcNow < retry) continue;
+            try
+            {
+                if (File.Exists(DailyMarker(st.Source)) && File.ReadAllText(DailyMarker(st.Source)).Trim() == today) continue;
+            }
+            catch { }
+            _ = RefreshDailyAsync(st.Source, today);
+            return true;
+        }
+        return false;
+    }
+
+    private static async Task RefreshDailyAsync(string source, string today)
+    {
+        _dailyRefreshing = true;
+        var affected = _states.Values.Where(s => s.Source == source).ToArray();
+        foreach (var st in affected) st.Busy = true;
+        RaiseChanged();
+        var staging = Path.Combine(CacheDir, ".daily-" + Guid.NewGuid().ToString("N"));
+        var batch = new State { Source = source, DownloadDir = staging };
+        try
+        {
+            // Bing 提供最近八天的图片；Picsum 每次随机取新图。
+            for (var i = 0; i < 8; i++)
+                if (await FetchAsync(batch) is null) break;
+            var fresh = Directory.Exists(staging) ? Directory.GetFiles(staging)
+                .Where(f => ImageExtensions.Contains(Path.GetExtension(f), StringComparer.OrdinalIgnoreCase)).ToArray() : [];
+            if (fresh.Length == 0) throw new IOException("未能下载新壁纸");
+            var names = fresh.Select(Path.GetFileName).ToHashSet(StringComparer.OrdinalIgnoreCase);
+            foreach (var file in fresh) File.Move(file, Path.Combine(CacheDir, Path.GetFileName(file)), true);
+            // 收藏文件保留；只清理该来源旧批次的普通缓存，不影响另一来源。
+            var liked = _states.Values.SelectMany(s => s.Liked).ToHashSet(StringComparer.OrdinalIgnoreCase);
+            foreach (var file in Directory.GetFiles(CacheDir, source + "_*"))
+            {
+                var name = Path.GetFileName(file);
+                if (!ImageExtensions.Contains(Path.GetExtension(file), StringComparer.OrdinalIgnoreCase)
+                    || names.Contains(name) || liked.Contains(name)) continue;
+                try { File.Delete(file); } catch { }
+            }
+            _imageCache.Clear();
+            File.WriteAllText(DailyMarker(source), today);
+            foreach (var st in affected)
+            {
+                st.LastError = "";
+                st.Elapsed = st.Index = 0;
+            }
+            DebugLog.Write($"[壁纸] {source} 每日刷新完成：{fresh.Length} 张");
+        }
+        catch (Exception ex)
+        {
+            DailyRetryAt[source] = DateTime.UtcNow.AddMinutes(5);
+            DebugLog.Write($"[壁纸] {source} 每日刷新失败，保留旧缓存：{ex.Message}");
+            foreach (var st in affected) st.LastError = "刷新失败，稍后重试";
+        }
+        finally
+        {
+            // staging 是本方法创建、位于 CacheDir 下的唯一临时目录。
+            try { if (Directory.Exists(staging)) Directory.Delete(staging, true); } catch { }
+            foreach (var st in affected) { st.Busy = false; Rescan(st); }
+            _dailyRefreshing = false;
+            RaiseChanged();
+        }
     }
 
     /// <summary>补下载：池子里不足 6 张时再取几张（最多 4 次），失败后 60 秒内不再重试</summary>
@@ -337,7 +421,7 @@ public static class WallpaperService
     {
         try
         {
-            Directory.CreateDirectory(CacheDir);
+            Directory.CreateDirectory(st.DownloadDir);
             var candidates = await GetCandidatesAsync(st);
             if (candidates.Count == 0)
             {
@@ -346,7 +430,7 @@ public static class WallpaperService
             }
             foreach (var (url, name) in candidates)
             {
-                var dest = Path.Combine(CacheDir, st.Source + "_" + name);
+                var dest = Path.Combine(st.DownloadDir, st.Source + "_" + name);
                 if (File.Exists(dest) && new FileInfo(dest).Length > 0) continue;
                 using var resp = await _http.GetAsync(url);
                 if (!resp.IsSuccessStatusCode) { st.LastError = $"HTTP {resp.StatusCode}"; continue; }
@@ -355,7 +439,8 @@ public static class WallpaperService
                 var tmp = dest + ".tmp";
                 await File.WriteAllBytesAsync(tmp, bytes);
                 File.Move(tmp, dest, true);
-                TrimCache(st);
+                if (st.DownloadDir == CacheDir) TrimCache(st);
+                st.LastError = "";
                 return dest;
             }
             if (st.LastError.Length == 0) st.LastError = "没有可用的新壁纸";

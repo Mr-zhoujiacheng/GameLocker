@@ -102,6 +102,8 @@ internal static class MonitorHelperHost
                     if (!output.Start()) Log("显示帧采集失败：" + output.LastError);
                 }
                 output?.SetTargets(targetPid, outputPid);
+                if (outputPid > 0 && tick % 10 == 0)
+                    DebugLog.Write($"[显示帧采集] game={targetPid} output={outputPid} fps={output?.GetFps(outputPid):0.##} error={output?.LastError}");
                 if (etw is not null)
                 {
                     etw.TargetPid = targetPid;

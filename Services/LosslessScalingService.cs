@@ -59,6 +59,15 @@ public static class LosslessScalingService
 
     /// <summary>内置 Magpie 宿主进程（FGHost.exe）</summary>
     private static Process? _magpieHost;
+    private static IntPtr _magpieGameWindow;
+
+    internal static int ActiveMagpieGamePid()
+    {
+        var window = _magpieGameWindow;
+        if (!IsMagpieScaling || window == IntPtr.Zero || !IsWindow(window)) return 0;
+        GetWindowThreadProcessId(window, out var pid);
+        return (int)pid;
+    }
     private static int _magpieState;
     private static int _cancelMagpie;
     public static string MagpieTargetName { get; private set; } = "";
@@ -93,7 +102,7 @@ public static class LosslessScalingService
     /// </summary>
     public static int ActiveMagpiePresenterPid()
     {
-        if (!IsMagpieRunning) return 0;
+        if (!IsMagpieScaling) return 0;
         var hostPid = 0;
         try { hostPid = _magpieHost?.Id ?? 0; } catch { }
         var presenter = 0;
@@ -102,13 +111,8 @@ public static class LosslessScalingService
             if (!IsWindowVisible(h)) return true;
             GetWindowThreadProcessId(h, out var owner);
             var pid = (int)owner;
-            var cls = new StringBuilder(64);
-            GetClassNameW(h, cls, cls.Capacity);
-            var name = cls.ToString();
-            // 宿主的输出窗（Magpie 系类名），或宿主进程自己的可见窗口都算输出端。
-            if (name.Contains("Magpie", StringComparison.OrdinalIgnoreCase)
-                || name.Contains("FGHost", StringComparison.OrdinalIgnoreCase)
-                || (hostPid > 0 && pid == hostPid))
+            // 仅接受本启动器所管理的宿主，不能误采另一份 Magpie 的窗口。
+            if (hostPid > 0 && pid == hostPid)
             {
                 presenter = pid;
                 return false;
@@ -653,6 +657,7 @@ public static class LosslessScalingService
             var host = Process.Start(psi);
             if (host is null) return ScaleResult.LaunchFailed;
             _magpieHost = host;
+            _magpieGameWindow = target;
             host.OutputDataReceived += (_, e) =>
             {
                 if (!string.IsNullOrWhiteSpace(e.Data)) DebugLog.Write($"[FGHost] {e.Data}");

@@ -518,14 +518,11 @@ public static class MonitorService
         var duckPid = NeedsFrameStats() ? LosslessScalingService.ActiveOutputPid() : 0;
         // 内置插帧（XeSS / FSR3）：Magpie 输出窗会占住前台，要回指到它下面真正在跑的游戏
         var magpiePid = NeedsFrameStats() ? LosslessScalingService.ActiveMagpiePresenterPid() : 0;
-        if (magpiePid > 0 && (targetPid == magpiePid || targetPid <= 0))
+        if (magpiePid > 0)
         {
-            var gameHwnd = ForegroundWatcherService.FrameGenTargetWindow;
-            if (gameHwnd != IntPtr.Zero)
-            {
-                GetWindowThreadProcessId(gameHwnd, out var gamePid);
-                if ((int)gamePid > 4) targetPid = (int)gamePid;
-            }
+            // 用启动 FGHost 时绑定的游戏，避免桌面/启动器/覆盖层切换导致采集目标来回清空。
+            var gamePid = LosslessScalingService.ActiveMagpieGamePid();
+            if (gamePid > 4) targetPid = gamePid;
         }
         var outputPid = magpiePid > 0 ? magpiePid : duckPid > 0 ? duckPid : targetPid;
         s.FrameGenerationDetected = magpiePid > 0 || duckPid > 0;
@@ -637,12 +634,13 @@ public static class MonitorService
             s.OutputFps = _lastOutputFps;
             s.FrameGenerationDetected |= _lastOutputGenerated;
         }
-        if (outputPid > 0 && outputPid == targetPid)
+        if (s.FrameGenerationDetected && targetPid > 0 && outputPid != targetPid)
         {
-            // 外部插帧输入是游戏的 ETW 原始帧率；内置插帧则保留 ETW 的原始帧分类结果。
-            // 这里只在输出端就是游戏本身（未插帧/小黄鸭同进程）时才标注原始帧率。
-            s.OriginalFps = targetPid != outputPid && s.Fps > 0 ? s.Fps : s.OriginalFps;
+            // 独立插帧宿主的输入 FPS 来自真实游戏提交事件，不用输出倍率推算。
+            s.OriginalFps = s.Fps > 0 ? s.Fps : double.NaN;
         }
+        if (magpiePid > 0 && n % 5 == 0)
+            DebugLog.Write($"[插帧监控] game={targetPid} output={outputPid} inputFps={s.Fps:0.##} outputFps={s.OutputFps:0.##} helper={_helperAlive} error={_losslessOutput?.LastError}");
         return s;
     }
 

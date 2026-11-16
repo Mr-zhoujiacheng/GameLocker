@@ -23,14 +23,40 @@ internal static class PowerProfileService
     [DllImport("kernel32.dll", SetLastError = true)]
     private static extern bool GetSystemPowerStatus(out SystemPowerStatus status);
 
-    /// <summary>当前是否由交流电供电（读取失败时按插电处理，保持原行为）</summary>
-    public static bool OnAc
+    private static bool _lastKnownOnAc = true;
+    private static readonly SemaphoreSlim ApplyGate = new(1, 1);
+
+    /// <summary>未知状态返回 null，恢复期间不把 ACLineStatus=255 误判为电池。</summary>
+    public static bool? ReadOnAc()
     {
-        get
+        try
         {
-            try { return GetSystemPowerStatus(out var status) && status.ACLineStatus == 1; }
-            catch { return true; }
+            if (GetSystemPowerStatus(out var status) && status.ACLineStatus <= 1)
+            {
+                _lastKnownOnAc = status.ACLineStatus == 1;
+                return _lastKnownOnAc;
+            }
         }
+        catch { }
+        return null;
+    }
+
+    public static bool OnAc => ReadOnAc() ?? _lastKnownOnAc;
+
+    /// <summary>启动/登录任务写功耗前，先按实际供电选择已保存目标，避免用上次关机时的另一套值。</summary>
+    public static void SynchronizeSavedCpuTarget()
+    {
+        var onAc = ReadOnAc();
+        var settings = SettingsService.Current;
+        if (onAc is null || !settings.SeparatePowerProfiles) return;
+        var profile = (onAc.Value ? settings.AcProfile : settings.BatteryProfile).Copy();
+        if (!profile.CpuPowerEnabled || profile.CpuPowerPl1 <= 0) return;
+        SettingsService.Update(s =>
+        {
+            s.CpuPowerPl1 = profile.CpuPowerPl1;
+            s.CpuPowerPl2 = profile.CpuPowerPl2;
+            s.CpuPowerFppt = profile.CpuPowerFppt;
+        });
     }
 
     /// <summary>当前供电方式对应的那套参数</summary>
@@ -81,7 +107,16 @@ internal static class PowerProfileService
     /// <summary>插拔电源后按新的供电方式重新应用参数；返回本次实际应用的项，供日志定位</summary>
     public static async Task<string> ApplyActiveAsync()
     {
-        var onAc = OnAc;
+        await ApplyGate.WaitAsync();
+        try { return await ApplyActiveCoreAsync(); }
+        finally { ApplyGate.Release(); }
+    }
+
+    private static async Task<string> ApplyActiveCoreAsync()
+    {
+        var detected = ReadOnAc();
+        if (detected is null) return "供电状态暂不可用，等待重试";
+        var onAc = detected.Value;
         var settings = SettingsService.Current;
         var profile = (!settings.SeparatePowerProfiles ? settings.SharedProfile
             : onAc ? settings.AcProfile : settings.BatteryProfile).Copy();

@@ -103,7 +103,7 @@ internal static class MonitorHelperHost
                 }
                 output?.SetTargets(targetPid, outputPid);
                 if (outputPid > 0 && tick % 10 == 0)
-                    DebugLog.Write($"[显示帧采集] game={targetPid} output={outputPid} fps={output?.GetFps(outputPid):0.##} error={output?.LastError}");
+                    Log($"[显示帧采集] game={targetPid} output={outputPid} fps={output?.GetFps(outputPid):0.##} {output?.Diagnostics}");
                 if (etw is not null)
                 {
                     etw.TargetPid = targetPid;
@@ -116,7 +116,8 @@ internal static class MonitorHelperHost
                 shared.Publish(fps, frameMs, history, cpuTemp, gpuTemp, targetPid,
                     etw?.GetOriginalFps() ?? double.NaN,
                     (etw?.FrameGenerationDetected ?? false) || (output?.HasGeneratedFrames(targetPid) ?? false),
-                    outputPid, output?.GetFps(outputPid) ?? double.NaN);
+                    outputPid, output?.GetFps(outputPid) ?? double.NaN,
+                    output?.GetApplicationFps(outputPid) ?? double.NaN);
             }
         }
         finally

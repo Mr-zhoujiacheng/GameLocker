@@ -31,6 +31,7 @@ internal sealed class MonitorShared : IDisposable
     private const int OffOutputTargetPid = 1520;
     private const int OffOutputSamplePid = 1524;
     private const int OffOutputFps = 1528;
+    private const int OffOutputOriginalFps = 1536;
     private const int Magic = 0x4D4F4E34; // "MON4"
 
     private const long FreshMs = 3000;
@@ -93,13 +94,15 @@ internal sealed class MonitorShared : IDisposable
 
     public void SetOutputTargetPid(int pid) => _view.Write(OffOutputTargetPid, pid);
     public int ReadOutputTargetPid() => _view.ReadInt32(OffOutputTargetPid);
-    public double ReadOutputFps(int pid)
+    public double ReadOutputFps(int pid) => ReadDisplayRate(pid, OffOutputFps);
+    public double ReadOutputOriginalFps(int pid) => ReadDisplayRate(pid, OffOutputOriginalFps);
+    private double ReadDisplayRate(int pid, int offset)
     {
         var seq = _view.ReadInt32(OffSeq);
         if (seq == 0 || (seq & 1) != 0 || pid <= 0
             || Environment.TickCount64 - _view.ReadInt64(OffTick) > FreshMs) return double.NaN;
         var samplePid = _view.ReadInt32(OffOutputSamplePid);
-        var fps = _view.ReadDouble(OffOutputFps);
+        var fps = _view.ReadDouble(offset);
         return samplePid == pid && ReadOutputTargetPid() == pid && _view.ReadInt32(OffSeq) == seq
             ? fps : double.NaN;
     }
@@ -111,7 +114,7 @@ internal sealed class MonitorShared : IDisposable
     }
 
     /// <summary>助手：发布一帧统计数据（含心跳时间，主进程据此判断助手是否存活）</summary>
-    public void Publish(double fps, double frameMs, double[] history, double cpuTemp, double gpuTemp, int targetPid, double originalFps, bool frameGenerationDetected, int outputPid = 0, double outputFps = double.NaN)
+    public void Publish(double fps, double frameMs, double[] history, double cpuTemp, double gpuTemp, int targetPid, double originalFps, bool frameGenerationDetected, int outputPid = 0, double outputFps = double.NaN, double outputOriginalFps = double.NaN)
     {
         try
         {
@@ -120,6 +123,7 @@ internal sealed class MonitorShared : IDisposable
             _view.Write(OffSamplePid, targetPid);
             _view.Write(OffOutputSamplePid, outputPid);
             _view.Write(OffOutputFps, outputFps);
+            _view.Write(OffOutputOriginalFps, outputOriginalFps);
             _view.Write(OffFps, fps);
             _view.Write(OffOriginalFps, originalFps);
             _view.Write(OffFrameGeneration, frameGenerationDetected ? 1 : 0);

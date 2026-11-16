@@ -11,6 +11,7 @@ internal static class CpuPowerAutoApply
     /// <summary>登录计划任务入口：写入后直接退出，不恢复，让设置持续生效。</summary>
     public static void RunFromTask()
     {
+        PowerProfileService.SynchronizeSavedCpuTarget();
         var settings = SettingsService.Current;
         if (settings.CpuPowerPl1 <= 0) return;   // 没有保存过功耗，任务什么都不做
         var deadline = DateTime.UtcNow.AddSeconds(StartupWaitSeconds);
@@ -39,6 +40,7 @@ internal static class CpuPowerAutoApply
     /// <summary>睡眠唤醒后重新写回。没有提权助手时交给登录计划任务（管理员权限，不弹 UAC）静默写回。</summary>
     public static void ReapplyIfActive()
     {
+        PowerProfileService.SynchronizeSavedCpuTarget();
         var settings = SettingsService.Current;
         if (settings.CpuPowerPl1 <= 0) return;
         if (!CpuPowerService.Active)

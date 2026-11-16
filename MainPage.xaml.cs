@@ -172,8 +172,7 @@ public sealed partial class MainPage : Page
             if (onAc != _lastOnAc)
             {
                 _lastOnAc = onAc;
-                RefreshPerformanceTiles();
-                _ = ApplyPowerProfileAsync();
+                RefreshPerformanceTiles(); // 参数应用由全局 PowerProfileWatcher 负责，不依赖页面时钟。
             }
             if (_perfOpen)
             {
@@ -464,26 +463,25 @@ public sealed partial class MainPage : Page
         ToolTipService.SetToolTip(BatteryBubble, $"电池供电 · {pct.Value}%");
     }
 
-    /// <summary>插拔电源应用参数串行化：连续插拔时排队执行，避免并发写硬件</summary>
-    private readonly SemaphoreSlim _powerProfileGate = new(1, 1);
-
-    /// <summary>插拔电源：后台应用该供电方式保存的性能面板参数；面板开着时同步刷新读数</summary>
-    private async Task ApplyPowerProfileAsync()
+    /// <summary>供电参数已在后台应用（可能来自唤醒/亮屏/解锁）：刷新磁贴与性能面板读数。</summary>
+    private void OnPowerProfileApplied() => DispatcherQueue.TryEnqueue(() =>
     {
-        await _powerProfileGate.WaitAsync();
+        if (!_pageWorkActive) return;
+        _lastOnAc = PowerProfileService.OnAc;
+        RefreshPerformanceTiles();
+        if (_perfOpen) _ = RefreshPerfAfterPowerChangeAsync();
+    });
+
+    private async Task RefreshPerfAfterPowerChangeAsync()
+    {
         try
         {
-            await PowerProfileService.ApplyActiveAsync();
-            if (_perfOpen)
-            {
-                await RefreshPerformanceStateAsync();
-                await RefreshFrameLimitAsync();
-                await RefreshCpuPowerAsync();
-                await RefreshCpuControlsAsync();
-            }
+            await RefreshPerformanceStateAsync();
+            await RefreshFrameLimitAsync();
+            await RefreshCpuPowerAsync();
+            await RefreshCpuControlsAsync();
         }
-        catch (Exception ex) { DebugLog.Write("[供电] 后台应用性能参数失败：" + ex.Message); }
-        finally { _powerProfileGate.Release(); }
+        catch (Exception ex) { DebugLog.Write("[供电] 面板刷新失败：" + ex.Message); }
     }
 
     private void TileHost_SizeChanged(object sender, SizeChangedEventArgs e)
@@ -927,6 +925,8 @@ public sealed partial class MainPage : Page
     private void ResumePageWork()
     {
         if (_pageWorkActive) return;
+        // 供电切换由全局 PowerProfileWatcher 应用，页面只负责在应用后同步读数
+        PowerProfileWatcher.Applied += OnPowerProfileApplied;
         _pageWorkActive = true;
         UpdateClock();
         _clockTimer.Start();
@@ -1240,6 +1240,7 @@ public sealed partial class MainPage : Page
     {
         if (!_pageWorkActive) return;
         _pageWorkActive = false;
+        PowerProfileWatcher.Applied -= OnPowerProfileApplied;
         if (_perfOpen) ClosePerformanceMenu();
         CancelPendingTap();
         _pageDotsTimer.Stop();

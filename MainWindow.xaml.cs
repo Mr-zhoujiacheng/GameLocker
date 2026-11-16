@@ -73,9 +73,38 @@ public sealed partial class MainWindow : Window
 
     private void RevealTaskbar()
     {
+        // 开始菜单模式：呼出时把任务栏一并显示出来（对齐系统开始菜单的行为），
+        // 否则全屏游戏/最大化窗口运行时任务栏不可见，看起来像"开始菜单少了任务栏"。
+        if (SettingsService.Current.StartMenuMode) ShowSystemTaskbar();
         // 只维护软件自己的 Z 序，不再移动/抬高任务栏，避免双方反复抢占。
         RefreshRevealedTaskbar();
         _taskbarRevealWatch.Start();
+    }
+
+    /// <summary>
+    /// 开始菜单模式呼出时恢复任务栏显示。任务栏可能是被自动隐藏、被本程序下载模式隐藏，
+    /// 或被其他全屏窗口的独占显示遮住；这里只做"恢复可见"，不改用户的自动隐藏配置。
+    /// </summary>
+    private void ShowSystemTaskbar()
+    {
+        if (_exiting) return;
+        try
+        {
+            if (_dlTaskbar != IntPtr.Zero)
+            {
+                // 下载模式占用了任务栏：仍处于下载模式的显示窗口期内，交给 EndDownloadOverlay 恢复。
+                if (FindWindow("Shell_TrayWnd", null) == _dlTaskbar) return;
+                _dlTaskbar = IntPtr.Zero;
+            }
+            var bar = FindWindow("Shell_TrayWnd", null);
+            if (bar == IntPtr.Zero) return;
+            if (!IsWindowVisibleForLaunch(bar)) ShowWindowAsync(bar, SW_SHOW);
+            // 任务栏保持在启动器下方：两者都置顶时按调用顺序排，这里只用 NOACTIVATE 重申一次，
+            // 不抢焦点，避免呼出瞬间键盘焦点被任务栏夺走。
+            SetWindowPos(bar, HWND_TOPMOST, 0, 0, 0, 0,
+                SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE | SWP_SHOWWINDOW);
+        }
+        catch (Exception ex) { DebugLog.Write($"任务栏显示失败：{ex.Message}"); }
     }
 
     private void RefreshRevealedTaskbar() => EnsureLauncherAboveTaskbar();
@@ -85,6 +114,8 @@ public sealed partial class MainWindow : Window
     {
         if (!_shown || _exiting
             || OnScreenKeyboard.IsVisible || _hwnd == IntPtr.Zero || !IsWindowVisibleForLaunch(_hwnd)) return;
+        // 开始菜单模式：任务栏必须保持可见（全屏游戏/其他置顶窗口会把它重新盖住）。
+        if (SettingsService.Current.StartMenuMode) ShowSystemTaskbar();
         var sidebarTopmost = (GetWindowLongPtr(_hwnd, GWL_EXSTYLE).ToInt64() & 0x8) != 0;
         var barAbove = false;
         for (var window = GetWindow(_hwnd, 3); window != IntPtr.Zero; window = GetWindow(window, 3))

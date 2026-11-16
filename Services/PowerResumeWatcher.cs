@@ -17,6 +17,10 @@ internal static class PowerResumeWatcher
     private static Thread? _thread;
 
     public static event Action? Resumed;
+    public static event Action<string>? StateChanged;
+    private static readonly Guid AcDcPowerSource = new("5d3e9a59-e9d5-4b00-a6bd-ff34ff516548");
+    private static readonly Guid ConsoleDisplayState = new("6fe69556-704a-47a0-8f24-c28d936fda47");
+    private static readonly Guid SessionDisplayStatus = new("2b84c20e-ad23-4ddf-93db-05ffbd7efca5");
 
     public static void Start()
     {
@@ -39,29 +43,66 @@ internal static class PowerResumeWatcher
         var hwnd = CreateWindowExW(0, ClassName, "GameLocker Power", 0,
             0, 0, 0, 0, IntPtr.Zero, IntPtr.Zero, instance, IntPtr.Zero);
         if (hwnd == IntPtr.Zero) return;
-        while (GetMessageW(out var message, IntPtr.Zero, 0, 0) > 0)
+        var notifications = new[] { AcDcPowerSource, ConsoleDisplayState, SessionDisplayStatus }
+            .Select(guid => RegisterPowerSettingNotification(hwnd, ref guid, 0)).ToArray();
+        WTSRegisterSessionNotification(hwnd, 0); // 当前会话的登录/解锁/连接
+        try
         {
-            TranslateMessage(ref message);
-            DispatchMessageW(ref message);
+            while (GetMessageW(out var message, IntPtr.Zero, 0, 0) > 0)
+            {
+                TranslateMessage(ref message);
+                DispatchMessageW(ref message);
+            }
         }
-        DestroyWindow(hwnd);
-        UnregisterClassW(ClassName, instance);
+        finally
+        {
+            foreach (var notification in notifications)
+                if (notification != IntPtr.Zero) UnregisterPowerSettingNotification(notification);
+            WTSUnRegisterSessionNotification(hwnd);
+            DestroyWindow(hwnd);
+            UnregisterClassW(ClassName, instance);
+        }
     }
 
     private static IntPtr WndProc(IntPtr hwnd, uint message, IntPtr wParam, IntPtr lParam)
     {
-        if (message == WM_POWERBROADCAST)
+        try
         {
-            var code = (int)wParam;
-            if (code is PBT_APMRESUMECRITICAL or PBT_APMRESUMESUSPEND or PBT_APMRESUMEAUTOMATIC)
+            if (message == WM_POWERBROADCAST)
             {
-                try { Resumed?.Invoke(); }
-                catch (Exception ex) { DebugLog.Write("[电源] 唤醒处理失败：" + ex.Message); }
+                var code = (int)wParam;
+                if (code is PBT_APMRESUMECRITICAL or PBT_APMRESUMESUSPEND or PBT_APMRESUMEAUTOMATIC)
+                    Resumed?.Invoke();
+                else if (code == 0x000A) StateChanged?.Invoke("电源状态通知"); // PBT_APMPOWERSTATUSCHANGE
+                else if (code == 0x8013 && lParam != IntPtr.Zero) // PBT_POWERSETTINGCHANGE
+                {
+                    var setting = Marshal.PtrToStructure<Guid>(lParam);
+                    var length = Marshal.ReadInt32(lParam, 16);
+                    if (length >= 4)
+                    {
+                        var value = Marshal.ReadInt32(lParam, 20);
+                        if (setting == AcDcPowerSource) StateChanged?.Invoke("插拔电通知");
+                        else if ((setting == ConsoleDisplayState || setting == SessionDisplayStatus) && value == 1)
+                            StateChanged?.Invoke("屏幕亮起");
+                    }
+                }
+                return new IntPtr(1);
             }
-            return new IntPtr(1);
+            if (message == 0x02B1 && (int)wParam is 1 or 3 or 5 or 8) // WM_WTSSESSION_CHANGE
+                StateChanged?.Invoke("会话连接/登录/解锁");
         }
+        catch (Exception ex) { DebugLog.Write("[电源] 状态通知处理失败：" + ex.Message); }
         return DefWindowProcW(hwnd, message, wParam, lParam);
     }
+
+    [DllImport("user32.dll", SetLastError = true)]
+    private static extern IntPtr RegisterPowerSettingNotification(IntPtr recipient, ref Guid setting, uint flags);
+    [DllImport("user32.dll")]
+    private static extern bool UnregisterPowerSettingNotification(IntPtr handle);
+    [DllImport("wtsapi32.dll", SetLastError = true)]
+    private static extern bool WTSRegisterSessionNotification(IntPtr hwnd, uint flags);
+    [DllImport("wtsapi32.dll")]
+    private static extern bool WTSUnRegisterSessionNotification(IntPtr hwnd);
 
     [UnmanagedFunctionPointer(CallingConvention.Winapi)]
     private delegate IntPtr WndProcDelegate(IntPtr hwnd, uint message, IntPtr wParam, IntPtr lParam);

@@ -98,7 +98,10 @@ public partial class App : Application
 
         // 记录掌机原始基础电源方案：标准“平衡”方案可能不存在，切回平衡时用它恢复
         PerformanceService.RememberBaseScheme();
-        // 睡眠/休眠唤醒后固件可能复位功耗限制：助手还连着时静默写回
+        // 先校准当前供电的保存目标，避免登录任务恢复成关机前另一套功耗。
+        PowerProfileService.SynchronizeSavedCpuTarget();
+        PowerProfileWatcher.Start();
+        // 睡眠/休眠唤醒后固件可能复位功耗限制：助手还连着时静默写回（与供电切换各自幂等）
         PowerResumeWatcher.Resumed += CpuPowerAutoApply.ReapplyIfActive;
         PowerResumeWatcher.Start();
         // 保存过功耗目标即视为已接管：恢复展示并触发登录任务静默写回，重启/关机/睡眠唤醒后都不用再点启用

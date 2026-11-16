@@ -564,7 +564,9 @@ public static class LosslessScalingService
                 {
                     using var process = Process.GetProcessById((int)pid);
                     targetName = $"{process.MainWindowTitle}（{process.ProcessName}）";
-                    if (pid == Environment.ProcessId || !TrainerService.IsGameLikeProcess(target, process.ProcessName))
+                    if (pid == Environment.ProcessId
+                        || process.ProcessName.Equals("GameLocker", StringComparison.OrdinalIgnoreCase)
+                        || !TrainerService.IsGameLikeProcess(target, process.ProcessName))
                         target = IntPtr.Zero;
                 }
                 catch { target = IntPtr.Zero; }

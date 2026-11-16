@@ -24,8 +24,19 @@ internal sealed class LosslessOutputListener : IDisposable
 
     private int _targetPid;
     private int _outputPid;
+    private long _outputRows, _validOutputRows;
+    private string _lastOutputRow = "";
 
-    private readonly record struct Sample(long ReceivedAt, double Interval, bool Generated);
+    internal string Diagnostics
+    {
+        get
+        {
+            lock (_gate)
+                return $"running={_process is not null && !_process.HasExited} header={_columns is not null} rows={_outputRows} valid={_validOutputRows} chains={_chains.Count(p => p.Key.Pid == _outputPid)} detail={string.Join(";", _chains.Where(p => p.Key.Pid == _outputPid).Select(p => $"{p.Key.Chain:X}:n={p.Value.Count},fg={p.Value.Count(s => s.Generated)},ms={p.Value.Sum(s => s.Interval):0.##}"))} last={_lastOutputRow} error={_lastError}";
+        }
+    }
+
+    private readonly record struct Sample(long ReceivedAt, double Interval, bool Generated, bool Application);
 
     // 捕获会话只启动一次；前台切换只更新内存过滤条件，不能携带上个游戏的样本。
     internal void SetTargets(int targetPid, int outputPid)
@@ -35,6 +46,8 @@ internal sealed class LosslessOutputListener : IDisposable
             if (_targetPid == targetPid && _outputPid == outputPid) return;
             _targetPid = targetPid;
             _outputPid = outputPid;
+            _outputRows = _validOutputRows = 0;
+            _lastOutputRow = "";
             _chains.Clear();
         }
     }
@@ -177,8 +190,13 @@ internal sealed class LosslessOutputListener : IDisposable
             if (_columns == null || _columns.Any(column => column >= fields.Count)) return;
             var c = _columns;
             if (!int.TryParse(fields[c[1]], NumberStyles.None, CultureInfo.InvariantCulture, out var pid)
-                || pid <= 0 || (pid != _targetPid && pid != _outputPid)
-                || !TryParseChain(fields[c[2]], out var chain)
+                || pid <= 0 || (pid != _targetPid && pid != _outputPid)) return;
+            if (pid == _outputPid)
+            {
+                _outputRows++;
+                _lastOutputRow = $"app={fields[c[0]]} chain={fields[c[2]]} type={fields[c[3]]} displayed={fields[c[4]]} mode={fields[c[5]]}";
+            }
+            if (!TryParseChain(fields[c[2]], out var chain)
                 || !double.TryParse(fields[c[4]], NumberStyles.Float, CultureInfo.InvariantCulture, out var interval)
                 || !double.IsFinite(interval) || interval <= 0)
                 return;
@@ -191,37 +209,45 @@ internal sealed class LosslessOutputListener : IDisposable
                 && !mode.Equals("Hardware: Legacy Flip", StringComparison.OrdinalIgnoreCase))
                 return;
 
+            if (pid == _outputPid) _validOutputRows++;
             var key = (pid, chain);
             if (!_chains.TryGetValue(key, out var samples))
                 _chains[key] = samples = new Queue<Sample>();
             // v2.6 CsvOutput.cpp 的 FrameTypeToString；Unknown/Application 不推测为生成帧。
             var generated = fields[c[3]].Equals("Intel XeSS-FG", StringComparison.OrdinalIgnoreCase)
                 || fields[c[3]].Equals("AMD AFMF", StringComparison.OrdinalIgnoreCase);
-            samples.Enqueue(new Sample(now, interval, generated));
+            samples.Enqueue(new Sample(now, interval, generated,
+                fields[c[3]].Equals("Application", StringComparison.OrdinalIgnoreCase)));
             while (samples.Count > MaxSamples) samples.Dequeue();
         }
     }
 
-    internal double GetFps(int pid)
+    internal double GetFps(int pid) => GetDisplayRates(pid).Actual;
+    internal double GetApplicationFps(int pid) => GetDisplayRates(pid).Original;
+
+    private (double Actual, double Original) GetDisplayRates(int pid)
     {
         lock (_gate)
         {
-            if (_disposed) return double.NaN;
+            if (_disposed) return (double.NaN, double.NaN);
             Prune(Stopwatch.GetTimestamp());
-            Queue<Sample>? onlyChain = null;
-            foreach (var pair in _chains)
-            {
-                if (pair.Key.Pid != pid) continue;
-                // 即使第二条链的样本不足，也不能猜测哪一条才是真正输出。
-                if (onlyChain != null) return double.NaN;
-                onlyChain = pair.Value;
-            }
-            if (onlyChain == null || onlyChain.Count < 10) return double.NaN;
-            // ETW 会批量投递；覆盖时长取显示间隔，不按管道回调到达跨度判断。
-            if (onlyChain.Sum(sample => sample.Interval) < 500) return double.NaN;
-            var average = onlyChain.Average(sample => sample.Interval);
-            var fps = 1000.0 / average;
-            return double.IsFinite(fps) ? fps : double.NaN;
+            var chains = _chains.Where(pair => pair.Key.Pid == pid)
+                .Select(pair => pair.Value)
+                .Where(samples => samples.Count >= 10 && samples.Sum(sample => sample.Interval) >= 500)
+                .ToArray();
+            // XeSS 标记是输出链的正向证据；计算时保留这条链的 Application 和生成帧，
+            // 不能只计生成帧，也不能把辅助交换链混进来。
+            var generatedChains = chains.Where(samples => samples.Any(sample => sample.Generated)).ToArray();
+            var eligible = generatedChains.Length > 0 ? generatedChains : chains;
+            Queue<Sample>? onlyChain = eligible.Length == 1 ? eligible[0] : null;
+            if (onlyChain == null) return (double.NaN, double.NaN);
+            // 两项使用同一显示时间窗口：总显示帧/时长为实际帧，Application 帧/时长为原始帧。
+            var duration = onlyChain.Sum(sample => sample.Interval);
+            var actual = 1000.0 * onlyChain.Count / duration;
+            var original = onlyChain.Any(sample => sample.Generated)
+                && onlyChain.All(sample => sample.Generated || sample.Application)
+                ? 1000.0 * onlyChain.Count(sample => sample.Application) / duration : double.NaN;
+            return (actual, original);
         }
     }
 

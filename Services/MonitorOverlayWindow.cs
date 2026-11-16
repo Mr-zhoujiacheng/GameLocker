@@ -289,7 +289,7 @@ internal sealed class MonitorOverlayWindow : IDisposable
 
             if (MeasureText(hdc, _fontFps, FormatFps(snap), out var fpsW) != 0) return Scaled(ChipFps);
             if (MeasureText(hdc, _fontValue, FormatOriginalFps(snap), out var originalW) != 0) return Scaled(ChipFps);
-            if (MeasureText(hdc, _fontLabel, "FPS", out var unitW) != 0) return Scaled(ChipFps);
+            if (MeasureText(hdc, _fontLabel, FpsUnit(snap), out var unitW) != 0) return Scaled(ChipFps);
             var content = fpsW + originalW + Scaled(3) + unitW;
             if (Has(MonitorMetric.FrameTime))
             {
@@ -819,7 +819,8 @@ internal sealed class MonitorOverlayWindow : IDisposable
             }
             SelectObject(hdc, _fontLabel);
             SetTextColor(hdc, DimColor(accent, 0.78));
-            TextOutW(hdc, suffixX + Scaled(3), Scaled(8) + offsetY, "FPS", 3);
+            var unit = FpsUnit(snap);
+            TextOutW(hdc, suffixX + Scaled(3), Scaled(8) + offsetY, unit, unit.Length);
         }
 
         if (Has(MonitorMetric.FrameTime))
@@ -913,19 +914,25 @@ internal sealed class MonitorOverlayWindow : IDisposable
 
     private bool ShowFpsBlock() => Has(MonitorMetric.Fps) || Has(MonitorMetric.FrameTime);
 
+    private static string FpsUnit(MonitorSnapshot s) => "FPS";
+
     private static string FormatFps(MonitorSnapshot s)
     {
         var fps = s.OutputFps;
-        return double.IsFinite(fps) && fps > 0 ? fps.ToString("0") : "—";
+        var value = double.IsFinite(fps) && fps > 0 ? fps.ToString("0") : "—";
+        return value;
     }
 
     private static string FormatOriginalFps(MonitorSnapshot s) =>
-        s.FrameGenerationDetected && double.IsFinite(s.OriginalFps) && s.OriginalFps > 0
-            ? $" / {s.OriginalFps:0.#}" : "";
+        s.FrameGenerationDetected
+            ? $" / {(double.IsFinite(s.OriginalFps) && s.OriginalFps > 0 ? s.OriginalFps.ToString("0.#") : "—")}" : "";
 
     /// <summary>帧时间：放在 FPS 数字脚下的小字；FPS 取不到时说明权限原因</summary>
     private static string FormatFrameDelay(MonitorSnapshot s)
     {
+        if (s.FrameGenerationDetected)
+            return double.IsFinite(s.OutputFps) && s.OutputFps > 0
+                ? $"{1000.0 / s.OutputFps:0.0}ms" : "输出待采集";
         if (s.FrameMs > 0) return $"{s.FrameMs:0.0}ms";
         return MonitorService.FpsAvailable ? "—" : "需管理员";
     }

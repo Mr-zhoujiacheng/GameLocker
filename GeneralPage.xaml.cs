@@ -23,6 +23,9 @@ public sealed partial class GeneralPage : Page, ISettingsGamepad
     public GeneralPage()
     {
         InitializeComponent();
+        // 页面用手绘白框当光标：控件被焦点（含页面加载时 WinUI 自动聚焦）不再画系统焦点框，
+        // 避免行描边 + 行内开关焦点框两个框；FocusWithRing 指定的光标控件仍保留
+        FocusRing.Attach(this);
 
         var s = SettingsService.Current;
         AutoStartToggle.IsOn = s.AutoStart;

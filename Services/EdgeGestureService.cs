@@ -318,6 +318,13 @@ public sealed class EdgeGestureService : IDisposable
         {
             // 手指抬起：判定手势。呼出=从边缘向中心内滑；收起=与呼出反向（从内部朝边缘快滑）
             _tDown = false;
+            var elapsed = Environment.TickCount64 - _tDownAt;
+            // 游戏内右上/底部边缘：交给顶栏/底栏手势，启动器这次不再响应
+            if (GameSwipeService.TryHandleGesture(_tStartX, _tStartY, _tLastX, _tLastY, elapsed))
+            {
+                Log("game swipe consumed (touch)");
+                return;
+            }
             var inward = _edge switch
             {
                 SummonEdge.Left => _tLastX - _tStartX,
@@ -326,7 +333,6 @@ public sealed class EdgeGestureService : IDisposable
                 _ => _tLastY - _tStartY
             };
             var nearEdge = NearEdge(_tStartX, _tStartY);
-            var elapsed = Environment.TickCount64 - _tDownAt;
             Log($"touch up ({_tLastX},{_tLastY}) inward={inward} nearEdge={nearEdge} ms={elapsed}");
             var cross = _edge is SummonEdge.Left or SummonEdge.Right
                 ? Math.Abs(_tLastY - _tStartY) : Math.Abs(_tLastX - _tStartX);
@@ -493,6 +499,13 @@ public sealed class EdgeGestureService : IDisposable
             else if (msgId == WM_LBUTTONUP && _tracking)
             {
                 _tracking = false;
+                // 游戏内右上/底部边缘：交给顶栏/底栏手势，启动器这次不再响应
+                if (GameSwipeService.TryHandleGesture(_downX, _downY, info.ptX, info.ptY,
+                        Environment.TickCount64 - _downAt))
+                {
+                    Log("game swipe consumed (mouse)");
+                    return CallNextHookEx(_hook, nCode, wParam, lParam);
+                }
                 var inward = Inward(info.ptX, info.ptY);
                 var elapsed = Environment.TickCount64 - _downAt;
                 var cross = _edge is SummonEdge.Left or SummonEdge.Right

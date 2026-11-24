@@ -1,0 +1,18 @@
+<?xml version="1.0" encoding="utf-8"?>
+<UserControl x:Class="GameLocker.Controls.PixelMascot"
+    xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+    xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml">
+
+    <UserControl.RenderTransform>
+        <TranslateTransform x:Name="DragOffset"/>
+    </UserControl.RenderTransform>
+    <Grid Width="96" Height="60">
+        <Image x:Name="FrameImage" Stretch="Uniform" IsHitTestVisible="False"/>
+        <!-- Only the upper body is interactive; the tile below the fingers remains clickable. -->
+        <Border x:Name="MascotHitSurface" Width="56" Height="49" Margin="19,1,0,0"
+                HorizontalAlignment="Left" VerticalAlignment="Top" Background="Transparent"
+                PointerPressed="OnMascotPressed" PointerMoved="OnMascotMoved"
+                PointerReleased="OnMascotReleased" PointerCanceled="OnMascotCaptureLost"
+                PointerCaptureLost="OnMascotCaptureLost"/>
+    </Grid>
+</UserControl>

@@ -1,0 +1,199 @@
+using System.IO.Compression;
+using System.Net;
+using System.Security.Cryptography;
+using System.Text.Json;
+using GameLocker.Services;
+
+var root = Path.Combine(Path.GetTempPath(), "GameLocker-UpdateSmoke-" + Guid.NewGuid().ToString("N"));
+try
+{
+    Directory.CreateDirectory(root);
+    var fullPack = MakePack("2.10.100");
+    var fake = new FakeGitHub(fullPack, "2.10.100");
+    using var client = new HttpClient(fake);
+    var service = new OptiCaptureHostUpdateService(root, client);
+    Check(service.GetInstalledDirectory() is null && service.GetInstalledVersion() is null, "An empty install is absent.");
+
+    var release = await service.GetLatestReleaseAsync();
+    Check(release.Version > new Version(2, 10, 80) && release.Tag == "v2.10.100", "Versions are compared numerically.");
+    fake.Draft = true;
+    await Reject<InvalidDataException>(() => service.GetLatestReleaseAsync(), "draft");
+    fake.Draft = false;
+    fake.IncludeFull = false;
+    await Reject<InvalidDataException>(() => service.GetLatestReleaseAsync(), "small pack only");
+    fake.IncludeFull = true;
+    fake.Digest = null;
+    await Reject<InvalidDataException>(() => service.GetLatestReleaseAsync(), "missing digest");
+    fake.Digest = "sha256:" + Convert.ToHexString(SHA256.HashData(fullPack));
+    fake.Tag = "v2.10.100-preview";
+    await Reject<InvalidDataException>(() => service.GetLatestReleaseAsync(), "preview version suffix");
+    fake.Tag = "v2.10.100";
+
+    var legacy = Path.Combine(root, "v2.10.80");
+    using (var files = new MemoryStream(MakePack(null)))
+    using (var zip = new ZipArchive(files))
+        zip.ExtractToDirectory(legacy);
+    File.WriteAllText(Path.Combine(legacy, "OptiCaptureHost.ini"), "[General]\nVSync=custom\n[Limiter]\nTarget=1\n[User]\nKey=value\n");
+    File.WriteAllText(Path.Combine(legacy, "notes.txt"), "keep in old runtime");
+    Check(service.GetInstalledDirectory() == legacy && service.GetInstalledVersion() == new Version(2, 10, 80), "Legacy fallback.");
+    var active = Path.Combine(root, "active-runtime.txt");
+    File.WriteAllText(active, "../outside");
+    Check(service.GetInstalledDirectory() == legacy, "Malformed pointer cannot leave the install root.");
+    File.Delete(active);
+
+    fake.Redirect = new Uri("https://release-assets.githubusercontent.com.example.net/package");
+    await Reject<InvalidDataException>(() => service.InstallAsync(release), "untrusted redirect");
+    fake.Redirect = new Uri("http://release-assets.githubusercontent.com/package");
+    await Reject<InvalidDataException>(() => service.InstallAsync(release), "non-HTTPS redirect");
+    fake.Redirect = new Uri(FakeGitHub.AssetHost);
+    await Reject<InvalidDataException>(() => service.InstallAsync(release with { Sha256 = new string('0', 64) }), "bad digest");
+    await Reject<InvalidDataException>(() => service.InstallAsync(release with { Size = release.Size + 1 }), "bad length");
+    await Reject<InvalidDataException>(() => service.InstallAsync(release with { DownloadUri = new Uri("https://example.net/file.zip") }), "non-official descriptor");
+
+    fake.Bytes = MakePack("2.10.100", badEntry: "../escape.txt");
+    await Reject<InvalidDataException>(() => service.InstallAsync(fake.Release()), "path traversal");
+    fake.Bytes = MakePack("2.10.100", badEntry: "OptiCaptureHost-2.10.100_Full Pack/Optiscaler/LibXeSS.dll");
+    await Reject<InvalidDataException>(() => service.InstallAsync(fake.Release()), "case alias");
+    fake.Bytes = MakePack("2.10.100", omit: "Optiscaler/streamline/sl.dlss_g.dll");
+    await Reject<FileNotFoundException>(() => service.InstallAsync(fake.Release()), "missing mode dependency");
+    fake.Bytes = fullPack;
+    using (var cancellation = new CancellationTokenSource())
+        await Reject<OperationCanceledException>(() => service.InstallAsync(release, (_, _) => cancellation.Cancel(), cancellation.Token), "cancel after download");
+
+    Directory.CreateDirectory(active);
+    await Reject<IOException>(() => service.InstallAsync(release), "activation failure leaves legacy available");
+    Directory.Delete(active);
+    Check(service.GetInstalledDirectory() == legacy && Directory.GetDirectories(root).Length == 1, "Failures leave only legacy and no staging directories.");
+
+    var notifications = new List<(long Received, long? Total)>();
+    var installed = await service.InstallAsync(release, (got, total) => notifications.Add((got, total)));
+    Check(installed != legacy && installed == service.GetInstalledDirectory() && service.GetInstalledVersion() == release.Version, "New runtime atomically becomes active.");
+    Check(notifications.Last() == (release.Size, release.Size), "Verified download reports full progress.");
+    Check(File.ReadAllText(Path.Combine(legacy, "notes.txt")) == "keep in old runtime", "Old user data remains in place.");
+    var ini = File.ReadAllText(Path.Combine(installed, "OptiCaptureHost.ini"));
+    Check(ini.Contains("VSync= custom") && ini.Contains("NewDefault=enabled") && ini.Contains("Key = value"), "New defaults and user settings both survive.");
+    Check(ini.Contains("Target= 0") && ini.Contains("OptiFps= 0") && ini.Contains("Auto= 0"), "GameLocker owns all limiter switches.");
+    var scaler = File.ReadAllText(Path.Combine(installed, "OptiScaler.ini"));
+    Check(scaler.Contains("External= false") && scaler.Contains("LoadAsiPlugins= false") && scaler.Contains("RTX40= false"), "Direct-launch and plugin defaults are enforced.");
+    Check(!File.Exists(Path.Combine(installed, "OptiCaptureHost.status")) && !File.Exists(Path.Combine(installed, "OptiCaptureHost.log")), "Stale runtime state is not copied.");
+    var downloads = fake.AssetRequests;
+    Check(await service.InstallAsync(release) == installed, "Repeated install is idempotent.");
+    fake.Tag = "v2.10.80";
+    Check(await service.InstallAsync(fake.Release()) == installed && fake.AssetRequests == downloads, "Older release cannot downgrade current runtime.");
+
+    var repairRoot = Path.Combine(root, "repair");
+    var partial = Path.Combine(repairRoot, "v2.10.80");
+    using (var files = new MemoryStream(MakePack(null, omit: "Optiscaler/libxess.dll")))
+    using (var zip = new ZipArchive(files))
+        zip.ExtractToDirectory(partial);
+    var repairServer = new FakeGitHub(MakePack("2.10.80"), "2.10.80");
+    using var repairClient = new HttpClient(repairServer);
+    var repairService = new OptiCaptureHostUpdateService(repairRoot, repairClient);
+    Check(repairService.GetInstalledDirectory() == partial && !repairService.IsFullRuntimeInstalled(), "Partial legacy install is usable but repairable.");
+    var repaired = await repairService.InstallAsync(await repairService.GetLatestReleaseAsync());
+    Check(repaired != partial && repairService.IsFullRuntimeInstalled() && Directory.Exists(partial), "Same-version repair fills components side by side.");
+
+    if (args.Length == 1)
+    {
+        var archive = Path.GetFullPath(args[0]);
+        var upstream = new Version(2, 10, 80);
+        using var asset = File.OpenRead(archive);
+        const string digest = "E61853C6E9B577F87DFD505AE669656D241562FFCE93F37CAA4235203E878120";
+        Check(asset.Length == 165207127 && Convert.ToHexString(SHA256.HashData(asset)) == digest, "Official RAR digest and size.");
+        var official = OptiCaptureHostPackage.Prepare(archive, Path.Combine(root, "official"), null, upstream, default);
+        Check(OptiCaptureHostPackage.HasFullRuntime(official), "Actual official RAR contains a valid full runtime.");
+        Console.WriteLine("Official v2.10.80 full RAR: SHA-256, extraction, and runtime validation passed.");
+    }
+    Console.WriteLine("OptiCaptureHost updater smoke tests passed.");
+}
+finally { Directory.Delete(root, true); }
+
+static byte[] MakePack(string? version, string? badEntry = null, string? omit = null)
+{
+    var files = new Dictionary<string, string>
+    {
+        ["OptiCaptureHost.exe"] = "fixture host", ["dxgi.dll"] = "fixture scaler",
+        ["OptiCaptureHost.ini"] = "[General]\nVSync=1\nNewDefault=enabled\n[Limiter]\nTarget=1\nOptiFps=1\nAuto=1\n",
+        ["OptiScaler.ini"] = "[FrameGen]\nExternal=true\n[Plugins]\nLoadAsiPlugins=true\n[MFGUnlock]\nXeFG=auto\nRTX40=auto\nRTX2030=auto\n",
+        ["OptiCaptureHost.status"] = "stale", ["OptiCaptureHost.log"] = "stale",
+        ["amd_fidelityfx_dx12.dll"] = "fixture ffx", ["nvngx_dlss.dll"] = "fixture dlss",
+        ["Optiscaler/libxess_fg.dll"] = "fixture XeFG", ["Optiscaler/libxell.dll"] = "fixture XeLL",
+        ["Optiscaler/libxess.dll"] = "fixture XeSS", ["Licenses/XeSS_LICENSE.txt"] = "fixture notices",
+        ["Optiscaler/streamline/sl.interposer.dll"] = "fixture sl", ["Optiscaler/streamline/sl.common.dll"] = "fixture sl",
+        ["Optiscaler/streamline/sl.dlss_g.dll"] = "fixture sl", ["Optiscaler/streamline/nvngx_dlssg.dll"] = "fixture sl"
+    };
+    using var stream = new MemoryStream();
+    using (var zip = new ZipArchive(stream, ZipArchiveMode.Create, leaveOpen: true))
+    {
+        var prefix = version is null ? "" : $"OptiCaptureHost-{version}_Full Pack/";
+        void Add(string name, string content)
+        {
+            using var writer = new StreamWriter(zip.CreateEntry(name).Open());
+            writer.Write(content);
+        }
+        foreach (var (name, content) in files)
+            if (name != omit) Add(prefix + name, content);
+        if (badEntry is not null) Add(badEntry, "rejected member");
+    }
+    return stream.ToArray();
+}
+
+static void Check(bool success, string message)
+{
+    if (!success) throw new Exception(message);
+}
+
+static async Task Reject<T>(Func<Task> action, string name) where T : Exception
+{
+    try { await action(); }
+    catch (Exception error) when (error is T || (typeof(T) == typeof(IOException) && error is UnauthorizedAccessException)) { return; }
+    throw new Exception($"Expected {typeof(T).Name} for {name}.");
+}
+
+sealed class FakeGitHub : HttpMessageHandler
+{
+    public const string AssetHost = "https://release-assets.githubusercontent.com/package";
+    private const string Api = "https://api.github.com/repos/tegraultra/OptiCaptureHost/releases/latest";
+    public byte[] Bytes;
+    public Uri? Redirect = new(AssetHost);
+    public string Tag;
+    public string? Digest;
+    public bool Draft;
+    public bool IncludeFull = true;
+    public int AssetRequests;
+
+    public FakeGitHub(byte[] bytes, string version)
+    {
+        Bytes = bytes;
+        Tag = "v" + version;
+        Digest = "sha256:" + Convert.ToHexString(SHA256.HashData(bytes));
+    }
+
+    private string Name => $"OptiCaptureHost-{Tag[1..]}_Full.Pack.zip";
+    private string Url => $"https://github.com/tegraultra/OptiCaptureHost/releases/download/{Tag}/{Name}";
+    public OptiCaptureHostRelease Release() => new(Version.Parse(Tag[1..]), Tag, new Uri(Url), Bytes.Length, Convert.ToHexString(SHA256.HashData(Bytes)));
+
+    protected override Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken token)
+    {
+        token.ThrowIfCancellationRequested();
+        if (!request.Headers.UserAgent.Any()) throw new Exception("GitHub requires a User-Agent.");
+        var url = request.RequestUri?.AbsoluteUri;
+        if (url == Api)
+        {
+            var assets = new List<object> { new { name = "OptiCaptureHost_v.2.10.100.rar" } };
+            if (IncludeFull)
+                assets.Insert(0, new { name = Name, state = "uploaded", size = Bytes.Length, digest = Digest, browser_download_url = Url });
+            var json = JsonSerializer.Serialize(new { tag_name = Tag, draft = Draft, prerelease = false, assets });
+            return Task.FromResult(new HttpResponseMessage(HttpStatusCode.OK) { Content = new StringContent(json) });
+        }
+        if (url == Url && Redirect is not null)
+        {
+            var response = new HttpResponseMessage(HttpStatusCode.Found);
+            response.Headers.Location = Redirect;
+            return Task.FromResult(response);
+        }
+        if (url != Url && url != AssetHost) throw new Exception($"Unexpected HTTP request: {url}");
+        AssetRequests++;
+        return Task.FromResult(new HttpResponseMessage(HttpStatusCode.OK) { Content = new ByteArrayContent(Bytes) });
+    }
+}

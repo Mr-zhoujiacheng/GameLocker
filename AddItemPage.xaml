@@ -1040,64 +1040,118 @@
 
                 <!-- 小黄鸭小组件：程序路径 / 补帧热键 / 自动补帧（仅小黄鸭编辑时显示） -->
                 <StackPanel x:Name="LosslessRow" Spacing="14" Visibility="Collapsed">
-                    <!-- 插帧引擎：默认 LSFG；XeSS / FSR3 走内置 Magpie 后端，启动/停止仍共用 A 键 -->
                     <StackPanel Spacing="4">
                         <TextBlock Text="插帧引擎" FontSize="15" Opacity="0.9"/>
                         <ComboBox x:Name="LosslessEngineCombo" HorizontalAlignment="Stretch"
                                   SelectionChanged="OnLosslessEngineChanged"
-                                  ToolTipService.ToolTip="LSFG=小黄鸭；XeSS FG / FSR3 FG=内置 Magpie 后端（WGC 捕获 + 外部光流）。">
-                            <ComboBoxItem Content="LSFG（小黄鸭）" Tag="LSFG"/>
-                            <ComboBoxItem Content="XeSS FG（Magpie）" Tag="XESS"/>
-                            <ComboBoxItem Content="FSR3 FG（Magpie）" Tag="FSR3"/>
+                                  ToolTipService.ToolTip="OptiScaler 使用窗口捕获，支持窗口化或无边框窗口化。">
+                            <!-- 小黄鸭（LSFG）与 OptiScaler 都用 SVG 图标，和磁贴上的引擎图标风格一致 -->
+                            <ComboBoxItem Tag="LSFG">
+                                <StackPanel Orientation="Horizontal" Spacing="8">
+                                    <Image Width="20" Height="20">
+                                        <Image.Source>
+                                            <SvgImageSource UriSource="ms-appx:///Assets/LosslessScaling.svg"/>
+                                        </Image.Source>
+                                    </Image>
+                                    <TextBlock Text="LSFG" VerticalAlignment="Center"/>
+                                </StackPanel>
+                            </ComboBoxItem>
+                            <ComboBoxItem Tag="OPTISCALER">
+                                <StackPanel Orientation="Horizontal" Spacing="8">
+                                    <Image Width="20" Height="20">
+                                        <Image.Source>
+                                            <SvgImageSource UriSource="ms-appx:///Assets/OptiScaler.svg"/>
+                                        </Image.Source>
+                                    </Image>
+                                    <TextBlock Text="OptiScaler" VerticalAlignment="Center"/>
+                                </StackPanel>
+                            </ComboBoxItem>
                         </ComboBox>
                         <TextBlock x:Name="LosslessEngineHint" FontSize="12" Opacity="0.55" TextWrapping="Wrap"
                                    Text="LSFG 会打开小黄鸭并发送 Ctrl+Alt+S；游戏需无边框窗口化。"/>
                     </StackPanel>
 
-                    <!-- Magpie 后端参数：仅 XeSS / FSR3 显示 -->
-                    <StackPanel x:Name="LosslessMagpiePanel" Spacing="10" Visibility="Collapsed">
-                        <StackPanel Spacing="4">
-                            <TextBlock Text="插帧 GPU" FontSize="15" Opacity="0.9"/>
-                            <ComboBox x:Name="FgGpuCombo" HorizontalAlignment="Stretch"
-                                      SelectionChanged="OnFgGpuChanged"
-                                      ToolTipService.ToolTip="默认优先 NVIDIA，否则选择第一张硬件 GPU；所选设备不可用时需重新选择。"/>
-                        </StackPanel>
-                        <StackPanel Spacing="4">
-                            <TextBlock Text="捕获方式" FontSize="15" Opacity="0.9"/>
-                            <ComboBox x:Name="FgCaptureCombo" HorizontalAlignment="Stretch"
-                                      ToolTipService.ToolTip="WGC 抓单个窗口；DXGI 抓整个显示器（兼容部分独占全屏）；DWM 兼容层。">
-                                <ComboBoxItem Content="窗口捕获 WGC（推荐）" Tag="WGC"/>
-                                <ComboBoxItem Content="桌面复制 DXGI（需游戏全屏）" Tag="DXGI"/>
-                                <ComboBoxItem Content="DWM 共享表面" Tag="DWM"/>
-                            </ComboBox>
-                        </StackPanel>
-
-                        <StackPanel x:Name="FgMultiplierPanel" Spacing="4">
-                            <TextBlock Text="XeSS 倍率" FontSize="15" Opacity="0.9"/>
-                            <ComboBox x:Name="FgMultiplierCombo" HorizontalAlignment="Stretch"
-                                      ToolTipService.ToolTip="Intel GPU 可选 2×/3×/4×；非 Intel GPU 仅支持 2×。">
-                                <ComboBoxItem Content="2×" Tag="2"/>
-                            </ComboBox>
-                        </StackPanel>
-
-                        <StackPanel Spacing="4">
-                            <TextBlock Text="光流方式" FontSize="15" Opacity="0.9"/>
-                            <ComboBox x:Name="FgFlowCombo" HorizontalAlignment="Stretch"
-                                      ToolTipService.ToolTip="FSR3 / XeSS 都依赖外部光流；NVIDIA 的 NVOF 仅 RTX 显卡可用。">
-                                <ComboBoxItem Content="AMD（跨厂商，推荐）" Tag="AMD"/>
-                                <ComboBoxItem Content="NVIDIA（仅 RTX）" Tag="NVIDIA"/>
-                            </ComboBox>
-                        </StackPanel>
-
-                        <StackPanel Spacing="4">
-                            <TextBlock Text="帧同步" FontSize="15" Opacity="0.9"/>
-                            <ComboBox x:Name="FgSyncCombo" HorizontalAlignment="Stretch"
-                                      ToolTipService.ToolTip="前置同步延迟最低；异步更平滑；Reflex 需要 NVIDIA 驱动支持。">
-                                <ComboBoxItem Content="前置帧同步（推荐）" Tag="FRONT_EDGE"/>
-                                <ComboBoxItem Content="异步" Tag="ASYNC"/>
-                                <ComboBoxItem Content="Reflex（NVIDIA）" Tag="REFLEX"/>
-                            </ComboBox>
-                        </StackPanel>
+                    <StackPanel x:Name="OptiCaptureOptions" Spacing="14" Visibility="Collapsed">
+                        <Grid x:Name="OptiCaptureColumns" ColumnSpacing="16" RowSpacing="14">
+                            <Grid.ColumnDefinitions>
+                                <ColumnDefinition Width="*"/>
+                                <ColumnDefinition x:Name="OptiCaptureRightColumn" Width="*"/>
+                            </Grid.ColumnDefinitions>
+                            <Grid.RowDefinitions>
+                                <RowDefinition Height="Auto"/>
+                                <RowDefinition Height="Auto"/>
+                            </Grid.RowDefinitions>
+                            <StackPanel Spacing="8">
+                                <TextBlock Text="画面与插帧" FontWeight="SemiBold"/>
+                                <ComboBox x:Name="OptiCaptureFrameGenCombo" Header="帧生成" HorizontalAlignment="Stretch"
+                                          ToolTipService.ToolTip="FSR FG 和 DLSS FG 需要额外运行库；设置在宿主下次启动时生效。">
+                                    <ComboBoxItem Content="XeFG 2×" Tag="xefg"/>
+                                    <ComboBoxItem Content="FSR FG" Tag="fsrfg"/>
+                                    <ComboBoxItem Content="DLSS FG" Tag="dlssg"/>
+                                    <ComboBoxItem Content="关闭" Tag="nofg"/>
+                                </ComboBox>
+                                <ComboBox x:Name="OptiCaptureUpscalerCombo" Header="超分后端" HorizontalAlignment="Stretch"
+                                          ToolTipService.ToolTip="选择 OptiScaler 的 DX12 超分后端，不会更改游戏窗口尺寸。">
+                                    <ComboBoxItem Content="AMD FSR（自动版本）" Tag="ffx"/>
+                                    <ComboBoxItem Content="AMD FSR 3.1" Tag="fsr3"/>
+                                    <ComboBoxItem Content="Intel XeSS" Tag="xess"/>
+                                    <ComboBoxItem Content="NVIDIA DLSS" Tag="dlss"/>
+                                </ComboBox>
+                                <ComboBox x:Name="OptiCaptureVSyncCombo" Header="宿主垂直同步" HorizontalAlignment="Stretch">
+                                    <ComboBoxItem Content="沿用当前配置" Tag="inherit"/>
+                                    <ComboBoxItem Content="开启" Tag="on"/>
+                                    <ComboBoxItem Content="关闭" Tag="off"/>
+                                </ComboBox>
+                                <ComboBox x:Name="OptiCaptureSharpnessCombo" Header="锐化覆盖" HorizontalAlignment="Stretch">
+                                    <ComboBoxItem Content="沿用当前配置" Tag="inherit"/>
+                                    <ComboBoxItem Content="关闭锐化覆盖" Tag="off"/>
+                                    <ComboBoxItem Content="低（30%）" Tag="0.3"/>
+                                    <ComboBoxItem Content="中（60%）" Tag="0.6"/>
+                                    <ComboBoxItem Content="高（90%）" Tag="0.9"/>
+                                </ComboBox>
+                            </StackPanel>
+                            <StackPanel x:Name="OptiCaptureOverlayColumn" Grid.Column="1" Spacing="8">
+                                <TextBlock Text="浮层与菜单" FontWeight="SemiBold"/>
+                                <ComboBox x:Name="OptiCaptureFpsOverlayCombo" Header="帧率浮层" HorizontalAlignment="Stretch">
+                                    <ComboBoxItem Content="沿用当前配置" Tag="inherit"/>
+                                    <ComboBoxItem Content="显示" Tag="on"/>
+                                    <ComboBoxItem Content="隐藏" Tag="off"/>
+                                </ComboBox>
+                                <ComboBox x:Name="OptiCaptureMenuScaleCombo" Header="菜单缩放" HorizontalAlignment="Stretch">
+                                    <ComboBoxItem Content="沿用当前配置" Tag="inherit"/>
+                                    <ComboBoxItem Content="75%" Tag="0.75"/>
+                                    <ComboBoxItem Content="100%" Tag="1.0"/>
+                                    <ComboBoxItem Content="125%" Tag="1.25"/>
+                                    <ComboBoxItem Content="150%" Tag="1.5"/>
+                                    <ComboBoxItem Content="200%" Tag="2.0"/>
+                                </ComboBox>
+                                <ComboBox x:Name="OptiCaptureMenuLanguageCombo" Header="游戏内菜单语言" HorizontalAlignment="Stretch">
+                                    <ComboBoxItem Content="简体中文（兼容版本）" Tag="zh-CN"/>
+                                    <ComboBoxItem Content="English（原版）" Tag="en"/>
+                                </ComboBox>
+                                <TextBlock x:Name="OptiCaptureLanguageStatus" FontSize="12" Opacity="0.7" TextWrapping="Wrap"/>
+                            </StackPanel>
+                        </Grid>
+                        <Border BorderBrush="{ThemeResource DividerStrokeColorDefaultBrush}" BorderThickness="0,1,0,0" Padding="0,10,0,0">
+                            <Grid ColumnSpacing="12" RowSpacing="6">
+                                <Grid.ColumnDefinitions>
+                                    <ColumnDefinition Width="*"/>
+                                    <ColumnDefinition Width="Auto"/>
+                                </Grid.ColumnDefinitions>
+                                <Grid.RowDefinitions>
+                                    <RowDefinition Height="Auto"/>
+                                    <RowDefinition Height="Auto"/>
+                                </Grid.RowDefinitions>
+                                <StackPanel Spacing="3" VerticalAlignment="Center">
+                                    <TextBlock Text="OptiCaptureHost 组件" FontWeight="SemiBold" TextWrapping="Wrap"/>
+                                    <TextBlock x:Name="OptiCaptureVersionText" FontSize="12" Opacity="0.75" TextWrapping="Wrap"
+                                               AutomationProperties.LiveSetting="Polite"/>
+                                </StackPanel>
+                                <Button x:Name="OptiCaptureUpdateButton" Grid.Column="1" VerticalAlignment="Center"
+                                        Content="检查更新" Click="OnOptiCaptureUpdateClick"/>
+                                <ProgressBar x:Name="OptiCaptureUpdateProgress" Grid.Row="1" Grid.ColumnSpan="2" Maximum="100" Visibility="Collapsed"/>
+                            </Grid>
+                        </Border>
                     </StackPanel>
 
                     <StackPanel x:Name="LosslessPathPanel" Spacing="4">

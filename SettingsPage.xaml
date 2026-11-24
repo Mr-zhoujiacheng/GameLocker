@@ -62,6 +62,7 @@
                     <RowDefinition Height="Auto"/>
                     <RowDefinition Height="Auto"/>
                     <RowDefinition Height="Auto"/>
+                    <RowDefinition Height="Auto"/>
                 </Grid.RowDefinitions>
 
                 <!-- 常规 -->
@@ -115,35 +116,6 @@
                         <StackPanel Grid.Column="1" Spacing="2" VerticalAlignment="Center">
                             <TextBlock Text="外观" FontSize="16" FontWeight="SemiBold"/>
                             <TextBlock Text="玻璃效果 · 背景颜色 · 窗口透明度" FontSize="11"
-                                       Opacity="0.55" TextTrimming="CharacterEllipsis"/>
-                        </StackPanel>
-                        <FontIcon Grid.Column="2" Glyph="&#xE76C;" FontSize="12" Opacity="0.45"
-                                  VerticalAlignment="Center"/>
-                    </Grid>
-                </Button>
-
-                <!-- 顶栏 -->
-                <Button x:Name="TopbarCard" Grid.Row="1" Grid.Column="0"
-                        Style="{StaticResource CategoryButtonStyle}" Click="OnCategoryCardClick">
-                    <Button.Background>
-                        <LinearGradientBrush StartPoint="0,0" EndPoint="0,1">
-                            <GradientStop Color="#12FFFFFF" Offset="0"/>
-                            <GradientStop Color="#388FB3FF" Offset="1"/>
-                        </LinearGradientBrush>
-                    </Button.Background>
-                    <Grid ColumnSpacing="10">
-                        <Grid.ColumnDefinitions>
-                            <ColumnDefinition Width="Auto"/>
-                            <ColumnDefinition Width="*"/>
-                            <ColumnDefinition Width="Auto"/>
-                        </Grid.ColumnDefinitions>
-                        <Border Width="34" Height="34" Background="#26FFFFFF" BorderThickness="1"
-                                BorderBrush="#33FFFFFF" VerticalAlignment="Center">
-                            <FontIcon Glyph="&#xE917;" FontSize="18"/>
-                        </Border>
-                        <StackPanel Grid.Column="1" Spacing="2" VerticalAlignment="Center">
-                            <TextBlock Text="顶栏" FontSize="16" FontWeight="SemiBold"/>
-                            <TextBlock Text="时钟 · 电池 · 网络 · 手柄图标显示" FontSize="11"
                                        Opacity="0.55" TextTrimming="CharacterEllipsis"/>
                         </StackPanel>
                         <FontIcon Grid.Column="2" Glyph="&#xE76C;" FontSize="12" Opacity="0.45"
@@ -237,6 +209,36 @@
                                   VerticalAlignment="Center"/>
                     </Grid>
                 </Button>
+
+                <!-- 系统：顶栏2 + 底栏合并 -->
+                <Button x:Name="SystemCard" Grid.Row="1" Grid.Column="0"
+                        Style="{StaticResource CategoryButtonStyle}" Click="OnCategoryCardClick">
+                    <Button.Background>
+                        <LinearGradientBrush StartPoint="0,0" EndPoint="0,1">
+                            <GradientStop Color="#12FFFFFF" Offset="0"/>
+                            <GradientStop Color="#387AD9C4" Offset="1"/>
+                        </LinearGradientBrush>
+                    </Button.Background>
+                    <Grid ColumnSpacing="10">
+                        <Grid.ColumnDefinitions>
+                            <ColumnDefinition Width="Auto"/>
+                            <ColumnDefinition Width="*"/>
+                            <ColumnDefinition Width="Auto"/>
+                        </Grid.ColumnDefinitions>
+                        <Border Width="34" Height="34" Background="#26FFFFFF" BorderThickness="1"
+                                BorderBrush="#33FFFFFF" VerticalAlignment="Center">
+                            <FontIcon Glyph="&#xE8A9;" FontSize="18" Foreground="White"/>
+                        </Border>
+                        <StackPanel Grid.Column="1" Spacing="2" VerticalAlignment="Center">
+                            <TextBlock Text="系统" FontSize="16" FontWeight="SemiBold"/>
+                            <TextBlock Text="接管win任务栏，开启全新任务栏体验" FontSize="11"
+                                       Opacity="0.55" TextTrimming="CharacterEllipsis"/>
+                        </StackPanel>
+                        <FontIcon Grid.Column="2" Glyph="&#xE76C;" FontSize="12" Opacity="0.45"
+                                  VerticalAlignment="Center"/>
+                    </Grid>
+                </Button>
+
             </Grid>
         </ScrollViewer>
 

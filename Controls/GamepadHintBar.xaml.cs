@@ -2,6 +2,7 @@ using Microsoft.UI.Text;
 using Microsoft.UI.Xaml;
 using Microsoft.UI.Xaml.Controls;
 using Microsoft.UI.Xaml.Media;
+using Microsoft.UI.Xaml.Shapes;
 using Windows.UI;
 using GameLocker.Services;
 
@@ -119,6 +120,10 @@ public sealed partial class GamepadHintBar : UserControl
         _ => GamepadButtons.None
     };
 
+    /// <summary>提示条文字统一用像素字体（与"像素街机"主题、像素猫娘同一套语言；不用于 MDL2 图标）</summary>
+    private static readonly FontFamily PixelFont =
+        new("ms-appx:///Assets/Fonts/fusion-pixel-10px-proportional-zh_hans.ttf#Fusion Pixel 10px Prop zh-Hans");
+
     /// <summary>用竖线分隔的多组 "键:说明" 配置提示内容，说明可省略（只显示按键图标）；键名为中文时渲染为文字胶囊徽章</summary>
     public void SetHints(string spec)
     {
@@ -147,6 +152,7 @@ public sealed partial class GamepadHintBar : UserControl
                 {
                     Text = label,
                     FontSize = (Highlight ? 12.5 : 11) * _scale,
+                    FontFamily = PixelFont,
                     FontWeight = Highlight ? FontWeights.SemiBold : FontWeights.Normal,
                     Opacity = Highlight ? 0.95 : 0.75,
                     VerticalAlignment = VerticalAlignment.Center
@@ -172,6 +178,7 @@ public sealed partial class GamepadHintBar : UserControl
             {
                 Text = label,
                 FontSize = 11,
+                FontFamily = PixelFont,
                 Opacity = 0.75,
                 VerticalAlignment = VerticalAlignment.Center
             });
@@ -189,6 +196,7 @@ public sealed partial class GamepadHintBar : UserControl
             {
                 Text = label,
                 FontSize = 11.5,
+                FontFamily = PixelFont,
                 Opacity = 0.75,
                 HorizontalAlignment = HorizontalAlignment.Center
             });
@@ -204,94 +212,159 @@ public sealed partial class GamepadHintBar : UserControl
         return chip;
     }
 
-    /// <summary>按按键标识生成对应徽章；无对应按键图标的中文词渲染为文字胶囊</summary>
-    private static FrameworkElement BuildBadge(string key, double scale = DefaultScale, bool highlight = false) => key.ToUpperInvariant() switch
+    /// <summary>按按键标识生成对应徽章：所有按键一律同直径圆形（字母、十字、肩键、摇杆、View/Menu），
+    /// "LB/RB" 这类"A 或 B"的组合键拆成并排两个圆；只有中文等非按键文字才退回胶囊。</summary>
+    internal static FrameworkElement BuildBadge(string key, double scale = DefaultScale, bool highlight = false)
     {
-        "A" => Circle("A", ColorFromRgb(0x10, 0x7C, 0x10), scale, highlight: highlight),   // 绿
-        "B" => Circle("B", ColorFromRgb(0xD8, 0x3B, 0x01), scale, highlight: highlight),   // 红
-        "X" => Circle("X", ColorFromRgb(0x00, 0x78, 0xD4), scale, highlight: highlight),   // 蓝
-        "Y" => Circle("Y", ColorFromRgb(0xFF, 0xB9, 0x00), scale, darkText: true, highlight: highlight), // 黄
-        "DPAD" => Pill("\u271A", scale: scale, highlight: highlight),                              // ✚ 十字方向键
-        "VIEW" => Pill("\uE713", icon: true, scale: scale, highlight: highlight),                  // 齿轮（View=进入设置）
-        "MENU" => Pill("\uE700", icon: true, scale: scale, highlight: highlight),                  // ≡ 菜单（Menu/Start）
-        "L3" => Pill("L3", scale: scale, highlight: highlight),
-        "R3" => Pill("R3", scale: scale, highlight: highlight),
-        "LB" => Pill("LB", scale: scale, highlight: highlight),
-        "RB" => Pill("RB", scale: scale, highlight: highlight),
-        "UD" => Pill("\u2195", scale: scale, fontScale: 1.2, highlight: highlight),   // ↕ 十字键上下
-        "LR" => Pill("\u2194", scale: scale, fontScale: 1.2, highlight: highlight),   // ↔ 十字键左右
-        "RS" => Stick(scale, highlight),                   // 右摇杆
-        _ => Pill(key, scale: scale, highlight: highlight)
+        var parts = key.ToUpperInvariant()
+            .Split('/', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
+        if (parts.Length == 0) return Pill(key, scale: scale, highlight: highlight);
+        if (parts.Length == 1) return BuildKeyBadge(parts[0], scale, highlight);
+        var row = new StackPanel
+        {
+            Orientation = Orientation.Horizontal,
+            Spacing = 1.5 * scale,
+            VerticalAlignment = VerticalAlignment.Center,
+            HorizontalAlignment = HorizontalAlignment.Center
+        };
+        foreach (var part in parts) row.Children.Add(BuildKeyBadge(part, scale, highlight));
+        return row;
+    }
+
+    private static FrameworkElement BuildKeyBadge(string key, double scale, bool highlight) => key switch
+    {
+        "A" => LetterCircle("A", ColorFromRgb(0x10, 0x7C, 0x10), scale, highlight),            // 绿
+        "B" => LetterCircle("B", ColorFromRgb(0xD8, 0x3B, 0x01), scale, highlight),            // 红
+        "X" => LetterCircle("X", ColorFromRgb(0x00, 0x78, 0xD4), scale, highlight),            // 蓝
+        "Y" => LetterCircle("Y", ColorFromRgb(0xFF, 0xB9, 0x00), scale, highlight, true),      // 黄（深字）
+        "DPAD" => CrossCircle(scale, highlight),                                              // ✚ 十字方向键
+        "VIEW" => GlyphCircle("\uE713", 0.62, scale, highlight),                               // 齿轮（View=设置）
+        "MENU" => GlyphCircle("\uE700", 0.62, scale, highlight),                               // ≡ 菜单
+        "UD" => GlyphCircle("\u2195", 0.60, scale, highlight),                                 // ↕
+        "LR" => GlyphCircle("\u2194", 0.60, scale, highlight),                                 // ↔
+        "RS" => StickCircle(scale, highlight),                                                // 右摇杆
+        "LB" or "RB" or "L3" or "R3" => WordCircle(key, scale, highlight),                     // 两字母按键盘位
+        _ => Pill(key, scale: scale, highlight: highlight)                                     // 中文等文字仍是胶囊
     };
 
-    /// <summary>右摇杆徽章：圆环 + 中心圆点，纯图形表示摇杆</summary>
-    private static FrameworkElement Stick(double scale = DefaultScale, bool highlight = false)
+    /// <summary>圆形底座：固定直径、无内边距，内容在正中</summary>
+    private static Border BadgeCircle(double scale, bool highlight, Color? fill = null)
     {
-        var d = 12 * scale;
-        var ring = new Border
+        var d = 18 * scale;
+        return new Border
         {
             Width = d,
             Height = d,
             CornerRadius = new CornerRadius(d / 2),
+            Background = new SolidColorBrush(fill ??
+                Color.FromArgb(highlight ? (byte)0x1F : (byte)0x33, 0xFF, 0xFF, 0xFF)),
+            VerticalAlignment = VerticalAlignment.Center,
+            HorizontalAlignment = HorizontalAlignment.Center
+        };
+    }
+
+    /// <summary>字母圆章（A/B/X/Y）：字形盒压成 1 em 再居中，视觉上才是正中间</summary>
+    private static FrameworkElement LetterCircle(string text, Color fill, double scale, bool highlight,
+        bool darkText = false) =>
+        Fill(BadgeCircle(scale, highlight, fill), MakeText(text, 11 * scale, highlight,
+            darkText ? Color.FromArgb(0xFF, 0x20, 0x20, 0x20) : White, FontWeights.Bold));
+
+    /// <summary>两字母圆章（LB/RB/L3/R3）：字号缩到能塞进圆里，同样居中</summary>
+    private static FrameworkElement WordCircle(string text, double scale, bool highlight) =>
+        Fill(BadgeCircle(scale, highlight), MakeText(text, 7.4 * scale, highlight, White, FontWeights.Bold));
+
+    /// <summary>图标圆章（View/Menu/上下左右）：MDL2 字形居中</summary>
+    private static FrameworkElement GlyphCircle(string glyph, double emRatio, double scale, bool highlight) =>
+        Fill(BadgeCircle(scale, highlight), new TextBlock
+        {
+            Text = glyph,
+            FontSize = 18 * scale * emRatio,
+            FontFamily = new FontFamily("Segoe MDL2 Assets"),
+            Foreground = new SolidColorBrush(White),
+            HorizontalAlignment = HorizontalAlignment.Center,
+            VerticalAlignment = VerticalAlignment.Center
+        });
+
+    /// <summary>十字键：两条线段画出来的"＋"，几何居中，不受字体基线影响</summary>
+    private static FrameworkElement CrossCircle(double scale, bool highlight)
+    {
+        var circle = BadgeCircle(scale, highlight);
+        var d = 18 * scale;
+        var arm = d * 0.52;
+        var thick = Math.Max(1.2, d * 0.11);
+        var cross = new Grid();
+        cross.Children.Add(new Rectangle
+        {
+            Width = arm, Height = thick, RadiusX = thick / 2, RadiusY = thick / 2,
+            Fill = new SolidColorBrush(White),
+            HorizontalAlignment = HorizontalAlignment.Center,
+            VerticalAlignment = VerticalAlignment.Center
+        });
+        cross.Children.Add(new Rectangle
+        {
+            Width = thick, Height = arm, RadiusX = thick / 2, RadiusY = thick / 2,
+            Fill = new SolidColorBrush(White),
+            HorizontalAlignment = HorizontalAlignment.Center,
+            VerticalAlignment = VerticalAlignment.Center
+        });
+        return Fill(circle, cross);
+    }
+
+    /// <summary>右摇杆：圆环 + 中心点，外框同样是圆章</summary>
+    private static FrameworkElement StickCircle(double scale, bool highlight)
+    {
+        var d = 18 * scale;
+        var ringSize = d * 0.62;
+        var ring = new Border
+        {
+            Width = ringSize,
+            Height = ringSize,
+            CornerRadius = new CornerRadius(ringSize / 2),
             BorderBrush = new SolidColorBrush(White),
-            BorderThickness = new Thickness((highlight ? 1.6 : 1.4) * scale),
+            BorderThickness = new Thickness(Math.Max(1, d * 0.075)),
+            HorizontalAlignment = HorizontalAlignment.Center,
+            VerticalAlignment = VerticalAlignment.Center,
             Child = new Border
             {
-                Width = 4 * scale,
-                Height = 4 * scale,
-                CornerRadius = new CornerRadius(2 * scale),
+                Width = d * 0.22,
+                Height = d * 0.22,
+                CornerRadius = new CornerRadius(d * 0.11),
                 Background = new SolidColorBrush(White),
                 HorizontalAlignment = HorizontalAlignment.Center,
                 VerticalAlignment = VerticalAlignment.Center
             }
         };
-        return new Border
-        {
-            Padding = new Thickness(4 * scale, 2 * scale, 4 * scale, 2 * scale),
-            CornerRadius = new CornerRadius(9 * scale),
-            Background = new SolidColorBrush(Color.FromArgb(highlight ? (byte)0x1F : (byte)0x33, 0xFF, 0xFF, 0xFF)),
-            BorderBrush = null,
-            BorderThickness = new Thickness(0),
-            VerticalAlignment = VerticalAlignment.Center,
-            HorizontalAlignment = HorizontalAlignment.Center,
-            Child = ring
-        };
+        return Fill(BadgeCircle(scale, highlight), ring);
     }
+
+    /// <summary>把内容塞进圆章：Grid 铺满，内容自带居中对齐</summary>
+    private static FrameworkElement Fill(Border circle, FrameworkElement content)
+    {
+        circle.Child = content;
+        return circle;
+    }
+
+    /// <summary>圆章里的文字：靠居中对齐 + 一点上移补偿（字体行盒的降部留白会让字看着偏下）</summary>
+    private static TextBlock MakeText(string text, double fontSize, bool highlight, Color color,
+        Windows.UI.Text.FontWeight weight) => new()
+    {
+        Text = text,
+        FontSize = fontSize,
+        FontWeight = weight,
+        FontFamily = new FontFamily("Segoe UI"),
+        Foreground = new SolidColorBrush(color),
+        HorizontalAlignment = HorizontalAlignment.Center,
+        VerticalAlignment = VerticalAlignment.Center,
+        Margin = new Thickness(0, -fontSize * 0.05, 0, 0)
+    };
+
 
     private static Color ColorFromRgb(byte r, byte g, byte b) => Color.FromArgb(0xFF, r, g, b);
 
     /// <summary>白色（Windows.UI/Microsoft.UI 两个 Colors 类同名，避免歧义直接构造）</summary>
     private static readonly Color White = Color.FromArgb(0xFF, 0xFF, 0xFF, 0xFF);
 
-    /// <summary>圆形按键徽章（A/B/X/Y）：彩色圆 + 居中字母；highlight 时外面套一圈同色光晕</summary>
-    private static FrameworkElement Circle(string text, Color fill, double scale = DefaultScale,
-        bool darkText = false, bool highlight = false)
-    {
-        var d = 18 * scale;
-        var circle = new Border
-        {
-            Width = d,
-            Height = d,
-            CornerRadius = new CornerRadius(d / 2),
-            Background = new SolidColorBrush(fill),
-            VerticalAlignment = VerticalAlignment.Center,
-            HorizontalAlignment = HorizontalAlignment.Center,
-            Child = new TextBlock
-            {
-                Text = text,
-                FontSize = 11 * scale,
-                FontWeight = FontWeights.Bold,
-                FontFamily = new FontFamily("Segoe UI"),
-                Foreground = new SolidColorBrush(darkText ? Color.FromArgb(0xFF, 0x20, 0x20, 0x20) : White),
-                HorizontalAlignment = HorizontalAlignment.Center,
-                VerticalAlignment = VerticalAlignment.Center
-            }
-        };
-        // 简约：键帽只用实色圆，不加光晕/外圈
-        return circle;
-    }
-
-    /// <summary>胶囊徽章（LB/RB/L3/R3/方向/View/Menu）：半透明底 + 居中文字或图形</summary>
+    /// <summary>胶囊徽章（中文等非按键文字）：半透明底 + 居中文字</summary>
     private static Border Pill(string content, bool icon = false, double scale = DefaultScale,
         double fontScale = 1, bool highlight = false)
     {
@@ -310,7 +383,7 @@ public sealed partial class GamepadHintBar : UserControl
                 Text = content,
                 FontSize = (icon ? 11 : 10) * scale * fontScale,
                 FontWeight = FontWeights.SemiBold,
-                FontFamily = new FontFamily(icon ? "Segoe MDL2 Assets" : "Segoe UI"),
+                FontFamily = icon ? new FontFamily("Segoe MDL2 Assets") : PixelFont,
                 Foreground = new SolidColorBrush(White),
                 HorizontalAlignment = HorizontalAlignment.Center,
                 VerticalAlignment = VerticalAlignment.Center

@@ -84,7 +84,7 @@ public static class SystemMediaService
         try
         {
             _manager = await GlobalSystemMediaTransportControlsSessionManager.RequestAsync();
-            _manager.CurrentSessionChanged += (_, _) => EnqueueUI(() => { AttachSession(); Notify(); });
+            _manager.CurrentSessionChanged += (_, _) => EnqueueUI(AttachSession);
             AttachSession();
         }
         catch
@@ -114,8 +114,8 @@ public static class SystemMediaService
             _title = "";
             _artist = "";
             ClearCover();
-            Notify();
         }
+        Notify();
     }
 
     /// <summary>

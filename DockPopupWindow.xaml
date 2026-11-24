@@ -1,0 +1,23 @@
+﻿<?xml version="1.0" encoding="utf-8"?>
+<Window
+    x:Class="GameLocker.DockPopupWindow"
+    xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+    xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml">
+
+    <Grid x:Name="Root" Background="#FF141418">
+        <Border x:Name="Card"
+                CornerRadius="16"
+                Background="#F0161619"
+                BorderBrush="#26FFFFFF"
+                BorderThickness="1"
+                Padding="14">
+            <StackPanel Spacing="10">
+                <TextBlock x:Name="TitleText"
+                           FontSize="12"
+                           Opacity="0.65"
+                           TextWrapping="NoWrap"/>
+                <Canvas x:Name="ItemsCanvas" Background="Transparent"/>
+            </StackPanel>
+        </Border>
+    </Grid>
+</Window>

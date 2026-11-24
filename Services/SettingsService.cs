@@ -32,11 +32,35 @@ public static class SettingsService
                 // 旧默认（单 Start）升级为 Start+Select，避免老配置继续用旧快捷键
                 if (loaded.FullscreenCombo == GamepadButtons.Menu)
                     loaded.FullscreenCombo = GamepadButtons.Menu | GamepadButtons.View;
+                // 上一版把「底栏呼出组合键」错接到启动器 SummonCombo 上，默认值也顺手从 LT+RT 改成 LS+RS；
+                // 存过那份配置的机器上启动器呼出键被顶成 LS+RS、LT+RT 直接失效。这里一次性还原。
+                var summonRestored = false;
+                if (!loaded.DockSummonComboMigrated)
+                {
+                    loaded.DockSummonComboMigrated = true;
+                    if (loaded.SummonCombo == (GamepadButtons.LeftThumb | GamepadButtons.RightThumb))
+                    {
+                        loaded.SummonCombo = GamepadButtons.LeftTrigger | GamepadButtons.RightTrigger;
+                        loaded.DockSummonCombo = GamepadButtons.LeftThumb | GamepadButtons.RightThumb;
+                        summonRestored = true;
+                        DebugLog.Write("[设置] 已把启动器呼出键还原为 LT+RT，LS+RS 挪给底栏呼出键");
+                    }
+                }
                 MigratePowerProfiles(loaded);
                 using var document = JsonDocument.Parse(File.ReadAllText(FilePath));
                 if (!document.RootElement.TryGetProperty(nameof(AppSettings.SharedProfile), out _))
                     loaded.SharedProfile = (PowerProfileService.OnAc ? loaded.AcProfile : loaded.BatteryProfile).Copy();
                 DebugLog.Enabled = loaded.DiagnosticLog;
+                // 底栏图标尺寸兜底（条高已改为按图标自动推导，旧配置里的 DockHeight 直接忽略）
+                var beforeIcon = loaded.DockIconSize;
+                loaded.NormalizeDockGeometry();
+                // 「任务栏处理」已改为「任务栏隐藏」开关：旧的“自动隐藏”(1) 不再有意义，统一归零
+                var beforeTaskbarMode = loaded.DockTaskbarMode;
+                if (loaded.DockTaskbarMode != 2) loaded.DockTaskbarMode = 0;
+                if (loaded.DockIconSize != beforeIcon || loaded.DockTaskbarMode != beforeTaskbarMode || summonRestored)
+                {
+                    try { Save(loaded); } catch { }
+                }
                 return loaded;
             }
         }
@@ -91,6 +115,8 @@ public static class SettingsService
     public static void Update(Action<AppSettings> mutate)
     {
         mutate(Current);
+        // 底栏条高必须容得下放大后的图标（含倒影），在这里兜底，任何入口改尺寸都不会存下坏组合
+        Current.NormalizeDockGeometry();
         Save(Current);
     }
 

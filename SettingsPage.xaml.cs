@@ -14,7 +14,7 @@ namespace GameLocker;
 /// </summary>
 public sealed partial class SettingsPage : Page, ISettingsGamepad
 {
-    /// <summary>卡片顺序与 OpenCategory 的分支编号一致（0=常规 … 5=关于）</summary>
+    /// <summary>卡片顺序与 OpenCategory 的分支编号一致（0=常规 … 7=底栏）</summary>
     private Control[] _cards = [];
     private int _index;
     private bool _ready;
@@ -23,7 +23,9 @@ public sealed partial class SettingsPage : Page, ISettingsGamepad
     public SettingsPage()
     {
         InitializeComponent();
-        _cards = [GeneralCard, AppearanceCard, TopbarCard, ControlCard, DrawerCard, AboutCard];
+        // 分类卡片用手绘白框当光标：子控件拿到焦点时不再画系统焦点框（避免两个框）
+        FocusRing.Attach(this);
+        _cards = [GeneralCard, AppearanceCard, SystemCard, ControlCard, DrawerCard, AboutCard];
         // 选中上浮作用在 RenderTransform 上，不影响卡片排布
         foreach (var c in _cards) c.RenderTransform = new CompositeTransform();
         // 卡片网格宽度跟随可用宽度（窄侧边栏/宽悬浮都对齐），避免两列被窗口裁掉
@@ -145,7 +147,7 @@ public sealed partial class SettingsPage : Page, ISettingsGamepad
         var page = index switch
         {
             1 => typeof(AppearancePage),
-            2 => typeof(TopbarPage),
+            2 => typeof(StatusBarSettingsPage),
             3 => typeof(KeybindPage),
             4 => typeof(DrawerSettingsPage),
             5 => typeof(AboutPage),

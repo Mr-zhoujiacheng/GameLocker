@@ -514,18 +514,12 @@ public static class MonitorService
     {
         var n = ++_tickCount;
         var s = new MonitorSnapshot();
-        var targetPid = NeedsFrameStats() ? ForegroundPid() : 0;
-        var duckPid = NeedsFrameStats() ? LosslessScalingService.ActiveOutputPid() : 0;
-        // 内置插帧（XeSS / FSR3）：Magpie 输出窗会占住前台，要回指到它下面真正在跑的游戏
-        var magpiePid = NeedsFrameStats() ? LosslessScalingService.ActiveMagpiePresenterPid() : 0;
-        if (magpiePid > 0)
-        {
-            // 用启动 FGHost 时绑定的游戏，避免桌面/启动器/覆盖层切换导致采集目标来回清空。
-            var gamePid = LosslessScalingService.ActiveMagpieGamePid();
-            if (gamePid > 4) targetPid = gamePid;
-        }
-        var outputPid = magpiePid > 0 ? magpiePid : duckPid > 0 ? duckPid : targetPid;
-        s.FrameGenerationDetected = magpiePid > 0 || duckPid > 0;
+        var needsFrames = NeedsFrameStats();
+        var opti = needsFrames ? LosslessScalingService.ReadOptiScalerTelemetry() : null;
+        var targetPid = opti?.GamePid ?? (needsFrames ? ForegroundPid() : 0);
+        var duckPid = needsFrames ? LosslessScalingService.ActiveOutputPid() : 0;
+        var outputPid = opti?.HostPid ?? (duckPid > 0 ? duckPid : targetPid);
+        s.FrameGenerationDetected = opti?.Confirmed ?? duckPid > 0;
         if (outputPid > 0 && IsElevated() && _losslessOutput is null)
         {
             _losslessOutput = new LosslessOutputListener();
@@ -645,8 +639,22 @@ public static class MonitorService
             else
                 s.OriginalFps = _lastOriginalFps;
         }
-        if (magpiePid > 0 && n % 5 == 0)
-            DebugLog.Write($"[插帧监控] game={targetPid} output={outputPid} inputFps={s.Fps:0.##} outputFps={s.OutputFps:0.##} helper={_helperAlive} {_losslessOutput?.Diagnostics}");
+        if (opti is not null)
+        {
+            // The host reports the capture and actual DXGI output from the same session.
+            // Never carry a previously confirmed output across focus loss or a stale status.
+            s.FrameGenerationDetected = opti.Confirmed;
+            if (opti.Confirmed && opti.Status is { } hostStatus)
+            {
+                s.OriginalFps = hostStatus.CaptureFps;
+                s.OutputFps = hostStatus.DxgiFps;
+            }
+            else
+            {
+                s.OriginalFps = double.NaN;
+                s.OutputFps = double.NaN;
+            }
+        }
         return s;
     }
 

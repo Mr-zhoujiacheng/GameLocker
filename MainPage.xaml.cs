@@ -9,7 +9,6 @@ using Microsoft.UI.Xaml.Controls;
 using Microsoft.UI.Xaml.Input;
 using Microsoft.UI.Xaml.Media;
 using Microsoft.UI.Xaml.Media.Animation;
-using Microsoft.UI.Xaml.Hosting;
 using Microsoft.UI.Xaml.Navigation;
 
 namespace GameLocker;
@@ -146,6 +145,17 @@ public sealed partial class MainPage : Page
     public MainPage()
     {
         InitializeComponent();
+        Current = this;
+        AddHandler(PointerPressedEvent, new PointerEventHandler((_, _) => Mascot.ReportActivity()), true);
+        AddHandler(PointerMovedEvent, new PointerEventHandler((_, _) => Mascot.ReportActivity(wake: false)), true);
+        AddHandler(PointerWheelChangedEvent, new PointerEventHandler((_, _) => Mascot.ReportActivity()), true);
+        AddHandler(KeyDownEvent, new KeyEventHandler((_, _) => Mascot.ReportActivity()), true);
+        // 主页的"选中"是磁贴描边（手柄光标）：子控件（音乐播放键、系统小组件按钮…）
+        // 即使拿到焦点也不能再画系统焦点框，否则会同时出现两个框
+        FocusRing.Attach(this);
+        MascotTrack.SizeChanged += (_, _) => PositionMascot();
+
+        Unloaded += (_, _) => { if (ReferenceEquals(Current, this)) Current = null; };
         UiSound.Open(); // 提前合成并打开音频设备，第一次手柄按键就有声
         HookStatusBubbles(); // 顶栏状态图标：单击快捷动作，长按进系统设置
         // 已读时间持久化：重启后仍能提示"上次打开通知中心之后到达"的通知；
@@ -155,6 +165,7 @@ public sealed partial class MainPage : Page
 
         Loaded += async (_, _) =>
         {
+            UpdateHomeHintLayout();
             ApplyDrawerWidth(); // 全屏/居中模式下抽屉按窗口宽度比例收窄并居中（须在首次重排之前生效）
             LayoutTiles();
             UpdateSelection();
@@ -209,10 +220,8 @@ public sealed partial class MainPage : Page
         SizeChanged += (_, _) =>
         {
             ApplyDrawerWidth();
-            UpdateHintBarScale();
             QueueResizeLayout();
         };
-        Loaded += (_, _) => UpdateHintBarScale();
 
         // 添加方式遮罩：鼠标点击选项/面板外空白（遮罩层）
         // 自绘卡片不是标准控件：点中即标记已处理，全局点击音效据此发声（点遮罩空白仍安静）
@@ -265,10 +274,6 @@ public sealed partial class MainPage : Page
         DrawerHost.Tapped += (_, _) => EnterDrawer();
         // 双击抽屉区域（空白处/当前抽屉本身）=重命名当前抽屉，等同抽屉层 R3（标签条上的双击由标签自身处理）
         DrawerHost.DoubleTapped += (_, _) => BeginRenameDrawerTab();
-        // 抽屉面板尺寸变化（内容重排/窗口缩放）：同步底部 toast 的位置（面板收起时 toast 需随其占位高度下移）
-        DrawerHost.SizeChanged += (_, _) => UpdateToastOffset();
-        // 悬浮提示条本身高度随提示内容变化（提示条换文案/隐藏）：toast 跟着重新定位
-        HintBarShell.SizeChanged += (_, _) => UpdateToastOffset();
     }
 
     private readonly DispatcherTimer _clockTimer;
@@ -331,7 +336,7 @@ public sealed partial class MainPage : Page
         if (_tickCount % 3 == 0) UpdateNotificationDot();
         _tickCount++;
         // 音乐磁贴进度秒级刷新
-        if (_musicRefs.Count > 0) RefreshMusicTiles();
+        if (_musicRefs.Count > 0) RefreshMusicState();
         // 性能监控磁贴读数秒级刷新
         if (_monRefs.Count > 0) RefreshMonitorTiles();
         // 下载模式：磁贴剩余时间与遮罩读数秒级刷新
@@ -514,13 +519,17 @@ public sealed partial class MainPage : Page
             // 列数没变：按磁贴右边界计算整组宽度，不能只取起始列，否则会漏掉宽磁贴的跨度。
             var usedW = 0.0;
             foreach (var p in _placedTiles)
-                usedW = Math.Max(usedW, p.col * (Unit + Gap) + p.tile.Width);
+                if (!ReferenceEquals(p.tile, _addTile))
+                    usedW = Math.Max(usedW, p.col * (Unit + Gap) + p.tile.Width);
+            if (usedW == 0 && _addTile is not null) usedW = Unit;
             var offsetX = Math.Max(0, (availW - usedW) / 2);
             foreach (var (tile, c, r) in _placedTiles)
             {
                 Canvas.SetLeft(tile, offsetX + c * (Unit + Gap));
                 Canvas.SetTop(tile, r * (Unit + Gap));
             }
+            AlignHomeHintToTiles(availW, offsetX, usedW);
+            PositionMascot();
         });
     }
 
@@ -907,6 +916,7 @@ public sealed partial class MainPage : Page
     protected override void OnNavigatedTo(NavigationEventArgs e)
     {
         base.OnNavigatedTo(e);
+        UpdateHomeHintLayout();
         // 页号：沿用当前页，并同步到窗口供新建磁贴归属
         if (App.Main is { } main) main.CurrentHomePage = _page;
         // 抽屉开关打开但尚无宿主（首次运行/宿主被清空）：补建一个默认宿主并落盘，
@@ -914,7 +924,7 @@ public sealed partial class MainPage : Page
         if (SettingsService.Current.DrawerEnabled && DrawerService.EnsureHost(_items, _page))
             ConfigService.Save(_items.ToList());
         _imagesReleased = false;
-        Reload(); // 内部 UpdateSelection 会按当前选中项设置底部提示条
+        Reload();
         LayoutPageDots();
         // 页面实例可能重建：主动同步手柄连接状态，避免图标回退默认白色
         SetGamepadStatus(App.Main?.Gamepad.HasGamepad ?? false);
@@ -928,13 +938,13 @@ public sealed partial class MainPage : Page
         // 供电切换由全局 PowerProfileWatcher 应用，页面只负责在应用后同步读数
         PowerProfileWatcher.Applied += OnPowerProfileApplied;
         _pageWorkActive = true;
-        UpdateClock();
-        _clockTimer.Start();
-        // 音乐小组件：接管系统媒体控制（SMTC），状态变化即时刷新磁贴
-        // （事件可能来自非 UI 线程，marshal 后刷新）
+        // 音乐小组件和猫娘共用系统媒体控制的播放状态。
         SystemMediaService.StateChanged += OnMusicStateChanged;
         _ = SystemMediaService.InitAsync();
-        RefreshMusicTiles();
+        RefreshMusicState();
+        Mascot.SetPageActive(!_moving);
+        UpdateClock();
+        _clockTimer.Start();
         // 图片组小组件：定时轮播当前图片，换图时只刷新磁贴内容不重建
         SlideshowService.CurrentChanged += OnSlideshowChanged;
         SlideshowService.Start();
@@ -988,7 +998,7 @@ public sealed partial class MainPage : Page
     private void QueuePageRefresh(Action refresh) =>
         DispatcherQueue.TryEnqueue(() => { if (_pageWorkActive) refresh(); });
 
-    private void OnMusicStateChanged() => QueuePageRefresh(RefreshMusicTiles);
+    private void OnMusicStateChanged() => QueuePageRefresh(RefreshMusicState);
 
     private void OnSlideshowChanged() =>
         QueuePageRefresh(RefreshPhotoTiles);
@@ -1020,6 +1030,29 @@ public sealed partial class MainPage : Page
         UpdateBattery();
         UpdateNetwork();
         UpdateNotificationDot();
+    }
+
+    internal void UpdateHomeHintLayout()
+    {
+        var settings = SettingsService.Current;
+        // 提示条在编辑态也保留（黑板已移除），平板模式才隐藏
+        HomeHintShell.Visibility = settings.TabletMode ? Visibility.Collapsed : Visibility.Visible;
+        // 提示条到标题区（84 DIP）底边的距离：三种窗口模式统一用这一个值，
+        // 以后想整体上下挪，只改 HomeHintBottom 一处，侧边栏 / 居中 / 开始菜单一起动。
+        HomeHintPlate.Margin = new Thickness(0, 0, 0, HomeHintBottom);
+        UpdateMascotDuck();
+    }
+
+    private void AlignHomeHintToTiles(double availableWidth, double tileOffset, double tileWidth)
+    {
+        var padding = TileScroll.Padding;
+        var margin = HomeHintShell.Margin;
+        var right = Math.Max(8, padding.Right);
+        // 靠右对齐但不贴边：右沿留一个 padding 的呼吸位，窄窗再大就靠 MaxWidth 缩字兜底。
+        HomeHintShell.Margin = new Thickness(padding.Left, margin.Top, right, margin.Bottom);
+        // 宽度策略：优先"拉长"而不是"缩小"，上限给到整窗可用宽；只有窗口真的塞不下时才由 Viewbox 缩字兜底。
+        HomeHintPlate.MaxWidth = Math.Max(220, availableWidth + 24 - padding.Left - right);
+        UpdateMascotDuck(); // 窗口尺寸变了：重新判断提示条有没有压到猫娘
     }
 
     /// <summary>全屏/居中模式下抽屉面板宽度占窗口宽度的比例（这两种模式窗口很宽，铺满会显得横向过长）</summary>
@@ -1093,7 +1126,6 @@ public sealed partial class MainPage : Page
     /// 收起动画结束后把抽屉行高度归零并折叠，让磁贴区铺满整屏、底部不再被空白条遮住。</summary>
     private void AnimateDrawerSlide(bool hidden, bool animate)
     {
-        UpdateToastOffset();
 
         if (!animate)
         {
@@ -1146,7 +1178,6 @@ public sealed partial class MainPage : Page
     private void CollapseDrawerRow()
     {
         DrawerHost.Visibility = Visibility.Collapsed;
-        UpdateToastOffset(); // 底部提示条随磁贴区一起落到底部
     }
 
     /// <summary>展开抽屉：显示悬浮面板</summary>
@@ -1170,38 +1201,6 @@ public sealed partial class MainPage : Page
             return Math.Max(h, root.ActualHeight - (r.Y - y));
         }
         catch { return root.ActualHeight; }
-    }
-
-    /// <summary>仅左右侧边栏按可用宽度缩小主页手柄提示；居中、全屏和开始菜单模式保持原尺寸。</summary>
-    private void UpdateHintBarScale()
-    {
-        var sidebar = App.Main?.IsWideOverlay == false && !SettingsService.Current.StartMenuMode;
-        HintBarScaleHost.Stretch = sidebar ? Stretch.Uniform : Stretch.None;
-        if (sidebar && ActualWidth > 0)
-        {
-            // 两侧保留 12 DIP，并扣除提示条底板的 Padding；DownOnly 保证宽窗口不放大。
-            HintBarShell.MaxWidth = Math.Max(1, ActualWidth - 24);
-            HintBarScaleHost.MaxWidth = Math.Max(1, HintBarShell.MaxWidth
-                - HintBarShell.Padding.Left - HintBarShell.Padding.Right);
-        }
-        else
-        {
-            HintBarShell.MaxWidth = double.PositiveInfinity;
-            HintBarScaleHost.MaxWidth = double.PositiveInfinity;
-        }
-    }
-
-    /// <summary>底部布局随提示条高度同步：toast 固定在底部手柄提示条上方，抽屉卡片再给整条底部让位。</summary>
-    private void UpdateToastOffset()
-    {
-        var barHeight = HintBarShell.Visibility == Visibility.Visible ? HintBarShell.ActualHeight : 0;
-        var bar = barHeight > 0 ? barHeight + 26 : 20;
-        MoveHintBar.Margin = new Thickness(0, 0, 0, bar);
-        // 收起时牌堆铺满页面宽度并始终贴底；展开的大卡才留边距、给提示条让位
-        DrawerHost.Margin = new Thickness(
-            _drawerExpanded ? 12 : 0, 6,
-            _drawerExpanded ? 12 : 0,
-            _drawerExpanded && barHeight > 0 ? bar : 8);
     }
 
     /// <summary>抽屉手势感应区高度（DIP）：抽屉收起（面板不在屏上）时，窗口底部这条窄带内上下划也归抽屉</summary>
@@ -1240,6 +1239,8 @@ public sealed partial class MainPage : Page
     {
         if (!_pageWorkActive) return;
         _pageWorkActive = false;
+        ApplyEditHeader(animate: false);
+        Mascot.SetPageActive(false);
         PowerProfileWatcher.Applied -= OnPowerProfileApplied;
         if (_perfOpen) ClosePerformanceMenu();
         CancelPendingTap();
@@ -1291,7 +1292,6 @@ public sealed partial class MainPage : Page
         LayoutTiles();
         if (keepDrawer) RestoreDrawerFocus(keepPos);
         UpdateSelection();
-        if (_moving) UpdateHintBar(); // 编辑模式内返回：提示条按恢复后的焦点重刷
     }
 
     /// <summary>返回主页后按离开前的层级恢复抽屉焦点：抽屉已不存在则不恢复；
@@ -1311,12 +1311,17 @@ public sealed partial class MainPage : Page
         _display.Clear();
         foreach (var it in _items)
         {
+            // 底栏专用条目（从底栏添加/拖入的）：只在底栏显示，主页磁贴网格里不排布
+            if (it.LauncherHidden) continue;
             if (DrawerService.IsDrawer(it)) continue; // 抽屉固定在主页下方独立区域，不进磁贴网格
             if (PageIndexOf(it) != _page) continue;   // 只显示归属当前页的项
             _display.Add((it, null));
             if (it.Kind == LaunchKind.Group && ReferenceEquals(it, _expanded))
                 foreach (var m in it.Members)
+                {
+                    if (m.LauncherHidden) continue;
                     _display.Add((m, it));
+                }
         }
         if (_selected >= _display.Count) _selected = Math.Max(0, _display.Count - 1);
     }
@@ -1465,15 +1470,30 @@ public sealed partial class MainPage : Page
     private enum ToastKind { Success, Warning }
 
     /// <summary>临时提示条：玻璃质感药丸，2 秒后自动隐藏（关闭反馈、删除反馈、拖入结果等复用）。
-    /// 成功=青色对勾，警告=琥珀感叹号；位置在磁贴画布底部（手柄提示条上方），但层级最高、可覆盖卡片，
+    /// 成功=青色对勾，警告=琥珀感叹号；位置在磁贴画布底部，但层级最高、可覆盖卡片，
     /// 首次出现时淡入 + 自下方归位。progress 非空表示这是一条联网下载进度：文案下方显示细进度条，
     /// 且只要还有进度上报就不自动收起。</summary>
     private Microsoft.UI.Xaml.DispatcherTimer? _dropToastTimer;
     private Storyboard? _toastIn;
 
+    /// <summary>底栏触发的组件动作：提示改走桌面悬浮 toast，不再用启动器内部的底部提示条。</summary>
+    private static long _dockActionUntilTicks;
+
+    public static void BeginDockAction() =>
+        Interlocked.Exchange(ref _dockActionUntilTicks, DateTime.UtcNow.AddSeconds(180).Ticks);
+
+    private static bool DockActionActive =>
+        Interlocked.Read(ref _dockActionUntilTicks) > DateTime.UtcNow.Ticks;
+
     private void ShowToast(string text, ToastKind kind = ToastKind.Success, double? progress = null, UiSoundKind? sound = null)
     {
         var warn = kind == ToastKind.Warning;
+        if (DockActionActive)
+        {
+            // 底栏组件触发的提示直接弹在桌面，启动器隐藏时也看得见
+            FloatingToastService.Show(text, warning: warn);
+            return;
+        }
         // 正常关闭仍可显示警告色，但使用开关成功音；真正失败才播放错误音。
         if (SettingsService.Current.UiSoundEnabled && (sound ?? (warn ? UiSoundKind.Error : null)) is { } cue)
             UiSound.Play(cue);
@@ -1502,7 +1522,6 @@ public sealed partial class MainPage : Page
 
         if (MoveHintBar.Visibility != Visibility.Visible)
         {
-            UpdateToastOffset(); // 按抽屉当前状态（显示/自动隐藏收起）定位后再显示，避免首帧跳动
             MoveHintBar.Visibility = Visibility.Visible;
             PlayToastIn();
         }
@@ -1512,7 +1531,6 @@ public sealed partial class MainPage : Page
             _dropToastTimer.Tick += (_, _) =>
             {
                 _dropToastTimer!.Stop();
-                // 底部 toast 到时直接隐藏；底部操作提示条（HintBar）由 UpdateHintBar 独立管理，互不影响
                 MoveHintBar.Visibility = Visibility.Collapsed;
             };
         }
@@ -1558,6 +1576,8 @@ public sealed partial class MainPage : Page
     /// </summary>
     public bool HandleGamepad(GamepadButtons buttons)
     {
+        if (buttons != 0) Mascot.ReportActivity();
+
         // A/B 的操作反馈音由 MainWindow 的全局音效统一播放（所有页面共用），这里不再重复播放
 
         // 添加方式选择遮罩 / 抽屉改名遮罩 / 电源菜单 / 文件传输浮层 打开：按键优先交给遮罩
@@ -1638,7 +1658,7 @@ public sealed partial class MainPage : Page
                     if (_drawerExpanded) BackToDrawerLevel(); else ExitDrawer();
                     return true;
                 }   // 消费 B，避免落 MainWindow 的最小化
-                if (buttons.HasFlag(GamepadButtons.LeftThumb)) { ExitDrawer(); EnterEditMode(); return true; }
+                if (buttons.HasFlag(GamepadButtons.LeftThumb)) { ExitDrawer(scrollToSelection: _moving); EnterEditMode(); return true; }
                 return false; // View（设置）等交 MainWindow
             }
 
@@ -1669,12 +1689,21 @@ public sealed partial class MainPage : Page
                 return true;
             }
             if (buttons.HasFlag(GamepadButtons.B)) { BackToDrawerLevel(); return true; }
-            if (buttons.HasFlag(GamepadButtons.LeftThumb)) { ExitDrawer(); EnterEditMode(); return true; }
+            if (buttons.HasFlag(GamepadButtons.LeftThumb)) { ExitDrawer(scrollToSelection: _moving); EnterEditMode(); return true; }
             return false; // 其它键（View/Menu 等）交 MainWindow 默认路由
         }
 
         if (_moving)
         {
+            // 首次鼠标点卡只提升牌面，不会接管手柄。手柄继续操作主页时，说明也切回主页。
+            const GamepadButtons homeEditInput = GamepadButtons.DPadUp | GamepadButtons.DPadDown |
+                GamepadButtons.DPadLeft | GamepadButtons.DPadRight | GamepadButtons.A | GamepadButtons.X | GamepadButtons.Y;
+            if (_drawerClickSelected >= 0 && (buttons & homeEditInput) != 0)
+            {
+                _drawerClickSelected = -1;
+                ApplyDrawerFanState();
+                RefreshHomeHints(force: true);
+            }
             if (buttons.HasFlag(GamepadButtons.DPadUp)) { if (_grabbed is not null) SwapInDirection(0, -1); else MoveSelection(0, -1); return true; }
             // 最底行再按 ↓（无候选）=进入抽屉区域（编辑模式内用于把标记的磁贴移入抽屉）
             if (buttons.HasFlag(GamepadButtons.DPadDown)) { if (_grabbed is not null) SwapInDirection(0, 1); else if (!MoveSelection(0, 1)) EnterDrawer(); return true; }
@@ -1743,23 +1772,24 @@ public sealed partial class MainPage : Page
         return false;
     }
 
-    /// <summary>进入编辑（移动）模式：时钟+日期换成"编辑模式"大字，提示条换成编辑操作提示。
-    /// L3 与长按设置磁贴共用；重排一次以给磁贴挂上拖拽手势。
-    /// 另加过渡反馈：大字弹出 + 所有磁贴错落抖动一下，让人明确感知已进入编辑模式。</summary>
+    /// <summary>L3 与长按设置共用入口；重排磁贴以挂上编辑手势，再用黑板替换顶部吊牌。</summary>
     private void EnterEditMode()
     {
         if (_moving) return;
         _moving = true;
+        Mascot.SetPageActive(false);
         // 若当前焦点在抽屉区域内部，先退出（编辑模式不建立区域内焦点）
         _inDrawer = false;
+        _drawerClickSelected = -1;
         _drawerFocusPos = -1;
         ClockText.Visibility = Visibility.Collapsed;
         DateText.Visibility = Visibility.Collapsed;
         EditModeText.Visibility = Visibility.Visible;
-        UpdateHintBar();
-        LayoutTiles();
-        PopInEditModeText();
-        ShakeTiles();
+        LayoutTiles(scrollToSelection: false);
+        RefreshHomeHints(force: true);
+        ApplyEditHeader(animate: true);
+        // L3 / 长按设置进入编辑模式：底部弹一条提示，避免"进了编辑模式但没察觉"
+        ShowToast("已进入编辑模式", ToastKind.Success, sound: UiSoundKind.Select);
     }
 
     /// <summary>"编辑模式"大字弹出：0.6 → 1 缩放 + 淡入，收尾时清掉 RenderTransform 免得留残影</summary>
@@ -1798,33 +1828,9 @@ public sealed partial class MainPage : Page
         sb.Begin();
     }
 
-    /// <summary>进入编辑模式的磁贴抖动：每个磁贴快速左右各摆几下后回正，按序号错开起播时间形成"波纹"。
-    /// 走 Composition 层的 RotationAngleInDegrees（不改 RenderTransform），因此与拖拽的 TranslateTransform、
-    /// 换位/展开动画互不干扰；动画收在 0°，结束后不留偏移。</summary>
-    private void ShakeTiles()
-    {
-        for (var k = 0; k < _tiles.Count; k++)
-        {
-            var t = _tiles[k];
-            var visual = ElementCompositionPreview.GetElementVisual(t);
-            visual.CenterPoint = new System.Numerics.Vector3(
-                (float)t.ActualWidth / 2f, (float)t.ActualHeight / 2f, 0f);
-
-            var anim = visual.Compositor.CreateScalarKeyFrameAnimation();
-            anim.Duration = TimeSpan.FromMilliseconds(360);
-            anim.DelayTime = TimeSpan.FromMilliseconds(k * 22);
-            anim.InsertKeyFrame(0f, 0f);
-            anim.InsertKeyFrame(0.2f, -4.5f);
-            anim.InsertKeyFrame(0.4f, 4.5f);
-            anim.InsertKeyFrame(0.6f, -3f);
-            anim.InsertKeyFrame(0.8f, 2f);
-            anim.InsertKeyFrame(1f, 0f);
-            visual.StartAnimation("RotationAngleInDegrees", anim);
-        }
-    }
-
     private void EndMove()
     {
+        RefreshHomeHints(force: true); // 退出编辑后提示条按当前选中项重写
         _moving = false;
         _marked.Clear();
         _grabbed = null;
@@ -1836,14 +1842,16 @@ public sealed partial class MainPage : Page
         RefreshSettingsBadge();
         // 选中项若停在"添加磁贴"（显示序列之外的末位），退出后回落到最后一个真实磁贴
         if (_selected >= _display.Count) _selected = Math.Max(0, _display.Count - 1);
-        // 恢复时钟+日期模块与底部常规提示条
+        // 恢复时钟+日期模块
         EditModeText.Visibility = Visibility.Collapsed;
         ClockText.Visibility = Visibility.Visible;
         DateText.Visibility = Visibility.Visible;
         UpdateClock();
-        LayoutTiles();
-        UpdateSelection(); // 末尾按当前选中项恢复底部提示条（音乐磁贴=音乐提示）
-        ShakeTiles();      // 退出编辑模式同样抖一下，让"回到普通模式"也有明确反馈
+        LayoutTiles(scrollToSelection: false);
+        ApplyEditHeader(animate: true);
+        RefreshHomeHints(force: true); // 退出编辑后提示条回来，按当前选中项重写动态区
+        // 退出编辑（L3/B、点设置磁贴、组合兜底）同一出口：底部弹提示
+        ShowToast("已退出编辑模式", ToastKind.Success, sound: UiSoundKind.Select);
     }
 
     /// <summary>移动模式 A 键：抓取当前磁贴（此后方向键=移动它）/ 再按放下</summary>
@@ -1860,7 +1868,6 @@ public sealed partial class MainPage : Page
             if (group is not null || item.Kind == LaunchKind.Group) return; // 组成员/组本体不可抓取
             _grabbed = item;
         }
-        UpdateHintBar();
         LayoutTiles();
         UpdateSelection();
     }
@@ -1886,9 +1893,10 @@ public sealed partial class MainPage : Page
     }
 
     /// <summary>自动流式排布：每个磁贴放入第一个能容纳它的空位（按 _display 显示序列）</summary>
-    private void LayoutTiles()
+    private void LayoutTiles(bool scrollToSelection = true)
     {
         if (_imagesReleased) return;
+        if (_lpTile is { } pressed && _tiles.Contains(pressed)) CancelLongPress();
         TileHost.Children.Clear();
         _placedTiles.Clear();
         _tiles.Clear();
@@ -1961,27 +1969,38 @@ public sealed partial class MainPage : Page
             maxCol = Math.Max(maxCol, spot.c + w - 1);
 
             var tile = CreateTile(item, group, i, w, h);
+            // 磁贴里的按钮只做点击：不参与系统焦点，避免多画出第二个焦点框
+            TileStyle.DisableInteractiveFocus(tile);
             _placedTiles.Add((tile, spot.c, spot.r));
             TileHost.Children.Add(tile);
             _tiles.Add(tile);
         }
 
-        // 编辑模式专属"添加磁贴"（1×1 小）：排在最后一个空位，点击=退出编辑并弹出添加方式选择（等同普通模式 X 键）。
+        // 添加格只找真实磁贴已占用的列；必要时增加一行，不能改变整组水平基准。
         // 只并入 _tiles（可手柄选中）而不进 _display——因此不参与标记/拖拽/删除，所有索引比对处均以 _display.Count 收口。
         if (_moving)
         {
             (int c, int r) add = (-1, -1);
+            var addCols = Math.Max(1, maxCol + 1);
             for (var r = 0; add.c < 0 && r < 1000; r++)
-                for (var c = 0; c < cols; c++)
+                for (var c = 0; c < addCols; c++)
                     if (Fits(occupied, c, r, 1, 1)) { add = (c, r); break; }
             if (add.c >= 0)
             {
-                occupied.Add((add.c, add.r));
                 maxRow = Math.Max(maxRow, add.r);
-                maxCol = Math.Max(maxCol, add.c);
 
                 _addTile = CreateAddTile();
-                _addTile.Tapped += (_, e) => { e.Handled = true; OpenAddFromEdit(); };
+                TileStyle.DisableInteractiveFocus(_addTile);
+                _addTile.Tapped += (_, e) =>
+                {
+                    e.Handled = true;
+                    _inDrawer = false;
+                    _drawerFocusPos = -1;
+                    _drawerClickSelected = -1;
+                    _selected = _display.Count;
+                    UpdateSelection();
+                    OpenAddFromEdit();
+                };
                 _placedTiles.Add((_addTile, add.c, add.r));
                 TileHost.Children.Add(_addTile);
                 _tiles.Add(_addTile);
@@ -1989,13 +2008,14 @@ public sealed partial class MainPage : Page
         }
 
         // 水平居中：整块磁贴按实际占用宽度在可视区内居中（窗口大小改变时随 SizeChanged 重算）；垂直保持靠左上
-        var usedW = maxCol < 0 ? 0 : (maxCol + 1) * (Unit + Gap) - Gap;
+        var usedW = maxCol < 0 ? (_addTile is null ? 0 : Unit) : (maxCol + 1) * (Unit + Gap) - Gap;
         var offsetX = Math.Max(0, (availW - usedW) / 2);
         foreach (var (tile, c, r) in _placedTiles)
         {
             Canvas.SetLeft(tile, offsetX + c * (Unit + Gap));
             Canvas.SetTop(tile, r * (Unit + Gap));
         }
+        AlignHomeHintToTiles(availW, offsetX, usedW);
 
         // 清掉上次切页动画可能残留的横向位移：动画被打断（切页途中呼出/隐藏启动器）时
         // PageSlide.X 会停在非零值，导致整块磁贴偏移、最右列被窗口边缘遮住。
@@ -2004,7 +2024,12 @@ public sealed partial class MainPage : Page
         TileScroll.Opacity = 1;
 
         // 撑满视口靠 XAML 的 MinWidth/MinHeight 绑定实现（垂直靠左上，暂不居中）；这里只设内容实际高度供超出时滚动
-        TileHost.Height = Math.Max(200, (maxRow + 1) * (Unit + Gap));
+        var contentHeight = Math.Max(200, (maxRow + 1) * (Unit + Gap));
+        // 退出可能移除加号所在的末行；保留当前可见范围，避免滚动容器自动钳制偏移。
+        if (!scrollToSelection && TileScroll.VerticalOffset > 0)
+            contentHeight = Math.Max(contentHeight, TileScroll.VerticalOffset + TileScroll.ViewportHeight);
+        TileHost.Height = contentHeight;
+        PositionMascot();
 
         // 回收已移除小组件的轮播状态，避免后台继续扫描目录/补下载
         SyncWidgetServices();
@@ -2015,8 +2040,54 @@ public sealed partial class MainPage : Page
         // 磁贴是每次重排新建的 Border，CreateTile 只画默认/标记/抓取描边；
         // 选中框由 UpdateSelection 叠加。呼出显示、组展开/收起、返回主页等都会触发
         // SizeChanged→LayoutTiles 重建磁贴，若不在此重绘选中框，手柄选中框就会丢失。
-        UpdateSelection();
+        UpdateSelection(scrollToSelection);
         RefreshSettingsBadge();
+    }
+
+    private void OnMascotTileViewChanged(object? sender, ScrollViewerViewChangedEventArgs e) => PositionMascot();
+
+    internal bool IsMascotPointerCaptured => Mascot.IsPointerCaptured;
+
+    private void PositionMascot()
+    {
+        if (MascotLayer is null) return;
+        // 黑板移除后猫娘不再飞到黑板旁：主页与编辑态都在原位
+        PositionHomeMascot();
+    }
+
+    private void PositionHomeMascot()
+    {
+        if (_placedTiles.Count == 0 || _pageAnimating)
+        {
+            Mascot.CancelMovement();
+            MascotLayer.Visibility = Visibility.Collapsed;
+            return;
+        }
+
+        var (tile, _, _) = _placedTiles[0];
+        double tileLeft = Canvas.GetLeft(tile);
+        double tileTop = Canvas.GetTop(tile) - TileScroll.VerticalOffset;
+        if (!double.IsFinite(tileLeft) || !double.IsFinite(tileTop)) return;
+
+        // Ignore small offset changes near the top while the layout/scroll position settles.
+        double hideDepth = MascotLayer.Visibility == Visibility.Visible ? 4 : 1;
+        if (tile == _addTile || tileTop < -hideDepth)
+        {
+            Mascot.CancelMovement();
+            MascotLayer.Visibility = Visibility.Collapsed;
+            return;
+        }
+        if (tileTop < 0) tileTop = 0;
+
+        // In the sprite, row 52 meets the tile edge, with only the fingers below it.
+        const double gripLine = 52;
+        double left = TileScroll.Padding.Left + tileLeft + (Math.Min(tile.Width, 104) - MascotLayer.Width) / 2;
+        double top = MascotSpacer.Height + TileScroll.Padding.Top + tileTop - gripLine;
+        MascotLayer.Margin = new Thickness(Math.Max(0, Math.Round(left)), Math.Round(top), 0, 0);
+        _firstTileEdgeY = MascotSpacer.Height + TileScroll.Padding.Top + tileTop; // 猫娘藏身时的"桌面"边沿
+        Mascot.SetDragBounds(MascotLayer.Margin.Left, MascotTrack.ActualWidth);
+        MascotLayer.Visibility = Visibility.Visible;
+        UpdateMascotDuck(); // 猫娘挪了位置，重新判断有没有被提示条压住
     }
 
     /// <summary>按当前所有磁贴（含未展开的组和其他页）回收轮播服务里已失效的状态，
@@ -2073,6 +2144,7 @@ public sealed partial class MainPage : Page
             want = _dragOverTrash ? SettingsBadge.Trash
                    : _marked.Count >= 2 ? SettingsBadge.Plus
                    : SettingsBadge.None;
+        RefreshHomeHints(force: true);
         if (_badge == want) return;
         if (_badgeIcon is not null && _badgeOrigGlyph is not null) _badgeIcon.Glyph = _badgeOrigGlyph;
         _badgeIcon = null;
@@ -2083,7 +2155,7 @@ public sealed partial class MainPage : Page
         {
             _settingsTile.BorderBrush = new SolidColorBrush(Windows.UI.Color.FromArgb(0x40, 0xFF, 0xFF, 0xFF));
             _settingsTile.BorderThickness = new Thickness(1);
-            UpdateSelection(); // 若设置磁贴正被选中，重绘选中描边
+            UpdateSelection(scrollToSelection: false); // 只恢复选中描边，不移动视口。
             return;
         }
         _settingsTile.BorderBrush = new SolidColorBrush(want == SettingsBadge.Trash
@@ -2456,7 +2528,7 @@ public sealed partial class MainPage : Page
     /// 无抽屉组件、或抽屉被删空时折叠隐藏并清引用，不占高度。</summary>
     private void RenderDrawerPanel()
     {
-        CancelLongPress();
+        if (_lpTile is { } pressed && _drawerInnerTiles.Contains(pressed)) CancelLongPress();
         CancelPendingTap();
         if (_drawerCardDragging) return; // 卡牌拖动期间不重建面板，否则画布重建会丢失指针捕获
         // 总开关（设置 → 抽屉）：关闭时与"无抽屉组件"同样折叠隐藏（抽屉内容保留，重开即恢复）
@@ -2839,18 +2911,20 @@ public sealed partial class MainPage : Page
     private void SetDrawerFanHover(int idx)
     {
         var wasGamepad = _drawerGamepadFocus;
+        var wasClicked = _drawerClickSelected >= 0;
         _drawerGamepadFocus = false;
         // 悬停到另一张卡时，上一次“点击选中”失效；悬停回原卡则保留选中
         if (idx >= 0 && idx != _drawerClickSelected) _drawerClickSelected = -1;
         if (_drawerFanHover == idx)
         {
             if (wasGamepad) ApplyDrawerFanState();
+            if (wasClicked && _drawerClickSelected < 0) RefreshHomeHints(force: true);
             return;
         }
         _drawerFanHover = idx;
         if (idx >= 0) _drawerIndex = idx;
         ApplyDrawerFanState();
-        if (_inDrawer && _drawerFocusPos < 0) UpdateHintForSelection();
+        if (_inDrawer || wasClicked) RefreshHomeHints(force: true);
     }
 
     /// <summary>构建一张扇形卡牌：抽屉名 + 项目数 + 内容预览 + 大号抽屉水印。</summary>
@@ -3070,7 +3144,7 @@ public sealed partial class MainPage : Page
                 _drawerFanHover = idx;
                 _drawerIndex = idx;
                 ApplyDrawerFanState();
-                if (_inDrawer) UpdateHintForSelection();
+                RefreshHomeHints(force: true);
                 return;
             }
             _drawerClickSelected = -1;
@@ -3551,6 +3625,7 @@ public sealed partial class MainPage : Page
             // 双击内层磁贴=进编辑页（等同 R3）；吞掉 DoubleTapped 不让它冒泡到面板（否则会弹出"重命名当前抽屉"遮罩）
             tile.DoubleTapped += (_, e) => { e.Handled = true; HandleDoubleTapOnDrawer(sub); };
             AttachInnerTileDrag(tile, sub); // 拖出到磁贴区=变主页磁贴；拖到设置磁贴=删除
+            TileStyle.DisableInteractiveFocus(tile); // 抽屉内层同样只用描边做光标
             canvas.Children.Add(tile);
             _drawerInnerTiles.Add(tile);
         }
@@ -3573,6 +3648,7 @@ public sealed partial class MainPage : Page
                 BeginAddIntoDrawer();
             };
             add.DoubleTapped += (_, e) => e.Handled = true; // 双击加号磁贴不冒泡到面板（避免弹出重命名遮罩）
+            TileStyle.DisableInteractiveFocus(add);
             canvas.Children.Add(add);
             _drawerInnerTiles.Add(add);
             _drawerAddTile = add;
@@ -3588,6 +3664,7 @@ public sealed partial class MainPage : Page
             if (_dragItem is not null) return; // 已有拖拽进行中
             _suppressTap = false;
             if (!_moving) StartLongPress(tile, sub, e);
+            else FocusDrawerItem(_drawerInnerTiles.IndexOf(tile));
             _dragItem = sub;
             _dragTile = tile;
             _dragStart = e.GetCurrentPoint(TileHost).Position;
@@ -3641,6 +3718,8 @@ public sealed partial class MainPage : Page
             _dragItem = null;
             _dragTile = null;
             _dragMoved = false;
+            _dragOverTrash = false;
+            RefreshSettingsBadge();
             if (moved) RevertInnerTileDrag(tile);
         }), true);
     }
@@ -3665,7 +3744,6 @@ public sealed partial class MainPage : Page
         _drawerFocusPos = Math.Clamp(_drawerFocusPos, -1, Math.Max(-1, page.Items.Count - 1));
         SwapToNearest(sub, p); // 落到落点附近（与最近顶层磁贴换位；内部含落盘与重绘）
         UpdateSelection();
-        if (_moving) UpdateHintBar();
         ShowToast(string.IsNullOrWhiteSpace(sub.Name) ? "已移出抽屉" : $"已把 {sub.Name} 移出抽屉");
     }
 
@@ -3678,7 +3756,6 @@ public sealed partial class MainPage : Page
         _drawerFocusPos = Math.Clamp(_drawerFocusPos, -1, Math.Max(-1, page.Items.Count - 1));
         RenderDrawerPanel();
         UpdateSelection();
-        if (_moving) UpdateHintBar();
         ShowToast(string.IsNullOrWhiteSpace(sub.Name) ? "已删除磁贴" : $"已删除 {sub.Name}");
     }
 
@@ -3742,11 +3819,10 @@ public sealed partial class MainPage : Page
         _drawerFocusPos = -1; // 卡牌层：焦点不在任何内层磁贴上
         if (!_drawerExpanded) ApplyDrawerFanState();
         UpdateSelection();
-        if (_moving) UpdateHintBar(); // 编辑模式内进入区域：提示条切成抽屉操作
     }
 
     /// <summary>退出抽屉区域：焦点回到磁贴区，同时把展开的大卡收回扇形手牌。</summary>
-    private void ExitDrawer()
+    private void ExitDrawer(bool scrollToSelection = true)
     {
         if (!_inDrawer) return;
         _inDrawer = false;
@@ -3759,8 +3835,7 @@ public sealed partial class MainPage : Page
             _fanEntrancePending = true;
             RenderDrawerPanel();
         }
-        UpdateSelection();
-        if (_moving) UpdateHintBar(); // 编辑模式内退出区域：提示条恢复编辑提示
+        UpdateSelection(scrollToSelection);
     }
 
     /// <summary>卡牌层 → 内层：把选中的卡展开成大卡，焦点落到第一个内层磁贴（空卡也保持展开）。</summary>
@@ -3776,14 +3851,12 @@ public sealed partial class MainPage : Page
         {
             _drawerFocusPos = -1;
             UpdateSelection();
-            if (_moving) UpdateHintBar(); else UpdateHintForSelection();
             var name = CurrentDrawerPage()?.Name;
             ShowToast(string.IsNullOrWhiteSpace(name) ? "卡牌是空的 · 按 X 添加" : $"「{name}」是空的 · 按 X 添加", ToastKind.Warning);
             return;
         }
         _drawerFocusPos = 0;
         UpdateSelection();
-        if (_moving) UpdateHintBar(); else UpdateHintForSelection();
     }
 
     /// <summary>内层 → 卡牌层：大卡收回扇形手牌（再按 B 才退出到磁贴区）。</summary>
@@ -3800,7 +3873,6 @@ public sealed partial class MainPage : Page
             RenderDrawerPanel();
         }
         UpdateSelection();
-        if (_moving) UpdateHintBar(); else UpdateHintForSelection();
     }
 
     /// <summary>LB/RB 或 ←→ 换卡：收起时切换扇形手牌的热卡；展开时整张大卡换成下一张（牌边同步重排）。</summary>
@@ -3820,7 +3892,7 @@ public sealed partial class MainPage : Page
         else
         {
             ApplyDrawerFanState();
-            if (_inDrawer) UpdateHintForSelection();
+            RefreshHomeHints(force: true);
         }
     }
 
@@ -4013,7 +4085,6 @@ public sealed partial class MainPage : Page
             _drawerFocusPos = Math.Clamp(_drawerFocusPos, -1, Math.Max(-1, page.Items.Count - 1));
             RenderDrawerPanel();
             UpdateSelection();
-            if (_moving) UpdateHintBar();
             ShowToast(string.IsNullOrWhiteSpace(item.Name) ? "已删除磁贴" : $"已删除 {item.Name}");
             return;
         }
@@ -4040,7 +4111,6 @@ public sealed partial class MainPage : Page
         PersistLayout();
         RenderDrawerPanel();
         UpdateSelection();
-        if (_moving) UpdateHintBar();
 
         ShowToast(string.IsNullOrWhiteSpace(name) ? "已删除抽屉" : $"已删除「{name}」");
     }
@@ -4068,7 +4138,6 @@ public sealed partial class MainPage : Page
         LayoutTiles();
         _selected = Math.Clamp(_selected, 0, Math.Max(0, _display.Count - 1));
         UpdateSelection();
-        if (_moving) UpdateHintBar();
         ShowToast($"已移入「{page.Name}」{moved} 个磁贴");
     }
 
@@ -4092,6 +4161,7 @@ public sealed partial class MainPage : Page
         SyncPerformanceFocus(); // 抽屉内移动光标同样要还原性能磁贴的待应用档位
         // 收起成手牌时刷新热卡样式；展开时大卡描边由 BuildDrawerSheet 保持
         if (!_drawerExpanded) ApplyDrawerFanState();
+        RefreshHomeHints(force: true);
     }
 
     /// <summary>抽屉面板表面：常态=玻璃渐变底 + 投影；透明模式=与窗口一致的透明底、去掉投影，
@@ -4293,6 +4363,9 @@ public sealed partial class MainPage : Page
             }
 
             if (!_moving || _dragItem is not null) return;
+            _drawerClickSelected = -1;
+            _inDrawer = false; // 切换焦点，但保留抽屉展开状态以便向里拖放
+            _drawerFocusPos = -1;
             if (group is not null)
             {
                 // 组成员不可拖拽：轻点仅选中（便于 Y 键移出组）
@@ -4381,6 +4454,9 @@ public sealed partial class MainPage : Page
                 _dragItem = null;
                 _dragTile = null;
                 _dragMoved = false;
+                _dragOverTrash = false;
+                ResetDrawerHover();
+                RefreshSettingsBadge();
             }
             if (_lpTile is not null && ReferenceEquals(_lpTile, tile))
             {
@@ -4402,6 +4478,13 @@ public sealed partial class MainPage : Page
         _dragItem = null;
         _dragTile = null;
         _dragMoved = false;
+        if (item is { Kind: LaunchKind.Widget, WidgetKind: WidgetKind.Settings })
+        {
+            var index = _display.IndexOf((item, null));
+            if (index >= 0) _selected = index;
+            EnterEditMode();
+            return;
+        }
         HandleItemY(item);
     }
 
@@ -4411,10 +4494,11 @@ public sealed partial class MainPage : Page
     /// <summary>拖拽放下：命中设置磁贴（垃圾桶）=删除；命中抽屉区域=放入当前抽屉；命中其他磁贴或空位=交换位置移动</summary>
     private void DropDragged(Windows.Foundation.Point p, LaunchItem dragged, Border? dragTile)
     {
+        // 拖拽结束后，黑板和设置徽章同时恢复为当前焦点的操作。
         var wasOverDrawer = _dragOverDrawer;
         _dragOverTrash = false;
-        RefreshSettingsBadge();
         ResetDrawerHover();
+        RefreshSettingsBadge();
         // 拖到"添加磁贴"上无意义：不换位、不删除，直接原样收回
         if (_addTile is not null && PointInTile(p, _addTile)) return;
 
@@ -4629,6 +4713,12 @@ public sealed partial class MainPage : Page
         ToggleGroup(item);
     }
 
+    /// <summary>最近一次创建的主页实例；启动器切到设置页/隐藏时，底栏小组件仍能找到它。</summary>
+    public static MainPage? Current { get; private set; }
+
+    /// <summary>底栏小组件图标调用：复用主页磁贴的触发语义。</summary>
+    public void ActivateWidgetFromDock(LaunchItem item) => ActivateWidgetItem(item);
+
     /// <summary>触发一个小组件磁贴（主页顶层与抽屉内层共用；抽屉内为静态外观但动作语义一致）</summary>
     private void ActivateWidgetItem(LaunchItem item)
     {
@@ -4769,24 +4859,23 @@ public sealed partial class MainPage : Page
     /// <summary>小黄鸭一键补帧：按结果给出提示，并刷新磁贴状态</summary>
     private async Task ActivateLosslessAsync(LaunchItem item)
     {
-        var magpie = LosslessScalingService.UsesMagpie(item);
-        var engineName = !magpie ? "LSFG"
-            : string.Equals(item.FrameGenEngine, LosslessScalingService.EngineXess, StringComparison.OrdinalIgnoreCase)
-                ? "XeSS FG" : "FSR3 FG";
+        var optiScaler = LosslessScalingService.UsesOptiScaler(item);
+        var engineName = optiScaler ? "OptiScaler" : "LSFG";
         if (LosslessScalingService.IsActivating)
         {
-            if (magpie)
+            if (optiScaler && LosslessScalingService.IsOptiScalerStarting)
             {
-                LosslessScalingService.CancelMagpieStart();
-                FloatingToastService.Show($"正在取消 {engineName} 插帧…");
+                LosslessScalingService.CancelOptiScalerStart();
+                FloatingToastService.Show("正在取消 OptiScaler 启动…");
             }
-            else ShowToast($"正在启动 {engineName}…", ToastKind.Warning);
             return;
         }
-        var result = await LosslessScalingService.ActivateAsync(item);
+        var activation = LosslessScalingService.ActivateAsync(item);
+        RefreshLosslessTiles();
+        var result = await activation;
         RefreshLosslessTiles();
         // 小黄鸭以管理员身份运行时，普通权限的启动器无法收起它的窗口，提示里说明一下
-        var minSuffix = !magpie && LosslessScalingService.MinimizeBlocked ? "（小黄鸭以管理员运行，窗口无法最小化）" : "";
+        var minSuffix = !optiScaler && LosslessScalingService.MinimizeBlocked ? "（小黄鸭以管理员运行，窗口无法最小化）" : "";
         var minKind = minSuffix.Length > 0 ? ToastKind.Warning : ToastKind.Success;
         // 游戏里按 A 时启动器已收进托盘，页面内的提示根本看不见，改用独立悬浮提示。
         void Report(string text, ToastKind kind = ToastKind.Success, UiSoundKind? sound = null)
@@ -4799,32 +4888,41 @@ public sealed partial class MainPage : Page
         switch (result)
         {
             case LosslessScalingService.ScaleResult.NotInstalled:
-                Report(magpie
-                    ? "内置补帧后端缺失：请确认 FG 目录完整"
+                Report(optiScaler
+                    ? $"OptiScaler 运行库未就绪：{LosslessScalingService.OptiFailureReason}"
                     : "未检测到小黄鸭：请先安装，或按 R3 指定程序", ToastKind.Warning);
                 break;
             case LosslessScalingService.ScaleResult.LaunchFailed:
-                Report(magpie
-                    ? $"{engineName} 启动失败：{(string.IsNullOrEmpty(LosslessScalingService.MagpieFailureReason) ? "请查看日志" : LosslessScalingService.MagpieFailureReason)}"
+                Report(optiScaler
+                    ? $"OptiScaler 启动失败：{LosslessScalingService.OptiFailureReason}"
                     : "小黄鸭启动失败", ToastKind.Warning);
                 break;
             case LosslessScalingService.ScaleResult.NoGame:
-                Report(magpie
-                    ? $"未识别到有效游戏窗口：桌面和系统窗口不支持插帧，请先切到游戏，再打开启动器按 A"
+                Report(optiScaler
+                    ? "未识别到有效游戏窗口，请将游戏切到窗口化或无边框并重试"
                     : "未检测到游戏：小黄鸭已打开并最小化，进入游戏后再按 A 开启 LSFG 插帧", ToastKind.Warning);
                 break;
             case LosslessScalingService.ScaleResult.FocusFailed:
                 Report("切不回游戏窗口：请进入游戏后再按 A", ToastKind.Warning);
                 break;
             case LosslessScalingService.ScaleResult.FrameGenOn:
-                Report($"已开启 {engineName} 插帧" + (magpie ? $" · {LosslessScalingService.MagpieTargetName}" : minSuffix), minKind, UiSoundKind.Select);
+                Report($"已开启 {engineName} 插帧" + minSuffix, minKind, UiSoundKind.Select);
                 break;
             case LosslessScalingService.ScaleResult.FrameGenOff:
                 Report($"已关闭 {engineName} 插帧" + minSuffix, minKind, UiSoundKind.Select);
                 break;
+            case LosslessScalingService.ScaleResult.HostRunning:
+                if (OptiCaptureProfile.NormalizeFrameGeneration(item.OptiCaptureFrameGeneration) == "nofg")
+                    Report("OptiScaler 已启动，帧生成关闭", ToastKind.Success);
+                else
+                    Report("OptiScaler 宿主运行中，尚未检测到插帧", ToastKind.Warning);
+                break;
+            case LosslessScalingService.ScaleResult.BusyWithOtherEngine:
+                Report("请先关闭另一种插帧引擎", ToastKind.Warning);
+                break;
             case LosslessScalingService.ScaleResult.ToggleFailed:
-                Report(magpie
-                    ? $"未能切换 {engineName}：后端可能未停止，请查看日志后重试"
+                Report(optiScaler
+                    ? "未能关闭 OptiScaler 宿主，请查看日志后重试"
                     : "未能切换 LSFG 插帧：请在小黄鸭里按 Ctrl+Alt+S 确认热键", ToastKind.Warning);
                 break;
         }
@@ -5181,22 +5279,6 @@ public sealed partial class MainPage : Page
 
     /// <summary>光标是否停在性能控制磁贴上（A 键应用/开关，音效与主页开关一致，用 success 音）</summary>
     public bool IsPerformanceTileSelected => IsPerformanceSelected();
-
-    /// <summary>性能磁贴底部提示：按已开启的快捷项动态生成（右摇杆切换项 / LB/RB 动作）</summary>
-    private static string PerformanceHintText(LaunchItem item, string head, string tail)
-    {
-        var enabled = TileStyle.EnabledQuickItems(item);
-        var quick = TileStyle.CurrentQuickItem(item);
-        var switchText = enabled.Length > 1 ? "←→:切换项|" : "";
-        var adjustText = enabled.Length == 0 ? ""
-            : quick is TileStyle.PerformanceQuickItem.FrameLimit or TileStyle.PerformanceQuickItem.PowerLimit
-                or TileStyle.PerformanceQuickItem.CpuFrequency ? "LB/RB:调整|"
-            : quick == TileStyle.PerformanceQuickItem.CpuBoost ? "A:开关|"
-            : "LB/RB:选择模式|";
-        // 睿频是开关型：A 直接开关并保存，不再显示“A:应用”
-        var applyText = quick == TileStyle.PerformanceQuickItem.CpuBoost && enabled.Length > 0 ? "" : "A:应用|";
-        return head + switchText + adjustText + applyText + "Y:打开面板|" + tail;
-    }
 
     /// <summary>当前选中的是否为顶层手柄映射小组件磁贴（决定 A 键是开/关映射还是启动）</summary>
     private bool IsGamepadMapSelected()
@@ -6613,6 +6695,9 @@ public sealed partial class MainPage : Page
         PerfDeviceText.Text = name;
     }
 
+        /// <summary>底栏性能组件：呼出启动器并打开主页按 Y 的完整性能面板。</summary>
+    public void OpenPerformanceFromDock() => OpenPerformanceMenu();
+
     private void ClosePerformanceMenu()
     {
         ClosePerformanceCombo();
@@ -7336,11 +7421,12 @@ public sealed partial class MainPage : Page
         return pruned;
     }
 
-    /// <summary>刷新所有音乐磁贴的系统媒体状态显示（曲目名/播放暂停按钮/封面）</summary>
-    private void RefreshMusicTiles()
+    /// <summary>同步猫娘动画和音乐磁贴的系统媒体状态。</summary>
+    private void RefreshMusicState()
     {
-        if (_musicRefs.Count == 0) return;
         var playing = SystemMediaService.IsPlaying;
+        Mascot.SetMusicPlaying(playing);
+        if (_musicRefs.Count == 0) return;
         var has = SystemMediaService.HasSession;
         var title = has ? SystemMediaService.Title : "";
         if (has && title.Length == 0) title = "未知曲目";
@@ -8107,7 +8193,6 @@ public sealed partial class MainPage : Page
         item.PerformanceOption = (int)enabled[((index + dir) % enabled.Length + enabled.Length) % enabled.Length];
         ConfigService.Save(_items.ToList());
         AnimatePerformanceSwitch(dir);
-        UpdateHintForSelection();
         return true;
     }
 
@@ -8421,8 +8506,11 @@ public sealed partial class MainPage : Page
 
     // ---- 选择 / 导航 ----
 
-    private void UpdateSelection()
+    private void UpdateSelection(bool scrollToSelection = true)
     {
+        // 手柄光标是磁贴描边：先撤掉可能残留的系统焦点框（呼出/重建磁贴后音乐播放键等
+        // 控件若曾拿到焦点，会多出一圈框，且随页面滚动和选中框一起移动）
+        FocusRing.HideCurrent(XamlRoot);
         for (var i = 0; i < _tiles.Count; i++)
         {
             var t = _tiles[i];
@@ -8456,13 +8544,13 @@ public sealed partial class MainPage : Page
                 Microsoft.UI.Xaml.Controls.Canvas.SetZIndex(t, 0);
             }
         }
-        if (!_inDrawer && _selected >= 0 && _selected < _tiles.Count)
+        if (scrollToSelection && !_inDrawer && _selected >= 0 && _selected < _tiles.Count)
             TileScroll.ChangeView(null,
                 Math.Max(0, Canvas.GetTop(_tiles[_selected]) - 40), null, false);
         UpdateDrawerSelection(); // 区域内部焦点描边 / 面板"在区域内"强调色
         UpdateWallpaperInfo();   // 壁纸磁贴：选中时显示标题与壁纸信息，光标移开即隐藏
-        UpdateHintForSelection();
         SyncPerformanceFocus();  // 性能磁贴：光标移开后恢复当前已生效的电源模式
+        RefreshHomeHints();      // 顶部提示条动态区：随选中磁贴换文案（固定区不动）
     }
 
     /// <summary>壁纸磁贴信息条：只有当前选中的壁纸磁贴显示，其它一律隐藏</summary>
@@ -8511,76 +8599,6 @@ public sealed partial class MainPage : Page
         WallpaperService.Register(item);
         UpdateWallpaperInfo();
         ShowToast("已收藏当前壁纸", ToastKind.Success);
-    }
-
-    /// <summary>按当前选中项替换底部提示条：音乐/图片组磁贴=只显示对应操作提示（主页提示暂时隐藏），其他=恢复主页提示（编辑模式不处理，由 UpdateHintBar 负责）</summary>
-    private void UpdateHintForSelection()
-    {
-        if (_moving) return;
-        if (_inDrawer)
-            if (_drawerFocusPos < 0)
-            {
-                var addSelected = _drawerIndex >= (_drawerOwner?.Drawers?.Count ?? 0);
-                HintBar.SetHints(_drawerExpanded
-                    ? "←→:切换卡牌|A:进入|X:添加|B:收起卡牌" // 展开页：只有 B 回到卡牌
-                    : addSelected
-                        ? "←→:切换卡牌|A:添加卡牌|B:退出" // 焦点在末尾“添加卡牌”上
-                        : "←→:切换卡牌|A:展开|X:添加|B:退出"); // 卡牌层：A 展开当前卡
-            }
-            else if (FocusedDrawerItem() is { Kind: LaunchKind.Widget, WidgetKind: WidgetKind.System })
-                HintBar.SetHints("DPAD:选择内层|←→:切换项|A:开关/打开|LB/RB:调整|B:收起卡牌"); // 内层系统小组件
-            else if (FocusedDrawerItem() is { Kind: LaunchKind.Widget, WidgetKind: WidgetKind.Performance } perfInner)
-                HintBar.SetHints(PerformanceHintText(perfInner, "DPAD:选择内层|", "B:收起卡牌")); // 内层性能控制（按已开启的快捷项生成）
-            else
-                HintBar.SetHints("DPAD:选择内层|A:启动|X:添加|Y:最小化|B:收起卡牌"); // 内层：按键作用于内层磁贴
-        else if (IsMusicSelected())
-            HintBar.SetHints("DPAD:切换选择|A:播放/暂停|LB:上一曲|RB:下一曲");
-        else if (IsPhotoSelected())
-            HintBar.SetHints("DPAD:切换选择|A:切换|LB:上一张|RB:下一张");
-        else if (IsWeatherSelected())
-            HintBar.SetHints("DPAD:切换选择|A:刷新天气|R3:编辑|L3:排列|B:隐藏");
-        else if (IsMappingSelected())
-            HintBar.SetHints("DPAD:切换选择|A:触发映射|R3:编辑|L3:排列|B:隐藏");
-        else if (IsTrainerSelected())
-            HintBar.SetHints("DPAD:切换选择|A:打开修改器|Y:关闭修改器|R3:编辑|L3:排列|B:隐藏");
-        else if (IsBackupSelected())
-            HintBar.SetHints("DPAD:切换选择|A:备份存档|Y:恢复存档|R3:编辑|L3:排列|B:隐藏");
-        else if (IsRecycleBinSelected())
-            HintBar.SetHints("DPAD:切换选择|A:打开回收站|Y:清空回收站|R3:编辑|L3:排列|B:隐藏");
-        else if (IsForegroundSelected())
-            HintBar.SetHints("DPAD:切换选择|A:冻结/解冻|Y:结束进程|R3:编辑|L3:排列|B:隐藏");
-        else if (IsSystemSelected())
-            HintBar.SetHints("DPAD:切换选择|←→:切换项|A:开关/打开|LB/RB:调整|R3:编辑|L3:排列|B:隐藏");
-        else if (IsPerformanceSelected())
-            HintBar.SetHints(PerformanceHintText(_display[_selected].item, "DPAD:切换选择|", "B:隐藏"));
-        else if (IsGamepadMapSelected())
-            HintBar.SetHints("DPAD:切换选择|A:开启/关闭映射|R3:编辑|L3:排列|B:隐藏");
-        else if (IsOptiSelected())
-            HintBar.SetHints("DPAD:切换选择|A:呼出OptiScaler菜单|Y:注入|R3:编辑|L3:排列|B:隐藏");
-        else if (IsMonitorSelected())
-            HintBar.SetHints("DPAD:切换选择|A:开启/关闭监控|R3:编辑|L3:排列|B:隐藏");
-        else if (IsLosslessSelected())
-            HintBar.SetHints("DPAD:切换选择|A:开关LSFG|Y:打开小黄鸭|R3:编辑|L3:排列|B:隐藏");
-        else if (IsProxySelected())
-            HintBar.SetHints("DPAD:切换选择|A:开启代理|Y:测速|R3:编辑|L3:排列|B:隐藏");
-        else if (IsWallpaperSelected())
-            HintBar.SetHints("DPAD:切换选择|A:应用壁纸|Y:收藏壁纸|R3:编辑|L3:排列|B:隐藏");
-        else if (IsFixedSelected())
-            HintBar.SetHints("DPAD:选择|A:打开|L3:排列|VIEW:设置|B:隐藏"); // 设置/电源常驻磁贴不可编辑
-        else if (IsClosableSelected())
-            HintBar.SetHints("DPAD:选择|A:打开|Y:最小化|X:添加|R3:编辑|L3:排列|VIEW:设置|B:隐藏");
-        else
-            HintBar.SetHints(DrawerService.FindDrawer(_items.ToList()) is null
-                ? "DPAD:选择|A:启动|X:添加|R3:编辑|L3:排列|VIEW:设置|B:隐藏"
-                : "DPAD:选择(↓:抽屉)|A:启动|X:添加|R3:编辑|L3:排列|VIEW:设置|B:隐藏");
-    }
-
-    /// <summary>选中磁贴是否为设置/电源常驻磁贴（固定小尺寸+固定配色，不可编辑）</summary>
-    private bool IsFixedSelected()
-    {
-        if (_selected < 0 || _selected >= _display.Count) return false;
-        var (item, group) = _display[_selected];
-        return group is null && TileStyle.IsFixedTile(item);
     }
 
     /// <summary>选中磁贴是否可 Y 关闭（程序/网站/文件夹=可；组/小组件=不可）</summary>
@@ -8698,7 +8716,6 @@ public sealed partial class MainPage : Page
         if (DrawerService.IsDrawer(item)) return; // 抽屉组件不参与标记/组合（避免自指容器）
         if (_marked.Contains(item)) _marked.Remove(item);
         else _marked.Add(item);
-        UpdateHintBar();
         LayoutTiles();
         UpdateSelection();
     }
@@ -8728,27 +8745,6 @@ public sealed partial class MainPage : Page
         BuildDisplay();
         LayoutTiles();
         UpdateSelection();
-        UpdateHintBar();
-    }
-
-    private void UpdateHintBar()
-    {
-        // 编辑模式内焦点在抽屉区域：抽屉层 Y=删除当前抽屉（最后一个删完则移除整个组件）、A=移入标记（无标记则进内层）、焦点在加号磁贴上时 A=添加磁贴
-        if (_inDrawer)
-        {
-            HintBar.SetHints(_drawerFocusPos < 0
-                ? "←→:切换卡牌|A:展开/移入|Y:删除卡牌|B:退出"
-                : FocusedDrawerIsAddTile()
-                    ? "A:添加磁贴|B:收起卡牌"
-                    : "DPAD:选择内层|A:移入标记|Y:删除磁贴|B:收起卡牌");
-            return;
-        }
-        // 编辑（移动）模式：底部提示条临时换成编辑操作提示（徽章形式）
-        HintBar.SetHints(_marked.Count >= 2
-            ? $"DPAD:移动选择|X:取消标记|A:组合({_marked.Count})|Y:删除|B:退出"
-            : _grabbed is not null
-                ? $"DPAD:移动「{_grabbed.Name}」|A:放下|X:标记|Y:删除|B:退出"
-                : "DPAD:选择|X:多选标记|A:抓取移动|Y:删除|B:退出");
     }
 
     /// <summary>删除当前选中磁贴：展开中的组=仅删组本体（成员回到顶层原位）；未展开的组=整组删除（含成员）；成员=移出组；普通=删除</summary>
@@ -8804,7 +8800,6 @@ public sealed partial class MainPage : Page
         BuildDisplay();
         LayoutTiles();
         UpdateSelection();
-        UpdateHintBar();
         if (pruned) LayoutPageDots();
     }
 
@@ -8944,6 +8939,7 @@ public sealed partial class MainPage : Page
         if (n <= 1) return;
 
         _pageAnimating = true;
+        PositionMascot();
         var width = TileScroll.ViewportWidth > 0 ? TileScroll.ViewportWidth : TileHost.ActualWidth;
         var ease = new CubicEase { EasingMode = EasingMode.EaseOut };
 
@@ -8994,6 +8990,7 @@ public sealed partial class MainPage : Page
                 PageSlide.X = 0;
                 TileScroll.Opacity = 1;
                 _pageAnimating = false;
+                PositionMascot();
             };
             inSb.Begin();
         };
@@ -9055,3 +9052,4 @@ public sealed partial class MainPage : Page
         if (_tiles.Count > 0) UpdateSelection();
     }
 }
+

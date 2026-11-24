@@ -221,10 +221,50 @@ public sealed partial class WidgetPage : Page
     /// <summary>每张卡片的说明文案：从 XAML 的 ToolTip 读一次后清空 ToolTip（避免选中时弹小提示），说明改为显示在顶栏居中位置</summary>
     private readonly Dictionary<Button, string> _descByCard = [];
 
+    /// <summary>与 _formControls 同序的组件类型，用来在"从底栏添加"时隐藏不支持的类型。</summary>
+    private static readonly WidgetKind[] CardKinds =
+    [
+        WidgetKind.Music, WidgetKind.Photos, WidgetKind.Weather, WidgetKind.Mapping,
+        WidgetKind.Trainer, WidgetKind.Backup, WidgetKind.GamepadMap, WidgetKind.OptiScaler,
+        WidgetKind.RecycleBin, WidgetKind.Foreground, WidgetKind.System, WidgetKind.Performance,
+        WidgetKind.DownloadMode, WidgetKind.Monitor, WidgetKind.FileTransfer, WidgetKind.LosslessScaling,
+        WidgetKind.Keyboard, WidgetKind.Clash, WidgetKind.Wallpaper, WidgetKind.ScreenTranslate
+    ];
+
+    /// <summary>支持放进底栏的组件；从开始图标进入添加页时，其余卡片直接隐藏。</summary>
+    private static readonly WidgetKind[] DockSupportedKinds =
+    [
+        WidgetKind.Trainer, WidgetKind.Backup, WidgetKind.OptiScaler, WidgetKind.RecycleBin,
+        WidgetKind.Performance, WidgetKind.DownloadMode, WidgetKind.Monitor, WidgetKind.FileTransfer,
+        WidgetKind.Keyboard, WidgetKind.LosslessScaling, WidgetKind.ScreenTranslate
+    ];
+
+    /// <summary>从底栏开始按钮的"小组件"卡片进入：添加后只进底栏，不占启动器主页。</summary>
+    public static bool PendingDockAdd;
+    private readonly bool _dockAdd;
+
     public WidgetPage()
     {
         InitializeComponent();
+        // 卡片用手绘白框当光标：控件被自动聚焦时不再画系统焦点框，避免两个框
+        FocusRing.Attach(this);
+        _dockAdd = PendingDockAdd;
+        PendingDockAdd = false;
         _formControls = [MusicWidgetCard, PhotoWidgetCard, WeatherWidgetCard, MappingWidgetCard, TrainerWidgetCard, BackupWidgetCard, GamepadMapWidgetCard, OptiScalerWidgetCard, RecycleBinWidgetCard, ForegroundWidgetCard, SystemWidgetCard, PerformanceWidgetCard, DownloadModeWidgetCard, MonitorWidgetCard, FileTransferWidgetCard, LosslessScalWidgetCard, KeyboardWidgetCard, ClashWidgetCard, WallpaperWidgetCard, ScreenTranslateWidgetCard];
+
+        // 从开始图标进入"添加到底栏"：只留下支持底栏的组件，其它卡片隐藏且不参与手柄/鼠标选择
+        if (_dockAdd)
+        {
+            var visible = new List<Control>();
+            for (var i = 0; i < _formControls.Length && i < CardKinds.Length; i++)
+            {
+                if (DockSupportedKinds.Contains(CardKinds[i]))
+                    visible.Add(_formControls[i]);
+                else
+                    _formControls[i].Visibility = Visibility.Collapsed;
+            }
+            _formControls = visible.ToArray();
+        }
 
         // 说明条：有文案才显示（"已在主页"之类的提示也走这里），没文案时不留空条
         SelDescText.RegisterPropertyChangedCallback(TextBlock.TextProperty, (_, _) =>
@@ -714,7 +754,18 @@ public sealed partial class WidgetPage : Page
     /// 则直接放进该抽屉而不是主页顶层。返回 false 表示被拒（抽屉放不下等），此时不落盘、留在本页提示。</summary>
     private bool CommitWidget(List<LaunchItem> items, LaunchItem it)
     {
-        var req = App.Main?.PendingDrawerInsert;
+        if (_dockAdd)
+        {
+            // 底栏最多 5 个组件；入口处也会拦一次，这里兜底
+            if (items.Count(x => x.Kind == LaunchKind.Widget && x.LauncherHidden && !x.DockHidden) >= 5)
+            {
+                SelDescText.Text = "底栏最多 5 个组件，请先长按删除一个";
+                return false;
+            }
+            it.LauncherHidden = true;
+            it.DockHidden = false;
+        }
+        var req = _dockAdd ? null : App.Main?.PendingDrawerInsert;
         if (req is not null)
         {
             App.Main!.PendingDrawerInsert = null;   // 一次性请求，消费即清
@@ -729,13 +780,19 @@ public sealed partial class WidgetPage : Page
             items.Add(it);
         }
         ConfigService.Save(items);
+        if (_dockAdd)
+        {
+            _ = DockHost.ApplyAsync();  // 添加后立刻重绘底栏图标
+            FloatingToastService.Show($"组件「{it.Name}」已加到底栏");
+        }
         App.Main?.ShowMainPage();
         return true;
     }
 
     /// <summary>是否已存在该类小组件（顶层 + 抽屉内）——只允许一个的组件用它做守卫</summary>
-    private static bool ExistsWidget(List<LaunchItem> items, WidgetKind kind)
-        => DrawerService.Anywhere(items, it => it.Kind == LaunchKind.Widget && it.WidgetKind == kind);
+    private bool ExistsWidget(List<LaunchItem> items, WidgetKind kind)
+        => DrawerService.Anywhere(items, it => it.Kind == LaunchKind.Widget && it.WidgetKind == kind
+            && (!_dockAdd || (it.LauncherHidden && !it.DockHidden)));
 
     private void AddMusicWidget()
     {

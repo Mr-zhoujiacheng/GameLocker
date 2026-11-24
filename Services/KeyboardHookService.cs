@@ -359,7 +359,7 @@ public sealed class KeyboardHookService : IDisposable
         var fg = GetForegroundWindow();
         if (IsStartMenuProcessWindow(fg) && IsWindowVisible(fg))
         {
-            KillStartUiProcesses(fg);
+            HideStartWindow(fg);
             StartMenuOpened?.Invoke();
         }
     }
@@ -434,24 +434,23 @@ public sealed class KeyboardHookService : IDisposable
         GetWindowThreadProcessId(hwnd, out var pid);
         var exe = ProcessImageName(pid);
         DebugLog.Write($"开始菜单: 拦截系统开始/搜索界面 event={eventId} hwnd={hwnd} pid={pid} exe={exe}");
-        if (exe.Equals("StartMenuExperienceHost.exe", StringComparison.OrdinalIgnoreCase)
-            || exe.Equals("SearchHost.exe", StringComparison.OrdinalIgnoreCase))
-            KillStartUiProcesses(hwnd);
-        else
-            HideForeignStartWindow(hwnd);
+        // 只隐藏窗口，绝不结束 StartMenuExperienceHost / SearchHost：
+        // 强杀会让 Win11 桌面右键菜单等 shell 功能失效到下次重启。
+        HideStartWindow(hwnd);
         if (eventId != EVENT_OBJECT_CREATE) StartMenuOpened?.Invoke();
     }
 
     private static bool IsStartUiWindow(IntPtr hwnd)
     {
-        if (IsStartMenuProcessWindow(hwnd)) return true;
+        // 只隐藏真正的“开始/搜索”窗口。StartMenuExperienceHost 还托管桌面右键菜单，
+        // 不能按进程一刀切，否则桌面右键菜单会被误隐藏。
         var cls = GetClassNameString(hwnd);
         if (!string.Equals(cls, "Windows.UI.Core.CoreWindow", StringComparison.OrdinalIgnoreCase))
             return false;
         return WindowText(hwnd) is "开始" or "搜索" or "Start" or "Search";
     }
 
-    private static void HideForeignStartWindow(IntPtr hwnd)
+    private static void HideStartWindow(IntPtr hwnd)
     {
         try
         {
@@ -463,7 +462,7 @@ public sealed class KeyboardHookService : IDisposable
         }
         catch { /* 注入失败：直接隐藏 */ }
         ShowWindow(hwnd, SW_HIDE);
-        DebugLog.Write($"开始菜单: 未知宿主窗口已隐藏 hwnd={hwnd}");
+        DebugLog.Write($"开始菜单: 已隐藏系统开始/搜索窗口 hwnd={hwnd}");
     }
 
     /// <summary>呼出/切换时开启约 2.5 秒封锁期，每 50ms 阻断系统开始/搜索界面。</summary>
@@ -487,8 +486,6 @@ public sealed class KeyboardHookService : IDisposable
                 _blockTimer?.Change(Timeout.Infinite, Timeout.Infinite);
                 return;
             }
-            KillNamedProcesses("StartMenuExperienceHost");
-            KillNamedProcesses("SearchHost");
             SweepStartUiWindows();
         }
     }
@@ -502,52 +499,9 @@ public sealed class KeyboardHookService : IDisposable
             if (!string.Equals(cls, "Windows.UI.Core.CoreWindow", StringComparison.OrdinalIgnoreCase))
                 return true;
             if (WindowText(h) is not ("开始" or "搜索" or "Start" or "Search")) return true;
-            GetWindowThreadProcessId(h, out var pid);
-            var exe = ProcessImageName(pid);
-            if (exe.Equals("StartMenuExperienceHost.exe", StringComparison.OrdinalIgnoreCase)
-                || exe.Equals("SearchHost.exe", StringComparison.OrdinalIgnoreCase))
-                KillProcess(pid);
-            else
-                HideForeignStartWindow(h);
+            HideStartWindow(h);
             return true;
         }, IntPtr.Zero);
-    }
-
-    private static void KillStartUiProcesses(IntPtr hwnd)
-    {
-        GetWindowThreadProcessId(hwnd, out var pid);
-        if (pid != 0) KillProcess(pid);
-        KillNamedProcesses("StartMenuExperienceHost");
-        KillNamedProcesses("SearchHost");
-    }
-
-    private static void KillNamedProcesses(string name)
-    {
-        try
-        {
-            foreach (var p in System.Diagnostics.Process.GetProcessesByName(name))
-            {
-                using (p) KillProcess((uint)p.Id);
-            }
-        }
-        catch { /* 进程枚举失败：忽略本次 */ }
-    }
-
-    private static void KillProcess(uint pid)
-    {
-        if (pid == 0) return;
-        var h = OpenProcess(PROCESS_TERMINATE, false, pid);
-        if (h == IntPtr.Zero)
-        {
-            DebugLog.Write($"开始菜单: 打开进程失败 pid={pid} err={Marshal.GetLastWin32Error()}");
-            return;
-        }
-        try
-        {
-            if (!TerminateProcess(h, 0))
-                DebugLog.Write($"开始菜单: 结束进程失败 pid={pid} err={Marshal.GetLastWin32Error()}");
-        }
-        finally { CloseHandle(h); }
     }
 
     /// <summary>指定窗口是否属于系统开始 / 搜索 UI。</summary>

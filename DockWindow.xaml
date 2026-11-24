@@ -1,0 +1,40 @@
+<?xml version="1.0" encoding="utf-8"?>
+<Window
+    x:Class="GameLocker.DockWindow"
+    xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+    xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml">
+
+    <!-- 无边框浮条：窗口本身由 DWM 圆角裁剪，内部只叠一层轻微染色，磨砂来自 Acrylic 背景。
+         注意：Bar 只画背景，图标条是它的兄弟节点——
+         Border 会把子内容裁到内容区（padding 以内），悬停放大的边缘图标会被切；
+         改成兄弟节点后，放大溢出只受窗口边界限制，内边距留的余量才真正生效。
+         不画整圈描边：1px 线框在 200% 缩放下会显得生硬（原仓库的描边也是可选、且默认很淡）。
+         改用 Sheen：顶部一道渐隐高光 + 底部一道极淡内阴影，靠明暗而不是线条收边。 -->
+    <Grid x:Name="Root" Background="Transparent">
+        <Border x:Name="Bar"
+                CornerRadius="8"
+                Background="#B3161619"
+                BorderThickness="0"/>
+
+        <Border x:Name="Sheen"
+                CornerRadius="8"
+                IsHitTestVisible="False"/>
+
+        <!-- 开始/小组件 与 其它应用之间的分隔：中间亮、两端渐隐的短竖条，比 1px 硬线柔和 -->
+        <Border x:Name="GroupDivider"
+                Width="2"
+                Height="28"
+                CornerRadius="1"
+                HorizontalAlignment="Left"
+                VerticalAlignment="Center"
+                Visibility="Collapsed"
+                IsHitTestVisible="False"/>
+
+        <StackPanel x:Name="ItemsPanel"
+                    Orientation="Horizontal"
+                    Spacing="12"
+                    HorizontalAlignment="Center"
+                    VerticalAlignment="Center"
+                    Margin="14,10,14,10"/>
+    </Grid>
+</Window>

@@ -66,6 +66,8 @@ public sealed class GamepadService : IDisposable
     private readonly long[] _slotLastProbeMs = new long[MaxUsers];
     private long _comboStartMs;
     private bool _comboFired;
+    private long _dockComboStartMs;
+    private bool _dockComboFired;
     private long _fsStartMs;
     private bool _fsFired;
     private long _drawerHoldStartMs;
@@ -108,6 +110,8 @@ public sealed class GamepadService : IDisposable
     public event Action? AllReleased;
     /// <summary>呼出组合键长按达到 SummonHoldMs 触发（松开前只触发一次）</summary>
     public event Action? SummonTriggered;
+    /// <summary>底栏呼出组合键长按达到 SummonHoldMs 触发（松开前只触发一次）</summary>
+    public event Action? DockSummonTriggered;
     /// <summary>全屏组合键长按达到 SummonHoldMs 触发（松开前只触发一次）</summary>
     public event Action? FullscreenTriggered;
     /// <summary>右摇杆持续上推达到 DrawerSummonHoldMs 触发（松开前只触发一次）</summary>
@@ -134,7 +138,7 @@ public sealed class GamepadService : IDisposable
         }
     }
 
-    /// <summary>呼出组合键（默认 LT+RT 同时长按 1 秒）</summary>
+    /// <summary>呼出组合键（默认 LT+RT 同时长按 1 秒，唤起启动器窗口）</summary>
     public GamepadButtons SummonCombo { get; set; } =
         GamepadButtons.LeftTrigger | GamepadButtons.RightTrigger;
 
@@ -144,6 +148,18 @@ public sealed class GamepadService : IDisposable
         SummonCombo = combo;
         _comboStartMs = 0;
         _comboFired = false;
+    }
+
+    /// <summary>底栏呼出组合键（默认 LS+RS 同时长按 1 秒，亮出底栏）</summary>
+    public GamepadButtons DockSummonCombo { get; set; } =
+        GamepadButtons.LeftThumb | GamepadButtons.RightThumb;
+
+    /// <summary>设置底栏呼出组合键并复位长按计时</summary>
+    public void SetDockSummonCombo(GamepadButtons combo)
+    {
+        DockSummonCombo = combo;
+        _dockComboStartMs = 0;
+        _dockComboFired = false;
     }
 
     /// <summary>全屏组合键（默认 Start+Select 长按 1 秒切换全屏；实际值由设置页捕获后覆盖）</summary>
@@ -273,6 +289,24 @@ public sealed class GamepadService : IDisposable
         {
             _comboStartMs = 0;
             _comboFired = false;
+        }
+
+        // 底栏呼出组合键长按检测（与启动器呼出键重合成同一个组合时，让启动器那边生效，避免一次长按开两样）
+        if (DockSummonCombo != GamepadButtons.None && DockSummonCombo != SummonCombo &&
+            (current & DockSummonCombo) == DockSummonCombo)
+        {
+            var now = Environment.TickCount64;
+            if (_dockComboStartMs == 0) _dockComboStartMs = now;
+            else if (!_dockComboFired && now - _dockComboStartMs >= SummonHoldMs)
+            {
+                _dockComboFired = true;
+                DockSummonTriggered?.Invoke();
+            }
+        }
+        else
+        {
+            _dockComboStartMs = 0;
+            _dockComboFired = false;
         }
 
         // 全屏组合键长按检测

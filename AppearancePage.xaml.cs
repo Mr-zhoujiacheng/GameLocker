@@ -63,6 +63,8 @@ public sealed partial class AppearancePage : Page, ISettingsGamepad
     public AppearancePage()
     {
         InitializeComponent();
+        // 页面用手绘白框当光标：非光标控件被焦点时不再画系统焦点框，避免两个框
+        FocusRing.Attach(this);
 
         Palette =
         [

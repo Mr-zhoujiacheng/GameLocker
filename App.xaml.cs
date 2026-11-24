@@ -1,4 +1,5 @@
 using Microsoft.UI.Xaml;
+using Microsoft.UI.Xaml.Controls;
 using GameLocker.Services;
 
 namespace GameLocker;
@@ -15,10 +16,20 @@ public partial class App : Application
     {
         InstallCrashLogging();
         InitializeComponent();
+        // 兜底：即使退出路径没有走到 MainWindow.Closed，也把「任务栏隐藏」恢复
+        AppDomain.CurrentDomain.ProcessExit += (_, _) =>
+        {
+            try { TaskbarControl.Shutdown(); } catch { }
+            try { TopTaskbarMode.ForceRestore(); } catch { }
+            try { StatusBarHost.Shutdown(); } catch { }
+        };
     }
 
     [System.Runtime.InteropServices.DllImport("user32.dll", CharSet = System.Runtime.InteropServices.CharSet.Unicode)]
     private static extern int MessageBoxW(IntPtr hwnd, string text, string caption, uint type);
+
+    [System.Runtime.InteropServices.DllImport("user32.dll")]
+    private static extern bool SetCursorPos(int x, int y);
 
     private bool AcquireSingleInstance()
     {
@@ -50,6 +61,86 @@ public partial class App : Application
         // 提权监控助手模式（--monitor-helper <父进程PID>）：只跑 ETW 帧率采集并写共享内存，
         // 不创建主窗口，父进程退出或发出停止事件后自行结束。
         var argv = Environment.GetCommandLineArgs();
+
+        // 仅测试恢复顶部任务栏（--restore-taskbar）。
+        if (Array.IndexOf(argv, "--restore-taskbar") >= 0)
+        {
+            TopTaskbarMode.ForceRestore();
+            return;
+        }
+
+        // 仅显示设置主页（--settings-hub-preview）：确认「顶栏2」卡片位置，不启动启动器。
+        if (Array.IndexOf(argv, "--settings-hub-preview") >= 0)
+        {
+            var preview = new Window { Title = "设置预览" };
+            preview.Content = new Frame();
+            if (preview.Content is Frame frame) frame.Navigate(typeof(SettingsPage));
+            preview.Activate();
+            return;
+        }
+
+        // 右键诊断（--right-click-test）：把光标放到桌面并注入一次右键。
+        if (Array.IndexOf(argv, "--right-click-test") >= 0)
+        {
+            SetCursorPos(600, 400);
+            Thread.Sleep(150);
+            KeySendService.SendMouse(KeySendService.MouseRight);
+            return;
+        }
+
+        // 仅测试打开系统托盘（--open-tray-preview）：验证 Win+B 注入是否可用。
+        if (Array.IndexOf(argv, "--open-tray-preview") >= 0)
+        {
+            TrayAppService.OpenSystemTray();
+            return;
+        }
+
+        // 仅显示控制中心（--control-center-preview）：调弹层版式，不启动启动器/顶栏。
+        if (Array.IndexOf(argv, "--control-center-preview") >= 0)
+        {
+            var monitor = Monitors.Primary();
+            StatusBarControlCenterWindow.Toggle(monitor.Bounds.Right, monitor.Bounds.Top, monitor.Bounds.Top + 64, false);
+            return;
+        }
+
+        // 仅显示「顶栏2」设置页（--statusbar-settings-preview）：用于调设置页版式，不启动启动器。
+        if (Array.IndexOf(argv, "--statusbar-settings-preview") >= 0)
+        {
+            var preview = new Window { Title = "系统 设置预览" };
+            preview.Content = new Frame();
+            if (preview.Content is Frame frame) frame.Navigate(typeof(StatusBarSettingsPage));
+            preview.Activate();
+            return;
+        }
+
+        // 仅显示系统顶栏（--statusbar-preview）：用于截图调样式，不启动启动器。
+        if (Array.IndexOf(argv, "--statusbar-preview") >= 0)
+        {
+            try
+            {
+                _ = StatusBarHost.InitializeAsync(force: true);
+                _ = new StatusBarSettingsPage(); // 验证设置页 XAML 可构造
+                DebugLog.Write("[预览] 顶栏2 已创建");
+            }
+            catch (Exception ex) { DebugLog.Write("[预览] 顶栏2 失败：" + ex); }
+            return;
+        }
+
+        // 仅显示底栏与系统顶栏（--dock-preview）：用于截图与调样式，不启动启动器。
+        if (Array.IndexOf(argv, "--dock-preview") >= 0)
+        {
+            try
+            {
+                _ = DockHost.InitializeAsync();
+                _ = StatusBarHost.InitializeAsync(force: true);
+                // 构建设置页，验证 XAML 与行构建不会在运行时抛异常
+                _ = new DockSettingsPage();
+                DebugLog.Write("[预览] 底栏已创建");
+            }
+            catch (Exception ex) { DebugLog.Write("[预览] 失败：" + ex); }
+            return;
+        }
+
         var edgePolicyIndex = Array.IndexOf(argv, SystemEdgeSwipePolicy.HelperArgument);
         if (edgePolicyIndex >= 0)
         {
@@ -110,17 +201,30 @@ public partial class App : Application
         // 接管系统屏幕键盘：关掉触屏键盘自动弹出、收起 osk/TabTip，改用本程序键盘
         SystemKeyboardWatcher.Apply(SettingsService.Current.TakeOverSystemKeyboard);
         Main = new MainWindow();
+        // 启动后不显示启动器，避免透明覆盖层吃掉桌面右键；需要时再呼出。
+        Main.HideToTray();
+
+        // 底栏：默认开启（见设置），窗口创建后按设置显示。
+        try
+        {
+            _ = DockHost.InitializeAsync();
+        }
+        catch (Exception ex) { DebugLog.Write("底栏初始化失败：" + ex); }
+
+        // 顶栏2（系统顶栏）：默认关；开启后创建常驻窗口并按设置占位。
+        try
+        {
+            _ = StatusBarHost.InitializeAsync();
+        }
+        catch (Exception ex) { DebugLog.Write("顶栏2 初始化失败：" + ex); }
 
         _tray = new TrayHotkeyService();
         // 事件在托盘 STA 线程触发，marshal 回 UI 线程
         _tray.ShowRequested += () => Main?.DispatcherQueue.TryEnqueue(Main.ShowFromTray);
         _tray.ExitRequested += () => Main?.DispatcherQueue.TryEnqueue(Main.ExitApp);
 
-        // 原型阶段首次启动直接显示，便于验证。
-        // 用 ShowFromTray 而非裸 Activate：构造函数里 PrepareSummon 已把窗口移到屏外等滑入，
-        // 若系统前台锁导致 Activated 不触发，裸 Activate 会让窗口永远停在屏外（前台无窗口）。
-        // ShowFromTray 自带兜底：Activated 没来就直接播滑入动画。
-        Main.ShowFromTray();
+        // 启动后驻留托盘，不自动弹出启动器；需要时用手柄组合键/键盘/边缘/托盘呼出。
+        // （此前原型阶段无条件 ShowFromTray，会留下一个覆盖桌面的透明窗口，导致桌面右键被吃掉。）
 
         // 启动时后台检查 GitHub 最新版本（关于页可关闭）；失败静默，不阻塞启动
         if (SettingsService.Current.AutoCheckUpdates)

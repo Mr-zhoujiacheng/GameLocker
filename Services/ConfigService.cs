@@ -32,7 +32,8 @@ public static class ConfigService
                     var performanceTiles = AllItems(items).Where(it => it.Kind == LaunchKind.Widget
                         && it.WidgetKind == WidgetKind.Performance && it.Size != TileSize.Large).ToList();
                     foreach (var tile in performanceTiles) tile.Size = TileSize.Large;
-                    if (performanceTiles.Count > 0) Save(items);
+                    var frameGenMigrated = MigrateLegacyFrameGenEngines(items);
+                    if (performanceTiles.Count > 0 || frameGenMigrated) Save(items);
                     EnsureSettingsTile(items);
                     return items;
                 }
@@ -91,6 +92,24 @@ public static class ConfigService
             changed = true;
         }
         if (changed) Save(items);
+    }
+
+    /// <summary>仅迁移 FGHost 的两个旧引擎值，保留其余配置字段。</summary>
+    private static bool MigrateLegacyFrameGenEngines(List<LaunchItem> items)
+    {
+        var changed = false;
+        foreach (var item in AllItems(items))
+        {
+            if (item.Kind != LaunchKind.Widget || item.WidgetKind != WidgetKind.LosslessScaling)
+                continue;
+            var engine = item.FrameGenEngine?.Trim();
+            if (!string.Equals(engine, "XESS", StringComparison.OrdinalIgnoreCase)
+                && !string.Equals(engine, "FSR3", StringComparison.OrdinalIgnoreCase))
+                continue;
+            item.FrameGenEngine = LosslessScalingService.EngineOptiScaler;
+            changed = true;
+        }
+        return changed;
     }
 
     /// <summary>顶层快捷项 + 抽屉内层磁贴（抽屉可嵌套，递归展开）</summary>

@@ -20,6 +20,8 @@ public sealed partial class CloudPage : Page, ISettingsGamepad
     public CloudPage()
     {
         InitializeComponent();
+        // 页面自绘光标/焦点框：非光标控件被自动聚焦时不再画系统焦点框，避免两个框
+        FocusRing.Attach(this);
         _controls = [TianyiProviderRadio, BaiduProviderRadio, LoginButton, LogoutButton, RootBox, SaveButton, TestButton];
         if (SettingsService.Current.CloudProvider == CloudProvider.Baidu) BaiduProviderRadio.IsChecked = true;
         else TianyiProviderRadio.IsChecked = true;

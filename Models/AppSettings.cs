@@ -228,6 +228,94 @@ public class AppSettings
     /// <summary>顶栏显示搜索图标（固定在图标组最左侧，点击打开自制搜索浮层）</summary>
     public bool ShowSearch { get; set; } = true;
 
+    /// <summary>
+    /// 系统顶栏（设置页「顶栏2」）总开关。
+    /// 当前只记录偏好：窗口与各信息段尚未实现，开启后不会创建任何界面。
+    /// 开发清单见 docs/topbar2-development-plan.md。
+    /// </summary>
+    public bool StatusBarEnabled { get; set; }
+
+    /// <summary>顶栏2：AppBar 占位（最大化窗口避让）。关闭则浮在屏幕上、不改变工作区</summary>
+    public bool StatusBarReserveSpace { get; set; } = true;
+
+    /// <summary>顶栏2 高度（DIP，24–40）</summary>
+    public int StatusBarHeight { get; set; } = 32;
+
+    /// <summary>顶栏2 底盘材质：0=跟随系统亚克力 / 1=半透明 / 2=纯色 / 3=渐变</summary>
+    public int StatusBarBackdropMode { get; set; }
+
+    /// <summary>顶栏2 底色（#AARRGGBB；纯色/渐变/半透明使用）</summary>
+    public string StatusBarColor { get; set; } = "#E61A1A1E";
+
+    /// <summary>顶栏2 渐变第二色</summary>
+    public string StatusBarColor2 { get; set; } = "#E62A2A36";
+
+    /// <summary>顶栏2 文字颜色（#AARRGGBB）</summary>
+    public string StatusBarTextColor { get; set; } = "#F2FFFFFF";
+
+    /// <summary>顶栏2 字号（10–18，DIP）</summary>
+    public int StatusBarFontSize { get; set; } = 12;
+
+    /// <summary>顶栏2：前台全屏时自动隐藏</summary>
+    public bool StatusBarFullscreenHide { get; set; } = true;
+
+    /// <summary>
+    /// 顶栏2：顶部任务栏模式。需先把系统任务栏位置设为“顶部”；
+    /// 开启后强制隐藏任务栏，顶栏2 按任务栏高度填满顶部预留条，不再注册 AppBar。
+    /// </summary>
+    public bool StatusBarTaskbarTopMode { get; set; }
+
+    /// <summary>顶栏2：显示时间日期段</summary>
+    public bool StatusBarShowClock { get; set; } = true;
+
+    /// <summary>顶栏2：显示电池段</summary>
+    public bool StatusBarShowBattery { get; set; } = true;
+
+    /// <summary>顶栏2：显示网络段</summary>
+    public bool StatusBarShowNetwork { get; set; } = true;
+
+    /// <summary>顶栏2：显示输入法段</summary>
+    public bool StatusBarShowIme { get; set; } = true;
+
+    /// <summary>顶栏2：显示通知段</summary>
+    public bool StatusBarShowNotifications { get; set; } = true;
+
+    /// <summary>顶栏2：显示控制中心入口</summary>
+    public bool StatusBarShowControlCenter { get; set; } = true;
+
+    /// <summary>顶栏2：控制中心用本程序的弹层（false 时改用 Windows 自带控制中心，Win+A）</summary>
+    public bool StatusBarCustomControlCenter { get; set; } = true;
+
+    /// <summary>顶栏2：显示资源监视段（CPU / 内存，2 秒刷新）</summary>
+    public bool StatusBarShowResources { get; set; }
+
+    /// <summary>顶栏2：显示电池健康段（设计容量/满充容量，5 分钟刷新）</summary>
+    public bool StatusBarShowBatteryHealth { get; set; }
+
+    /// <summary>顶栏2：显示专注模式入口</summary>
+    public bool StatusBarShowFocus { get; set; } = true;
+
+    /// <summary>顶栏2：显示托盘入口（已登记的托盘常驻应用 + 系统托盘）</summary>
+    public bool StatusBarShowTray { get; set; } = true;
+
+    /// <summary>顶栏主题（对应 DockThemes 下标）；任何主题都保留左右渐变透明。</summary>
+    public int StatusBarTheme { get; set; }
+
+    /// <summary>控制中心 8 个控件的布局：上排 4 个 + 更多展开 4 个，分号分隔。</summary>
+    public string StatusBarControlCenterLayout { get; set; } = "";
+
+    /// <summary>顶栏2：专注模式（只影响本程序：隐藏通知计数并显示免打扰）</summary>
+    public bool StatusBarFocusMode { get; set; }
+
+    /// <summary>顶栏2：显示计时器段</summary>
+    public bool StatusBarShowTimer { get; set; }
+
+    /// <summary>顶栏2：计时器时长（分钟，5–120）</summary>
+    public int StatusBarTimerMinutes { get; set; } = 25;
+
+    /// <summary>顶栏2 上次打开通知中心的时间（UTC ISO 8601），用于未读计数；与启动器内顶栏分开</summary>
+    public string StatusBarNotificationSeenTime { get; set; } = "";
+
     /// <summary>上次打开通知中心的时间（UTC ISO 8601）：比它晚的通知才亮绿点；持久化，重启后仍能提示未读</summary>
     public string NotificationSeenTime { get; set; } = "";
 
@@ -247,9 +335,19 @@ public class AppSettings
     /// Win 键与任务栏开始按钮改为呼出/收起本启动器（新用户默认开启）</summary>
     public bool StartMenuMode { get; set; } = true;
 
-    /// <summary>呼出组合键（长按 1 秒唤起窗口），默认 LT+RT</summary>
+    /// <summary>呼出组合键（长按 1 秒唤起启动器窗口），默认 LT+RT</summary>
     public GamepadButtons SummonCombo { get; set; } =
         GamepadButtons.LeftTrigger | GamepadButtons.RightTrigger;
+
+    /// <summary>底栏呼出组合键（长按 1 秒亮出底栏），默认 LS+RS；与启动器呼出键分开，互不影响</summary>
+    public GamepadButtons DockSummonCombo { get; set; } =
+        GamepadButtons.LeftThumb | GamepadButtons.RightThumb;
+
+    /// <summary>
+    /// 已经在启动器呼出键从 LT+RT 被误改成 LS+RS 的版本上存过配置：
+    /// 加载时一次性把 SummonCombo 还原成 LT+RT、把 LS+RS 挪给 DockSummonCombo。
+    /// </summary>
+    public bool DockSummonComboMigrated { get; set; }
 
     /// <summary>全屏组合键（长按 1 秒切换全屏模式），默认 Start+Select</summary>
     public GamepadButtons FullscreenCombo { get; set; } =
@@ -269,4 +367,82 @@ public class AppSettings
 
     /// <summary>云端备份使用的网盘：天翼云 / 百度网盘</summary>
     public CloudProvider CloudProvider { get; set; } = CloudProvider.Tianyi;
+
+    // ---------------- 底栏 ----------------
+    // 字段在一次文件回退中丢失，这里按底栏现有读取点补回默认值。
+
+    /// <summary>底栏总开关</summary>
+    public bool DockEnabled { get; set; } = true;
+
+    /// <summary>外观主题下标，见 <see cref="DockThemes"/></summary>
+    public int DockTheme { get; set; }
+
+    /// <summary>鼠标经过时图标放大</summary>
+    public bool DockMagnify { get; set; } = true;
+
+    /// <summary>按下图标时轻微缩小</summary>
+    public bool DockPressFeedback { get; set; } = true;
+
+    // 以下底栏行为已经固定，不再提供设置项；保留属性供旧 settings.json 反序列化并统一返回固定值。
+
+    /// <summary>悬停时用 DWM 缩略图预览窗口（固定开启）</summary>
+    public bool DockWindowPreview { get => true; set { } }
+
+    /// <summary>无窗口时允许模拟点击托盘图标唤醒（固定关闭）</summary>
+    public bool DockTrayWake { get => false; set { } }
+
+    /// <summary>点击文件夹在底栏展开内容（固定开启）</summary>
+    public bool DockFolderExpand { get => true; set { } }
+
+    /// <summary>文件夹展开的弧形角度（固定 90）</summary>
+    public int DockArcAngle { get => 90; set { } }
+
+    /// <summary>任务栏隐藏：0 不隐藏 / 2 彻底隐藏（旧值 1 自动隐藏已废弃，加载时归零）</summary>
+    public int DockTaskbarMode { get; set; }
+
+    /// <summary>底栏所在屏幕（固定主屏）</summary>
+    public int DockMonitorMode { get => 0; set { } }
+
+    /// <summary>指定屏序号（固定 0）</summary>
+    public int DockMonitorIndex { get => 0; set { } }
+
+    /// <summary>在已运行应用图标下方显示标记（固定开启）</summary>
+    public bool DockShowRunning { get => true; set { } }
+
+    /// <summary>运行指示样式（固定 2 = 横条）</summary>
+    public int DockIndicatorStyle { get => 2; set { } }
+
+    /// <summary>运行指示大小（固定 3）</summary>
+    public int DockIndicatorSize { get => 3; set { } }
+
+    /// <summary>运行指示颜色（固定绿色）</summary>
+    public string DockIndicatorColor { get => "#7BD88F"; set { } }
+
+    /// <summary>鼠标离开后收起，留边缘触发带</summary>
+    public bool DockAutoHide { get; set; }
+
+    /// <summary>启动器收起后允许手柄操作底栏（固定开启）</summary>
+    public bool DockGamepadEnabled { get => true; set { } }
+
+    /// <summary>图标边长（36–64）。条高由它推导，不再单独保存。</summary>
+    public int DockIconSize { get; set; } = 40;
+
+    public const int DockIconMin = 36;
+    public const int DockIconMax = 64;
+
+    /// <summary>运行指示在图标下方额外占用的高度（DIP）</summary>
+    public static int DockIndicatorExtra(bool showRunning, int style, int size) =>
+        showRunning && style > 0 ? Math.Clamp(size, 3, 16) + 1 : 0;
+
+    /// <summary>
+    /// 条高 = ceil((图标 + 指示占位) × 1.14) + 内边距（上 6 + 下 2）。
+    /// 1.14 是给悬停放大留的余量（放大倍率 1.18 时仍能完整落在条内）。
+    /// 上边多留 3 DIP、下边收 1 DIP，条顶抬高 2 DIP，视觉重心不再偏下。
+    /// </summary>
+    public static int DockBarHeight(int iconSize, int indicatorExtra) =>
+        (int)Math.Ceiling((Math.Clamp(iconSize, DockIconMin, DockIconMax) + Math.Max(0, indicatorExtra)) * 1.14) + 8;
+
+    /// <summary>图标尺寸落在合法区间；旧配置里的条高字段已废弃，这里只校正图标。</summary>
+    public void NormalizeDockGeometry() =>
+        DockIconSize = Math.Clamp(DockIconSize, DockIconMin, DockIconMax);
 }

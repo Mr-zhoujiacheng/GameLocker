@@ -201,8 +201,7 @@ internal sealed class LosslessOutputListener : IDisposable
                 || !double.IsFinite(interval) || interval <= 0)
                 return;
             var mode = fields[c[5]];
-            // 只有小黄鸭要求独立显示链。FGHost 的 WGC/DWM 输出允许走桌面合成，
-            // 不能仅因输出 PID 与游戏不同，就把这些真实显示记录全部过滤掉。
+            // 只有 Lossless Scaling 的输出要求独立显示链；其他进程的桌面合成记录仍然有效。
             var lossless = pid == _outputPid
                 && fields[c[0]].Equals("LosslessScaling.exe", StringComparison.OrdinalIgnoreCase);
             if (lossless && !mode.Contains("Independent Flip", StringComparison.OrdinalIgnoreCase)

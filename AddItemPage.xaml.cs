@@ -292,9 +292,18 @@ public sealed partial class AddItemPage : Page, ISettingsGamepad
     private static Microsoft.UI.Xaml.Media.SolidColorBrush MakeBrush(byte a, byte r, byte g, byte b)
         => new(Windows.UI.Color.FromArgb(a, r, g, b));
 
+    /// <summary>从底栏开始按钮的"自定义"卡片进入：保存时只进底栏，不占启动器主页。</summary>
+    public static bool PendingDockAdd;
+    private readonly bool _dockAdd;
+
     public AddItemPage()
     {
         InitializeComponent();
+        // 页面用手绘光标：控件被自动聚焦时不再画系统焦点框，避免两个框
+        // （FocusWithRing 指定的光标控件与文本输入框仍保留焦点框）
+        FocusRing.Attach(this);
+        _dockAdd = PendingDockAdd;
+        PendingDockAdd = false;
         _perfSeparateCardBorder = PerfSeparateCard.BorderBrush;
         HintBar.HintTapped += key =>
         {
@@ -399,6 +408,7 @@ public sealed partial class AddItemPage : Page, ISettingsGamepad
         if (avail <= 0) return;
         FormHost.Width = avail;
         FormPanel.Width = Math.Min(FormMaxWidth, avail);
+        LayoutOptiCaptureOptions(FormPanel.Width);
         // 保存按钮与表单同宽居中：窄窗口下占满可用宽（与原样式一致的大按钮），宽窗口下不超过表单宽
         SaveButton.Width = FormPanel.Width;
     }
@@ -531,6 +541,17 @@ public sealed partial class AddItemPage : Page, ISettingsGamepad
         if (LosslessRow.Visibility == vis)
         {
             list.Add(LosslessEngineCombo);
+            if (OptiCaptureOptions.Visibility == vis)
+            {
+                list.Add(OptiCaptureFrameGenCombo);
+                list.Add(OptiCaptureUpscalerCombo);
+                list.Add(OptiCaptureVSyncCombo);
+                list.Add(OptiCaptureSharpnessCombo);
+                list.Add(OptiCaptureFpsOverlayCombo);
+                list.Add(OptiCaptureMenuScaleCombo);
+                list.Add(OptiCaptureMenuLanguageCombo);
+                list.Add(OptiCaptureUpdateButton);
+            }
             if (LosslessPathPanel.Visibility == vis)
             {
                 list.Add(LosslessBrowseButton);
@@ -553,14 +574,6 @@ public sealed partial class AddItemPage : Page, ISettingsGamepad
                     list.Add(LosslessOptFlowScale);
                     list.Add(LosslessOptHideFps);
                 }
-            }
-            if (LosslessMagpiePanel.Visibility == vis)
-            {
-                list.Add(FgGpuCombo);
-                list.Add(FgCaptureCombo);
-                if (FgMultiplierPanel.Visibility == vis) list.Add(FgMultiplierCombo);
-                list.Add(FgFlowCombo);
-                list.Add(FgSyncCombo);
             }
         }
         // 小猫咪：订阅链接 / 代理模式 / 本地代理端口 / 内核版本与更新 / 节点下拉
@@ -907,8 +920,11 @@ public sealed partial class AddItemPage : Page, ISettingsGamepad
                 NameBox.Visibility = w;
                 _pendingLosslessPath = item.LosslessPath;
                 _pickingLosslessPath = false;
+                SelectComboByTag(OptiCaptureFrameGenCombo, OptiCaptureProfile.NormalizeFrameGeneration(item.OptiCaptureFrameGeneration));
+                SelectComboByTag(OptiCaptureUpscalerCombo, OptiCaptureProfile.NormalizeUpscaler(item.OptiCaptureUpscaler));
+                LoadOptiCaptureOptions(item);
+                ResetOptiCaptureUpdateUi();
                 SelectFrameGenEngine(item.FrameGenEngine);
-                SelectFrameGenOptions(item);
                 LosslessPathText.Text = string.IsNullOrWhiteSpace(item.LosslessPath)
                     ? "自动检测（Steam 库）" : item.LosslessPath!;
                 ReloadLosslessProfiles(item.LosslessProfile);
@@ -919,8 +935,8 @@ public sealed partial class AddItemPage : Page, ISettingsGamepad
                 LosslessOptGsync.IsChecked = item.LosslessOptGsync;
                 LosslessOptFlowScale.IsChecked = item.LosslessOptFlowScale;
                 LosslessOptHideFps.IsChecked = item.LosslessOptHideFps;
-                LosslessOptimizePanel.Visibility = item.LosslessOptimize
-                    ? Microsoft.UI.Xaml.Visibility.Visible : Microsoft.UI.Xaml.Visibility.Collapsed;
+                // The panel visibility was set by SelectFrameGenEngine; keep LSFG controls hidden for OptiScaler.
+                UpdateLosslessEnginePanels();
             }
             // 小猫咪：订阅链接 / 代理模式 / 本地代理端口 / 节点下拉（磁贴固定显示 "Clash"，不允许改名）
             var isProxy = item.WidgetKind == WidgetKind.Clash;
@@ -1730,6 +1746,9 @@ public sealed partial class AddItemPage : Page, ISettingsGamepad
             case Button btn when ReferenceEquals(btn, ProxyNodeRefreshButton):
                 _ = LoadProxyNodesAsync();
                 break;
+            case Button btn when ReferenceEquals(btn, OptiCaptureUpdateButton):
+                OnOptiCaptureUpdateClick(btn, new RoutedEventArgs());
+                break;
             // 小猫咪：检查并更新内核版本
             case Button btn when ReferenceEquals(btn, ProxyCoreUpdateButton):
                 OnProxyCoreUpdateClick(btn, new RoutedEventArgs());
@@ -2099,17 +2118,9 @@ public sealed partial class AddItemPage : Page, ISettingsGamepad
                     it.TileColor = SelectedColor();
                     it.LosslessPath = string.IsNullOrWhiteSpace(_pendingLosslessPath) ? null : _pendingLosslessPath.Trim();
                     it.FrameGenEngine = SelectedFrameGenEngine();
-                    if ((FgGpuCombo.SelectedItem as ComboBoxItem)?.Tag is GpuAdapter gpu)
-                    {
-                        it.FgGpuIndex = gpu.Index;
-                        it.FgGpuVendorId = gpu.VendorId;
-                        it.FgGpuDeviceId = gpu.DeviceId;
-                    }
-                    it.FgCaptureMode = ComboTag(FgCaptureCombo, "WGC");
-                    it.FgXeSSMultiplier = int.TryParse(ComboTag(FgMultiplierCombo, "2"), out var fgMul)
-                        ? Math.Clamp(fgMul, 2, 4) : 2;
-                    it.FgOpticalFlow = ComboTag(FgFlowCombo, "AMD");
-                    it.FgFrameSync = ComboTag(FgSyncCombo, "FRONT_EDGE");
+                    it.OptiCaptureFrameGeneration = OptiCaptureProfile.NormalizeFrameGeneration(ComboTag(OptiCaptureFrameGenCombo, "xefg"));
+                    it.OptiCaptureUpscaler = OptiCaptureProfile.NormalizeUpscaler(ComboTag(OptiCaptureUpscalerCombo, "ffx"));
+                    SaveOptiCaptureOptions(it);
                     var profile = CurrentLosslessProfile();
                     it.LosslessProfile = string.IsNullOrWhiteSpace(profile) ? null : profile;
                     it.LosslessOptimize = LosslessOptimizeSwitch.IsOn;
@@ -2333,6 +2344,11 @@ public sealed partial class AddItemPage : Page, ISettingsGamepad
                 IconFile = _pendingIcon,
                 CoverFile = string.IsNullOrEmpty(_pendingCover) ? null : _pendingCover
             };
+            if (_dockAdd)
+            {
+                it.LauncherHidden = true;
+                it.DockHidden = false;
+            }
             if (kind != LaunchKind.Url && it.IconFile == null)
                 it.IconFile = await IconExtractService.ExtractAsync(target);
             // 从主页抽屉内部按 X 发起的新建：直接放进该抽屉（放不下则报错且不落盘）
@@ -2354,6 +2370,11 @@ public sealed partial class AddItemPage : Page, ISettingsGamepad
 
         ConfigService.Save(items);
         MonitorService.ApplySettings(); // 监控正在运行时：位置/大小/透明度立即生效
+        if (_dockAdd)
+        {
+            _ = DockHost.ApplyAsync();  // 从底栏添加后立刻重绘底栏图标
+            FloatingToastService.Show($"「{items[^1].Name}」已加到底栏");
+        }
         App.Main?.ShowMainPage();
     }
 
@@ -2545,25 +2566,13 @@ public sealed partial class AddItemPage : Page, ISettingsGamepad
         RebuildFormControls();
     }
 
-    /// <summary>当前选中的插帧引擎（LSFG / XESS / FSR3）</summary>
+    /// <summary>当前选中的插帧引擎（LSFG / OPTISCALER）</summary>
     private string SelectedFrameGenEngine() =>
-        (LosslessEngineCombo.SelectedItem as ComboBoxItem)?.Tag as string ?? LosslessScalingService.EngineLsfg;
+        LosslessScalingService.NormalizeFrameGenEngine((LosslessEngineCombo.SelectedItem as ComboBoxItem)?.Tag as string);
 
-    /// <summary>进入编辑页时按已保存的引擎选中对应项（未知/空值回落到 LSFG）</summary>
     private void SelectFrameGenEngine(string? engine)
     {
-        var tag = string.IsNullOrWhiteSpace(engine)
-            ? LosslessScalingService.EngineLsfg : engine!.Trim().ToUpperInvariant();
-        LosslessEngineCombo.SelectedIndex = 0;
-        for (var i = 0; i < LosslessEngineCombo.Items.Count; i++)
-        {
-            if (LosslessEngineCombo.Items[i] is ComboBoxItem c
-                && string.Equals(c.Tag as string, tag, StringComparison.OrdinalIgnoreCase))
-            {
-                LosslessEngineCombo.SelectedIndex = i;
-                break;
-            }
-        }
+        SelectComboByTag(LosslessEngineCombo, LosslessScalingService.NormalizeFrameGenEngine(engine));
         UpdateLosslessEnginePanels();
     }
 
@@ -2573,77 +2582,18 @@ public sealed partial class AddItemPage : Page, ISettingsGamepad
         RebuildFormControls();
     }
 
-    /// <summary>LSFG 才显示小黄鸭路径/配置/优化；XeSS 与 FSR3 用内置 Magpie 后端，显示捕获/光流/同步参数</summary>
+    /// <summary>LSFG 与 OptiScaler 配置面板互斥。</summary>
     private void UpdateLosslessEnginePanels()
     {
-        var engine = SelectedFrameGenEngine();
-        var isLsfg = string.Equals(engine, LosslessScalingService.EngineLsfg, StringComparison.OrdinalIgnoreCase);
-        var isXess = string.Equals(engine, LosslessScalingService.EngineXess, StringComparison.OrdinalIgnoreCase);
+        var isLsfg = SelectedFrameGenEngine() == LosslessScalingService.EngineLsfg;
+        OptiCaptureOptions.Visibility = isLsfg ? Microsoft.UI.Xaml.Visibility.Collapsed : Microsoft.UI.Xaml.Visibility.Visible;
         var vis = isLsfg ? Microsoft.UI.Xaml.Visibility.Visible : Microsoft.UI.Xaml.Visibility.Collapsed;
         LosslessPathPanel.Visibility = vis;
         LosslessProfilePanel.Visibility = vis;
         LosslessOptimizeWrap.Visibility = vis;
+        LosslessEngineHint.Visibility = vis;
         LosslessOptimizePanel.Visibility = isLsfg && LosslessOptimizeSwitch.IsOn
             ? Microsoft.UI.Xaml.Visibility.Visible : Microsoft.UI.Xaml.Visibility.Collapsed;
-
-        LosslessMagpiePanel.Visibility = isLsfg
-            ? Microsoft.UI.Xaml.Visibility.Collapsed : Microsoft.UI.Xaml.Visibility.Visible;
-        FgMultiplierPanel.Visibility = !isLsfg && isXess
-            ? Microsoft.UI.Xaml.Visibility.Visible : Microsoft.UI.Xaml.Visibility.Collapsed;
-
-        LosslessEngineHint.Text = isLsfg
-            ? "LSFG 会打开小黄鸭并发送 Ctrl+Alt+S；游戏需无边框窗口化。"
-            : isXess
-                ? "内置 Magpie：所选 GPU + 外部光流 + XeSS FG；Intel 可选 2×/3×/4×，其他 GPU 仅 2×。A 键开/关。"
-                : "内置 Magpie：WGC 捕获 + 外部光流 + FSR3 FG（固定 2×、仅 SDR）。A 键开/关。";
-    }
-
-    /// <summary>把已保存的 Magpie 后端参数填回编辑页</summary>
-    private void SelectFrameGenOptions(LaunchItem item)
-    {
-        FgGpuCombo.Items.Clear();
-        GpuAdapter selected;
-        try
-        {
-            var adapters = GpuAdapterService.Enumerate();
-            foreach (var gpu in adapters)
-                FgGpuCombo.Items.Add(new ComboBoxItem { Content = $"{gpu.Name}（GPU {gpu.Index}）", Tag = gpu });
-            selected = GpuAdapterService.Resolve(adapters, item.FgGpuIndex, item.FgGpuVendorId, item.FgGpuDeviceId);
-        }
-        catch (Exception ex)
-        {
-            selected = new GpuAdapter(item.FgGpuIndex < 0 ? -2 : item.FgGpuIndex,
-                item.FgGpuVendorId, item.FgGpuDeviceId, "不可用");
-            FgGpuCombo.Items.Add(new ComboBoxItem { Content = $"GPU 不可用：{ex.Message}", Tag = selected });
-        }
-        foreach (ComboBoxItem option in FgGpuCombo.Items)
-        {
-            if (Equals(option.Tag, selected))
-            {
-                FgGpuCombo.SelectedItem = option;
-                break;
-            }
-        }
-        SelectComboByTag(FgCaptureCombo, item.FgCaptureMode);
-        UpdateFgMultiplierOptions(Math.Clamp(item.FgXeSSMultiplier, 2, 4).ToString());
-        SelectComboByTag(FgFlowCombo, item.FgOpticalFlow);
-        SelectComboByTag(FgSyncCombo, item.FgFrameSync);
-    }
-
-    private void OnFgGpuChanged(object sender, SelectionChangedEventArgs e)
-    {
-        if (FgMultiplierCombo is not null)
-            UpdateFgMultiplierOptions(ComboTag(FgMultiplierCombo, "2"));
-    }
-
-    private void UpdateFgMultiplierOptions(string selected)
-    {
-        var intel = (FgGpuCombo.SelectedItem as ComboBoxItem)?.Tag is GpuAdapter gpu
-            && gpu.Index >= 0 && gpu.VendorId == 0x8086;
-        FgMultiplierCombo.Items.Clear();
-        for (var multiplier = 2; multiplier <= (intel ? 4 : 2); multiplier++)
-            FgMultiplierCombo.Items.Add(new ComboBoxItem { Content = $"{multiplier}×", Tag = multiplier.ToString() });
-        SelectComboByTag(FgMultiplierCombo, selected);
     }
 
     private static string ComboTag(ComboBox combo, string fallback) =>
@@ -3551,6 +3501,7 @@ public sealed partial class AddItemPage : Page, ISettingsGamepad
     protected override void OnNavigatedFrom(NavigationEventArgs e)
     {
         base.OnNavigatedFrom(e);
+        _optiCaptureUpdateCancellation?.Cancel();
         _mappingCapturing = false;
         _captureMapping = null;
         _captureMode = CaptureMode.Mapping;

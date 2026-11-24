@@ -26,6 +26,13 @@ public enum PowerAction
 /// </summary>
 public static class PowerService
 {
+    /// <summary>锁定当前工作站（Win+L 的锁屏，不会注销）</summary>
+    public static bool Lock()
+    {
+        try { return LockWorkStation(); }
+        catch { return false; }
+    }
+
     /// <summary>执行电源操作（阻塞调用；睡眠/休眠会一直阻塞到系统唤醒）。
     /// 返回 false 表示系统拒绝该操作，Message 是给用户看的原因。</summary>
     public static (bool Ok, string Message) Execute(PowerAction action)
@@ -123,6 +130,10 @@ public static class PowerService
     [DllImport("user32.dll", SetLastError = true)]
     [return: MarshalAs(UnmanagedType.Bool)]
     private static extern bool ExitWindowsEx(uint flags, uint reason);
+
+    [DllImport("user32.dll", SetLastError = true)]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    private static extern bool LockWorkStation();
 
     [DllImport("powrprof.dll", SetLastError = true)]
     [return: MarshalAs(UnmanagedType.U1)]

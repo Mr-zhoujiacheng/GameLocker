@@ -1,0 +1,306 @@
+# English display text<TAB>Simplified Chinese; \n represents a newline. Do not include ## IDs.
+Upscaler	超分辨率
+Upscalers	超分辨率
+Frame Generation	帧生成
+Image	画质
+Framerate	帧率
+Overlay & Look	叠加层与外观
+Input	输入
+Misc	其他
+Plugins	插件
+Notifications	通知
+Status	状态
+Optical F5Low	光流 F5Low
+Status & Presets	状态与预设
+NR Options	神经渲染选项
+NR Input	神经渲染输入
+NR Output	神经渲染输出
+Passes & Colour	渲染阶段与色彩
+Compare & Debug	对比与调试
+Neural Rendering	神经渲染
+Auto	自动
+On	开启
+Off	关闭
+Enable	启用
+Disable	禁用
+Enabled	已启用
+Disabled	已禁用
+Active	启用
+None	无
+Default	默认
+Reset	重置
+Apply	应用
+Apply Changes	应用更改
+Apply Change	应用更改
+Save Settings	保存设置
+Save Changes	保存更改
+Close	关闭
+Clear	清空
+Copy	复制
+Open release page	打开发行页面
+Game	游戏
+Version	版本
+Resolution	分辨率
+Quality	质量
+Ultra Quality	超高质量
+Native AA	原生抗锯齿
+Balanced	平衡
+Performance	性能
+Ultra Performance	超高性能
+Performance Overlay	性能叠加层
+Change Upscaler	切换超分算法
+Change FG	切换帧生成算法
+Upscaler Quality	超分质量
+Menu Scale	菜单缩放
+Settings	设置
+Menu	菜单
+Theme	主题
+Light Theme	浅色主题
+Modern style	现代样式
+Accent Colour	强调色
+Background Colour	背景色
+Reset Accent Color	重置强调色
+Reset Background Color	重置背景色
+Blue	蓝色
+Teal	青色
+Gray	灰色
+Yellow	黄色
+Green	绿色
+Red	红色
+Orange	橙色
+Purple	紫色
+White	白色
+Black	黑色
+Opacity	不透明度
+Background Alpha	背景不透明度
+Overlay Alpha	叠加层不透明度
+Show FPS	显示帧率
+Show FPS Overlay	显示帧率叠加层
+FPS Overlay	帧率叠加层
+FPS Overlay Position	帧率叠加层位置
+FPS Overlay Scale	帧率叠加层缩放
+FPS Counter	帧率计数器
+FPS Limit	帧率上限
+Apply Limit	应用帧率上限
+Reset Limit	重置帧率上限
+Refresh Rate	刷新率
+Set as FPS Limit	设为帧率上限
+Frame Pacing	帧调度
+Low Latency	低延迟
+Boost	增强
+Target FPS	目标帧率
+Use as FPS limit	用作帧率上限
+Allow 1X	允许 1 倍
+VSync	垂直同步
+Vertical Sync	垂直同步
+HDR output	HDR 输出
+Convert SDR to HDR	将 SDR 转换为 HDR
+Game brightness	游戏亮度
+Sharpness	锐度
+Override	覆盖
+Enable RCAS/DA	启用 RCAS/DA
+Enable Motion Adaptive Sharpness	启用运动自适应锐化
+DA + MAS Debug	调试 DA + MAS
+Clamp Output	限制输出范围
+Depth Bias	深度偏移
+Depth Scale	深度缩放
+Reset Depth Values	重置深度设置
+Contrast Enabled	启用对比度调整
+Contrast	对比度
+MAS Debug	调试 MAS
+MotionSharpness	运动锐度
+MotionThreshod	运动阈值
+MotionRange	运动范围
+Upscale Ratio Override	覆盖超分倍率
+Override all	覆盖全部
+Override per quality preset	按质量预设覆盖
+All Ratios	全局倍率
+Output Scaling	输出缩放
+Ratio	倍率
+Init Flags	初始化标志
+Auto Exposure	自动曝光
+Disable Reactive Mask	禁用响应遮罩
+Depth Inverted	反转深度
+HDR	HDR
+Display Res. MV	显示分辨率的运动矢量
+Jitter Cancellation	消除抖动
+Dynamic Res. (DRS)	动态分辨率 (DRS)
+React. Mask Bias	响应遮罩偏移
+Use Binary Reactive Mask	使用二值响应遮罩
+Use Reactive Mask as Transparency Mask	将响应遮罩用作透明度遮罩
+Enable Magnifier	启用放大镜
+Size	大小
+Zoom Factor	放大倍率
+Border Size	边框大小
+Static Pos X	固定位置 X
+Static Pos Y	固定位置 Y
+Reset Static Position (Follow Cursor)	重置固定位置（跟随光标）
+Set Static Position	设置固定位置
+Cursor Offset X	光标偏移 X
+Cursor Offset Y	光标偏移 Y
+Enable Extended Limits	扩大设置范围
+Use Precompiled Shaders	使用预编译着色器
+DRS (Dynamic Resolution Scaling)	动态分辨率缩放 (DRS)
+Override Minimum	覆盖最小值
+Override Maximum	覆盖最大值
+Restore Compute Root Signature	恢复计算根签名
+Restore Graphic Root Signature	恢复图形根签名
+To File	输出到文件
+To Console	输出到控制台
+Log Level	日志级别
+Logging	日志
+Keybinds	快捷键
+Press any key...	请按任意键…
+Show Debug	显示调试信息
+Debug View	调试视图
+Enable Debug View	启用调试视图
+Upscaler Debug View	超分调试视图
+Watermark	水印
+Enable Watermark	启用水印
+Render Presets Override	覆盖渲染预设
+Use Generic App Id with DLSS	为 DLSS 使用通用应用 ID
+Stability	稳定性
+Motion	运动
+Velocity Factor	速度系数
+Reactive Scale	响应缩放
+Shading Scale	着色缩放
+Acc. Added Per Frame	每帧累积增量
+Min. Disocclusion Acc.	显露区域的最小累积量
+Don't Use NTShared	不使用 NTShared
+Use CopyResource for Inputs	使用 CopyResource 复制输入
+Use CopyResource for Output	使用 CopyResource 复制输出
+Network Models	神经网络模型
+XeSS Settings	XeSS 设置
+FFX Settings	FFX 设置
+FFX Upscaler	FFX 超分算法
+FSR4 Model	FSR4 模型
+DLSSD Settings	DLSSD 设置
+DLSS Settings	DLSS 设置
+Dx11 with Dx12 Settings	DX11 转 DX12 设置
+Vulkan with Dx12 Settings	Vulkan 转 DX12 设置
+Frame Generation (FSR FG)	帧生成 (FSR FG)
+Frame Generation (F5Low)	帧生成 (F5Low)
+Frame Generation (DLSSG)	帧生成 (DLSSG)
+OptiFG Settings (Vulkan)	OptiFG 设置 (Vulkan)
+FFX FG	FFX 帧生成
+FG Input	帧生成输入
+FG Output	帧生成输出
+Multiplier	倍率
+Dynamic MFG	动态多帧生成
+External frame generation / MFG unlocker	外部帧生成与多帧生成解锁
+Built-in MFG unlock	内置多帧生成解锁
+Follow game's DLSS FG	跟随游戏的 DLSS 帧生成
+DLSS-G preset	DLSS-G 预设
+Game DLSS-G ratio	游戏 DLSS-G 倍率
+Game DLSS-G dynamic	游戏 DLSS-G 动态多帧生成
+Game DLSS-G target fps	游戏 DLSS-G 目标帧率
+Force Dynamic MFG	强制使用动态多帧生成
+DMFG FPS Target	动态多帧生成目标帧率
+Apply Target	应用目标帧率
+Reset Target	重置目标帧率
+Use Game's Reflex Markers	使用游戏的 Reflex 标记
+Allow Async	允许异步
+Disable HW Flip Metering	禁用硬件翻转节拍控制
+FG Only Generated	只显示生成帧
+Interpolated frames only	仅显示插值帧
+UI Composition	界面合成
+Force Borderless	强制无边框
+Show Detected UI	显示检测到的界面
+Draw UI over	在最上层绘制界面
+UI premultiplied alpha	界面使用预乘 Alpha
+Disable UI texture	禁用界面纹理
+Disable HUDless	禁用无 HUD 纹理
+Accept First HUDless	接受首张无 HUD 纹理
+Skip Reset	跳过重置
+Frame Ahead	提前帧数
+Hud Cutoff	HUD 截断阈值
+HUDless Resources	无 HUD 资源
+UI Texture	界面纹理
+Unblend UI	分离界面图层
+Immediate Capture	即时捕获
+Flip (Unity)	翻转 (Unity)
+Flip Use Offset	翻转时使用偏移
+Resource Blocking	资源屏蔽
+Relaxed Resource Check	放宽资源检查
+FG Create List	记录帧生成资源列表
+FG Use List	按列表使用帧生成资源
+Reset List	重置列表
+Tracking Settings	资源跟踪设置
+Resource Settings	资源设置
+Syncing Settings	同步设置
+FG Make MV Copies	为帧生成复制运动矢量
+FG Make Depth Copies	为帧生成复制深度
+FG Use Mutex for Present	帧生成呈现时使用互斥锁
+Skip Config for HUDless	无 HUD 纹理跳过配置
+Skip Dispatch for HUDless	无 HUD 纹理跳过派发
+Fix broken visuals	修复画面错误
+Limit	上限
+Extended	扩展
+FG Rectangle Settings	帧生成区域设置
+Rectangle Settings	区域设置
+Rect Left	区域左边界
+Rect Top	区域上边界
+Rect Width	区域宽度
+Rect Height	区域高度
+Reset FG Rect	重置帧生成区域
+Frame Pacing Tuning	帧调度微调
+Enable Tuning	启用微调
+Safety Margins in ms	安全余量（毫秒）
+Variance Factor	方差系数
+Enable Hybrid Spin	启用混合自旋等待
+Hybrid Spin Time	混合自旋等待时间
+Apply Timing Changes	应用时序调整
+Ignore Init Checks	忽略初始化检查
+Depth as ValidNow	立即视深度为有效
+Velocity as ValidNow	立即视运动矢量为有效
+HUDless as ValidNow	立即视无 HUD 纹理为有效
+Debug Reset Lines	显示重置调试线
+Debug Tear Lines	显示撕裂调试线
+Debug Pacing Lines	显示帧调度调试线
+Use FSR Input Values	使用 FSR 输入值
+Vert. FOV	垂直视野
+Horz. FOV	水平视野
+Camera Near	相机近裁剪面
+Camera Far	相机远裁剪面
+Reset Camera Values	重置相机参数
+Mipmap Bias	Mipmap 偏移
+Input latency: --	输入延迟：--
+Input latency: %s%.0f ms	输入延迟：%s%.0f ms
+Input latency, to Present: %s%.0f ms	输入至呈现延迟：%s%.0f ms
+OptiScaler - %s for menu	OptiScaler - 按 %s 打开菜单
+Update available: %s (current %s)	可更新至 %s（当前 %s）
+Save Settings and restart the game to apply	保存设置并重启游戏后生效
+Upscalers don't always work in menus.	游戏菜单中的超分辨率功能不一定有效。
+Upscaler used when Ray Reconstruction is turned on in the game.	游戏启用光线重建后使用的超分算法。
+No denoise	无降噪
+This upscaler can't denoise.\nWith DLSSD on in the game, image may look grainy or noisy.	此超分算法不支持降噪。\n游戏启用 DLSSD 时，画面可能出现颗粒或噪点。
+nvngx_dlss.dll not found, DLSS disabled!	未找到 nvngx_dlss.dll，DLSS 已禁用。
+| Input: %s	| 输入：%s
+| Spoof: %s	| 模拟：%s
+Exists	存在
+Doesn't Exist	不存在
+Exist	存在
+Don't Exist	不存在
+GPU timing not available	无法获取 GPU 耗时
+External	外部
+Internal	内置
+Missing	缺失
+Unavailable	不可用
+Not available	不可用
+Not detected	未检测到
+Not loaded	未加载
+Loaded	已加载
+Active input	当前输入
+Nothing yet.	暂无通知。
+%zu listed, %llu shown in total	列表中有 %zu 条，共显示过 %llu 条
+Every notification shown since the game started, newest first. The overlay's toasts fade after a few seconds.	显示本次游戏运行中的通知，按时间倒序排列。叠加层提示会在几秒后消失。
+MFG unlock: %s	多帧生成解锁：%s
+Off by default. Built in, no file needed.	默认关闭。功能内置，无需额外文件。
+No *.asi files in the folder	目录中没有 *.asi 文件
+ASI plugins are off	ASI 插件已关闭
+Load ASI plugins	加载 ASI 插件
+Folder: %s%s	目录：%s%s
+(not read yet)	（尚未读取）
+Unticked files are not loaded at the next start.	未勾选的文件下次启动时不会加载。
+Barriers overridden	已覆盖资源屏障
+What OptiScaler found and runs here. A screenshot of this page helps with a bug report.	此页列出 OptiScaler 检测到的内容和运行状态。报告问题时可附上本页截图。

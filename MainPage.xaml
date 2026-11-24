@@ -23,13 +23,13 @@
           AllowDrop="True" DragOver="OnDragOver" DragLeave="OnDragLeave" Drop="OnDrop">
 
         <Grid.RowDefinitions>
-            <RowDefinition Height="Auto"/>
+            <RowDefinition Height="84"/>
             <RowDefinition Height="*"/>
             <RowDefinition Height="Auto"/>
         </Grid.RowDefinitions>
 
-        <!-- 顶栏：时钟 + 手柄状态 -->
-        <Grid Grid.Row="0" Padding="20,12">
+        <!-- 旧版启动器顶栏已停用（时钟/状态图标/搜索/编辑入口），由顶栏2 接管 -->
+        <Grid Grid.Row="0" Padding="20,12" Visibility="Collapsed">
             <!-- 时钟：左侧 2px 渐隐竖线 + 时间/日期两行（轻改精致版） -->
             <Grid x:Name="ClockPanel" VerticalAlignment="Center" ColumnSpacing="10">
                 <Grid.ColumnDefinitions>
@@ -158,10 +158,11 @@
 
             <!-- 磁贴画布：ScrollViewer + Canvas 手动布局（靠上排布，从上往下）。
                  副页切换：LT/RT 时整块画布沿切换方向滑出、换页后反向滑入（TranslateTransform 由 SwitchPage 驱动） -->
-            <ScrollViewer x:Name="TileScroll" Grid.Row="0" Padding="12,10"
+            <ScrollViewer x:Name="TileScroll" Grid.Row="0" Padding="12,0"
                           VerticalAlignment="Top" HorizontalAlignment="Stretch"
                           HorizontalContentAlignment="Left" VerticalContentAlignment="Top"
                           VerticalScrollMode="Auto" HorizontalScrollMode="Disabled"
+                          ViewChanged="OnMascotTileViewChanged"
                           VerticalScrollBarVisibility="Hidden">
                 <ScrollViewer.RenderTransform>
                     <TranslateTransform x:Name="PageSlide"/>
@@ -204,17 +205,104 @@
             </Border>
         </Grid>
 
-        <!-- 底部按键提示：无底板、无描边，只垫一层极淡暗底保证对比（简约但醒目）。
-             抽屉展开时由代码给抽屉面板留出这条提示条的高度，抽屉在上、提示条在最下面，两者不重叠 -->
-        <Border x:Name="HintBarShell" Grid.Row="0" Grid.RowSpan="3"
-                HorizontalAlignment="Center" VerticalAlignment="Bottom"
-                Margin="0,0,0,20" Padding="14,9" CornerRadius="12" BorderThickness="0"
-                Background="#26000000"
-                Visibility="{x:Bind HintBar.Visibility, Mode=OneWay}">
-            <Viewbox x:Name="HintBarScaleHost" Stretch="None" StretchDirection="DownOnly">
-                <ctl:GamepadHintBar x:Name="HintBar" BadgeScale="1" Highlight="True"/>
-            </Viewbox>
-        </Border>
+        <!-- The overlay spans both rows so the mascot's hands can cross the tile edge. -->
+        <Grid x:Name="MascotSpacer" Grid.Row="0" Height="84" IsHitTestVisible="False"/>
+        <Grid x:Name="MascotTrack" Grid.Row="0" Grid.RowSpan="2">
+            <Grid x:Name="MascotLayer" Width="96" Height="60"
+                  HorizontalAlignment="Left" VerticalAlignment="Top"
+                  Visibility="Collapsed">
+                <Grid.RenderTransform>
+                    <!-- 被提示条挡住时整只往下缩，只留耳朵尖；遮挡消失再冒出来（见 UpdateMascotDuck） -->
+                    <TranslateTransform x:Name="MascotDuckSlide"/>
+                </Grid.RenderTransform>
+                <ctl:PixelMascot x:Name="Mascot" Width="96" Height="60" HorizontalAlignment="Left" VerticalAlignment="Bottom"/>
+            </Grid>
+        </Grid>
+
+        <!-- 顶部提示条（双区 HUD）：左 = 动态区（随选中磁贴刷新：启动/播放、最小化、切歌…），
+             右 = 固定键位（选择/添加/编辑/返回）。居中悬浮，不贴窗口边；内容由 RefreshHomeHints() 写入。 -->
+        <Grid x:Name="HomeHintShell" Grid.Row="0" HorizontalAlignment="Right"
+              Margin="12,0,12,0" IsHitTestVisible="False">
+            <Grid.RenderTransform>
+                <TranslateTransform x:Name="HomeHintSlide"/>
+            </Grid.RenderTransform>
+            <Grid.RowDefinitions>
+                <RowDefinition Height="*"/>
+                <RowDefinition Height="Auto"/>
+            </Grid.RowDefinitions>
+            <!-- 背景与设置页提示条统一：半透明黑底、无描边（原来是上亮下暗渐变 + 1px 高光描边） -->
+            <Border x:Name="HomeHintPlate" Grid.Row="1" Margin="0,0,0,22"
+                    Padding="0" CornerRadius="12" SizeChanged="OnHomeHintSizeChanged"
+                    Background="#26000000" BorderThickness="0">
+                <Grid>
+                    <!-- 固定高度（而不是 MaxHeight）：窗口变窄时只有内容等比缩小，盘面高度保持不变，
+                         侧边栏 / 居中 / 开始菜单三种模式看起来一样高。 -->
+                    <Viewbox Height="32" Margin="12,4,12,4"
+                             Stretch="Uniform" StretchDirection="DownOnly">
+                    <StackPanel Orientation="Horizontal" VerticalAlignment="Center" Spacing="10">
+                        <!-- 动态区在左、固定区在右：整条右沿钉在窗口边缘，动态区变宽只向左长，
+                             右侧固定区的位置不随内容变化而跳动。 -->
+                        <Border x:Name="HomeHintDynamicHost" CornerRadius="7" VerticalAlignment="Center"
+                                Background="#14FFC24D" BorderBrush="#CCFFC24D"
+                                BorderThickness="2,0,0,0" Padding="8,4,8,4">
+                            <Border.RenderTransform>
+                                <TranslateTransform x:Name="HomeHintDynamicSlide"/>
+                            </Border.RenderTransform>
+                            <!-- 主键徽章比固定区大一档（1.0 vs 0.75）：一眼看出"这几条是当前磁贴的" -->
+                            <ctl:GamepadHintBar x:Name="HomeHintDynamic" BadgeScale="1" Highlight="True"/>
+                        </Border>
+                        <!-- 分隔线只做"两区"的弱提示：右侧已有键位盘承托，这条线再重就抢戏 -->
+                        <Border x:Name="HomeHintDivider" Width="1" Margin="0,3"
+                                Background="#26FFFFFF" VerticalAlignment="Stretch"/>
+                        <!-- 固定区：2×2 网格（上＝字母键，下＝十字/L3），中间用一横一竖两条细线分成四格。
+                             面板上下内边距让给了这一块，所以 4 个键位比单排时大而不撑大整条。
+                             外观做成"内凹键区"：底色比提示条更深 + 顶部内阴影 + 下沿一线微光，
+                             像 4 个键嵌进一条浅槽里；不去和左侧橙色动态区抢注意力。 -->
+                        <Border x:Name="HomeHintFixed" CornerRadius="7" VerticalAlignment="Center"
+                                Background="#1A000000" Padding="6,2" Opacity="0.9">
+                        <Grid>
+                        <Grid>
+                            <Grid.RowDefinitions>
+                                <RowDefinition Height="Auto"/>
+                                <RowDefinition Height="1"/>
+                                <RowDefinition Height="Auto"/>
+                            </Grid.RowDefinitions>
+                            <Grid.ColumnDefinitions>
+                                <ColumnDefinition Width="Auto"/>
+                                <ColumnDefinition Width="1"/>
+                                <ColumnDefinition Width="Auto"/>
+                            </Grid.ColumnDefinitions>
+                            <ctl:GamepadHintBar x:Name="HomeHintChipX" Grid.Row="0" Grid.Column="0" BadgeScale="0.75"
+                                                Margin="0,1,11,1" Hints="X:添加"/>
+                            <ctl:GamepadHintBar x:Name="HomeHintChipB" Grid.Row="0" Grid.Column="2" BadgeScale="0.75"
+                                                Margin="11,1,0,1" Hints="B:返回"/>
+                            <ctl:GamepadHintBar x:Name="HomeHintChipDpad" Grid.Row="2" Grid.Column="0" BadgeScale="0.75"
+                                                Margin="0,1,11,1" Hints="DPAD:选择"/>
+                            <ctl:GamepadHintBar x:Name="HomeHintChipL3" Grid.Row="2" Grid.Column="2" BadgeScale="0.75"
+                                                Margin="11,1,0,1" Hints="L3:编辑"/>
+                            <Border Grid.Row="0" Grid.RowSpan="3" Grid.Column="1"
+                                    Width="1" Background="#1FFFFFFF"/>
+                            <Border Grid.Row="1" Grid.ColumnSpan="3"
+                                    Height="1" Background="#1FFFFFFF"/>
+                        </Grid>
+                        <!-- 顶部内阴影：凹槽上沿压暗，做出"陷进去"的深度 -->
+                        <Border Height="9" VerticalAlignment="Top" IsHitTestVisible="False"
+                                CornerRadius="7,7,0,0">
+                            <Border.Background>
+                                <LinearGradientBrush StartPoint="0,0" EndPoint="0,1">
+                                    <GradientStop Color="#3D000000" Offset="0"/>
+                                    <GradientStop Color="#00000000" Offset="1"/>
+                                </LinearGradientBrush>
+                            </Border.Background>
+                        </Border>
+                        </Grid>
+                        </Border>
+                    </StackPanel>
+                    </Viewbox>
+                </Grid>
+            </Border>
+        </Grid>
+
 
         <!-- 添加方式选择遮罩：X 键 / 编辑模式"添加磁贴"弹出，三选一（自定义 / 小组件 / 副页块），手柄可操作。
              玻璃质感面板 + 强调色图标徽章；选中项用强调色描边 + 底色高亮（见 UpdateChoiceCursor） -->
@@ -1060,11 +1148,11 @@
 
         <!-- 临时提示条（关闭反馈/删除反馈/拖入结果 toast）：玻璃质感药丸 + 状态图标徽章。
              放在根 Grid 最后一个子元素，只为保证层级最高、不会被卡片或浮层遮住；
-             位置仍是原来的底部居中（手柄提示条上方）。图标/强调色由 ShowToast 按消息语义
+             位于底部居中。图标/强调色由 ShowToast 按消息语义
              （成功=青色对勾 / 警告=琥珀感叹号）切换 -->
         <Border x:Name="MoveHintBar" Grid.Row="0" Grid.RowSpan="3"
                 HorizontalAlignment="Center" VerticalAlignment="Bottom"
-                Margin="0,0,0,30" IsHitTestVisible="False"
+                Margin="0,0,0,20" IsHitTestVisible="False"
                 CornerRadius="12" Padding="12,7,16,7"
                 Background="#E6242424" BorderBrush="#33FFFFFF" BorderThickness="1.5"
                 Visibility="Collapsed">
@@ -1088,3 +1176,4 @@
         </Border>
     </Grid>
 </Page>
+

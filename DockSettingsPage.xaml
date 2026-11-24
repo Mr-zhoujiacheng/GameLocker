@@ -1,0 +1,168 @@
+<?xml version="1.0" encoding="utf-8"?>
+<Page
+    x:Class="GameLocker.DockSettingsPage"
+    xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+    xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+    xmlns:ctl="using:GameLocker.Controls">
+
+    <Page.Resources>
+        <!-- 开关行卡片：直角 + 浅蓝渐变底；选中时由代码改 BorderBrush 画白框（与常规/顶栏页一致） -->
+        <Style x:Key="SettingRowStyle" TargetType="Button">
+            <Setter Property="CornerRadius" Value="0"/>
+            <Setter Property="BorderThickness" Value="2"/>
+            <Setter Property="BorderBrush" Value="Transparent"/>
+            <Setter Property="Padding" Value="12,10"/>
+            <Setter Property="MinHeight" Value="72"/>
+            <Setter Property="HorizontalAlignment" Value="Stretch"/>
+            <Setter Property="VerticalAlignment" Value="Stretch"/>
+            <Setter Property="HorizontalContentAlignment" Value="Stretch"/>
+            <Setter Property="VerticalContentAlignment" Value="Center"/>
+            <Setter Property="IsTabStop" Value="False"/>
+        </Style>
+        <!-- 开关本体：自绘胶囊（隐去 On/Off 文字与多余留白），随 IsOn 变色、滑块滑动 -->
+        <Style x:Key="CleanToggleStyle" TargetType="ToggleSwitch">
+            <Setter Property="Template">
+                <Setter.Value>
+                    <ControlTemplate TargetType="ToggleSwitch">
+                        <Grid Width="44" Height="22" Background="Transparent">
+                            <Border Width="40" Height="20" CornerRadius="10" Background="#2AFFFFFF"
+                                    BorderThickness="1" BorderBrush="#4DFFFFFF"
+                                    HorizontalAlignment="Center" VerticalAlignment="Center"/>
+                            <Border x:Name="Fill" Width="40" Height="20" CornerRadius="10" Background="#C64CC2FF"
+                                    Opacity="0" HorizontalAlignment="Center" VerticalAlignment="Center"/>
+                            <Ellipse x:Name="Knob" Width="14" Height="14" Fill="#FFFFFF"
+                                     HorizontalAlignment="Left" VerticalAlignment="Center" Margin="3,0,0,0">
+                                <Ellipse.RenderTransform>
+                                    <CompositeTransform/>
+                                </Ellipse.RenderTransform>
+                            </Ellipse>
+                            <VisualStateManager.VisualStateGroups>
+                                <VisualStateGroup x:Name="ToggleStates">
+                                    <VisualState x:Name="Off">
+                                        <VisualState.Setters>
+                                            <Setter Target="Knob.Fill" Value="#FFFFFF"/>
+                                        </VisualState.Setters>
+                                        <Storyboard>
+                                            <DoubleAnimation Storyboard.TargetName="Knob"
+                                                             Storyboard.TargetProperty="(UIElement.RenderTransform).(CompositeTransform.TranslateX)"
+                                                             To="0" Duration="0:0:0.12"/>
+                                            <DoubleAnimation Storyboard.TargetName="Fill"
+                                                             Storyboard.TargetProperty="Opacity"
+                                                             To="0" Duration="0:0:0.12"/>
+                                        </Storyboard>
+                                    </VisualState>
+                                    <VisualState x:Name="On">
+                                        <VisualState.Setters>
+                                            <Setter Target="Knob.Fill" Value="#1F1F1F"/>
+                                        </VisualState.Setters>
+                                        <Storyboard>
+                                            <DoubleAnimation Storyboard.TargetName="Knob"
+                                                             Storyboard.TargetProperty="(UIElement.RenderTransform).(CompositeTransform.TranslateX)"
+                                                             To="20" Duration="0:0:0.12"/>
+                                            <DoubleAnimation Storyboard.TargetName="Fill"
+                                                             Storyboard.TargetProperty="Opacity"
+                                                             To="1" Duration="0:0:0.12"/>
+                                        </Storyboard>
+                                    </VisualState>
+                                </VisualStateGroup>
+                            </VisualStateManager.VisualStateGroups>
+                        </Grid>
+                    </ControlTemplate>
+                </Setter.Value>
+            </Setter>
+        </Style>
+    </Page.Resources>
+
+    <Grid Background="Transparent"
+          RequestedTheme="Dark" XYFocusKeyboardNavigation="Enabled">
+
+        <Grid.RowDefinitions>
+            <RowDefinition Height="Auto"/>
+            <RowDefinition Height="*"/>
+        </Grid.RowDefinitions>
+
+        <ctl:SettingsHeader Grid.Row="0" Title="底栏" Subtitle="DOCK"/>
+
+        <!-- 内容区可滚动：窄窗口下控件不被遮盖 -->
+        <ScrollViewer x:Name="ContentScroll" Grid.Row="1" Padding="20,8,20,10"
+                      HorizontalScrollMode="Disabled" HorizontalScrollBarVisibility="Disabled"
+                      VerticalScrollBarVisibility="Hidden">
+            <StackPanel x:Name="ContentStack" Spacing="12" VerticalAlignment="Top">
+
+                <!-- 底栏预览：按当前主题/图标大小实时演示，右上角显示运行状态 -->
+                <StackPanel x:Name="PreviewBlock" Spacing="6">
+                    <Grid>
+                        <TextBlock Text="底栏预览" FontSize="11.5" Opacity="0.55"
+                                   VerticalAlignment="Center"/>
+                        <Border HorizontalAlignment="Right" Padding="9,3" CornerRadius="8"
+                                Background="#14FFFFFF" BorderThickness="1" BorderBrush="#1FFFFFFF">
+                            <StackPanel Orientation="Horizontal" Spacing="6" VerticalAlignment="Center">
+                                <Ellipse x:Name="StatusDot" Width="6" Height="6" Fill="#FF6FE3A0"
+                                         VerticalAlignment="Center"/>
+                                <TextBlock x:Name="StatusText" Text="已启用" FontSize="11"
+                                           Opacity="0.8" VerticalAlignment="Center"/>
+                            </StackPanel>
+                        </Border>
+                    </Grid>
+
+                    <Border Padding="12,10" CornerRadius="12" Background="#14FFFFFF"
+                            BorderBrush="#1FFFFFFF" BorderThickness="1" MinHeight="66">
+                        <Grid>
+                            <Border x:Name="PreviewBar" HorizontalAlignment="Left" Padding="8,6"
+                                    CornerRadius="12" Background="#CC161619"
+                                    BorderThickness="1" BorderBrush="#26FFFFFF">
+                                <StackPanel Orientation="Horizontal" Spacing="7" VerticalAlignment="Center">
+                                    <!-- 开始按钮：和真实底栏一样，蓝色四格 -->
+                                    <Border x:Name="PreviewStartPlate" Width="32" Height="32" CornerRadius="9"
+                                            Background="#14FFFFFF">
+                                        <FontIcon x:Name="PreviewStartIcon" Glyph="&#xE8A9;" FontSize="18"
+                                                  Foreground="#FF4CC2FF"
+                                                  HorizontalAlignment="Center" VerticalAlignment="Center"/>
+                                    </Border>
+
+                                    <Border Width="1" Height="24" Background="#26FFFFFF" Margin="1,0"/>
+
+                                    <!-- 示意图标：按主题换底盘颜色，图形固定为彩色，接近真实应用图标 -->
+                                    <Border x:Name="PreviewTile1" Width="32" Height="32" CornerRadius="9"
+                                            Background="#14FFFFFF">
+                                        <FontIcon Glyph="&#xE7FC;" FontSize="16" Foreground="#FF8FB3FF"
+                                                  HorizontalAlignment="Center" VerticalAlignment="Center"/>
+                                    </Border>
+                                    <Border x:Name="PreviewTile2" Width="32" Height="32" CornerRadius="9"
+                                            Background="#14FFFFFF">
+                                        <FontIcon Glyph="&#xE8B7;" FontSize="16" Foreground="#FFFFD166"
+                                                  HorizontalAlignment="Center" VerticalAlignment="Center"/>
+                                    </Border>
+                                    <Border x:Name="PreviewTile3" Width="32" Height="32" CornerRadius="9"
+                                            Background="#14FFFFFF">
+                                        <FontIcon Glyph="&#xE774;" FontSize="16" Foreground="#FF7AD9C4"
+                                                  HorizontalAlignment="Center" VerticalAlignment="Center"/>
+                                    </Border>
+                                    <Border x:Name="PreviewTile4" Width="32" Height="32" CornerRadius="9"
+                                            Background="#14FFFFFF">
+                                        <FontIcon Glyph="&#xE768;" FontSize="16" Foreground="#FFB9A0FF"
+                                                  HorizontalAlignment="Center" VerticalAlignment="Center"/>
+                                    </Border>
+                                </StackPanel>
+                            </Border>
+
+                            <TextBlock Text="屏幕底部 · 开始菜单风格" FontSize="11" Opacity="0.42"
+                                       HorizontalAlignment="Right" VerticalAlignment="Center"/>
+                        </Grid>
+                    </Border>
+                </StackPanel>
+
+                <StackPanel x:Name="Rows" Spacing="10" Padding="0,0,4,8"/>
+            </StackPanel>
+        </ScrollViewer>
+
+        <!-- 悬浮放大的按键提示：浮在内容之上，不占布局行（与其它设置子页一致） -->
+        <Border Grid.Row="0" Grid.RowSpan="99"
+                HorizontalAlignment="Right" VerticalAlignment="Top"
+                Margin="0,14,20,0" Padding="14,9" CornerRadius="12"
+                Background="#26000000">
+            <ctl:GamepadHintBar BadgeScale="1"
+                                Hints="DPAD:选择|A:切换|B:返回"/>
+        </Border>
+    </Grid>
+</Page>

@@ -43,6 +43,8 @@ public sealed partial class AboutPage : Page, ISettingsGamepad
     public AboutPage()
     {
         InitializeComponent();
+        // 卡片用手绘白框当光标：子控件拿到焦点时不再画系统焦点框
+        FocusRing.Attach(this);
 
         var v = typeof(AboutPage).Assembly.GetName().Version;
         VersionText.Text = $"版本 {v?.Major ?? 1}.{v?.Minor ?? 0}.{v?.Build ?? 0}";
@@ -230,6 +232,8 @@ public sealed partial class AboutPage : Page, ISettingsGamepad
     /// <summary>给当前卡片画白框</summary>
     private void UpdateCursor(int index)
     {
+        // 光标是卡片白框：先撤掉可能残留的系统焦点框，避免卡片内按钮上多出一圈
+        FocusRing.HideCurrent(XamlRoot);
         for (var i = 0; i < _cards.Length; i++)
             _cards[i].BorderBrush = i == index ? CursorBrush : ClearBrush;
     }

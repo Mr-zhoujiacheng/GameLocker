@@ -1,0 +1,172 @@
+<?xml version="1.0" encoding="utf-8"?>
+<Window
+    x:Class="GameLocker.StatusBarWindow"
+    xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+    xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml">
+
+    <!-- 系统顶栏：全宽横条，贴屏幕顶边。
+         底盘由 SystemBackdrop / Bar.Background 决定；内容只负责排版与命中，
+         各信息段都是透明 Border，悬停/按压在代码里做轻量反馈。 -->
+    <Grid x:Name="Root" Background="Transparent">
+        <Border x:Name="Bar" Background="#E61A1A1E"/>
+
+        <Grid x:Name="ContentGrid" Padding="16,0">
+            <Grid.ColumnDefinitions>
+                <ColumnDefinition Width="Auto"/>
+                <ColumnDefinition Width="*"/>
+                <ColumnDefinition Width="Auto"/>
+            </Grid.ColumnDefinitions>
+
+            <!-- 左侧暂时留空，信息全部靠右 -->
+
+            <!-- 右：网络 / 电量 / 输入法 / 通知 -->
+            <StackPanel x:Name="RightPanel" Grid.Column="2" Orientation="Horizontal" Spacing="4"
+                        VerticalAlignment="Center">
+
+                <Border x:Name="TimerSegment" Padding="7,3" CornerRadius="6"
+                        Background="Transparent" Tapped="OnTimerTapped" Visibility="Collapsed"
+                        PointerEntered="OnSegmentPointerEntered" PointerExited="OnSegmentPointerExited"
+                        PointerPressed="OnSegmentPointerPressed" PointerReleased="OnSegmentPointerReleased"
+                        PointerCaptureLost="OnSegmentPointerReleased">
+                    <Border.RenderTransform>
+                        <CompositeTransform/>
+                    </Border.RenderTransform>
+                    <TextBlock x:Name="TimerText" Text="25:00" FontSize="10"
+                               VerticalAlignment="Center"/>
+                </Border>
+
+                <Border x:Name="ResourceSegment" Padding="7,3" CornerRadius="6"
+                        Background="Transparent" Tapped="OnResourceTapped" Visibility="Collapsed"
+                        PointerEntered="OnSegmentPointerEntered" PointerExited="OnSegmentPointerExited"
+                        PointerPressed="OnSegmentPointerPressed" PointerReleased="OnSegmentPointerReleased"
+                        PointerCaptureLost="OnSegmentPointerReleased">
+                    <Border.RenderTransform>
+                        <CompositeTransform/>
+                    </Border.RenderTransform>
+                    <TextBlock x:Name="ResourceText" Text="CPU --" FontSize="10"
+                               VerticalAlignment="Center"/>
+                </Border>
+
+                <Border x:Name="BatteryHealthSegment" Padding="7,3" CornerRadius="6"
+                        Background="Transparent" Tapped="OnBatteryHealthTapped" Visibility="Collapsed"
+                        PointerEntered="OnSegmentPointerEntered" PointerExited="OnSegmentPointerExited"
+                        PointerPressed="OnSegmentPointerPressed" PointerReleased="OnSegmentPointerReleased"
+                        PointerCaptureLost="OnSegmentPointerReleased">
+                    <Border.RenderTransform>
+                        <CompositeTransform/>
+                    </Border.RenderTransform>
+                    <TextBlock x:Name="BatteryHealthText" Text="健康 --" FontSize="10"
+                               VerticalAlignment="Center"/>
+                </Border>
+
+                <Border x:Name="ImeSegment" Padding="7,3" CornerRadius="6"
+                        Background="Transparent" Tapped="OnImeTapped"
+                        PointerEntered="OnSegmentPointerEntered" PointerExited="OnSegmentPointerExited"
+                        PointerPressed="OnSegmentPointerPressed" PointerReleased="OnSegmentPointerReleased"
+                        PointerCaptureLost="OnSegmentPointerReleased">
+                    <Border.RenderTransform>
+                        <CompositeTransform/>
+                    </Border.RenderTransform>
+                    <TextBlock x:Name="ImeText" Text="中" FontSize="10" FontWeight="SemiBold"
+                               VerticalAlignment="Center"/>
+                </Border>
+
+                <Border x:Name="BatterySegment" Padding="7,3" CornerRadius="6"
+                        Background="Transparent" Tapped="OnBatteryTapped"
+                        PointerEntered="OnSegmentPointerEntered" PointerExited="OnSegmentPointerExited"
+                        PointerPressed="OnSegmentPointerPressed" PointerReleased="OnSegmentPointerReleased"
+                        PointerCaptureLost="OnSegmentPointerReleased">
+                    <Border.RenderTransform>
+                        <CompositeTransform/>
+                    </Border.RenderTransform>
+                    <StackPanel Orientation="Horizontal" Spacing="4" VerticalAlignment="Center">
+                        <FontIcon x:Name="BatteryIcon" Glyph="&#xE850;" FontSize="13"/>
+                        <TextBlock x:Name="BatteryText" Text="--%" VerticalAlignment="Center"/>
+                        <TextBlock x:Name="BatteryBolt" Text="⚡" FontSize="10" Foreground="White"
+                                   IsColorFontEnabled="False"
+                                   VerticalAlignment="Center" Visibility="Collapsed"/>
+                    </StackPanel>
+                </Border>
+
+                <Border x:Name="TraySegment" Padding="7,3" CornerRadius="6"
+                        Background="Transparent" Tapped="OnTrayTapped"
+                        PointerEntered="OnSegmentPointerEntered" PointerExited="OnSegmentPointerExited"
+                        PointerPressed="OnSegmentPointerPressed" PointerReleased="OnSegmentPointerReleased"
+                        PointerCaptureLost="OnSegmentPointerReleased">
+                    <Border.RenderTransform>
+                        <CompositeTransform/>
+                    </Border.RenderTransform>
+                    <FontIcon x:Name="TrayIcon" Glyph="&#xE70E;" FontSize="12"/>
+                </Border>
+
+                <Border x:Name="NetworkSegment" Padding="7,3" CornerRadius="6"
+                        Background="Transparent" Tapped="OnNetworkTapped"
+                        PointerEntered="OnSegmentPointerEntered" PointerExited="OnSegmentPointerExited"
+                        PointerPressed="OnSegmentPointerPressed" PointerReleased="OnSegmentPointerReleased"
+                        PointerCaptureLost="OnSegmentPointerReleased">
+                    <Border.RenderTransform>
+                        <CompositeTransform/>
+                    </Border.RenderTransform>
+                    <FontIcon x:Name="NetworkIcon" Glyph="&#xE701;" FontSize="13"/>
+                </Border>
+
+                <Border x:Name="FocusSegment" Padding="7,3" CornerRadius="6"
+                        Background="Transparent" Tapped="OnFocusTapped"
+                        PointerEntered="OnSegmentPointerEntered" PointerExited="OnSegmentPointerExited"
+                        PointerPressed="OnSegmentPointerPressed" PointerReleased="OnSegmentPointerReleased"
+                        PointerCaptureLost="OnSegmentPointerReleased">
+                    <Border.RenderTransform>
+                        <CompositeTransform/>
+                    </Border.RenderTransform>
+                    <FontIcon x:Name="FocusIcon" Glyph="&#xE708;" FontSize="13"/>
+                </Border>
+
+                <Border x:Name="NotificationSegment" Padding="7,3" CornerRadius="6"
+                        Background="Transparent" Tapped="OnNotificationTapped"
+                        PointerEntered="OnSegmentPointerEntered" PointerExited="OnSegmentPointerExited"
+                        PointerPressed="OnSegmentPointerPressed" PointerReleased="OnSegmentPointerReleased"
+                        PointerCaptureLost="OnSegmentPointerReleased">
+                    <Border.RenderTransform>
+                        <CompositeTransform/>
+                    </Border.RenderTransform>
+                    <StackPanel Orientation="Horizontal" Spacing="4" VerticalAlignment="Center">
+                        <FontIcon x:Name="NotificationIcon" Glyph="&#xEA8F;" FontSize="13"/>
+                        <TextBlock x:Name="NotificationCount" Text="" FontSize="10.5"
+                                   FontWeight="SemiBold" VerticalAlignment="Center" Visibility="Collapsed"/>
+                    </StackPanel>
+                </Border>
+
+                <Border x:Name="ControlCenterSegment" Padding="7,3" CornerRadius="6"
+                        Background="Transparent" Tapped="OnControlCenterTapped"
+                        PointerEntered="OnSegmentPointerEntered" PointerExited="OnSegmentPointerExited"
+                        PointerPressed="OnSegmentPointerPressed" PointerReleased="OnSegmentPointerReleased"
+                        PointerCaptureLost="OnSegmentPointerReleased">
+                    <Border.RenderTransform>
+                        <CompositeTransform/>
+                    </Border.RenderTransform>
+                    <FontIcon x:Name="ControlCenterIcon" Glyph="&#xE713;" FontSize="13"/>
+                </Border>
+
+                <!-- 最右：时间（上）/ 星期 + 月份（下） -->
+                <Border x:Name="ClockSegment" Padding="10,2" CornerRadius="6"
+                        Background="Transparent" Tapped="OnClockTapped"
+                        PointerEntered="OnSegmentPointerEntered" PointerExited="OnSegmentPointerExited"
+                        PointerPressed="OnSegmentPointerPressed" PointerReleased="OnSegmentPointerReleased"
+                        PointerCaptureLost="OnSegmentPointerReleased">
+                    <Border.RenderTransform>
+                        <CompositeTransform/>
+                    </Border.RenderTransform>
+                    <StackPanel x:Name="ClockStack" Orientation="Vertical" Spacing="0" VerticalAlignment="Center"
+                                HorizontalAlignment="Right">
+                        <TextBlock x:Name="ClockText" Text="--:--" FontSize="15" FontWeight="SemiBold"
+                                   LineHeight="18" LineStackingStrategy="BlockLineHeight"
+                                   HorizontalAlignment="Right"/>
+                        <TextBlock x:Name="DateText" Text="" FontSize="8.5" Opacity="0.64"
+                                   LineHeight="11" LineStackingStrategy="BlockLineHeight"
+                                   Margin="0,1,0,0" HorizontalAlignment="Right"/>
+                    </StackPanel>
+                </Border>
+            </StackPanel>
+        </Grid>
+    </Grid>
+</Window>

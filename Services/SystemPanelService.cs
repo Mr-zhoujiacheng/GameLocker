@@ -117,6 +117,72 @@ public static class SystemPanelService
         _ => _nightLightOn ? "已开启" : "已关闭"
     };
 
+    /// <summary>控制中心用：当前主音量与静音状态（音量接口不可用时返回 null）</summary>
+    public static (bool Mute, int Percent)? GetVolumeState()
+    {
+        var (mute, scalar) = ReadVolume();
+        if (mute is null || scalar is null) return null;
+        return (mute.Value, (int)Math.Round(scalar.Value * 100));
+    }
+
+    /// <summary>控制中心用：设置主音量百分比（同时取消静音）</summary>
+    public static bool SetVolumePercent(int percent)
+    {
+        var vol = GetVolume();
+        if (vol is null) return false;
+        try
+        {
+            var ctx = Guid.Empty;
+            vol.SetMasterVolumeLevelScalar(Math.Clamp(percent, 0, 100) / 100f, ref ctx);
+            vol.GetMute(out var mute);
+            if (mute) vol.SetMute(false, ref ctx);
+            return true;
+        }
+        catch (Exception ex)
+        {
+            Debug.WriteLine($"[SystemPanel] 设置音量失败: {ex.Message}");
+            return false;
+        }
+    }
+
+    /// <summary>控制中心用：后台读取亮度百分比（不支持时返回 null）</summary>
+    public static async Task<int?> ReadBrightnessPercentAsync()
+    {
+        var value = await Task.Run(static () =>
+        {
+            try
+            {
+                return TryGetBrightness(out var min, out var cur, out var max)
+                    ? (int?)Math.Round(BrightnessPercent(min, cur, max))
+                    : null;
+            }
+            catch
+            {
+                return null;
+            }
+        });
+        return value;
+    }
+
+    /// <summary>控制中心用：后台写入亮度百分比（不支持时返回 false）</summary>
+    public static async Task<bool> SetBrightnessPercentAsync(int percent)
+    {
+        return await Task.Run(() =>
+        {
+            try
+            {
+                if (!TryGetBrightness(out var min, out _, out var max)) return false;
+                var span = Math.Max(1, (int)max - (int)min);
+                var raw = (uint)Math.Clamp((int)min + span * Math.Clamp(percent, 0, 100) / 100, (int)min, (int)max);
+                return SetBrightness(raw);
+            }
+            catch
+            {
+                return false;
+            }
+        });
+    }
+
     /// <summary>亮度读数文案缓存（后台线程写，UI 线程读）</summary>
     private static volatile string? _brightnessText;
 

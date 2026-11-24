@@ -54,39 +54,31 @@ namespace GameLocker.Services;
         // 调用方持有 _frameGenLock；先识别自身，避免启动器覆盖或清空候选。
         GetWindowThreadProcessId(hwnd, out var pid);
         if (hwnd != IntPtr.Zero && pid == (uint)Environment.ProcessId) return;
-        // 内置插帧的输出窗（Magpie/FGHost）会占住前台：保留上一个游戏窗口，
-        // 帧率监控与插帧切换都要靠它回指到真正在跑的游戏。
-        if (hwnd != IntPtr.Zero && IsFrameGenOutputWindow(hwnd, (int)pid)) return;
+        // 内置插帧输出窗不能覆盖上一个游戏候选。
+        if (hwnd != IntPtr.Zero && IsFrameGenOutputWindow(hwnd, pid)) return;
 
         _frameGenTargetWindow = IntPtr.Zero;
         if (hwnd == IntPtr.Zero || pid == 0 || !IsWindow(hwnd)
             || !IsWindowVisible(hwnd) || IsIconic(hwnd) || GetAncestor(hwnd, 2) != hwnd) return;
         var className = ClassName(hwnd);
         if (string.IsNullOrEmpty(className)
-            || className is "Progman" or "WorkerW" or "Shell_TrayWnd" or "Shell_SecondaryTrayWnd"
-            || className.Contains("Magpie", StringComparison.OrdinalIgnoreCase)
-            || className.Contains("FGHost", StringComparison.OrdinalIgnoreCase)) return;
+            || className is "Progman" or "WorkerW" or "Shell_TrayWnd" or "Shell_SecondaryTrayWnd") return;
         if (string.IsNullOrWhiteSpace(WindowTitle(hwnd))) return;
         var (name, _) = Describe(pid);
         if (name is null || name.ToLowerInvariant() is
             "explorer" or "startmenuexperiencehost" or "searchhost" or "searchapp"
             or "textinputhost" or "shellexperiencehost" or "applicationframehost"
             or "sihost" or "dwm" or "lockapp" or "logonui" or "shellhost"
-            or "fghost" or "magpie" or "gamelocker") return;
+            or "gamelocker") return;
         if (IsWindow(hwnd)) _frameGenTargetWindow = hwnd;
     }
 
-    /// <summary>是否为内置插帧（Magpie/FGHost）的输出窗口：前台落到它上面时不能把游戏候选清掉。</summary>
-    private static bool IsFrameGenOutputWindow(IntPtr hwnd, int pid)
+    private static bool IsFrameGenOutputWindow(IntPtr hwnd, uint pid)
     {
-        var className = ClassName(hwnd);
-        if (!string.IsNullOrEmpty(className)
-            && (className.Contains("Magpie", StringComparison.OrdinalIgnoreCase)
-                || className.Contains("FGHost", StringComparison.OrdinalIgnoreCase))) return true;
+        if (ClassName(hwnd) is "OptiCaptureHostOverlay" or "OptiCaptureHostLabel") return true;
         if (pid <= 4) return false;
-        var (name, _) = Describe((uint)pid);
-        return name is not null
-            && name.ToLowerInvariant() is "fghost" or "magpie" or "magpie-tool";
+        var (name, _) = Describe(pid);
+        return string.Equals(name, "OptiCaptureHost", StringComparison.OrdinalIgnoreCase);
     }
 
     private static void OnForegroundChanged(IntPtr hook, uint eventType, IntPtr hwnd,

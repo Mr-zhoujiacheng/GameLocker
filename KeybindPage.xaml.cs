@@ -60,6 +60,8 @@ public sealed partial class KeybindPage : Page, ISettingsGamepad
     public KeybindPage()
     {
         InitializeComponent();
+        // 快捷映射卡片用手绘白框当光标：子控件（捕获按钮）拿到焦点时不再画系统焦点框
+        FocusRing.Attach(this);
         CaptureText.Text = GamepadService.Describe(SettingsService.Current.SummonCombo);
         KeyCaptureText.Text = KeySendService.MappingLabel(0, SettingsService.Current.KeyboardSummonKey,
             SettingsService.Current.KeyboardSummonMods);
@@ -264,6 +266,8 @@ public sealed partial class KeybindPage : Page, ISettingsGamepad
     /// <summary>刷新选中样式：只有当前卡片有高亮描边与加亮底色</summary>
     private void ApplyCardFocus()
     {
+        // 光标是卡片描边：撤掉可能残留的系统焦点框（如捕获按钮上的焦点框）
+        FocusRing.HideCurrent(XamlRoot);
         for (var i = 0; i < _cards.Length; i++)
         {
             var on = i == _focus;

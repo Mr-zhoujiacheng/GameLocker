@@ -607,11 +607,41 @@ public static class TileStyle
             Padding = new Thickness(0),
             Background = new SolidColorBrush(Windows.UI.Color.FromArgb(0x22, 0xFF, 0xFF, 0xFF)),
             BorderThickness = new Thickness(0),
-            CornerRadius = new CornerRadius(16)
+            CornerRadius = new CornerRadius(16),
+            // 只做点击：不接收键盘/系统焦点。否则这块按钮会画出自己的系统焦点框，
+            // 和磁贴选中描边同时出现"两个框"（音乐组件上最明显）
+            IsTabStop = false,
+            AllowFocusOnInteraction = false,
+            UseSystemFocusVisuals = false
         };
         if (act != null) b.Click += (_, _) => act();
         else b.IsEnabled = false;
         return b;
+    }
+
+    /// <summary>
+    /// 磁贴内部的按钮/开关只承载鼠标、触摸点击，选中状态由磁贴自身的描边表示（手柄光标）。
+    /// 若这些控件再参与系统焦点，就会在磁贴里画出第二个焦点框（典型：音乐组件的播放按钮上多一圈白框，
+    /// 移动光标/滚动时和磁贴选中框一起动）。这里统一关掉 Tab 焦点、焦点框与"点击即聚焦"，
+    /// 不影响 Click、触摸命中与拖拽。
+    /// </summary>
+    public static void DisableInteractiveFocus(FrameworkElement root)
+    {
+        void Walk(DependencyObject node)
+        {
+            if (node is FrameworkElement fe)
+            {
+                fe.AllowFocusOnInteraction = false;
+                if (fe is Control c)
+                {
+                    c.IsTabStop = false;
+                    c.UseSystemFocusVisuals = false;
+                }
+            }
+            var count = VisualTreeHelper.GetChildrenCount(node);
+            for (var i = 0; i < count; i++) Walk(VisualTreeHelper.GetChild(node, i));
+        }
+        Walk(root);
     }
 
     /// <summary>
@@ -1941,6 +1971,7 @@ public static class TileStyle
         public TextBlock? Title;                  // 标题（长/大尺寸才有）
         public double IconSize;                   // 当前图标尺寸
         public Func<double, FrameworkElement>? DuckFactory; // LSFG 默认图标绘制器
+        internal bool ShowsOptiScalerIcon;
     }
 
     /// <summary>
@@ -1998,14 +2029,13 @@ public static class TileStyle
             };
         }
 
-        var refs = new LosslessTileRefs();
+        var refs = new LosslessTileRefs { ShowsOptiScalerIcon = LosslessScalingService.UsesOptiScaler(item) };
 
-        // 图标容器：LSFG=小黄鸭线条图，XeSS=intel 字标，FSR3=AMD 字标
         ContentControl IconHost(double size)
         {
             var host = new ContentControl
             {
-                Content = EngineIcon(item, size, Duck),
+                Content = refs.ShowsOptiScalerIcon ? OptiScalerIcon(size) : Duck(size),
                 IsHitTestVisible = false,
                 HorizontalAlignment = HorizontalAlignment.Center,
                 VerticalAlignment = VerticalAlignment.Center,
@@ -2143,60 +2173,36 @@ public static class TileStyle
         return (tile, refs);
     }
 
-    /// <summary>按插帧引擎决定磁贴标题：LSFG 用自定义名称，XeSS/FSR3 显示引擎名</summary>
-    private static string EngineTitle(LaunchItem item)
-    {
-        if (string.Equals(item.FrameGenEngine, LosslessScalingService.EngineXess, StringComparison.OrdinalIgnoreCase))
-            return "XeSS FG";
-        if (string.Equals(item.FrameGenEngine, LosslessScalingService.EngineFsr3, StringComparison.OrdinalIgnoreCase))
-            return "FSR FG";
-        return string.IsNullOrWhiteSpace(item.Name) ? "小黄鸭" : item.Name;
-    }
+    private static string EngineTitle(LaunchItem item) =>
+        LosslessScalingService.UsesOptiScaler(item) ? "OptiScaler"
+        : string.IsNullOrWhiteSpace(item.Name) ? "小黄鸭" : item.Name;
 
-    /// <summary>按插帧引擎决定磁贴图标：LSFG=小黄鸭，XeSS=intel 字标，FSR3=AMD 字标</summary>
-    private static FrameworkElement EngineIcon(
-        LaunchItem item, double size, Func<double, FrameworkElement> duck)
+    internal static Image OptiScalerIcon(double size) => new()
     {
-        if (string.Equals(item.FrameGenEngine, LosslessScalingService.EngineXess, StringComparison.OrdinalIgnoreCase))
-            return BrandMarkIcon("intel", size);
-        if (string.Equals(item.FrameGenEngine, LosslessScalingService.EngineFsr3, StringComparison.OrdinalIgnoreCase))
-            return BrandMarkIcon("AMD", size);
-        return duck(size);
-    }
-
-    /// <summary>品牌字标图标：白字，等比缩放到磁贴图标尺寸</summary>
-    private static Viewbox BrandMarkIcon(string text, double size) => new()
-    {
+        Source = new Microsoft.UI.Xaml.Media.Imaging.SvgImageSource(new Uri("ms-appx:///Assets/OptiScaler.svg")),
         Width = size,
         Height = size,
-        Stretch = Microsoft.UI.Xaml.Media.Stretch.Uniform,
         HorizontalAlignment = HorizontalAlignment.Center,
         VerticalAlignment = VerticalAlignment.Center,
-        IsHitTestVisible = false,
-        Child = new TextBlock
-        {
-            Text = text,
-            FontSize = 12,
-            FontWeight = Microsoft.UI.Text.FontWeights.Bold,
-            Foreground = new SolidColorBrush(Microsoft.UI.Colors.White),
-            IsHitTestVisible = false
-        }
+        IsHitTestVisible = false
     };
 
     /// <summary>把安装/运行状态、插帧状态与操作摘要写入磁贴引用</summary>
     public static void FillLosslessState(LosslessTileRefs refs, LaunchItem item)
     {
-        var magpie = LosslessScalingService.UsesMagpie(item);
-        var installed = magpie ? LosslessScalingService.IsMagpieInstalled : LosslessScalingService.IsInstalled(item);
-        var running = installed && (magpie ? LosslessScalingService.IsMagpieRunning : LosslessScalingService.IsRunning);
-        var scaling = magpie ? LosslessScalingService.IsMagpieScaling : running && LosslessScalingService.IsLsfgScaling;
-        var engineName = !magpie ? "LSFG"
-            : string.Equals(item.FrameGenEngine, LosslessScalingService.EngineXess, StringComparison.OrdinalIgnoreCase)
-                ? "XeSS FG" : "FSR FG";
+        var optiScaler = LosslessScalingService.UsesOptiScaler(item);
+        var starting = optiScaler && LosslessScalingService.IsOptiScalerStarting;
+        var installed = optiScaler ? LosslessScalingService.IsOptiScalerInstalled : LosslessScalingService.IsInstalled(item);
+        var running = optiScaler ? LosslessScalingService.IsOptiScalerRunning : installed && LosslessScalingService.IsRunning;
+        var scaling = optiScaler ? LosslessScalingService.IsOptiScalerScaling : running && LosslessScalingService.IsLsfgScaling;
+        var engineName = optiScaler ? "OptiScaler" : "LSFG";
 
         // 编辑页切换引擎后，磁贴可能只做状态刷新，这里同步图标与标题
-        if (refs.Icon is not null && refs.DuckFactory is not null)
-            refs.Icon.Content = EngineIcon(item, refs.IconSize, refs.DuckFactory);
+        if (refs.ShowsOptiScalerIcon != optiScaler && refs.Icon is not null && refs.DuckFactory is not null)
+        {
+            refs.Icon.Content = optiScaler ? OptiScalerIcon(refs.IconSize) : refs.DuckFactory(refs.IconSize);
+            refs.ShowsOptiScalerIcon = optiScaler;
+        }
         if (refs.Title is not null) refs.Title.Text = EngineTitle(item);
 
         refs.Dot.Fill = new SolidColorBrush(
@@ -2205,14 +2211,16 @@ public static class TileStyle
             : running ? Windows.UI.Color.FromArgb(0xFF, 0x4C, 0xC2, 0xFF)     // 蓝：运行中未插帧
             : Windows.UI.Color.FromArgb(0xFF, 0xF5, 0xC5, 0x42));             // 黄：已安装未运行
         refs.Status.Text = !installed ? "未安装"
+            : starting ? "启动中"
             : scaling ? "插帧中"
-            : running ? "运行中"
+            : running ? (optiScaler ? "宿主运行中" : "运行中")
             : "未运行";
 
         if (refs.Summary.Visibility == Visibility.Collapsed) return;
         refs.Summary.Text = !installed
-            ? (magpie ? "R3:编辑 · 缺少 FG" : "R3:编辑 · 指定程序")
-            : scaling ? $"A:关闭{engineName}"
+            ? (optiScaler ? "缺少运行库" : "R3:编辑 · 指定程序")
+            : starting ? "A:取消启动"
+            : scaling || (optiScaler && running) ? $"A:关闭{engineName}"
             : $"A:开启{engineName}";
     }
 

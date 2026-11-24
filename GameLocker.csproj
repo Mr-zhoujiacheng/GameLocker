@@ -13,7 +13,7 @@
     <EnableMsixTooling>false</EnableMsixTooling>
     <ApplicationManifest>app.manifest</ApplicationManifest>
     <AssemblyName>GameLocker</AssemblyName>
-    <Version>3.3.8</Version>
+    <Version>3.4.0</Version>
     <ApplicationIcon>Assets\GameLocker.ico</ApplicationIcon>
     <NoWarn>$(NoWarn);CA1416</NoWarn>
     <!-- dotnet CLI 构建时指向 VS BuildTools 的 AppxPackage 任务目录（生成 PRI 所需） -->
@@ -25,6 +25,7 @@
     <PackageReference Include="Microsoft.WindowsAppSDK" Version="1.6.*" />
     <PackageReference Include="Microsoft.Windows.SDK.BuildTools" Version="10.0.26100.422" />
     <PackageReference Include="SharpCompress" Version="0.39.0" />
+    <PackageReference Include="System.Drawing.Common" Version="8.0.0" />
     <PackageReference Include="System.Management" Version="8.0.0" />
     <!-- 搜索浮层：用 Windows 搜索索引（SYSTEMINDEX OLE DB 提供程序）查本机文件 -->
     <PackageReference Include="System.Data.OleDb" Version="8.0.0" />
@@ -39,11 +40,17 @@
     <Content Include="Assets\GameLocker.ico" CopyToOutputDirectory="PreserveNewest" />
     <!-- 关于页展示的软件图标（ms-appx:///Assets/GameLocker-256.png） -->
     <Content Include="Assets\GameLocker-256.png" CopyToOutputDirectory="PreserveNewest" />
+    <!-- 小黄鸭（OptiScaler）：编辑页下拉里的引擎图标 -->
+    <Content Include="Assets\OptiScaler.svg" CopyToOutputDirectory="PreserveNewest" CopyToPublishDirectory="PreserveNewest" />
+    <!-- 小黄鸭（LSFG）：编辑页「插帧引擎」下拉里与 OptiScaler 图标同一风格 -->
+    <Content Include="Assets\LosslessScaling.svg" CopyToOutputDirectory="PreserveNewest" CopyToPublishDirectory="PreserveNewest" />
     <!-- 手柄映射编辑器的手柄底图（ms-appx:///Assets/gamepad-base.png） -->
     <Content Include="Assets\gamepad-base.png" CopyToOutputDirectory="PreserveNewest" />
     <!-- 关于页标语用的像素字体（Fusion Pixel，OFL 授权，许可文本随字体一起分发） -->
     <Content Include="Assets\Fonts\*.ttf" CopyToOutputDirectory="PreserveNewest" />
     <Content Include="Assets\Fonts\OFL-fusion-pixel.txt" CopyToOutputDirectory="PreserveNewest" />
+    <!-- 主页看板娘：粉紫像素猫娘的 48 帧小图（96×60） -->
+    <Content Include="Assets\Mascot\catmaid-*.png" CopyToOutputDirectory="PreserveNewest" />
     <!-- PawnIO：静默安装器（驱动缺失时由提权助手执行一次）与再分发许可文本，放到程序根目录便于查找 -->
     <Content Include="Resources\PawnIO_setup.exe" Link="PawnIO_setup.exe" CopyToOutputDirectory="PreserveNewest" />
     <Content Include="Resources\COPYING-PawnIO.txt" Link="COPYING-PawnIO.txt" CopyToOutputDirectory="PreserveNewest" />
@@ -53,9 +60,6 @@
     <Content Include="Resources\RyzenAdj\*" Exclude="Resources\RyzenAdj\WinRing0x64.sys" Link="RyzenAdj\%(Filename)%(Extension)" CopyToOutputDirectory="PreserveNewest" />
     <!-- WinRing0 按 helper EXE 目录寻找驱动文件 -->
     <Content Include="Resources\RyzenAdj\WinRing0x64.sys" Link="WinRing0x64.sys" CopyToOutputDirectory="PreserveNewest" Condition="Exists('Resources\RyzenAdj\WinRing0x64.sys')" />
-    <!-- 内置插帧后端（Magpie 宿主 FGHost.exe + XeSS/FSR 运行库，约 157MB）：
-         体积过大不入库，放在仓库根的 FG 目录；由下方 CopyFrameGenBackend 目标在构建后复制到输出的 FG 子目录。
-         不能作为 Content 参与构建：FG 内含 resources.pri 与各语言目录，会让 PRI 索引报重复条目。 -->
     <!-- IntelMSR 签名模块（PawnIO 驱动校验签名后执行） -->
     <EmbeddedResource Include="Resources\IntelMSR.bin" />
     <!-- LpcACPIEC 签名模块：ACPI EC 端口访问，用于探测厂商 EC 里的 GPU 温度 -->
@@ -65,6 +69,8 @@
     <EmbeddedResource Include="Resources\UiSoundSelect.wav" />
     <EmbeddedResource Include="Resources\UiSoundBack.wav" />
     <EmbeddedResource Include="Resources\UiSoundError.wav" />
+    <!-- 与固定 OptiScaler ABI 匹配的可选中文件（许可和源信息随包） -->
+    <None Update="Resources\OptiScalerZhCN\*" CopyToOutputDirectory="PreserveNewest" CopyToPublishDirectory="PreserveNewest" />
     <!-- 屏幕键盘的中文拼音字典（音节 → 常用字，按频次排序） -->
     <EmbeddedResource Include="Resources\pinyin.tsv" />
     <!-- 屏幕键盘的双字词表（拼音 → 词语，按词频排序），用于提高两字词联想准确度 -->
@@ -76,16 +82,5 @@
     <!-- 屏幕键盘的五笔（86 版）码表（编码 → 候选字词，按字频排序） -->
     <EmbeddedResource Include="Resources\wubi.tsv" />
   </ItemGroup>
-
-  <!-- 构建后把仓库根的 FG（内置插帧后端）原样复制到输出目录的 FG 子目录。
-       放在 Target 里而不是 Content，避免 FG 自带的 resources.pri / 语言目录进入本工程的 PRI 索引。 -->
-  <Target Name="CopyFrameGenBackend" AfterTargets="Build" Condition="Exists('$(MSBuildProjectDirectory)\FG')">
-    <ItemGroup>
-      <_FgBackendFiles Include="$(MSBuildProjectDirectory)\FG\**\*" />
-    </ItemGroup>
-    <Copy SourceFiles="@(_FgBackendFiles)"
-          DestinationFiles="@(_FgBackendFiles->'$(OutDir)FG\%(RecursiveDir)%(Filename)%(Extension)')"
-          SkipUnchangedFiles="true" />
-  </Target>
 
 </Project>

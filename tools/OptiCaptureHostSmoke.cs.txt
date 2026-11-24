@@ -1,0 +1,200 @@
+using System.Diagnostics;
+using GameLocker.Services;
+
+static void Check(bool condition, string reason)
+{
+    if (!condition) throw new Exception(reason);
+}
+
+static async Task Expect<T>(Func<Task> action) where T : Exception
+{
+    try { await action(); }
+    catch (T) { return; }
+    throw new Exception($"Expected {typeof(T).Name}.");
+}
+
+static string Snapshot(long stamp, int pid = 42, int focus = 0, string output = "60.0", string present = "30.0") =>
+    $"stamp={stamp}\npid={pid}\nrefresh=120.0\ncapture=30.0\npresent={present}\ndxgi={output}\nfocus={focus}\n";
+
+static OptiCaptureHostStatus? Parse(string text) => OptiCaptureHostStatus.Parse(text, 42, 6000, 10000);
+
+var currentSnapshot = Snapshot(9000);
+Check(Parse(currentSnapshot) is not null, "Rejected current status.");
+Check(Parse(Snapshot(9000, pid: 17)) is null, "Accepted another host's status.");
+Check(Parse(Snapshot(7000)) is null, "Accepted an expired status.");
+Check(Parse(Snapshot(6000)) is null, "Accepted a pre-launch status.");
+Check(Parse(Snapshot(11000)) is null, "Accepted a future status.");
+Check(Parse(Snapshot(9000, focus: 3)) is null, "Accepted an unknown focus value.");
+Check(Parse(Snapshot(9000, output: "NaN")) is null, "Accepted a non-finite frame rate.");
+Check(Parse(currentSnapshot + "focus=2\n") is null, "Accepted conflicting focus fields.");
+Check(Parse(currentSnapshot.Replace("present=30.0\n", "")) is null, "Accepted an incomplete status.");
+Check(Parse(Snapshot(9000, output: "0")) is not null, "Rejected a ready host without measured output.");
+
+var evidence = new OptiCaptureHostFrameEvidence();
+Check(!evidence.Observe(Parse(Snapshot(8000))), "Confirmed on the first sample.");
+Check(!evidence.Observe(Parse(Snapshot(8000))), "Counted the same sample twice.");
+Check(!evidence.Observe(Parse(Snapshot(9000))), "Confirmed before three distinct samples.");
+Check(evidence.Observe(Parse(Snapshot(10000))), "Did not confirm three qualifying samples.");
+Check(!evidence.Observe(null), "Kept evidence after the status expired.");
+Check(!evidence.Observe(Parse(Snapshot(10000))), "Restored expired evidence from the same sample.");
+foreach (var rejected in new[] { Parse(Snapshot(10000, focus: 1)), Parse(Snapshot(10000, present: "60.0")) })
+{
+    evidence = new();
+    evidence.Observe(Parse(Snapshot(8000)));
+    evidence.Observe(Parse(Snapshot(9000)));
+    Check(!evidence.Observe(rejected), "Reported evidence from overlay focus or host-generated repeats.");
+}
+
+const string input = "[FrameGen]\r\nEnabled = true\r\nFGOutput = XeFG\r\n[Unrelated]\r\nKeep = unchanged\r\n";
+var offProfile = new OptiCaptureProfile("nofg", "xess");
+var offIni = offProfile.UpdateScalerIni(input);
+Check(!offProfile.UsesFrameGeneration && offIni.Contains("Enabled = false") && offIni.Contains("FGOutput = nofg")
+    && offIni.Contains("Dx12Upscaler = xess"), "Off and XeSS settings were not applied.");
+Check(offProfile.UpdateHostIni("[Settings]\nFrameGenMode=0\n").Contains("FrameGenMode = 2"), "Host still expected frame generation.");
+Check(offIni.Contains("[Unrelated]\r\nKeep = unchanged\r\n"), "Unrelated settings were changed.");
+Check(offProfile.UpdateScalerIni(offIni) == offIni, "Applying the same profile twice changed the INI.");
+var fsr = new OptiCaptureProfile(" FSRFG ", "FSR3");
+var fsrIni = fsr.UpdateScalerIni(offIni);
+Check(fsr.UsesFrameGeneration && fsrIni.Contains("Enabled = true") && fsrIni.Contains("FGOutput = fsrfg")
+    && fsrIni.Contains("Dx12Upscaler = ffx") && fsrIni.Contains("UpscalerIndex = 2"), "FSR mapping was incorrect.");
+var dlss = new OptiCaptureProfile("dlssg", "dlss");
+Check(dlss.UpdateScalerIni(fsrIni).Contains("FGNvngxReplacement = None")
+    && dlss.UpdateHostIni("").Contains("FrameGenMode = 8"), "Native DLSS FG mapping was incorrect.");
+var defaults = new OptiCaptureProfile("unknown", null);
+Check(defaults.UpdateScalerIni(fsrIni).Contains("FGOutput = XeFG") && defaults.UpdateScalerIni(fsrIni).Contains("UpscalerIndex = auto"),
+    "Defaults failed to restore the XeFG and automatic FSR configuration.");
+const string customScaler = "[Menu]\nScale=1.4\nShowFps=true\n[Sharpness]\nOverrideSharpness=true\nSharpness=0.7\n";
+const string customHost = "[General]\nVSync=1\n";
+var advanced = new OptiCaptureProfile("xefg", "ffx", "off", "off", "1.25", "0.6");
+var advancedIni = advanced.UpdateScalerIni(customScaler);
+Check(advancedIni.Contains("[Menu]\nScale = 1.25\nShowFps = false\n")
+    && advancedIni.Contains("OverrideSharpness=true\nSharpness = 0.6\n")
+    && advanced.UpdateHostIni(customHost).Contains("[General]\nVSync = 0\n"), "Advanced settings were not applied.");
+Check(advanced.UpdateScalerIni(advancedIni) == advancedIni, "Advanced settings were not idempotent.");
+var noSharpenOverride = new OptiCaptureProfile(null, null, sharpness: "off");
+Check(noSharpenOverride.UpdateScalerIni(customScaler).Contains("OverrideSharpness = false\nSharpness=0.7\n"),
+    "Disabling the sharpening override modified the saved strength.");
+var invalidAdvanced = new OptiCaptureProfile(null, null, "3", "yes", "9", "1.01");
+var defaultScalerIni = defaults.UpdateScalerIni(customScaler);
+var defaultHostIni = defaults.UpdateHostIni(customHost);
+Check(invalidAdvanced.UpdateScalerIni(customScaler) == defaultScalerIni
+    && invalidAdvanced.UpdateHostIni(customHost) == defaultHostIni,
+    "Invalid options overwrote saved settings instead of inheriting them.");
+const string oldHotkeys = "[General]\nMenuKey=45\n[Shortcuts]\nFocus=6,122\nMenu=6,121\n";
+var newHotkeys = defaults.UpdateHostIni(oldHotkeys);
+Check(newHotkeys.Contains("[General]\nMenuKey = 125\n[Shortcuts]\nFocus=6,122\nMenu = 0,45\n")
+    && defaults.UpdateHostIni(newHotkeys) == newHotkeys
+    && defaults.UpdateScalerIni("[Menu]\nShortcutKey = 0x2D\n").Contains("[Menu]\nShortcutKey = 0x7D\n"),
+    "Insert must be the host shortcut, with a different key forwarded to the scaler.");
+var missing = Path.Combine(AppContext.BaseDirectory, "missing-runtime");
+await Expect<FileNotFoundException>(() => Task.Run(() => fsr.ValidateDependencies(missing)));
+await Expect<FileNotFoundException>(() => Task.Run(() => dlss.ValidateDependencies(missing)));
+await Expect<FileNotFoundException>(() => Task.Run(() => offProfile.ValidateDependencies(missing)));
+defaults.ValidateDependencies(missing);
+Console.WriteLine("OptiScaler profile mapping, idempotence, and dependency tests passed.");
+
+var service = new OptiCaptureHostService();
+await Expect<FileNotFoundException>(() => service.StartAsync(Path.Combine(AppContext.BaseDirectory, "missing-runtime"), 0));
+Console.WriteLine("Status parsing, frame evidence, and missing-runtime tests passed.");
+if (args is ["--menu", var originalDll, var bundle])
+{
+    // Never write into the source runtime or distribution bundle.
+    var runtime = Directory.CreateDirectory(Path.Combine(AppContext.BaseDirectory, "v2.10.80")).FullName;
+    var installedBundle = Directory.CreateDirectory(Path.Combine(AppContext.BaseDirectory, "Resources", "OptiScalerZhCN")).FullName;
+    var localizedName = "dxgi.zh-CN.dll";
+    var current = Path.Combine(runtime, "dxgi.dll");
+    var backup = Path.Combine(runtime, "dxgi.GameLocker-original.dll");
+    var bundleDll = Path.Combine(installedBundle, localizedName);
+    File.Copy(originalDll, current);
+    File.Copy(Path.Combine(bundle, localizedName), bundleDll);
+    File.Copy(Path.Combine(bundle, "OptiScaler.zh-CN.json"), Path.Combine(installedBundle, "OptiScaler.zh-CN.json"));
+    var originalHash = Hash(originalDll);
+    var localizedHash = Hash(bundleDll);
+    Check(originalHash != localizedHash && OptiCaptureMenuLocalization.IsAvailable(runtime), "Compatible Chinese menu was not detected.");
+    OptiCaptureMenuLocalization.Apply(runtime, "zh-CN");
+    OptiCaptureMenuLocalization.Apply(runtime, "zh-CN");
+    Check(Hash(current) == localizedHash && Hash(backup) == originalHash, "Chinese menu or backup is incorrect.");
+    OptiCaptureMenuLocalization.Apply(runtime, "en");
+    Check(Hash(current) == originalHash, "Restoring English did not reproduce the original DLL.");
+    var unsupported = Directory.CreateDirectory(Path.Combine(AppContext.BaseDirectory, "v2.10.81")).FullName;
+    var unsupportedDll = Path.Combine(unsupported, "dxgi.dll");
+    File.Copy(current, unsupportedDll);
+    OptiCaptureMenuLocalization.Apply(unsupported, "zh-CN");
+    Check(!OptiCaptureMenuLocalization.IsAvailable(unsupported) && Hash(unsupportedDll) == originalHash, "An unsupported runtime was altered.");
+    File.AppendAllText(bundleDll, "corrupt");
+    OptiCaptureMenuLocalization.Apply(runtime, "zh-CN");
+    Check(!OptiCaptureMenuLocalization.IsAvailable(runtime) && Hash(current) == originalHash, "A damaged Chinese DLL was installed.");
+    Console.WriteLine("Chinese menu switching, restoration, unsupported-version and checksum tests passed.");
+    return;
+}
+if (args.Length == 0) return;
+
+static string Hash(string path)
+{
+    using var file = File.OpenRead(path);
+    return Convert.ToHexString(System.Security.Cryptography.SHA256.HashData(file));
+}
+
+var directory = Path.GetFullPath(args[0]);
+await Expect<ArgumentException>(() => service.StartAsync(directory, 0));
+Check(!HostPresent(directory), "An OptiCaptureHost from this directory is already running.");
+using var target = Process.Start(args[1]) ?? throw new Exception("Could not launch the animation fixture.");
+try
+{
+    for (int n = 0; n < 60 && target.MainWindowHandle == 0; n++)
+    {
+        await Task.Delay(100);
+        target.Refresh();
+    }
+    var window = target.MainWindowHandle;
+    Check(window != 0, "Animation window was not created.");
+    using (var cancellation = new CancellationTokenSource())
+    {
+        var starting = service.StartAsync(directory, window, cancellation.Token);
+        cancellation.Cancel();
+        await Expect<OperationCanceledException>(() => starting);
+    }
+    Check(!HostPresent(directory), "Cancellation left a host running.");
+    var ready = await service.StartAsync(directory, window);
+    Check(ready.Stamp > 0 && HostPresent(directory), "No owned host with a fresh status.");
+    await Expect<InvalidOperationException>(() => service.StartAsync(directory, window));
+    await service.StopAsync();
+    await service.StopAsync();
+    Check(!HostPresent(directory) && await service.ReadStatusAsync() is null, "Stopping left a host or stale status.");
+    await service.StartAsync(directory, window);
+    Check(target.CloseMainWindow(), "Could not close the animation window.");
+    await target.WaitForExitAsync().WaitAsync(TimeSpan.FromSeconds(8));
+    for (int n = 0; n < 50 && HostPresent(directory); n++) await Task.Delay(200);
+    Check(!HostPresent(directory) && await service.ReadStatusAsync() is null, "Target close left a host or stale status.");
+    Console.WriteLine("Real-host start, cancellation, duplicate start, stop, and target-close tests passed.");
+}
+finally
+{
+    try { await service.StopAsync(); }
+    finally
+    {
+        if (!target.HasExited)
+        {
+            target.CloseMainWindow();
+            if (!target.WaitForExit(2000)) target.Kill();
+        }
+    }
+}
+
+static bool HostPresent(string directory)
+{
+    var found = false;
+    foreach (var process in Process.GetProcessesByName("OptiCaptureHost"))
+    {
+        using (process)
+        {
+            try
+            {
+                found |= !process.HasExited && string.Equals(process.MainModule?.FileName,
+                    Path.Combine(directory, "OptiCaptureHost.exe"), StringComparison.OrdinalIgnoreCase);
+            }
+            catch (InvalidOperationException) { }
+        }
+    }
+    return found;
+}

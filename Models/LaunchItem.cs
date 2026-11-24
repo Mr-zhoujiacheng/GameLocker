@@ -18,7 +18,9 @@ public enum LaunchKind
     /// <summary>磁贴组（包含多个成员磁贴，主页按 A 原位展开/收起）</summary>
     Group,
     /// <summary>小组件（WidgetPage 添加，磁贴形态承载实时状态与交互，如音乐控制器）</summary>
-    Widget
+    Widget,
+    /// <summary>托盘常驻应用（底栏实时追加的合成条目，不写入 items.json；点击唤出/收起它的主窗口）</summary>
+    Tray
 }
 
 /// <summary>小组件类型</summary>
@@ -385,6 +387,15 @@ public class LaunchItem
     /// <summary>屏幕键盘贴在屏幕右侧（仅 WidgetKind.Keyboard 使用；false=贴左侧）</summary>
     public bool KeyboardDockRight { get; set; }
 
+    /// <summary>从底栏隐藏该条目（仍保留在启动器磁贴里；默认 false 表示显示在底栏）</summary>
+    public bool DockHidden { get; set; }
+
+    /// <summary>
+    /// 只在底栏显示、不上启动器主页磁贴（从底栏"添加应用/文件夹/网址/拖入"创建的条目默认 true）。
+    /// 条目本身仍保存在 items.json，只是主页不再排布它。
+    /// </summary>
+    public bool LauncherHidden { get; set; }
+
     /// <summary>屏幕键盘按 QWERTY 排列字母（仅 WidgetKind.Keyboard 使用；false=按 a–z 顺序）</summary>
     public bool KeyboardQwerty { get; set; }
 
@@ -400,24 +411,16 @@ public class LaunchItem
     /// <summary>手动指定的 LosslessScaling.exe 路径（仅 WidgetKind.LosslessScaling 使用；空=按 Steam 库自动检测）</summary>
     public string? LosslessPath { get; set; }
 
-    /// <summary>插帧引擎：LSFG（小黄鸭，默认）/ XESS / FSR3（后两者走内置 Magpie 后端）</summary>
+    /// <summary>插帧引擎：LSFG（默认）或 OPTISCALER。</summary>
     public string FrameGenEngine { get; set; } = "LSFG";
 
-    public int FgGpuIndex { get; set; } = -1;
-    public uint FgGpuVendorId { get; set; }
-    public uint FgGpuDeviceId { get; set; }
-
-    /// <summary>Magpie 捕获方式：WGC（窗口）/ DXGI（桌面复制）/ DWM（共享表面）</summary>
-    public string FgCaptureMode { get; set; } = "WGC";
-
-    /// <summary>XeSS FG 倍率：2 / 3 / 4（FSR3 固定 2×，此值会被忽略）</summary>
-    public int FgXeSSMultiplier { get; set; } = 2;
-
-    /// <summary>外部光流：AMD / NVIDIA</summary>
-    public string FgOpticalFlow { get; set; } = "AMD";
-
-    /// <summary>帧同步：FRONT_EDGE / ASYNC / REFLEX</summary>
-    public string FgFrameSync { get; set; } = "FRONT_EDGE";
+    public string OptiCaptureFrameGeneration { get; set; } = "xefg";
+    public string OptiCaptureUpscaler { get; set; } = "ffx";
+    public string OptiCaptureVSync { get; set; } = "inherit";
+    public string OptiCaptureFpsOverlay { get; set; } = "inherit";
+    public string OptiCaptureMenuScale { get; set; } = "inherit";
+    public string OptiCaptureMenuLanguage { get; set; } = "zh-CN";
+    public string OptiCaptureSharpness { get; set; } = "inherit";
 
     /// <summary>选中的小黄鸭配置名（Settings.xml 中 Game Profiles 的 Title，仅 WidgetKind.LosslessScaling 使用；
     /// 空=不指定，完全跟随小黄鸭自己的匹配）</summary>
@@ -531,13 +534,13 @@ public class LaunchItem
         FileTransferRecvFolder = FileTransferRecvFolder,
         LosslessPath = LosslessPath,
         FrameGenEngine = FrameGenEngine,
-        FgGpuIndex = FgGpuIndex,
-        FgGpuVendorId = FgGpuVendorId,
-        FgGpuDeviceId = FgGpuDeviceId,
-        FgCaptureMode = FgCaptureMode,
-        FgXeSSMultiplier = FgXeSSMultiplier,
-        FgOpticalFlow = FgOpticalFlow,
-        FgFrameSync = FgFrameSync,
+        OptiCaptureFrameGeneration = OptiCaptureFrameGeneration,
+        OptiCaptureUpscaler = OptiCaptureUpscaler,
+        OptiCaptureVSync = OptiCaptureVSync,
+        OptiCaptureFpsOverlay = OptiCaptureFpsOverlay,
+        OptiCaptureMenuScale = OptiCaptureMenuScale,
+        OptiCaptureMenuLanguage = OptiCaptureMenuLanguage,
+        OptiCaptureSharpness = OptiCaptureSharpness,
         LosslessProfile = LosslessProfile,
         LosslessOptimize = LosslessOptimize,
         LosslessOptQueue = LosslessOptQueue,
@@ -559,6 +562,8 @@ public class LaunchItem
         TranslateSource = TranslateSource,
         TranslateTarget = TranslateTarget,
         GamepadMappings = [.. GamepadMappings.Select(m => m.Clone())],
+        DockHidden = DockHidden,
+        LauncherHidden = LauncherHidden,
         Members = [.. Members.Select(m => m.Clone())],
         Drawers = Drawers is null ? null : [.. Drawers.Select(d => d.Clone())]
     };

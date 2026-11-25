@@ -1,4 +1,4 @@
-using System.Diagnostics;
+using Microsoft.Win32.SafeHandles;
 using System.Runtime.InteropServices;
 using System.Text;
 
@@ -15,7 +15,6 @@ internal static class MonitorHelperHost
     private const int WM_QUIT = 0x0012;
     private const int WM_TIMER = 0x0113;
     private const uint PM_NOREMOVE = 0x0000;
-    private const int TimerId = 1;
 
     /// <summary>助手入口：成功返回时表示已收到退出请求，调用方应终止进程</summary>
     public static void Run(int parentPid)
@@ -35,39 +34,14 @@ internal static class MonitorHelperHost
         catch { }
         Log($"stopEvent={(stop is null ? "缺失" : "ok")}");
 
-        // CPU 封装温度：PawnIO/MSR（首次会静默安装随包附带的驱动，失败则保持不可用）
-        // GPU 温度：厂商 MSI ACPI WMI（Get_Thermal[3]），由下面的定时器每 500ms 取一次（内部缓存 2 秒）
-        // 放到后台任务里做，避免驱动安装耗时拖住 ETW 启动与采样
-        _ = Task.Run(() =>
-        {
-            var ready = PawnIoMsr.EnsureReady(installIfMissing: true);
-            Log($"pawnio={(ready ? "ok" : PawnIoMsr.Status)}");
-
-            var wmiReady = MsiWmiProbe.EnsureReady();
-            Log($"msi-wmi={(wmiReady ? "ok：" + MsiWmiProbe.MethodList : MsiWmiProbe.Status)}");
-
-            WriteVendorStatus(wmiReady);
-        });
-
+        using var initializationCancellation = new CancellationTokenSource();
+        var initializationToken = initializationCancellation.Token;
+        Task? cpuInitialization = null;
+        Task? gpuInitialization = null;
         LosslessOutputListener? output = null;
         PresentEtwListener? etw = null;
-        try
-        {
-            etw = new PresentEtwListener();
-            if (etw.Start()) Log("etw=ok");
-            else
-            {
-                Log($"etw 启动失败 err={etw.StartError} {etw.StartDiagnostic}（继续只读温度）");
-                etw.Dispose();
-                etw = null;
-            }
-        }
-        catch (Exception ex)
-        {
-            Log("etw 异常：" + ex.Message);
-            etw?.Dispose();
-            etw = null;
-        }
+        var framesRequested = false;
+        long nextTemperatureAt = 0;
 
         // 先创建线程消息队列，否则看门狗的 PostThreadMessage 可能失败
         PeekMessage(out _, IntPtr.Zero, 0, 0, PM_NOREMOVE);
@@ -80,22 +54,62 @@ internal static class MonitorHelperHost
         };
         watchdog.Start();
 
-        SetTimer(IntPtr.Zero, new UIntPtr(TimerId), 500, IntPtr.Zero);
+        var interval = 500u;
+        var timer = SetTimer(IntPtr.Zero, UIntPtr.Zero, interval, IntPtr.Zero);
         // 主进程每秒消费一次，助手 500ms 发布一次已足够；温度再降一半频率并缓存上次读数
         var cpuTemp = double.NaN;
         var gpuTemp = double.NaN;
         var tick = 0;
         try
         {
+            if (timer == UIntPtr.Zero) return;
             while (GetMessage(out var msg, IntPtr.Zero, 0, 0) > 0)
             {
                 if (msg.message == WM_QUIT) break;
-                if (msg.message != WM_TIMER) continue;
+                if (msg.message != WM_TIMER || unchecked((ulong)msg.wParam.ToInt64()) != timer.ToUInt64()) continue;
                 tick++;
+                var sampling = shared.ReadSampling();
+                var panelActive = shared.HasPanelDemand;
+                var requestedInterval = sampling == 0 && !panelActive ? 2500u : 500u;
+                if (interval != requestedInterval)
+                {
+                    if (SetTimer(IntPtr.Zero, timer, requestedInterval, IntPtr.Zero) != UIntPtr.Zero)
+                        interval = requestedInterval;
+                }
+                var trackFrames = sampling.HasFlag(MonitorShared.Sampling.Frames);
+                var readCpu = panelActive || sampling.HasFlag(MonitorShared.Sampling.CpuTemperature);
+                var readGpu = sampling.HasFlag(MonitorShared.Sampling.GpuTemperature);
+                var background = !panelActive && sampling.HasFlag(MonitorShared.Sampling.Background);
+                if (readCpu && cpuInitialization is null)
+                    cpuInitialization = Task.Run(() =>
+                    {
+                        var ready = PawnIoMsr.EnsureReady(installIfMissing: true, initializationToken);
+                        Log($"pawnio={(ready ? "ok" : PawnIoMsr.Status)}");
+                    });
+                if (readGpu && gpuInitialization is null)
+                    gpuInitialization = Task.Run(() =>
+                    {
+                        initializationToken.ThrowIfCancellationRequested();
+                        var ready = MsiWmiProbe.EnsureReady();
+                        Log($"msi-wmi={(ready ? "ok：" + MsiWmiProbe.MethodList : MsiWmiProbe.Status)}");
+                        WriteVendorStatus(ready);
+                    });
+                if (framesRequested != trackFrames)
+                {
+                    framesRequested = trackFrames;
+                    if (trackFrames) etw = StartEtw();
+                    else
+                    {
+                        etw?.Dispose();
+                        output?.Dispose();
+                        etw = null;
+                        output = null;
+                    }
+                }
                 double fps = 0, frameMs = 0;
                 double[] history = [];
-                var targetPid = shared.ReadTargetPid();
-                var outputPid = shared.ReadOutputTargetPid();
+                var targetPid = trackFrames ? shared.ReadTargetPid() : 0;
+                var outputPid = trackFrames ? shared.ReadOutputTargetPid() : 0;
                 if (outputPid > 0 && output is null)
                 {
                     output = new LosslessOutputListener();
@@ -109,11 +123,18 @@ internal static class MonitorHelperHost
                     etw.TargetPid = targetPid;
                     (fps, frameMs, history) = etw.GetStats();
                 }
-                // 温度约每秒读一次；两次之间沿用上次结果，避免把 NaN 覆盖到主进程
-                if (tick % 2 == 1 && PawnIoMsr.Available) cpuTemp = PawnIoMsr.ReadTemperature();
-                // 兼容旧版的 MSI 固件参考温度，不代表已确认的独立 GT 温度。
-                if (tick % 2 == 1) gpuTemp = MsiWmiProbe.ReadGpuTemperature();
-                shared.Publish(fps, frameMs, history, cpuTemp, gpuTemp, targetPid,
+                var now = Environment.TickCount64;
+                if (now >= nextTemperatureAt || (!background && nextTemperatureAt - now > 1000))
+                {
+                    nextTemperatureAt = now + (background ? 5000 : 1000);
+                    cpuTemp = readCpu && cpuInitialization?.IsCompletedSuccessfully == true && PawnIoMsr.Available
+                        ? PawnIoMsr.ReadTemperature() : double.NaN;
+                    // MSI 固件参考温度，不能当作已确认的独立 GT 温度。
+                    gpuTemp = readGpu && gpuInitialization?.IsCompletedSuccessfully == true
+                        ? MsiWmiProbe.ReadGpuTemperature() : double.NaN;
+                }
+                shared.Publish(fps, frameMs, history, readCpu ? cpuTemp : double.NaN,
+                    readGpu ? gpuTemp : double.NaN, targetPid,
                     etw?.GetOriginalFps() ?? double.NaN,
                     (etw?.FrameGenerationDetected ?? false) || (output?.HasGeneratedFrames(targetPid) ?? false),
                     outputPid, output?.GetFps(outputPid) ?? double.NaN,
@@ -122,13 +143,32 @@ internal static class MonitorHelperHost
         }
         finally
         {
-            KillTimer(IntPtr.Zero, new UIntPtr(TimerId));
+            if (timer != UIntPtr.Zero) KillTimer(IntPtr.Zero, timer);
             etw?.Dispose();
             output?.Dispose();
-            PawnIoMsr.Close();
+            initializationCancellation.Cancel();
+            var initialization = Task.WhenAll(cpuInitialization ?? Task.CompletedTask, gpuInitialization ?? Task.CompletedTask);
+            try { initialization.WaitAsync(TimeSpan.FromSeconds(3)).GetAwaiter().GetResult(); }
+            catch (TimeoutException) { Log("传感器初始化取消等待超时，进程退出时由系统释放设备句柄"); }
+            catch (OperationCanceledException) { }
+            catch (Exception ex) { Log("传感器初始化结束异常：" + ex.Message); }
+            if (cpuInitialization?.IsCompleted == true) PawnIoMsr.Close();
             stop?.Dispose();
             Log("exit");
         }
+    }
+
+    private static PresentEtwListener? StartEtw()
+    {
+        var etw = new PresentEtwListener();
+        try
+        {
+            if (etw.Start()) return etw;
+            Log($"ETW 启动失败 err={etw.StartError} {etw.StartDiagnostic}");
+        }
+        catch (Exception ex) { Log("ETW 异常：" + ex.Message); }
+        etw.Dispose();
+        return null;
     }
 
     /// <summary>助手诊断日志（%APPDATA%\GameLocker\monitor-helper.log）</summary>
@@ -181,29 +221,22 @@ internal static class MonitorHelperHost
     /// <summary>看门狗：父进程消失或主进程发停止事件时，给助手线程投递 WM_QUIT</summary>
     private static void Watch(int parentPid, EventWaitHandle? stop, uint threadId)
     {
-        while (ParentAlive(parentPid))
-        {
-            if (stop is null)
-            {
-                Thread.Sleep(500);
-                continue;
-            }
-            if (stop.WaitOne(500)) break;
-        }
-        PostThreadMessage(threadId, WM_QUIT, IntPtr.Zero, IntPtr.Zero);
-    }
-
-    private static bool ParentAlive(int pid)
-    {
         try
         {
-            using var p = Process.GetProcessById(pid);
-            return !p.HasExited;
+            var handle = OpenProcess(0x00100000, false, parentPid); // SYNCHRONIZE
+            if (handle.IsInvalid)
+            {
+                handle.Dispose();
+                return;
+            }
+            using var parent = new EventWaitHandle(false, EventResetMode.ManualReset);
+            parent.SafeWaitHandle.Dispose();
+            parent.SafeWaitHandle = handle;
+            if (stop is null) parent.WaitOne();
+            else WaitHandle.WaitAny(new WaitHandle[] { parent, stop });
         }
-        catch
-        {
-            return false;
-        }
+        catch (Exception ex) { Log("父进程等待失败：" + ex.Message); }
+        finally { PostThreadMessage(threadId, WM_QUIT, IntPtr.Zero, IntPtr.Zero); }
     }
 
     // ---- P/Invoke ----
@@ -240,6 +273,9 @@ internal static class MonitorHelperHost
 
     [DllImport("user32.dll")]
     private static extern bool KillTimer(IntPtr hwnd, UIntPtr id);
+
+    [DllImport("kernel32.dll")]
+    private static extern SafeWaitHandle OpenProcess(uint access, bool inherit, int processId);
 
     [DllImport("kernel32.dll")]
     private static extern uint GetCurrentThreadId();

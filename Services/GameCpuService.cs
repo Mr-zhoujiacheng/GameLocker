@@ -251,6 +251,12 @@ public static class GameCpuService
                 // A diagnostic is emitted only once until a new configuration requests a retry.
                 if (DiscoveryFailures.Add(-1)) Report("进程跟踪失败：" + ex.Message);
             }
+            if (Targets.Count == 0)
+            {
+                _timer?.Dispose();
+                _timer = null;
+                UpdatePrioritySelection();
+            }
         }
     }
 

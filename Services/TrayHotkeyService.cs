@@ -36,14 +36,17 @@ public sealed class TrayHotkeyService : IDisposable
     private volatile bool _disposed;
     private readonly WndProcDelegate _wndProc; // 防止被 GC 回收
     private NOTIFYICONDATA _nid;
+    private uint _taskbarCreatedMessage;
 
     /// <summary>热键被按下 / 托盘双击 / 选择"显示启动器"</summary>
     public event Action? ShowRequested;
     /// <summary>托盘菜单选择退出</summary>
     public event Action? ExitRequested;
 
-    public TrayHotkeyService()
+    public TrayHotkeyService(Action showRequested, Action exitRequested)
     {
+        ShowRequested += showRequested;
+        ExitRequested += exitRequested;
         _wndProc = WndProc;
         _thread = new Thread(Run) { IsBackground = true, Name = "TrayHotkey" };
         _thread.Start();
@@ -65,10 +68,11 @@ public sealed class TrayHotkeyService : IDisposable
         };
         RegisterClassEx(ref wc);
 
+        _taskbarCreatedMessage = ShellRestartWatcher.RegisterTaskbarCreatedMessage();
         _hwnd = CreateWindowEx(0, className, "Game Locker", 0,
             0, 0, 0, 0, 0, 0, hInstance, 0);
-
-        var ok = RegisterHotKey(_hwnd, HOTKEY_ID, MOD_CONTROL | MOD_ALT, VK_G);
+        if (_hwnd == IntPtr.Zero) return;
+        RegisterHotKey(_hwnd, HOTKEY_ID, MOD_CONTROL | MOD_ALT, VK_G);
 
         _nid = new NOTIFYICONDATA
         {
@@ -80,7 +84,9 @@ public sealed class TrayHotkeyService : IDisposable
             hIcon = IconLoader.Small,
             szTip = "Game Locker（Ctrl+Alt+G 唤起）"
         };
-        Shell_NotifyIcon(NIM_ADD, ref _nid);
+        ShellRestartWatcher.AllowTaskbarCreatedMessage(_hwnd, _taskbarCreatedMessage);
+        AddTrayIcon();
+        if (_disposed) PostMessage(_hwnd, WM_CLOSE, 0, 0);
 
         // 消息循环
         while (GetMessage(out var msg, 0, 0, 0))
@@ -90,8 +96,20 @@ public sealed class TrayHotkeyService : IDisposable
         }
     }
 
+    private void AddTrayIcon()
+    {
+        if (_nid.hWnd != IntPtr.Zero && !_disposed && !Shell_NotifyIcon(NIM_ADD, ref _nid))
+            DebugLog.Write("[托盘] 添加托盘图标失败");
+    }
+
     private IntPtr WndProc(IntPtr hWnd, uint msg, IntPtr wParam, IntPtr lParam)
     {
+        if (_taskbarCreatedMessage != 0 && msg == _taskbarCreatedMessage)
+        {
+            AddTrayIcon();
+            return 0;
+        }
+
         switch (msg)
         {
             case WM_HOTKEY:
@@ -111,6 +129,8 @@ public sealed class TrayHotkeyService : IDisposable
                 return 0;
 
             case WM_DESTROY:
+                if (_nid.hWnd != IntPtr.Zero) Shell_NotifyIcon(NIM_DELETE, ref _nid);
+                UnregisterHotKey(hWnd, HOTKEY_ID);
                 PostQuitMessage(0);
                 return 0;
         }
@@ -138,12 +158,7 @@ public sealed class TrayHotkeyService : IDisposable
     {
         if (_disposed) return;
         _disposed = true;
-        if (_hwnd != 0)
-        {
-            Shell_NotifyIcon(NIM_DELETE, ref _nid);
-            UnregisterHotKey(_hwnd, HOTKEY_ID);
-            PostMessage(_hwnd, WM_CLOSE, 0, 0);
-        }
+        if (_hwnd != IntPtr.Zero) PostMessage(_hwnd, WM_CLOSE, 0, 0);
     }
 
     // ---- P/Invoke 声明 ----
@@ -177,6 +192,16 @@ public sealed class TrayHotkeyService : IDisposable
         public IntPtr hIcon;
         [MarshalAs(UnmanagedType.ByValTStr, SizeConst = 128)]
         public string szTip;
+        public uint dwState;
+        public uint dwStateMask;
+        [MarshalAs(UnmanagedType.ByValTStr, SizeConst = 256)]
+        public string? szInfo;
+        public uint uTimeoutOrVersion;
+        [MarshalAs(UnmanagedType.ByValTStr, SizeConst = 64)]
+        public string? szInfoTitle;
+        public uint dwInfoFlags;
+        public Guid guidItem;
+        public IntPtr hBalloonIcon;
     }
 
     [StructLayout(LayoutKind.Sequential)]
@@ -226,7 +251,7 @@ public sealed class TrayHotkeyService : IDisposable
     [DllImport("user32.dll")]
     private static extern bool UnregisterHotKey(IntPtr hWnd, int id);
 
-    [DllImport("shell32.dll")]
+    [DllImport("shell32.dll", CharSet = CharSet.Unicode)]
     private static extern bool Shell_NotifyIcon(uint dwMessage, ref NOTIFYICONDATA lpData);
 
     [DllImport("user32.dll")]

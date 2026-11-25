@@ -358,7 +358,7 @@ internal sealed class LosslessOutputListener : IDisposable
     {
         try
         {
-            if (!process.HasExited) process.Kill();
+            if (!process.HasExited) process.Kill(entireProcessTree: true);
             process.WaitForExit(1500);
         }
         catch (InvalidOperationException) { }

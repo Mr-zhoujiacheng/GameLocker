@@ -110,14 +110,12 @@ internal static class GameWindowDetector
         if (hwnd == IntPtr.Zero || pid == 0) return false;
         if (!IsWindowVisible(hwnd) || IsIconic(hwnd) || IsCloaked(hwnd)) return false;
 
+        // 真全屏覆盖所在显示器，最大化覆盖工作区的普通窗口可以在读取进程前排除。
+        if (!CoversOwnMonitor(hwnd)) return false;
         var exeFile = KeyboardHookService.ProcessImageName(pid);
         if (exeFile.Length == 0) return false;
         var exe = Path.GetFileNameWithoutExtension(exeFile);
-        // 共享黑名单仍然生效：系统外壳、浏览器、聊天、办公、启动器等一律否决。
         if (!TrainerService.IsGameLikeProcess(hwnd, exe)) return false;
-
-        // 必须真正盖满所在显示器（副屏同样适用），"最大化"后只盖住工作区不算。
-        if (!CoversOwnMonitor(hwnd)) return false;
 
         var className = WindowClass(hwnd);
         // 桌面软件即使有全屏/游戏引擎类名（如 Steam 大屏幕模式的 SDL 窗口）也不算游戏

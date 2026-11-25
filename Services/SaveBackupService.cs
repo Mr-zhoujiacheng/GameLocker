@@ -11,7 +11,7 @@ public readonly record struct BackupMessage(string Text, bool Error);
 
 public sealed record SaveBackupVersion(string Location, string FileName, DateTime Created, DateTime Modified, long Size);
 
-public sealed record SaveRestoreRequest(string GameName, bool Cloud, IReadOnlyList<SaveBackupVersion> Versions);
+public sealed record SaveRestoreRequest(string GameName, string SourceName, IReadOnlyList<SaveBackupVersion> Versions);
 public sealed record SaveRestoreChoice(SaveBackupVersion Version, bool RestartGame);
 
 /// <summary>
@@ -33,10 +33,10 @@ public static class SaveBackupService
     public static Func<SaveRestoreRequest, Task<SaveRestoreChoice?>>? ChooseRestoreAsync { get; set; }
     public static Func<string, Task<bool>>? ConfirmRestartAsync { get; set; }
 
-    private static async Task<SaveRestoreChoice?> ChooseAsync(string gameName, bool cloud, IReadOnlyList<SaveBackupVersion> versions)
+    private static async Task<SaveRestoreChoice?> ChooseAsync(string gameName, string sourceName, IReadOnlyList<SaveBackupVersion> versions)
     {
         var choose = ChooseRestoreAsync ?? throw new IOException("无法显示备份选择窗口，请返回启动器后重试");
-        var selected = await choose(new SaveRestoreRequest(gameName, cloud, versions));
+        var selected = await choose(new SaveRestoreRequest(gameName, sourceName, versions));
         if (selected is null) Report("已取消恢复，存档未改动");
         else if (!versions.Contains(selected.Version)) throw new IOException("所选备份不在当前列表中");
         return selected;
@@ -99,6 +99,7 @@ public static class SaveBackupService
             var title = TrainerService.LastWindowTitle;
             var exePath = TrainerService.CurrentGameExePath();
             var gameName = Sanitize(TrainerService.CurrentGameName());
+            var session = item.BackupMode == BackupMode.Cloud ? CloudBackupProvider.CaptureSession() : null;
             DebugLog.Write($"存档备份: 触发 exe={exeName} 标题={title} 模式={item.BackupMode}");
             Report("正在查找存档位置…");
             await SaveManifest.EnsureLoadedAsync(t => Report(t));
@@ -111,9 +112,9 @@ public static class SaveBackupService
                 return;
             }
 
-            if (item.BackupMode == BackupMode.Cloud)
+            if (session is not null)
             {
-                await CloudBackupAsync(item, gameName, location);
+                await CloudBackupAsync(session, item, gameName, location);
                 return;
             }
 
@@ -146,15 +147,9 @@ public static class SaveBackupService
     /// 云端（天翼云上传）：打包到本地临时 zip → 上传 → 删临时文件 → 按保留份数裁剪云端旧备份。
     /// 未配置 / 上传失败都只提示错误，**不**回退写本地（避免用户误以为已上云）。
     /// </summary>
-    private static async Task CloudBackupAsync(LaunchItem item, string gameName, SaveLocation location)
+    private static async Task CloudBackupAsync(CloudBackupSession session, LaunchItem item, string gameName, SaveLocation location)
     {
-        if (!CloudBackupProvider.IsSignedIn)
-        {
-            Report($"{CloudBackupProvider.DisplayName}未登录：请在存档磁贴编辑页打开「云端备份设置」扫码登录", true);
-            return;
-        }
-
-        var root = Sanitize(CloudBackupProvider.RootFolder);
+        var root = Sanitize(session.RootFolder);
         var folder = $"{root}/{gameName}";
 
         var stamp = DateTime.Now.ToString("yyyyMMdd-HHmmss-fffffff");
@@ -165,32 +160,32 @@ public static class SaveBackupService
         try
         {
             Report("正在准备云端目录…");
-            await CloudBackupProvider.EnsureFolderAsync(folder);
+            await CloudBackupProvider.EnsureFolderAsync(session, folder);
 
             Report("正在打包存档…");
             Directory.CreateDirectory(tmpDir);
             var bytes = await Task.Run(() => Pack(location.Paths, tmpZip));
 
             Report("正在上传到云端…");
-            await CloudBackupProvider.UploadAsync(folder, fileName, tmpZip);
+            await CloudBackupProvider.UploadAsync(session, folder, fileName, tmpZip);
 
             var keep = item.BackupKeep <= 0 ? 5 : item.BackupKeep;
             Report("正在整理云端历史备份…");
             var cleanupFailed = false;
             try
             {
-                var list = await CloudBackupProvider.ListAsync(folder);
+                var list = await CloudBackupProvider.ListAsync(session, folder);
                 foreach (var old in list.Where(e => IsBackupFile(e.Name, gameName))
                     .OrderByDescending(e => e.Modified).Skip(keep))
                 {
-                    try { await CloudBackupProvider.DeleteAsync(folder, old.Href); }
+                    try { await CloudBackupProvider.DeleteAsync(session, folder, old.Href); }
                     catch { cleanupFailed = true; }
                 }
             }
             catch { cleanupFailed = true; }
 
             var sizeMb = bytes / 1024d / 1024d;
-            Report($"已备份到{CloudBackupProvider.DisplayName}：{folder}/{fileName}（{sizeMb:0.#}MB）" +
+            Report($"已备份到{session.DisplayName}：{folder}/{fileName}（{sizeMb:0.#}MB）" +
                 (cleanupFailed ? "；旧版本清理未完成，可稍后重试" : ""));
         }
         catch (Exception ex)
@@ -222,6 +217,7 @@ public static class SaveBackupService
             var exePath = TrainerService.CurrentGameExePath();
 
             var gameName = Sanitize(TrainerService.CurrentGameName());
+            var session = item.BackupMode == BackupMode.Cloud ? CloudBackupProvider.CaptureSession() : null;
             DebugLog.Write($"存档同步: 触发 exe={exeName} 标题={title} 模式={item.BackupMode}");
             await SaveManifest.EnsureLoadedAsync(t => Report(t));
 
@@ -233,9 +229,9 @@ public static class SaveBackupService
                 return;
             }
 
-            if (item.BackupMode == BackupMode.Cloud)
+            if (session is not null)
             {
-                await CloudSyncAsync(gameName, location, exeName, exePath);
+                await CloudSyncAsync(session, gameName, location, exeName, exePath);
                 return;
             }
             await LocalSyncAsync(item, gameName, location, exeName, exePath);
@@ -269,7 +265,7 @@ public static class SaveBackupService
             Report($"本地没有 {gameName} 的备份，请先按 A 备份一次", true);
             return;
         }
-        var selected = await ChooseAsync(gameName, false, versions);
+        var selected = await ChooseAsync(gameName, "本地备份", versions);
         if (selected is null) return;
 
         var version = selected.Version;
@@ -283,15 +279,9 @@ public static class SaveBackupService
     /// 云端同步：取云端该游戏目录下最近一份 zip → 下载到本地临时文件 → 解压覆盖回本地存档 → 删临时文件。
     /// 未配置云端 / 云端无备份 / 下载失败都只提示错误，**不**回退读本地（与云端备份对称）。
     /// </summary>
-    private static async Task CloudSyncAsync(string gameName, SaveLocation location, string exeName, string? exePath)
+    private static async Task CloudSyncAsync(CloudBackupSession session, string gameName, SaveLocation location, string exeName, string? exePath)
     {
-        if (!CloudBackupProvider.IsSignedIn)
-        {
-            Report($"{CloudBackupProvider.DisplayName}未登录：请在存档磁贴编辑页打开「云端备份设置」扫码登录", true);
-            return;
-        }
-
-        var root = Sanitize(CloudBackupProvider.RootFolder);
+        var root = Sanitize(session.RootFolder);
         var folder = $"{root}/{gameName}";
 
         var tmpDir = Path.Combine(DefaultBackupsDir, "_tmp");
@@ -299,7 +289,7 @@ public static class SaveBackupService
         try
         {
             Report("正在查询云端备份…");
-            var list = await CloudBackupProvider.ListAsync(folder);
+            var list = await CloudBackupProvider.ListAsync(session, folder);
             var versions = list
                 .Where(e => IsBackupFile(e.Name, gameName))
                 .Select(e => new SaveBackupVersion(e.Href, e.Name,
@@ -312,10 +302,10 @@ public static class SaveBackupService
                 return;
             }
 
-            var selected = await ChooseAsync(gameName, true, versions);
+            var selected = await ChooseAsync(gameName, session.DisplayName, versions);
             if (selected is null) return;
             var version = selected.Version;
-            var currentList = await CloudBackupProvider.ListAsync(folder);
+            var currentList = await CloudBackupProvider.ListAsync(session, folder);
             if (!currentList.Any(e => e.Href == version.Location && e.Size == version.Size &&
                 e.Modified.LocalDateTime == version.Modified))
                 throw new IOException("所选云端备份已被修改或删除，请重新打开列表");
@@ -325,7 +315,7 @@ public static class SaveBackupService
             Directory.CreateDirectory(tmpDir);
 
             Report("正在从云端下载备份…");
-            await CloudBackupProvider.DownloadAsync(href, tmpZip);
+            await CloudBackupProvider.DownloadAsync(session, href, tmpZip);
 
             await RestoreSelectedAsync(location.Paths, tmpZip, exeName, exePath, selected.RestartGame);
         }
@@ -490,23 +480,7 @@ public static class SaveBackupService
         }
         if (pending.Count == 0) throw new IOException("备份中没有可恢复的存档文件");
 
-        var staging = Path.Combine(Path.GetTempPath(), "GameLocker-Restore-" + Guid.NewGuid().ToString("N"));
-        try
-        {
-            Directory.CreateDirectory(staging);
-            for (var i = 0; i < pending.Count; i++)
-                pending[i].Entry.ExtractToFile(Path.Combine(staging, i.ToString()));
-            for (var i = 0; i < pending.Count; i++)
-            {
-                Directory.CreateDirectory(Path.GetDirectoryName(pending[i].Destination)!);
-                File.Copy(Path.Combine(staging, i.ToString()), pending[i].Destination, overwrite: true);
-            }
-            return pending.Count;
-        }
-        finally
-        {
-            try { if (Directory.Exists(staging)) Directory.Delete(staging, recursive: true); } catch { }
-        }
+        return SaveRestoreTransaction.Commit(pending);
     }
 
     /// <summary>备份目标目录：编辑页指定的文件夹优先，未指定时用默认目录</summary>

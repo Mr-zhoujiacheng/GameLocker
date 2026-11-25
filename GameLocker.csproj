@@ -13,12 +13,16 @@
     <EnableMsixTooling>false</EnableMsixTooling>
     <ApplicationManifest>app.manifest</ApplicationManifest>
     <AssemblyName>GameLocker</AssemblyName>
-    <Version>3.4.1</Version>
+    <Version>3.4.2</Version>
     <ApplicationIcon>Assets\GameLocker.ico</ApplicationIcon>
     <NoWarn>$(NoWarn);CA1416</NoWarn>
     <!-- dotnet CLI 构建时指向 VS BuildTools 的 AppxPackage 任务目录（生成 PRI 所需） -->
     <AppxMSBuildToolsPath Condition="Exists('C:\Program Files (x86)\Microsoft Visual Studio\2022\BuildTools\MSBuild\Microsoft\VisualStudio\v17.0\AppxPackage\Microsoft.Build.AppxPackage.dll')">C:\Program Files (x86)\Microsoft Visual Studio\2022\BuildTools\MSBuild\Microsoft\VisualStudio\v17.0\AppxPackage\</AppxMSBuildToolsPath>
   </PropertyGroup>
+
+  <ItemGroup>
+    <Compile Remove="tests\**\*.cs" />
+  </ItemGroup>
 
   <ItemGroup>
     <PackageReference Include="Interop.UIAutomationClient" Version="10.19041.0" />

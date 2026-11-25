@@ -48,11 +48,12 @@ internal static class PowerProfileService
     {
         var onAc = ReadOnAc();
         var settings = SettingsService.Current;
-        if (onAc is null || !settings.SeparatePowerProfiles) return;
+        if (onAc is null || !settings.SeparatePowerProfiles || !settings.CpuPowerTakeover) return;
         var profile = (onAc.Value ? settings.AcProfile : settings.BatteryProfile).Copy();
         if (!profile.CpuPowerEnabled || profile.CpuPowerPl1 <= 0) return;
         SettingsService.Update(s =>
         {
+            if (!s.CpuPowerTakeover) return;
             s.CpuPowerPl1 = profile.CpuPowerPl1;
             s.CpuPowerPl2 = profile.CpuPowerPl2;
             s.CpuPowerFppt = profile.CpuPowerFppt;
@@ -145,11 +146,11 @@ internal static class PowerProfileService
             }
 
             // 3) CPU 功耗：先把目标写成“已保存值”，再交给助手或登录任务静默写回硬件
-            if (profile.CpuPowerEnabled && profile.CpuPowerPl1 > 0)
+            if (profile.CpuPowerEnabled && profile.CpuPowerPl1 > 0 && SettingsService.Current.CpuPowerTakeover)
             {
                 SettingsService.Update(s =>
                 {
-                    s.CpuPowerTakeover = true;
+                    if (!s.CpuPowerTakeover) return;
                     s.CpuPowerPl1 = profile.CpuPowerPl1;
                     s.CpuPowerPl2 = profile.CpuPowerPl2;
                     s.CpuPowerFppt = profile.CpuPowerFppt;

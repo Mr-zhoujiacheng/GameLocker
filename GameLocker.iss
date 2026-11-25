@@ -1,11 +1,11 @@
-﻿; Game Locker 安装包脚本（Inno Setup 6）
+; Game Locker 安装包脚本（Inno Setup 6）
 ; 用法：ISCC.exe GameLocker.iss
 ; 源目录 = dotnet build 的 Release 产物；产物落在仓库外的 ..\dist\ 下
 ; 说明：publish 目录（dotnet publish 产物）不含 GameLocker.pri，运行时无法加载 XAML，
 ;       故打包统一取 build 产物，并排除 publish 与 *.pdb
 
 #define AppName "Game Locker"
-#define AppVersion "3.4.1"
+#define AppVersion "3.4.2"
 #define AppPublisher "Mr-zhoujiacheng"
 #define AppUrl "https://github.com/Mr-zhoujiacheng/GameLocker"
 #ifndef SrcDir
@@ -51,6 +51,9 @@ Source: "{#SrcDir}\*"; DestDir: "{app}"; Flags: ignoreversion recursesubdirs cre
 Type: filesandordirs; Name: "{app}\XeSSFG"
 Type: filesandordirs; Name: "{app}\Mako"
 
+[Registry]
+Root: HKCU; Subkey: "Software\GameLocker"; ValueType: string; ValueName: "InstallPath"; ValueData: "{app}\GameLocker.exe"; Flags: uninsdeletevalue uninsdeletekeyifempty
+
 [Icons]
 Name: "{group}\{#AppName}"; Filename: "{app}\GameLocker.exe"
 Name: "{autodesktop}\{#AppName}"; Filename: "{app}\GameLocker.exe"; Tasks: desktopicon
@@ -60,3 +63,17 @@ Filename: "{app}\GameLocker.exe"; Description: "立即启动 {#AppName}"; Flags:
 ; 内置更新器走静默安装（/VERYSILENT），RestartApplications 在静默模式下不生效，
 ; 这里补一条只在静默安装后执行的启动项，保证升级完自动重新打开
 Filename: "{app}\GameLocker.exe"; Flags: nowait skipifnotsilent
+
+[Code]
+procedure CurUninstallStepChanged(CurUninstallStep: TUninstallStep);
+var
+  Command, InstalledExe: string;
+begin
+  if CurUninstallStep <> usUninstall then
+    Exit;
+  InstalledExe := ExpandConstant('{app}\GameLocker.exe');
+  if RegQueryStringValue(HKCU, 'Software\Microsoft\Windows\CurrentVersion\Run', 'GameLocker', Command) and
+     ((CompareText(Trim(Command), '"' + InstalledExe + '"') = 0) or
+      (CompareText(Trim(Command), InstalledExe) = 0)) then
+    RegDeleteValue(HKCU, 'Software\Microsoft\Windows\CurrentVersion\Run', 'GameLocker');
+end;

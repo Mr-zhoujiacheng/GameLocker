@@ -62,7 +62,7 @@ internal static class DockHost
     /// </summary>
     public static async Task SummonAsync()
     {
-        if (!SettingsService.Current.SystemEnabled) return;
+        if (App.Main?.IsExiting == true || !SettingsService.Current.SystemEnabled) return;
         if (_gameMode) _revealedInGame = true;
         if (Bars.Count == 0) await ApplyAsync();
         if (!SettingsService.Current.SystemEnabled || (_gameMode && !_revealedInGame)) return;
@@ -139,6 +139,7 @@ internal static class DockHost
     /// <summary>按当前设置重建底栏（开关、尺寸、图标、目标屏幕）。</summary>
     public static async Task ApplyAsync()
     {
+        if (App.Main?.IsExiting == true) return;
         var settings = SettingsService.Current;
 
         TaskbarControl.Apply(settings.SystemEnabled ? settings.DockTaskbarMode : 0);
@@ -162,7 +163,7 @@ internal static class DockHost
         // 为新出现的屏建窗口
         foreach (var monitor in targets)
         {
-            if (!SettingsService.Current.SystemEnabled) return;
+            if (App.Main?.IsExiting == true || !SettingsService.Current.SystemEnabled) return;
             var existing = Bars.FirstOrDefault(b => b.Monitor == monitor.Handle);
             if (existing is not null)
             {
@@ -180,7 +181,7 @@ internal static class DockHost
             await window.ApplySettingsAsync();
         }
 
-        if (!SettingsService.Current.SystemEnabled) return;
+        if (App.Main?.IsExiting == true || !SettingsService.Current.SystemEnabled) return;
         Relayout();
         foreach (var bar in Bars) bar.Window.SetVisible(!_gameMode || _revealedInGame);
     }

@@ -23,6 +23,7 @@ internal static class TopTaskbarMode
     private static readonly object Gate = new();
     private static Timer? _watchdog;
     private static bool _active;
+    private static bool _restoreOwner;
 
     private const string AdvancedKey = @"Software\Microsoft\Windows\CurrentVersion\Explorer\Advanced";
     private const string TaskbarSizeValue = "TaskbarSize"; // 26H2：0=默认 48 DIP，1=小 32 DIP
@@ -63,6 +64,11 @@ internal static class TopTaskbarMode
     {
         lock (Gate)
         {
+            if (!_restoreOwner)
+            {
+                message = "只有主实例可以更改系统任务栏状态";
+                return false;
+            }
             if (_active)
             {
                 message = "";
@@ -113,15 +119,21 @@ internal static class TopTaskbarMode
         return true;
     }
 
+    internal static void SetRestoreOwner(bool owns)
+    {
+        lock (Gate) _restoreOwner = owns;
+    }
+
     public static void Disable() => Disable(force: false);
 
-    /// <summary>退出软件时强制恢复：即使内部状态已不是 active，只要还有备份就还原并显示任务栏。</summary>
+    /// <summary>仅主实例或显式恢复工具可消费共享任务栏快照。</summary>
     public static void ForceRestore() => Disable(force: true);
 
     private static void Disable(bool force)
     {
         lock (Gate)
         {
+            if (!_restoreOwner) return;
             if (!_active && !force && !File.Exists(SizeBackupPath)) return;
             _active = false;
         }

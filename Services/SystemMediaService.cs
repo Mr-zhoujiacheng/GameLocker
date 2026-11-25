@@ -1,229 +1,266 @@
-using Windows.Media;
+using Microsoft.UI.Dispatching;
+using Microsoft.UI.Xaml.Media.Imaging;
+using Windows.Foundation;
 using Windows.Media.Control;
+using Windows.Storage.Streams;
+using MediaSession = Windows.Media.Control.GlobalSystemMediaTransportControlsSession;
+using MediaSessionManager = Windows.Media.Control.GlobalSystemMediaTransportControlsSessionManager;
 
 namespace GameLocker.Services;
 
-/// <summary>
-/// 系统媒体控制服务（全局静态）：通过 SMTC（GlobalSystemMediaTransportControls）
-/// 读取并控制设备当前正在播放的媒体会话（任意播放器：浏览器、音乐 App 等）。
-/// 不创建自己的播放会话、不管理音乐文件。
-/// 状态变化通过 StateChanged 回调通知 UI（事件已在服务层 marshal 回 UI 线程后触发）。
-/// </summary>
+/// <summary>在主页可见时观察系统媒体会话，并按需控制当前播放器。</summary>
 public static class SystemMediaService
 {
-    private static GlobalSystemMediaTransportControlsSessionManager? _manager;
-    private static GlobalSystemMediaTransportControlsSession? _session;
-    private static Task? _init;
-
-    /// <summary>UI 线程调度器（InitAsync 在 UI 线程调用时捕获）。
-    /// SMTC 事件可能在后台线程触发，而元数据读取与 BitmapImage.SetSourceAsync 必须在 UI 线程执行，
-    /// 故所有事件处理统一 marshal 回 UI 线程（也顺带消除并发竞态）。</summary>
-    private static Microsoft.UI.Dispatching.DispatcherQueue? _uiQueue;
-
-    private static void EnqueueUI(Action a)
+    // 观察与缓存由 UI 线程管理。WinRT 回调只向所属观察周期的队列投递。
+    private sealed class Observation(DispatcherQueue queue, bool includeTrackDetails)
     {
-        if (_uiQueue == null || !_uiQueue.TryEnqueue(() => a())) a(); // 未就绪则就地执行
+        public bool IncludeTrackDetails { get; } = includeTrackDetails;
+        public MediaSessionManager? Manager { get; set; }
+        public MediaSession? Session { get; set; }
+        public Task? Initialization { get; set; }
+        public long TrackRevision { get; set; }
+
+        public void OnCurrentSessionChanged(MediaSessionManager manager, CurrentSessionChangedEventArgs args) =>
+            Enqueue(() => AttachSession(this));
+
+        public void OnPlaybackChanged(MediaSession session, PlaybackInfoChangedEventArgs args) =>
+            Enqueue(() => { if (ReferenceEquals(session, Session)) Notify(); });
+
+        public void OnMediaChanged(MediaSession session, MediaPropertiesChangedEventArgs args) =>
+            Enqueue(() => { if (ReferenceEquals(session, Session)) _ = RefreshAndNotifyAsync(this, session); });
+
+        private void Enqueue(Action action) => queue.TryEnqueue(() =>
+        {
+            if (ReferenceEquals(_observation, this)) action();
+        });
     }
 
-    // 曲目信息（WinRT 投影为异步方法，缓存后同步读取）
+    private static Task<MediaSessionManager>? _managerRequest;
+    private static Observation? _observation;
     private static string _title = "";
     private static string _artist = "";
+    private static BitmapImage? _coverImage;
+    private static MediaSession? Session => _observation?.Session;
 
-    /// <summary>会话/曲目/播放状态变化（UI 层自行 marshal 后刷新）</summary>
+    /// <summary>会话、曲目或播放状态在 UI 线程上通知。</summary>
     public static event Action? StateChanged;
 
-    public static bool HasSession => _session != null;
-
-    /// <summary>当前曲目名（无会话为空）</summary>
+    public static bool HasSession => Session is not null;
     public static string Title => _title;
-
-    /// <summary>当前艺术家（无会话为空）</summary>
     public static string Artist => _artist;
+    public static BitmapImage? CoverImage => _coverImage;
 
-    public static bool IsPlaying
+    public static bool IsPlaying => IsSessionPlaying(Session);
+
+    private static bool IsSessionPlaying(MediaSession? session)
     {
-        get
+        try
         {
-            var info = GetPlaybackInfo();
-            return info?.PlaybackStatus == GlobalSystemMediaTransportControlsSessionPlaybackStatus.Playing;
+            return session?.GetPlaybackInfo()?.PlaybackStatus ==
+                GlobalSystemMediaTransportControlsSessionPlaybackStatus.Playing;
         }
+        catch { return false; }
     }
 
-    /// <summary>播放进度（秒）；无会话为 0</summary>
+    /// <summary>播放进度（秒）；无会话为 0。</summary>
     public static double PositionSeconds
     {
         get
         {
-            try { return Math.Clamp(_session?.GetTimelineProperties()?.Position.TotalSeconds ?? 0, 0, 86400); }
+            try { return Math.Clamp(Session?.GetTimelineProperties()?.Position.TotalSeconds ?? 0, 0, 86400); }
             catch { return 0; }
         }
     }
 
-    /// <summary>曲目总时长（秒）；无会话/未知为 0</summary>
+    /// <summary>曲目总时长（秒）；无会话或未知为 0。</summary>
     public static double DurationSeconds
     {
         get
         {
-            try { return Math.Clamp(_session?.GetTimelineProperties()?.EndTime.TotalSeconds ?? 0, 0, 86400); }
+            try { return Math.Clamp(Session?.GetTimelineProperties()?.EndTime.TotalSeconds ?? 0, 0, 86400); }
             catch { return 0; }
         }
     }
 
-    private static GlobalSystemMediaTransportControlsSessionPlaybackInfo? GetPlaybackInfo()
+    /// <summary>在 UI 线程开始或恢复观察。仅猫娘需要播放状态时可跳过曲目和封面。</summary>
+    public static Task InitAsync(bool includeTrackDetails = true)
     {
-        try { return _session?.GetPlaybackInfo(); }
+        if (_observation is { } active && active.IncludeTrackDetails == includeTrackDetails)
+            return active.Initialization ?? Task.CompletedTask;
+        if (DispatcherQueue.GetForCurrentThread() is not { } queue) return Task.CompletedTask;
+
+        Pause();
+        var observation = new Observation(queue, includeTrackDetails);
+        _observation = observation;
+        return observation.Initialization = InitializeAsync(observation);
+    }
+
+    /// <summary>在 UI 线程暂停观察并释放缓存。播放控制命令仍可读取当前系统会话。</summary>
+    public static void Pause()
+    {
+        if (_observation is not { } observation) return;
+        _observation = null;
+        ClearTrack();
+        DetachSession(observation);
+        if (observation.Manager is { } manager)
+        {
+            try { manager.CurrentSessionChanged -= observation.OnCurrentSessionChanged; }
+            catch { /* 系统媒体管理器可能已经断开。 */ }
+        }
+    }
+
+    private static async Task<MediaSessionManager> RequestManagerAsync() => await MediaSessionManager.RequestAsync();
+
+    private static async Task<MediaSessionManager?> GetManagerAsync()
+    {
+        var request = _managerRequest ??= RequestManagerAsync();
+        try { return await request; }
+        catch
+        {
+            if (ReferenceEquals(request, _managerRequest)) _managerRequest = null;
+            return null;
+        }
+    }
+
+    private static async Task InitializeAsync(Observation observation)
+    {
+        var manager = await GetManagerAsync();
+        if (!ReferenceEquals(_observation, observation)) return;
+        observation.Manager = manager;
+        try
+        {
+            if (manager is not null)
+            {
+                manager.CurrentSessionChanged += observation.OnCurrentSessionChanged;
+                AttachSession(observation);
+                return;
+            }
+        }
+        catch { /* SMTC 不可用时维持无会话状态。 */ }
+        if (!ReferenceEquals(_observation, observation)) return;
+        Pause();
+        Notify();
+    }
+
+    private static void AttachSession(Observation observation)
+    {
+        MediaSession? nextSession;
+        try { nextSession = observation.Manager?.GetCurrentSession(); }
+        catch { nextSession = null; }
+        if (nextSession is not null && ReferenceEquals(nextSession, observation.Session)) return;
+
+        DetachSession(observation);
+        ClearTrack();
+        if (nextSession is not null)
+        {
+            observation.Session = nextSession;
+            try
+            {
+                nextSession.PlaybackInfoChanged += observation.OnPlaybackChanged;
+                if (observation.IncludeTrackDetails)
+                {
+                    nextSession.MediaPropertiesChanged += observation.OnMediaChanged;
+                    _ = RefreshAndNotifyAsync(observation, nextSession);
+                }
+            }
+            catch { DetachSession(observation); }
+        }
+        Notify();
+    }
+
+    private static void DetachSession(Observation observation)
+    {
+        observation.TrackRevision++;
+        if (observation.Session is not { } session) return;
+        observation.Session = null;
+        try { session.PlaybackInfoChanged -= observation.OnPlaybackChanged; }
+        catch { /* 会话可能已经关闭。 */ }
+        if (!observation.IncludeTrackDetails) return;
+        try { session.MediaPropertiesChanged -= observation.OnMediaChanged; }
+        catch { /* 会话可能已经关闭。 */ }
+    }
+
+    private static void ClearTrack()
+    {
+        _title = "";
+        _artist = "";
+        _coverImage = null;
+    }
+
+    private static bool IsCurrent(Observation observation, MediaSession session, long revision) =>
+        ReferenceEquals(observation, _observation) && ReferenceEquals(session, observation.Session) &&
+        revision == observation.TrackRevision;
+
+    private static async Task RefreshAndNotifyAsync(Observation observation, MediaSession session)
+    {
+        var revision = ++observation.TrackRevision;
+        string title = "", artist = "";
+        IRandomAccessStreamReference? thumbnail = null;
+        try
+        {
+            var properties = await session.TryGetMediaPropertiesAsync();
+            if (!IsCurrent(observation, session, revision)) return;
+            title = properties?.Title ?? "";
+            artist = properties?.Artist ?? "";
+            thumbnail = properties?.Thumbnail;
+        }
+        catch { /* 无法读取曲目信息时保留空状态。 */ }
+        if (!IsCurrent(observation, session, revision)) return;
+
+        var cover = title == _title && artist == _artist ? _coverImage : null;
+        if (cover is null && thumbnail is not null)
+        {
+            cover = await DecodeCoverAsync(thumbnail, 160, () => IsCurrent(observation, session, revision));
+            if (!IsCurrent(observation, session, revision)) return;
+        }
+        _title = title;
+        _artist = artist;
+        _coverImage = cover;
+        Notify();
+    }
+
+    private static async Task<BitmapImage?> DecodeCoverAsync(IRandomAccessStreamReference thumbnail, int width,
+        Func<bool> isCurrent)
+    {
+        try
+        {
+            using var stream = await thumbnail.OpenReadAsync();
+            if (!isCurrent()) return null;
+            var image = new BitmapImage { DecodePixelWidth = width };
+            await image.SetSourceAsync(stream);
+            return isCurrent() ? image : null;
+        }
         catch { return null; }
     }
 
-    /// <summary>请求管理器并订阅会话切换（幂等，重复调用复用同一 Task）</summary>
-    public static Task InitAsync() => _init ??= DoInitAsync();
+    public static void TogglePlay() => _ = SendCommandAsync(session =>
+        IsSessionPlaying(session) ? session.TryPauseAsync() : session.TryPlayAsync());
 
-    private static async Task DoInitAsync()
+    public static void Next() => _ = SendCommandAsync(session => session.TrySkipNextAsync());
+
+    public static void Prev() => _ = SendCommandAsync(session => session.TrySkipPreviousAsync());
+
+    private static async Task SendCommandAsync(Func<MediaSession, IAsyncOperation<bool>> command)
     {
-        _uiQueue = Microsoft.UI.Dispatching.DispatcherQueue.GetForCurrentThread();
         try
         {
-            _manager = await GlobalSystemMediaTransportControlsSessionManager.RequestAsync();
-            _manager.CurrentSessionChanged += (_, _) => EnqueueUI(AttachSession);
-            AttachSession();
+            var manager = await GetManagerAsync();
+            if (manager?.GetCurrentSession() is { } session) await command(session);
         }
-        catch
-        {
-            // SMTC 不可用（异常环境）：保持无会话状态，磁贴显示"未在播放"
-        }
+        catch { /* 播放器可能在按键后关闭，忽略已经失效的命令。 */ }
     }
 
-    /// <summary>切换到当前活动会话并重新挂接事件</summary>
-    private static void AttachSession()
+    /// <summary>异步读取所观察会话的当前封面。</summary>
+    public static async Task<BitmapImage?> GetThumbnailAsync()
     {
-        if (_session != null)
-        {
-            _session.PlaybackInfoChanged -= OnPlaybackChanged;
-            _session.MediaPropertiesChanged -= OnMediaChanged;
-        }
-        _session = _manager?.GetCurrentSession();
-        if (_session != null)
-        {
-            _session.PlaybackInfoChanged += OnPlaybackChanged;
-            _session.MediaPropertiesChanged += OnMediaChanged;
-            // 属性+封面异步刷新完成后再广播，避免 UI 拿到旧 Title 导致封面误判
-            _ = RefreshAndNotifyAsync();
-        }
-        else
-        {
-            _title = "";
-            _artist = "";
-            ClearCover();
-        }
-        Notify();
-    }
-
-    /// <summary>
-    /// 读取曲目元数据缓存，并按需拉取封面，全部完成后才广播。
-    /// 必须等属性刷新完再广播：否则 UI 读到旧 Title|Artist，封面判定相同而跳过更新。
-    /// </summary>
-    private static async Task RefreshAndNotifyAsync()
-    {
-        var s = _session;
-        if (s == null) return;
-        Windows.Storage.Streams.IRandomAccessStreamReference? thumbRef = null;
+        if (_observation is not { Session: { } session } observation) return null;
+        var revision = observation.TrackRevision;
         try
         {
-            var props = await s.TryGetMediaPropertiesAsync();
-            if (!ReferenceEquals(s, _session)) return; // 期间已切换会话，丢弃过期结果
-            _title = props.Title ?? "";
-            _artist = props.Artist ?? "";
-            thumbRef = props.Thumbnail;
-        }
-        catch { _title = ""; _artist = ""; }
-
-        await LoadCoverAsync(s, $"{_title}|{_artist}", thumbRef);
-        Notify();
-    }
-
-    // ---- 封面缓存：服务层在曲目变化后主动拉取，UI 只读缓存，无并发竞态 ----
-    private static string _coverKey = "";
-    private static Microsoft.UI.Xaml.Media.Imaging.BitmapImage? _coverImage;
-    private static bool _coverLoading;
-
-    /// <summary>当前封面（无封面或未就绪为 null）</summary>
-    public static Microsoft.UI.Xaml.Media.Imaging.BitmapImage? CoverImage => _coverImage;
-
-    private static void ClearCover()
-    {
-        _coverKey = "";
-        _coverImage = null;
-        _coverLoading = false;
-    }
-
-    /// <summary>
-    /// 拉取封面到缓存。去重规则：同 key 且（正在拉取 或 已有图）才跳过；
-    /// 若同 key 但缓存无图，说明封面是晚到的（部分播放器先发标题事件、封面就绪后再发一次），需重试。
-    /// 切歌时旧请求结果靠 key 校验自动丢弃。
-    /// </summary>
-    private static async Task LoadCoverAsync(
-        GlobalSystemMediaTransportControlsSession s, string key,
-        Windows.Storage.Streams.IRandomAccessStreamReference? thumbRef)
-    {
-        if (key == _coverKey && (_coverLoading || _coverImage != null)) return;
-        _coverKey = key;
-        _coverImage = null;
-        if (thumbRef == null) return;
-        _coverLoading = true;
-        try
-        {
-            var ras = await thumbRef.OpenReadAsync();
-            if (!ReferenceEquals(s, _session) || key != _coverKey) return; // 会话/曲目已变，丢弃
-            var bmp = new Microsoft.UI.Xaml.Media.Imaging.BitmapImage();
-            bmp.DecodePixelWidth = 160; // 缩略图级别，降低解码开销
-            await bmp.SetSourceAsync(ras);
-            if (!ReferenceEquals(s, _session) || key != _coverKey) return;
-            _coverImage = bmp;
-            Notify(); // 封面晚于标题就绪时立即通知 UI
-        }
-        catch { /* 解码失败：保持无封面 */ }
-        finally { _coverLoading = false; }
-    }
-
-    // 播放状态变化才广播；进度（TimelinePropertiesChanged）高频触发，
-    // 由主页秒级轮询读取，不广播避免刷屏
-    private static void OnPlaybackChanged(GlobalSystemMediaTransportControlsSession s, object e) =>
-        EnqueueUI(Notify);
-
-    private static void OnMediaChanged(GlobalSystemMediaTransportControlsSession s,
-        MediaPropertiesChangedEventArgs e) => EnqueueUI(() => _ = RefreshAndNotifyAsync());
-
-    /// <summary>播放/暂停切换（无会话时忽略）</summary>
-    public static void TogglePlay()
-    {
-        var s = _session;
-        if (s == null) return;
-        _ = IsPlaying ? s.TryPauseAsync() : s.TryPlayAsync();
-    }
-
-    /// <summary>下一曲</summary>
-    public static void Next() => _ = _session?.TrySkipNextAsync();
-
-    /// <summary>上一曲</summary>
-    public static void Prev() => _ = _session?.TrySkipPreviousAsync();
-
-    /// <summary>异步读取当前封面为 ImageSource（无会话/无封面/失败返回 null）</summary>
-    public static async Task<Microsoft.UI.Xaml.Media.Imaging.BitmapImage?> GetThumbnailAsync()
-    {
-        var s = _session;
-        if (s == null) return null;
-        try
-        {
-            var props = await s.TryGetMediaPropertiesAsync();
-            if (!ReferenceEquals(s, _session)) return null; // 期间已切换会话
-            var streamRef = props.Thumbnail;
-            if (streamRef == null) return null;
-            var ras = await streamRef.OpenReadAsync();
-            if (!ReferenceEquals(s, _session)) return null;
-            var bmp = new Microsoft.UI.Xaml.Media.Imaging.BitmapImage();
-            bmp.DecodePixelWidth = 128; // 缩略图级别，降低解码开销
-            await bmp.SetSourceAsync(ras);
-            return bmp;
+            var properties = await session.TryGetMediaPropertiesAsync();
+            if (!IsCurrent(observation, session, revision) || properties?.Thumbnail is not { } thumbnail) return null;
+            var image = await DecodeCoverAsync(thumbnail, 128, () => IsCurrent(observation, session, revision));
+            return IsCurrent(observation, session, revision) ? image : null;
         }
         catch { return null; }
     }

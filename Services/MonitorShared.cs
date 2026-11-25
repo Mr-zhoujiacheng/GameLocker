@@ -32,7 +32,12 @@ internal sealed class MonitorShared : IDisposable
     private const int OffOutputSamplePid = 1524;
     private const int OffOutputFps = 1528;
     private const int OffOutputOriginalFps = 1536;
+    private const int OffSampling = 1544;
+    private const int OffPanelDemandUntil = 1552;
     private const int Magic = 0x4D4F4E34; // "MON4"
+
+    [Flags]
+    internal enum Sampling { Frames = 1, CpuTemperature = 2, GpuTemperature = 4, Background = 8 }
 
     private const long FreshMs = 3000;
 
@@ -56,6 +61,9 @@ internal sealed class MonitorShared : IDisposable
             view.Write(OffMagic, Magic);
             view.Write(OffSeq, 0);
             view.Write(OffTargetPid, 0);
+            view.Write(OffOutputTargetPid, 0);
+            view.Write(OffSampling, 0);
+            view.Write(OffPanelDemandUntil, 0L);
             view.Write(OffOriginalFps, double.NaN);
             return shared;
         }
@@ -91,6 +99,15 @@ internal sealed class MonitorShared : IDisposable
     {
         try { _view.Write(OffTargetPid, pid); } catch { }
     }
+
+    internal void SetSampling(Sampling sampling) => _view.Write(OffSampling, (int)sampling);
+    internal Sampling ReadSampling() => (Sampling)_view.ReadInt32(OffSampling);
+    internal void SetPanelDemandUntil(long tick)
+    {
+        try { _view.Write(OffPanelDemandUntil, tick); }
+        catch (ObjectDisposedException) { }
+    }
+    internal bool HasPanelDemand => _view.ReadInt64(OffPanelDemandUntil) > Environment.TickCount64;
 
     public void SetOutputTargetPid(int pid) => _view.Write(OffOutputTargetPid, pid);
     public int ReadOutputTargetPid() => _view.ReadInt32(OffOutputTargetPid);

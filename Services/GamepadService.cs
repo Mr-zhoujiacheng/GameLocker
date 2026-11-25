@@ -35,7 +35,7 @@ public enum GamepadButtons
 }
 
 /// <summary>
-/// 手柄轮询服务：XInput P/Invoke，~16ms 轮询 4 个用户槽位。
+/// 手柄轮询服务：通过 XInput 检测 4 个用户槽位，有连接时每 16ms 轮询，无连接时每 500ms 探测。
 /// 除边沿按钮事件外，还检测"呼出组合键长按"（默认 LT+RT 1 秒）触发 SummonTriggered。
 /// </summary>
 public sealed class GamepadService : IDisposable
@@ -48,7 +48,9 @@ public sealed class GamepadService : IDisposable
     private const long StickReversalGuardMs = 150;
     private const byte TriggerThreshold = 30;
     private const int ERROR_SUCCESS = 0;
-    /// <summary>未连接槽位的重探测间隔：无手柄时不再每 16ms 空查四个槽位，连接后仍能在 1 秒内发现</summary>
+    private const int ConnectedPollMs = 16;
+    private const int IdlePollMs = 500;
+    /// <summary>有手柄连接时，其他空槽只需每秒探测一次。</summary>
     private const long DisconnectedRescanMs = 1000;
 
     /// <summary>呼出组合键需持续按住的时长</summary>
@@ -57,8 +59,9 @@ public sealed class GamepadService : IDisposable
     /// <summary>右摇杆上推呼出抽屉需持续按住的时长（防止轻碰摇杆误触）</summary>
     public const int DrawerSummonHoldMs = 1000;
 
+    private readonly object _timerGate = new();
     private System.Timers.Timer? _timer;
-    private int _polling;
+    private bool _disposed;
     private GamepadButtons _last;
     private GamepadButtons _current;
     private bool _hasGamepad;
@@ -176,14 +179,34 @@ public sealed class GamepadService : IDisposable
 
     public void Start()
     {
-        _timer = new System.Timers.Timer(16) { AutoReset = true };
-        _timer.Elapsed += (_, _) =>
+        lock (_timerGate)
         {
-            if (Interlocked.Exchange(ref _polling, 1) != 0) return;
-            try { Poll(); }
-            finally { Volatile.Write(ref _polling, 0); }
-        };
-        _timer.Start();
+            if (_disposed || _timer is not null) return;
+            _timer = new System.Timers.Timer(ConnectedPollMs) { AutoReset = false };
+            _timer.Elapsed += (_, _) => PollAndScheduleNext();
+            _timer.Start();
+        }
+    }
+
+    private void PollAndScheduleNext()
+    {
+        lock (_timerGate)
+        {
+            if (_timer is null) return;
+        }
+
+        try { Poll(); }
+        finally
+        {
+            lock (_timerGate)
+            {
+                if (_timer is { } timer)
+                {
+                    timer.Interval = _hasGamepad ? ConnectedPollMs : IdlePollMs;
+                    timer.Start();
+                }
+            }
+        }
     }
 
     private void Poll()
@@ -194,8 +217,8 @@ public sealed class GamepadService : IDisposable
 
         for (uint i = 0; i < MaxUsers; i++)
         {
-            // 已连接槽位每帧轮询；空槽位每秒才探测一次，手柄接入后仍能及时识别
-            if (!_slotConnected[i] && nowProbeMs - _slotLastProbeMs[i] < DisconnectedRescanMs) continue;
+            // 整体空闲时每轮探测所有槽位，有连接时只对其他空槽降频。
+            if (_hasGamepad && !_slotConnected[i] && nowProbeMs - _slotLastProbeMs[i] < DisconnectedRescanMs) continue;
             _slotLastProbeMs[i] = nowProbeMs;
             if (GetState(i, out var state) != ERROR_SUCCESS)
             {
@@ -386,8 +409,12 @@ public sealed class GamepadService : IDisposable
 
     public void Dispose()
     {
-        _timer?.Stop();
-        _timer?.Dispose();
+        lock (_timerGate)
+        {
+            _disposed = true;
+            _timer?.Dispose();
+            _timer = null;
+        }
     }
 
     /// <summary>组合键的界面描述（如 "LT+RT"）</summary>

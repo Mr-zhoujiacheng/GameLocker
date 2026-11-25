@@ -138,9 +138,14 @@ public static class MonitorService
     }
 
     /// <summary>性能面板独立读取设备状态；与监控采样互斥。</summary>
+    private static readonly object HelperGate = new();
+    private static volatile bool _exiting;
+    private static CancellationTokenSource? _localSensorCancellation;
+    private static Task? _localSensorStartup;
+
     public static MonitorSnapshot? ReadDeviceStatus()
     {
-        if (Interlocked.Exchange(ref _ticking, 1) == 1) return null;
+        if (_exiting || IsStopping || Interlocked.Exchange(ref _ticking, 1) == 1) return null;
         try
         {
             var s = new MonitorSnapshot { CpuPower = ReadCpuPower(), CpuMhz = ReadCpuMhz() };
@@ -156,7 +161,9 @@ public static class MonitorService
             {
                 // 和性能监控同源：未提权时用提权助手回传的 MSR 温度；首次进面板时补拉起助手
                 EnsureStatusHelper();
-                if (_shared is not null && TryReadHelperTemps())
+                var shared = _shared;
+                shared?.SetPanelDemandUntil(Environment.TickCount64 + 6500);
+                if (shared is not null && TryReadHelperTemps(shared))
                 {
                     s.CpuTemp = _helperCpuTemp;
                     if (IsRunning) s.CpuTemp = Current.CpuTemp;
@@ -187,12 +194,9 @@ public static class MonitorService
     }
 
     /// <summary>更新助手回传的 CPU/GPU 温度，返回是否读到有效通道数据</summary>
-    private static bool TryReadHelperTemps()
+    private static bool TryReadHelperTemps(MonitorShared shared)
     {
-        if (_shared is null) return false;
-        _shared.SetTargetPid(ForegroundPid());
-        _shared.SetOutputTargetPid(0);
-        if (!_shared.TryRead(out _, out _, out _, out var helperTemp, out var helperGpuTemp, out _, out _))
+        if (!shared.TryRead(out _, out _, out _, out var helperTemp, out var helperGpuTemp, out _, out _))
         {
             _helperAlive = false;
             _helperCpuTemp = _helperGpuTemp = double.NaN;
@@ -236,17 +240,13 @@ public static class MonitorService
         return result;
     }
 
-    /// <summary>A/点击：开启或关闭监控（必须在 UI 线程调用）</summary>
-    public static void Toggle()
-    {
-        if (IsRunning) Stop();
-        else Start();
-    }
+    private static Task _stopWork = Task.CompletedTask;
+    internal static bool IsStopping => !_stopWork.IsCompleted;
 
-    /// <summary>开启监控：创建悬浮条 + 启动帧率采集与采样定时器</summary>
+    /// <summary>开启监控：创建悬浮条、启动帧率来源和采样计时器。</summary>
     public static void Start()
     {
-        if (IsRunning) return;
+        if (_exiting || IsRunning || IsStopping) return;
         IsRunning = true;
         _tickCount = 0;
         _frameTargetPid = _lastOutputPid = 0;
@@ -310,8 +310,12 @@ public static class MonitorService
     private static void StartFrameSource()
     {
         var elevated = IsElevated();
-        if (elevated && Want(MonitorMetric.CpuTemp))
-            _ = Task.Run(() => PawnIoMsr.EnsureReady(installIfMissing: true));
+        if (elevated && Want(MonitorMetric.CpuTemp) && _localSensorStartup is null)
+        {
+            _localSensorCancellation = new CancellationTokenSource();
+            var token = _localSensorCancellation.Token;
+            _localSensorStartup = Task.Run(() => PawnIoMsr.EnsureReady(installIfMissing: true, token));
+        }
         if (_etw is not null || _shared is not null || _helper is not null) return;
         if (elevated)
         {
@@ -338,48 +342,102 @@ public static class MonitorService
         }
     }
 
-    /// <summary>关闭监控：停止助手 + 销毁悬浮条 + 停止 ETW 会话（必须在 UI 线程调用）</summary>
-    public static void Stop()
-    {
-        if (!IsRunning) return;
-        IsRunning = false;
+    private sealed record StopWork(PresentEtwListener? Etw, LosslessOutputListener? Output,
+        EventWaitHandle? StopEvent, MonitorShared? Shared, Process? Helper,
+        CancellationTokenSource? SensorCancellation, Task? SensorStartup);
 
-        _timer?.Dispose();
+    public static Task ShutdownAsync()
+    {
+        _exiting = true;
+        return StopAsync();
+    }
+
+    /// <summary>调用方在 UI 线程发起停止，采集资源在后台释放。</summary>
+    public static Task StopAsync() => IsStopping ? _stopWork : _stopWork = StopOnUiAsync();
+
+    private static async Task StopOnUiAsync()
+    {
+        // 若性能面板正在等待 UAC，先等其交还进程句柄。
+        await Task.Run(() => { lock (HelperGate) { } });
+        if (!IsRunning && _helper is null && _shared is null && _localSensorStartup is null) return;
+        IsRunning = false;
+        var timer = _timer;
         _timer = null;
-        _etw?.Dispose();
+        try { _stopEvent?.Set(); } catch { }
+        _localSensorCancellation?.Cancel();
+        if (timer is not null) await timer.DisposeAsync();
+        await FinishStopAsync(BeginStop());
+    }
+
+    private static async Task FinishStopAsync(StopWork work)
+    {
+        try
+        {
+            var helper = work.Helper is null ? Task.CompletedTask : StopHelperAsync(work.Helper);
+            await Task.WhenAll(Task.Run(() => DisposeStopResources(work)), helper).ConfigureAwait(false);
+        }
+        finally { work.StopEvent?.Dispose(); }
+    }
+
+    private static StopWork BeginStop()
+    {
+        var work = new StopWork(_etw, _losslessOutput, _stopEvent, _shared, _helper,
+            _localSensorCancellation, _localSensorStartup);
+        _localSensorCancellation = null;
+        _localSensorStartup = null;
+        var overlay = _overlay;
         _etw = null;
-        _losslessOutput?.Dispose();
         _losslessOutput = null;
+        _stopEvent = null;
+        _shared = null;
+        _overlay = null;
+        _helper = null;
+        _helperAlive = false;
         _frameTargetPid = _lastOutputPid = 0;
         _lastOutputFps = double.NaN;
         _lastOriginalFps = double.NaN;
         _lastOutputGenerated = false;
 
-        try { _stopEvent?.Set(); } catch { }
-
-        var helper = _helper;
-        _helper = null;
-        _helperAlive = false;
-        if (helper is not null)
-        {
-            try
-            {
-                if (!helper.WaitForExit(1500)) helper.Kill();
-            }
-            catch { }
-            helper.Dispose();
-        }
-        _stopEvent?.Dispose();
-        _stopEvent = null;
-        _shared?.Dispose();
-        _shared = null;
-
-        _overlay?.Dispose();
-        _overlay = null;
-
+        overlay?.Dispose();
         lock (Gate) _snapshot = new MonitorSnapshot();
         StateChanged?.Invoke();
+        return work;
     }
+
+    private static void DisposeStopResources(StopWork work)
+    {
+        try { work.Etw?.Dispose(); } catch (Exception ex) { DebugLog.Write("[监控] ETW 释放失败：" + ex.Message); }
+        try { work.Output?.Dispose(); } catch (Exception ex) { DebugLog.Write("[监控] PresentMon 释放失败：" + ex.Message); }
+        try { work.SensorStartup?.WaitAsync(TimeSpan.FromSeconds(4)).GetAwaiter().GetResult(); }
+        catch (OperationCanceledException) { }
+        catch (Exception ex) { DebugLog.Write("[监控] 停止传感器初始化：" + ex.Message); }
+        work.SensorCancellation?.Dispose();
+        work.Shared?.Dispose();
+    }
+
+    private static async Task StopHelperAsync(Process helper)
+    {
+        try
+        {
+            using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(6));
+            try { await helper.WaitForExitAsync(timeout.Token).ConfigureAwait(false); }
+            catch (OperationCanceledException) when (timeout.IsCancellationRequested)
+            {
+                if (helper.HasExited) return;
+                DebugLog.Write("[监控] 助手未按时退出，终止其自有进程树");
+                helper.Kill(entireProcessTree: true);
+                using var killTimeout = new CancellationTokenSource(TimeSpan.FromSeconds(3));
+                try { await helper.WaitForExitAsync(killTimeout.Token).ConfigureAwait(false); }
+                catch (OperationCanceledException) when (killTimeout.IsCancellationRequested)
+                { DebugLog.Write("[监控] 助手进程树终止等待超时"); }
+            }
+        }
+        catch (InvalidOperationException) when (helper.HasExited) { }
+        catch (Exception ex) { DebugLog.Write("[监控] 停止助手失败：" + ex.Message); }
+        finally { helper.Dispose(); }
+    }
+
+
 
     /// <summary>把监控磁贴里保存的悬浮条设置（位置 / 大小 / 配色 / 常开）实时应用；未开启时忽略</summary>
     public static void ApplySettings()
@@ -416,6 +474,15 @@ public static class MonitorService
     /// <summary>拉起提权助手采集帧率；失败/取消 UAC 时降级为不显示帧率</summary>
     private static void StartHelper()
     {
+        lock (HelperGate)
+        {
+            if (_exiting || IsStopping || _helper is not null || _shared is not null) return;
+            StartHelperCore();
+        }
+    }
+
+    private static void StartHelperCore()
+    {
         _shared = MonitorShared.CreateWriter();
         if (_shared is null)
         {
@@ -423,6 +490,8 @@ public static class MonitorService
             return;
         }
 
+        UpdateHelperSampling(_shared, background: false);
+        if (!IsRunning) _shared.SetPanelDemandUntil(Environment.TickCount64 + 6500);
         try
         {
             _stopEvent = new EventWaitHandle(false, EventResetMode.ManualReset, MonitorShared.StopEventName);
@@ -465,9 +534,23 @@ public static class MonitorService
         }
     }
 
+    private static void UpdateHelperSampling(MonitorShared? shared, bool background)
+    {
+        if (shared is null) return;
+        MonitorShared.Sampling options = 0;
+        if (IsRunning)
+        {
+            if (NeedsFrameStats()) options |= MonitorShared.Sampling.Frames;
+            if (Want(MonitorMetric.CpuTemp)) options |= MonitorShared.Sampling.CpuTemperature;
+            if (Want(MonitorMetric.GpuTemp)) options |= MonitorShared.Sampling.GpuTemperature;
+            if (background) options |= MonitorShared.Sampling.Background;
+        }
+        shared.SetSampling(options);
+    }
+
     private static void Tick(object? state)
     {
-        if (!IsRunning) return;
+        if (_exiting || !IsRunning) return;
         if (Interlocked.Exchange(ref _ticking, 1) == 1) return;
         try
         {
@@ -478,7 +561,9 @@ public static class MonitorService
             var alwaysOn = _overlay?.AlwaysOn == true;
             _overlay?.SetForeground(appFg, fullscreen);
 
-            if (!appFg && !fullscreen && !alwaysOn)
+            var background = !appFg && !fullscreen && !alwaysOn;
+            UpdateHelperSampling(_shared, background);
+            if (background)
             {
                 // 后台每 5 秒采样并重绘一次（Tick 每 1s 到，所以隔 5 轮真正采样一次）
                 var bg = Interlocked.Increment(ref _backgroundTick);

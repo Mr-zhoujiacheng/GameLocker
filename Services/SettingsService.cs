@@ -20,57 +20,112 @@ public static class SettingsService
         Converters = { new System.Text.Json.Serialization.JsonStringEnumConverter() }
     };
 
+    private static readonly object Gate = new();
+    private static bool _useInMemorySettings;
+    internal static bool IsRecovering => Volatile.Read(ref _useInMemorySettings);
+
     public static AppSettings Current { get; private set; } = Load();
 
     private static AppSettings Load()
     {
+        string? original;
         try
         {
-            if (File.Exists(FilePath))
+            original = ConfigurationFile.Read(FilePath);
+            if (original is null)
             {
-                var loaded = JsonSerializer.Deserialize<AppSettings>(File.ReadAllText(FilePath), Options) ?? new AppSettings();
-                // 旧默认（单 Start）升级为 Start+Select，避免老配置继续用旧快捷键
-                if (loaded.FullscreenCombo == GamepadButtons.Menu)
-                    loaded.FullscreenCombo = GamepadButtons.Menu | GamepadButtons.View;
-                // 上一版把「底栏呼出组合键」错接到启动器 SummonCombo 上，默认值也顺手从 LT+RT 改成 LS+RS；
-                // 存过那份配置的机器上启动器呼出键被顶成 LS+RS、LT+RT 直接失效。这里一次性还原。
-                var summonRestored = false;
-                if (!loaded.DockSummonComboMigrated)
-                {
-                    loaded.DockSummonComboMigrated = true;
-                    if (loaded.SummonCombo == (GamepadButtons.LeftThumb | GamepadButtons.RightThumb))
-                    {
-                        loaded.SummonCombo = GamepadButtons.LeftTrigger | GamepadButtons.RightTrigger;
-                        loaded.DockSummonCombo = GamepadButtons.LeftThumb | GamepadButtons.RightThumb;
-                        summonRestored = true;
-                        DebugLog.Write("[设置] 已把启动器呼出键还原为 LT+RT，LS+RS 挪给底栏呼出键");
-                    }
-                }
-                MigratePowerProfiles(loaded);
-                using var document = JsonDocument.Parse(File.ReadAllText(FilePath));
-                if (!document.RootElement.TryGetProperty(nameof(AppSettings.SharedProfile), out _))
-                    loaded.SharedProfile = (PowerProfileService.OnAc ? loaded.AcProfile : loaded.BatteryProfile).Copy();
-                DebugLog.Enabled = loaded.DiagnosticLog;
-                // 底栏图标尺寸兜底（条高已改为按图标自动推导，旧配置里的 DockHeight 直接忽略）
-                var beforeIcon = loaded.DockIconSize;
-                loaded.NormalizeDockGeometry();
-                // 「任务栏处理」已改为「任务栏隐藏」开关：旧的“自动隐藏”(1) 不再有意义，统一归零
-                var beforeTaskbarMode = loaded.DockTaskbarMode;
-                if (loaded.DockTaskbarMode != 2) loaded.DockTaskbarMode = 0;
-                if (loaded.DockIconSize != beforeIcon || loaded.DockTaskbarMode != beforeTaskbarMode || summonRestored)
-                {
-                    try { Save(loaded); } catch { }
-                }
-                return loaded;
+                var defaults = new AppSettings { DockSummonComboMigrated = true, PowerProfilesMigrated = true };
+                TryWriteOnLoad(defaults, original);
+                return defaults;
             }
+
+            using var document = JsonDocument.Parse(original);
+            var loaded = ParseSettings(document.RootElement);
+            var changed = false;
+            // 旧默认（单 Start）升级为 Start+Select，避免老配置继续用旧快捷键
+            if (loaded.FullscreenCombo == GamepadButtons.Menu)
+            {
+                loaded.FullscreenCombo = GamepadButtons.Menu | GamepadButtons.View;
+                changed = true;
+            }
+            // 旧版把底栏呼出组合键写到了启动器。一次性还原各自的组合键。
+            if (!loaded.DockSummonComboMigrated)
+            {
+                loaded.DockSummonComboMigrated = true;
+                changed = true;
+                if (loaded.SummonCombo == (GamepadButtons.LeftThumb | GamepadButtons.RightThumb))
+                {
+                    loaded.SummonCombo = GamepadButtons.LeftTrigger | GamepadButtons.RightTrigger;
+                    loaded.DockSummonCombo = GamepadButtons.LeftThumb | GamepadButtons.RightThumb;
+                    DebugLog.Write("[设置] 已把启动器呼出键还原为 LT+RT，LS+RS 挪给底栏呼出键");
+                }
+            }
+            if (!document.RootElement.TryGetProperty(nameof(AppSettings.CpuPowerTakeover), out _) && loaded.CpuPowerPl1 > 0)
+            {
+                loaded.CpuPowerTakeover = true;
+                changed = true;
+            }
+            if (!loaded.PowerProfilesMigrated)
+            {
+                MigratePowerProfiles(loaded);
+                changed = true;
+            }
+            if (!document.RootElement.TryGetProperty(nameof(AppSettings.SharedProfile), out _))
+            {
+                loaded.SharedProfile = (PowerProfileService.OnAc ? loaded.AcProfile : loaded.BatteryProfile).Copy();
+                changed = true;
+            }
+            DebugLog.Enabled = loaded.DiagnosticLog;
+            // 条高按图标推导，旧配置里的 DockHeight 不再使用。
+            var beforeIcon = loaded.DockIconSize;
+            loaded.NormalizeDockGeometry();
+            // 旧的“自动隐藏”(1) 已移除。
+            var beforeTaskbarMode = loaded.DockTaskbarMode;
+            if (loaded.DockTaskbarMode != 2) loaded.DockTaskbarMode = 0;
+            if (changed || loaded.DockIconSize != beforeIcon || loaded.DockTaskbarMode != beforeTaskbarMode)
+                TryWriteOnLoad(loaded, original);
+            return loaded;
         }
-        catch
+        catch (Exception ex)
         {
-            // 配置损坏时回退默认
+            StartRecovery(ex);
+            return new AppSettings
+            {
+                TakeOverSystemKeyboard = false,
+                EdgeGestureSummon = false,
+                StartMenuMode = false,
+                AutoCheckUpdates = false
+            };
         }
-        var def = new AppSettings();
-        Save(def);
-        return def;
+    }
+
+    internal static AppSettings? ReadSavedSettings()
+    {
+        var saved = ConfigurationFile.Read(FilePath);
+        if (saved is null) return null;
+        using var document = JsonDocument.Parse(saved);
+        return ParseSettings(document.RootElement);
+    }
+
+    private static AppSettings ParseSettings(JsonElement root)
+    {
+        var settings = root.Deserialize<AppSettings>(Options);
+        if (settings is null || settings.AcProfile is null || settings.BatteryProfile is null
+            || settings.SharedProfile is null || settings.CoreParkingOriginals is null)
+            throw new JsonException("设置结构无效");
+        return settings;
+    }
+
+    private static void TryWriteOnLoad(AppSettings settings, string? original)
+    {
+        try { ConfigurationFile.Write(FilePath, JsonSerializer.Serialize(settings, Options), original); }
+        catch (Exception ex) { StartRecovery(ex, "初始化或迁移写入失败"); }
+    }
+
+    private static void StartRecovery(Exception error, string reason = "读取失败")
+    {
+        _useInMemorySettings = true;
+        ConfigurationFile.Report(FilePath, $"{reason}，保留原文件，本次运行的更改仅保存在内存", error);
     }
 
     /// <summary>旧配置只有一套全局功耗/核心设置：首次升级时复制成插电与电池两套参数，
@@ -102,11 +157,31 @@ public static class SettingsService
 
     public static void Save(AppSettings settings)
     {
-        Current = settings;
-        DebugLog.Enabled = settings.DiagnosticLog;
-        Directory.CreateDirectory(Dir);
-        File.WriteAllText(FilePath, JsonSerializer.Serialize(settings, Options));
-        ApplyAutoStart(settings.AutoStart);
+        lock (Gate)
+        {
+            Current = settings;
+            DebugLog.Enabled = settings.DiagnosticLog;
+            if (_useInMemorySettings) return;
+
+            string? original;
+            try
+            {
+                original = ConfigurationFile.Read(FilePath);
+                if (original is not null)
+                {
+                    using var document = JsonDocument.Parse(original);
+                    ParseSettings(document.RootElement);
+                }
+            }
+            catch (Exception ex)
+            {
+                StartRecovery(ex);
+                return;
+            }
+
+            ConfigurationFile.Write(FilePath, JsonSerializer.Serialize(settings, Options), original);
+            ApplyAutoStart(settings.AutoStart);
+        }
     }
 
     /// <summary>
@@ -114,10 +189,31 @@ public static class SettingsService
     /// </summary>
     public static void Update(Action<AppSettings> mutate)
     {
-        mutate(Current);
-        // 底栏条高必须容得下放大后的图标（含倒影），在这里兜底，任何入口改尺寸都不会存下坏组合
-        Current.NormalizeDockGeometry();
-        Save(Current);
+        lock (Gate)
+        {
+            mutate(Current);
+            // 底栏条高必须容得下放大后的图标（含倒影），在这里兜底，任何入口改尺寸都不会存下坏组合
+            Current.NormalizeDockGeometry();
+            Save(Current);
+        }
+    }
+
+    private static string? AutoStartExecutable()
+    {
+        using var install = Registry.CurrentUser.OpenSubKey(@"Software\GameLocker");
+        if (install?.GetValue("InstallPath") is string installedExe &&
+            Path.IsPathFullyQualified(installedExe) && File.Exists(installedExe))
+            return installedExe;
+
+        // 兼容尚未写入 InstallPath 的 Inno Setup 版本和自定义安装目录。
+        const string uninstallKey = @"Software\Microsoft\Windows\CurrentVersion\Uninstall\{A7F3C4E2-9B21-4E7D-8C5A-6D4E3F1B2A90}_is1";
+        using var previous = Registry.CurrentUser.OpenSubKey(uninstallKey);
+        if (previous?.GetValue("InstallLocation") is string location && Path.IsPathFullyQualified(location))
+        {
+            var previousExe = Path.Combine(location, "GameLocker.exe");
+            if (File.Exists(previousExe)) return previousExe;
+        }
+        return Environment.ProcessPath;
     }
 
     /// <summary>开机自启：写/删 HKCU\Software\Microsoft\Windows\CurrentVersion\Run</summary>
@@ -131,24 +227,26 @@ public static class SettingsService
 
             if (enable)
             {
-                // 加引号：路径含空格时 Run 项按空格截断，重启后就启动不了本程序
-                var exe = $"\"{Environment.ProcessPath}\"";
-                if (!string.Equals(run.GetValue("GameLocker") as string, exe, StringComparison.OrdinalIgnoreCase))
-                    run.SetValue("GameLocker", exe);
+                if (AutoStartExecutable() is not { } executable) return;
+                var command = $"\"{executable}\"";
+                if (!string.Equals(run.GetValue("GameLocker") as string, command, StringComparison.OrdinalIgnoreCase))
+                    run.SetValue("GameLocker", command);
             }
             else
                 run.DeleteValue("GameLocker", false);
         }
-        catch
+        catch (Exception ex)
         {
-            // 注册表不可写时忽略，不影响其余设置
+            DebugLog.Write("开机自启项更新失败：" + ex.Message);
         }
     }
 
-    /// <summary>启动时校正自启项：程序被移动/重命名后 Run 值仍指向旧路径，开机就起不来。</summary>
+    /// <summary>在主实例启动时校正已启用的自启项。</summary>
     public static void EnsureAutoStartPath()
     {
-        ApplyAutoStart(Current.AutoStart);
-        DebugLog.Write($"开机自启：{Current.AutoStart} → {Environment.ProcessPath}");
+        lock (Gate)
+        {
+            if (!_useInMemorySettings) ApplyAutoStart(Current.AutoStart);
+        }
     }
 }

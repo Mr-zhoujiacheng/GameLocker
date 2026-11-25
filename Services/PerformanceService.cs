@@ -429,11 +429,7 @@ public static class PerformanceService
         }
     }
 
-    private static string GetActiveSchemeGuid()
-    {
-        var (code, output, _) = Run("powercfg.exe", "/getactivescheme");
-        return code == 0 ? Regex.Match(output, GuidPattern).Value.ToLowerInvariant() : "";
-    }
+    private static string GetActiveSchemeGuid() => EnergySaverService.ReadActiveScheme()?.ToString("D") ?? "";
 
     private static CpuSetting? QueryCpuSetting(string scheme, string setting)
     {

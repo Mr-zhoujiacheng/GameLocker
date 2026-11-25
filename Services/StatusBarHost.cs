@@ -111,6 +111,7 @@ internal static class StatusBarHost
     /// <summary>按设置创建/更新/销毁顶栏。设置页拨开关后调用。</summary>
     public static async Task ApplyAsync()
     {
+        if (App.Main?.IsExiting == true) return;
         var settings = SettingsService.Current;
 
         if (!settings.SystemEnabled)

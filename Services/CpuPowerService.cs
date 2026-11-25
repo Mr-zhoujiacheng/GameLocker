@@ -48,11 +48,8 @@ internal static class CpuPowerService
     /// <summary>启动时恢复接管展示，并触发一次登录任务静默写回（任务本身是管理员权限，不弹 UAC）</summary>
     public static void ResumeSavedTakeover()
     {
-        var s = SettingsService.Current;
-        if (s.CpuPowerPl1 <= 0) return;
-        // 兼容旧版本：之前保存过功耗目标就视为已接管，无需重新保存一次
-        if (!s.CpuPowerTakeover) SettingsService.Update(x => x.CpuPowerTakeover = true);
-        SetCached(SavedTakeoverState()!);
+        if (SavedTakeoverState() is not { } state) return;
+        SetCached(state);
         TriggerLogonTask();
     }
 
@@ -280,27 +277,87 @@ internal static class CpuPowerService
     {
         lock (Gate)
         {
-            if (_pipe is null)
-            {
-                var had = SettingsService.Current.CpuPowerTakeover;
-                if (had) SettingsService.Update(s => s.CpuPowerTakeover = false);
-                return new(true, had ? "已关闭自动接管，硬件限制重启后恢复" : "CPU 功耗未启用");
-            }
+            var hadSavedTarget = SettingsService.Current.CpuPowerTakeover;
+            // 先保存关闭门控：即使之后无法删除提权任务，也不再按旧目标写回。
+            bool savedGate;
             try
             {
-                var result = Exchange(new("restore")).Result;
-                if (result.Ok)
-                {
-                    CloseSession();
-                    SettingsService.Update(s => s.CpuPowerTakeover = false);
-                }
-                return result;
+                SettingsService.Update(ClearSavedTakeover);
+                savedGate = SettingsService.ReadSavedSettings() is not { CpuPowerTakeover: true };
             }
             catch (Exception ex)
             {
-                CloseSession();
-                return new(false, "恢复 CPU 功耗未获确认：" + ErrorMessage(ex));
+                savedGate = false;
+                DebugLog.Write("[功耗] 保存关闭标记失败：" + ErrorMessage(ex));
             }
+            SetCached(new State(false, false, DisabledMessage, []));
+
+            var taskRemoved = false;
+            Result restore = new(true, hadSavedTarget ? "已关闭自动接管，硬件限制重启后恢复" : "CPU 功耗未启用");
+            if (_pipe is not null)
+            {
+                try
+                {
+                    if (savedGate) taskRemoved = Exchange(new("delete-task")).Result.Ok;
+                    restore = Exchange(new("restore")).Result;
+                }
+                catch (Exception ex)
+                {
+                    restore = new(false, "恢复 CPU 功耗未获确认：" + ErrorMessage(ex));
+                }
+                finally { CloseSession(); }
+            }
+            if (savedGate && !taskRemoved) taskRemoved = DeleteAutoApplyTask();
+            var message = restore.Ok ? restore.Message : "已关闭并清除自动目标；" + restore.Message;
+            if (!savedGate)
+                return new(false, "关闭目标未能持久保存；未删除登录恢复任务以避免误失去原接管，" + message);
+            if (!taskRemoved)
+                message += "；无法确认登录恢复任务已删除，保留的任务会检查关闭标记";
+            return new(restore.Ok, message);
+        }
+    }
+
+    /// <summary>执行包含命名管道和计划任务进程的关闭事务；可由 UI await，不阻塞 Dispatcher。</summary>
+    public static Task<Result> DisableAsync() => Task.Run(Disable);
+
+    private static bool DeleteAutoApplyTask()
+    {
+        try
+        {
+            // 固定名称，不能用查询失败推断任务不存在（也可能是权限不足）。
+            // 直接使用任务计划程序 COM 删除，按 HRESULT 区分已不存在和无权限。
+            var type = Type.GetTypeFromProgID("Schedule.Service");
+            if (type is null) return false;
+            dynamic service = Activator.CreateInstance(type)!;
+            service.Connect();
+            dynamic folder = service.GetFolder("\\");
+            folder.DeleteTask(LogonTaskName, 0);
+            return true;
+        }
+        catch (COMException ex) when (ex.HResult == unchecked((int)0x8004130F)
+            || ex.HResult == unchecked((int)0x80070002))
+        {
+            return true;
+        }
+        catch (Exception ex)
+        {
+            DebugLog.Write("[功耗] 删除登录恢复任务失败：" + ErrorMessage(ex));
+            return false;
+        }
+    }
+
+    private static void ClearSavedTakeover(GameLocker.Models.AppSettings settings)
+    {
+        settings.CpuPowerTakeover = false;
+        settings.CpuPowerPl1 = 0;
+        settings.CpuPowerPl2 = 0;
+        settings.CpuPowerFppt = 0;
+        foreach (var profile in new[] { settings.SharedProfile, settings.AcProfile, settings.BatteryProfile })
+        {
+            profile.CpuPowerEnabled = false;
+            profile.CpuPowerPl1 = 0;
+            profile.CpuPowerPl2 = 0;
+            profile.CpuPowerFppt = 0;
         }
     }
 
@@ -337,11 +394,14 @@ internal static class CpuPowerService
         lock (Gate)
         {
             if (_pipe is null) return;
-            try { Exchange(new(SettingsService.Current.CpuPowerPl1 > 0 ? "keep" : "restore")); }
+            try { Exchange(new(SettingsService.Current.CpuPowerTakeover && SettingsService.Current.CpuPowerPl1 > 0 ? "keep" : "restore")); }
             catch (Exception) { /* 管道已断：助手会自行恢复 */ }
             finally { CloseSession(); }
         }
     }
+
+    /// <summary>异步等待助手完成 keep/restore 及进程退出；不得在 UI Dispatcher 同步等待。</summary>
+    public static Task ShutdownAsync() => Task.Run(Shutdown);
 
     private static Response Exchange(Request request)
     {
@@ -434,6 +494,10 @@ internal static class CpuPowerService
                             break;
                         case "task":
                             response = new(null, InstallLogonTask());
+                            break;
+                        case "delete-task":
+                            var deleted = DeleteAutoApplyTask();
+                            response = new(null, new(deleted, deleted ? "已删除登录恢复任务" : "无法删除登录恢复任务"));
                             break;
                         case "keep":
                             // 用户已保存功耗目标：退出时保留硬件设置，不恢复接管前的值。

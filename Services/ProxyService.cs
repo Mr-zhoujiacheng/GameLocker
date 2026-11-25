@@ -511,7 +511,9 @@ public static class ProxyService
         var running = CoreProcessRunning();
         var proxyOn = IsSystemProxyOn() && SystemProxyServer().Contains($":{port}", StringComparison.Ordinal);
 
-        if (running && proxyOn && !SetSystemProxy(false, port))
+        if (running && proxyOn) AdoptCoreForDisconnect(port);
+        if (running && proxyOn && !SetSystemProxy(false, port)
+            && !DisableLegacyProxyAndAdoptCore(port))
             return new ToggleResult(false, true, "无法安全恢复原系统代理，内核保持运行以避免死端口");
 
         if (running)
@@ -847,6 +849,80 @@ public static class ProxyService
         }
         catch { }
         return false;
+    }
+
+    private static bool HasExpectedLoopbackProxy(ProxyValueSnapshot enabled, ProxyValueSnapshot server, int port)
+    {
+        return enabled.Exists && enabled.Kind == RegistryValueKind.DWord
+            && enabled.Value.TryGetInt32(out var on) && on != 0
+            && server.Exists && server.Kind == RegistryValueKind.String
+            && string.Equals(server.Value.GetString()?.Trim(), $"127.0.0.1:{port}", StringComparison.OrdinalIgnoreCase);
+    }
+
+    private static bool AdoptCoreForDisconnect(int expectedPort)
+    {
+        try
+        {
+            using var key = Registry.CurrentUser.OpenSubKey(InternetSettingsKey);
+            if (key is null || !HasExpectedLoopbackProxy(
+                ReadRegistryValue(key, "ProxyEnable"), ReadRegistryValue(key, "ProxyServer"), expectedPort))
+                return false;
+
+            using var core = FindPrivateCoreProcess();
+            if (core is null) return false;
+            Interlocked.Exchange(ref _ownsCore, 1);
+            return true;
+        }
+        catch (Exception ex)
+        {
+            DebugLog.Write("[代理] 接管旧会话内核失败：" + ex.Message);
+            return false;
+        }
+    }
+
+    private static Process? FindPrivateCoreProcess()
+    {
+        foreach (var process in Process.GetProcessesByName("mihomo"))
+        {
+            try
+            {
+                if (string.Equals(GetProcessImagePath(process), CoreExe, StringComparison.OrdinalIgnoreCase))
+                    return process;
+            }
+            catch { }
+            process.Dispose();
+        }
+        return null;
+    }
+
+    private static bool DisableLegacyProxyAndAdoptCore(int expectedPort)
+    {
+        Process? matchedCore = null;
+        try
+        {
+            matchedCore = FindPrivateCoreProcess();
+            if (matchedCore is null) return false;
+
+            using var key = Registry.CurrentUser.OpenSubKey(InternetSettingsKey, writable: true);
+            if (key is null) return false;
+            var enabled = ReadRegistryValue(key, "ProxyEnable");
+            var server = ReadRegistryValue(key, "ProxyServer");
+            if (!HasExpectedLoopbackProxy(enabled, server, expectedPort)) return false;
+
+            // The original snapshot may be missing after a crash or upgrade. On this explicit
+            // disconnect action, disable only our verified loopback route and keep its server value.
+            key.SetValue("ProxyEnable", 0, RegistryValueKind.DWord);
+            NotifyProxyChanged();
+            Interlocked.Exchange(ref _ownsCore, 1);
+            DebugLog.Write($"[代理] 原始快照缺失；已确认私有 mihomo.exe 与端口 {expectedPort}，关闭系统代理开关并保留地址后停止内核");
+            return true;
+        }
+        catch (Exception ex)
+        {
+            DebugLog.Write("[代理] 旧会话恢复系统代理失败：" + ex.Message);
+            return false;
+        }
+        finally { matchedCore?.Dispose(); }
     }
 
     private static bool KillCore()

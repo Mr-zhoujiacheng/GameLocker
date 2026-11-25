@@ -12,7 +12,7 @@ $checks['exit cancels current proxy operation'] = $source -match 'OperationCance
 $checks['restore notifies WinINet'] = $source -match 'NotifyProxyChanged\s*\('
 $checks['kernel stop honors process ownership'] = $source -match 'Interlocked\.Exchange\(ref _ownsCore, 0\) == 0'
 $checks['temporary probe kernel is stopped'] = $source -match 'if \(!wasRunning\) KillCore\(\)'
-$checks['legacy missing snapshot only blocks the GameLocker port'] = $source -match 'if \(_originalProxy is null\)\s*\{\s*var enabled = ReadRegistryValue\(key, "ProxyEnable"\);\s*var server = ReadRegistryValue\(key, "ProxyServer"\);\s*if \(IsGameLockerProxy\(enabled, server\)\)\s*\{\s*DebugLog\.Write'
+$checks['legacy disconnect disables only a verified GameLocker loopback proxy'] = $source -match 'if \(running && proxyOn\) AdoptCoreForDisconnect\(port\)' -and $source -match 'HasExpectedLoopbackProxy\(ProxyValueSnapshot enabled, ProxyValueSnapshot server, int port\)' -and $source -match 'FindPrivateCoreProcess\(\)' -and $source -match 'Interlocked\.Exchange\(ref _ownsCore, 1\)' -and $source -match 'key\.SetValue\("ProxyEnable", 0, RegistryValueKind\.DWord\)' -and $source -match 'DisableLegacyProxyAndAdoptCore\(port\)'
 $failed = @()
 foreach ($check in $checks.GetEnumerator()) {
     if ($check.Value) { Write-Output ('PASS: ' + $check.Key) }

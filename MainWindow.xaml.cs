@@ -1557,7 +1557,7 @@ public sealed partial class MainWindow : Window
     {
         if (_exiting || !KeyboardHook.StartMenuMode) return;
         var now = Environment.TickCount64;
-        if (now - _lastStartMenuToggle < 400) return;
+        if (now - _lastStartMenuToggle < 800) return;
         _lastStartMenuToggle = now;
         DebugLog.Write($"开始菜单: 切换 shown={_shown}");
         KeyboardHook.BeginStartUiBlockWatch();

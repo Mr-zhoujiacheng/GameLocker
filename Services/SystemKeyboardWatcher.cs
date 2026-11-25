@@ -1,3 +1,4 @@
+using System.ComponentModel;
 using System.Runtime.InteropServices;
 using System.Text;
 using Microsoft.Win32;
@@ -23,9 +24,13 @@ internal static class SystemKeyboardWatcher
     private const string TouchKeyboardKeyPath = @"Software\Microsoft\TabletTip\1.7";
     private const string AutoInvokeValue = "EnableDesktopModeAutoInvoke";
 
+    private static readonly object Gate = new();
     private static WinEventDelegate? _callback; // 防止回调被 GC
     private static IntPtr _hook;
     private static long _lastHandled;           // 防抖：系统键盘连续重试弹出时不要连点
+    private static bool _snapshotCaptured;
+    private static object? _originalValue;
+    private static RegistryValueKind _originalKind;
 
     /// <summary>接管是否已开启</summary>
     public static bool IsRunning => _hook != IntPtr.Zero;
@@ -33,26 +38,88 @@ internal static class SystemKeyboardWatcher
     /// <summary>按设置开/关接管</summary>
     public static void Apply(bool enabled)
     {
-        SetAutoInvoke(!enabled);
-        if (enabled) Start();
-        else Stop();
+        lock (Gate)
+        {
+            if (!enabled)
+            {
+                Stop();
+                Restore();
+                return;
+            }
+            if (_hook != IntPtr.Zero) return;
+
+            try
+            {
+                CaptureAndSuppressAutoInvoke();
+                Start();
+                if (_hook == IntPtr.Zero)
+                    throw new Win32Exception(Marshal.GetLastWin32Error(), "无法安装系统键盘事件钩子");
+            }
+            catch (Exception ex)
+            {
+                Stop();
+                Restore();
+                DebugLog.Write("[系统键盘] 接管未启用：" + ex.Message);
+            }
+        }
     }
 
-    /// <summary>
-    /// 改注册表开/关触屏键盘自动弹出（关闭接管时恢复系统默认：自动弹出）。
-    /// 没有权限时静默失败：接管退化为只收起 osk/TabTip，不影响其他功能。
-    /// </summary>
-    private static void SetAutoInvoke(bool enabled)
+    private static void CaptureAndSuppressAutoInvoke()
     {
         try
         {
             using var key = Registry.CurrentUser.OpenSubKey(TouchKeyboardKeyPath, writable: true)
-                ?? Registry.CurrentUser.CreateSubKey(TouchKeyboardKeyPath);
-            key?.SetValue(AutoInvokeValue, enabled ? 1 : 0, RegistryValueKind.DWord);
+                ?? Registry.CurrentUser.CreateSubKey(TouchKeyboardKeyPath, writable: true)
+                ?? throw new IOException("无法打开触屏键盘设置项");
+            if (!_snapshotCaptured)
+            {
+                _originalValue = key.GetValue(AutoInvokeValue, null, RegistryValueOptions.DoNotExpandEnvironmentNames);
+                if (key.GetValueNames().Contains(AutoInvokeValue, StringComparer.OrdinalIgnoreCase))
+                {
+                    _originalKind = key.GetValueKind(AutoInvokeValue);
+                    if (_originalValue is null || _originalKind == RegistryValueKind.Unknown)
+                        throw new IOException("无法无损保存触屏键盘设置项");
+                }
+                else
+                {
+                    _originalValue = null;
+                }
+                _snapshotCaptured = true;
+            }
+            key.SetValue(AutoInvokeValue, 0, RegistryValueKind.DWord);
         }
-        catch
+        catch (Exception ex)
         {
-            // 忽略：受限账户/策略不允许写时，自动弹出关不掉，但不会出错崩溃
+            Restore();
+            // 注册表受限时继续接管可独立处理的旧版键盘窗口。
+            DebugLog.Write("[系统键盘] 无法关闭触摸键盘自动弹出：" + ex.Message);
+        }
+    }
+
+    private static void Restore()
+    {
+        if (!_snapshotCaptured) return;
+        try
+        {
+            if (_originalValue is null)
+            {
+                using var key = Registry.CurrentUser.OpenSubKey(TouchKeyboardKeyPath, writable: true);
+                key?.DeleteValue(AutoInvokeValue, throwOnMissingValue: false);
+            }
+            else
+            {
+                using var key = Registry.CurrentUser.OpenSubKey(TouchKeyboardKeyPath, writable: true)
+                    ?? Registry.CurrentUser.CreateSubKey(TouchKeyboardKeyPath, writable: true)
+                    ?? throw new IOException("无法恢复触屏键盘设置项");
+                key.SetValue(AutoInvokeValue, _originalValue, _originalKind);
+            }
+            _snapshotCaptured = false;
+            _originalValue = null;
+        }
+        catch (Exception ex)
+        {
+            // 保留快照，后续关闭或进程退出可重试恢复。
+            DebugLog.Write("[系统键盘] 恢复触摸键盘设置失败：" + ex.Message);
         }
     }
 
@@ -98,7 +165,7 @@ internal static class SystemKeyboardWatcher
     private delegate void WinEventDelegate(IntPtr hWinEventHook, uint eventType, IntPtr hwnd,
         int idObject, int idChild, uint dwEventThread, uint dwmsEventTime);
 
-    [DllImport("user32.dll")]
+    [DllImport("user32.dll", SetLastError = true)]
     private static extern IntPtr SetWinEventHook(uint eventMin, uint eventMax, IntPtr hmodWinEventProc,
         WinEventDelegate lpfnWinEventProc, uint idProcess, uint idThread, uint dwFlags);
 

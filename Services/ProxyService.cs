@@ -68,6 +68,70 @@ public static class ProxyService
     // ==================== HTTP ====================
 
     private static readonly HttpClient Http = new() { Timeout = TimeSpan.FromSeconds(15) };
+    private static readonly SemaphoreSlim OperationGate = new(1, 1);
+    private static readonly object LifecycleGate = new();
+    private static readonly AsyncLocal<int> OperationDepth = new();
+    private static readonly CancellationTokenSource OperationCancellation = new();
+    private static bool _shuttingDown;
+    private static int _ownsCore;
+    private static ProxySettingsSnapshot? _originalProxy;
+    private static ProxyValueSnapshot? _lastProxyEnable;
+    private static ProxyValueSnapshot? _lastProxyServer;
+
+    internal sealed record ProxyValueSnapshot(bool Exists, RegistryValueKind Kind, JsonElement Value);
+    private sealed record ProxySettingsSnapshot(ProxyValueSnapshot ProxyEnable, ProxyValueSnapshot ProxyServer,
+        ProxyValueSnapshot? WrittenEnable = null, ProxyValueSnapshot? WrittenServer = null);
+
+    private static async Task<T> RunOperationAsync<T>(Func<Task<T>> operation, T stoppedValue)
+    {
+        if (OperationDepth.Value > 0) return await operation();
+        await OperationGate.WaitAsync();
+        try
+        {
+            if (_shuttingDown) return stoppedValue;
+            OperationDepth.Value++;
+            try { return await operation(); }
+            finally { OperationDepth.Value--; }
+        }
+        finally { OperationGate.Release(); }
+    }
+
+    internal static async Task ShutdownAsync()
+    {
+        lock (LifecycleGate)
+        {
+            if (_shuttingDown) return;
+            _shuttingDown = true;
+            OperationCancellation.Cancel();
+        }
+
+        await OperationGate.WaitAsync();
+        try
+        {
+            var restored = false;
+            try
+            {
+                using var key = Registry.CurrentUser.OpenSubKey(InternetSettingsKey, writable: true);
+                restored = key is not null && RestoreOriginalProxy(key);
+                if (restored) NotifyProxyChanged();
+            }
+            catch (Exception ex) { DebugLog.Write("[代理] 退出恢复系统代理失败：" + ex.Message); }
+
+            if (restored || !SystemProxyReferencesLoopback()) KillCore();
+            Current = new Snapshot();
+        }
+        finally { OperationGate.Release(); }
+    }
+
+    private static bool SystemProxyReferencesLoopback()
+    {
+        try
+        {
+            using var key = Registry.CurrentUser.OpenSubKey(InternetSettingsKey);
+            return key is not null && IsGameLockerProxy(ReadRegistryValue(key, "ProxyEnable"), ReadRegistryValue(key, "ProxyServer"));
+        }
+        catch { return true; }
+    }
 
     private static HttpRequestMessage ApiRequest(HttpMethod method, string path, string? json = null)
     {
@@ -80,12 +144,14 @@ public static class ProxyService
 
     private static async Task<(bool Ok, string Body)> ApiAsync(HttpMethod method, string path, string? json, int timeoutMs)
     {
+        if (_shuttingDown) return (false, "");
         try
         {
-            using var cts = new CancellationTokenSource(timeoutMs);
+            using var linked = CancellationTokenSource.CreateLinkedTokenSource(OperationCancellation.Token);
+            linked.CancelAfter(timeoutMs);
             using var request = ApiRequest(method, path, json);
-            using var response = await Http.SendAsync(request, cts.Token);
-            return (response.IsSuccessStatusCode, await response.Content.ReadAsStringAsync(cts.Token));
+            using var response = await Http.SendAsync(request, linked.Token);
+            return (response.IsSuccessStatusCode, await response.Content.ReadAsStringAsync(linked.Token));
         }
         catch
         {
@@ -98,7 +164,10 @@ public static class ProxyService
     private static bool _refreshing;
 
     /// <summary>探测内核与连接状态（异步；并发保护，同一时刻只跑一次）</summary>
-    public static async Task RefreshAsync(LaunchItem item)
+    public static async Task RefreshAsync(LaunchItem item) =>
+        await RunOperationAsync(async () => { await RefreshCoreAsync(item); return true; }, false);
+
+    private static async Task RefreshCoreAsync(LaunchItem item)
     {
         if (_refreshing) return;
         _refreshing = true;
@@ -204,28 +273,239 @@ public static class ProxyService
             if (key is null) return false;
             if (on)
             {
-                key.SetValue("ProxyServer", $"127.0.0.1:{port}", RegistryValueKind.String);
+                EnsureOriginalProxyCaptured(key);
+                if (_originalProxy is null) return false;
+                var server = new ProxyValueSnapshot(true, RegistryValueKind.String,
+                    JsonSerializer.SerializeToElement($"127.0.0.1:{port}"));
+                var enable = new ProxyValueSnapshot(true, RegistryValueKind.DWord, JsonSerializer.SerializeToElement(1));
+                _lastProxyServer = server;
+                _lastProxyEnable = enable;
+                _originalProxy = _originalProxy with { WrittenEnable = enable, WrittenServer = server };
+                SaveProxySnapshot(_originalProxy);
+                key.SetValue("ProxyServer", server.Value.GetString()!, server.Kind);
                 key.SetValue("ProxyEnable", 1, RegistryValueKind.DWord);
             }
             else
             {
-                key.SetValue("ProxyEnable", 0, RegistryValueKind.DWord);
+                if (!RestoreOriginalProxy(key)) return false;
             }
-            InternetSetOption(IntPtr.Zero, OptionSettingsChanged, IntPtr.Zero, 0);
-            InternetSetOption(IntPtr.Zero, OptionRefresh, IntPtr.Zero, 0);
+            NotifyProxyChanged();
             return true;
         }
-        catch
+        catch (Exception ex)
         {
+            RollBackPartialProxyWrite();
+            DebugLog.Write("[代理] 系统代理设置失败：" + ex.Message);
             return false;
         }
+    }
+
+    private static void RollBackPartialProxyWrite()
+    {
+        try
+        {
+            using var key = Registry.CurrentUser.OpenSubKey(InternetSettingsKey, writable: true);
+            if (key is null || _originalProxy is null) return;
+            var currentEnable = ReadRegistryValue(key, "ProxyEnable");
+            var currentServer = ReadRegistryValue(key, "ProxyServer");
+            var enableIsOurs = Matches(currentEnable, _lastProxyEnable);
+            var serverIsOurs = Matches(currentServer, _lastProxyServer);
+            var enableIsOriginal = Matches(currentEnable, _originalProxy.ProxyEnable);
+            var serverIsOriginal = Matches(currentServer, _originalProxy.ProxyServer);
+            if ((!enableIsOurs && !enableIsOriginal) || (!serverIsOurs && !serverIsOriginal)) return;
+            if (enableIsOurs) RestoreRegistryValue(key, "ProxyEnable", _originalProxy.ProxyEnable);
+            if (serverIsOurs) RestoreRegistryValue(key, "ProxyServer", _originalProxy.ProxyServer);
+            NotifyProxyChanged();
+            DeleteProxySnapshot();
+            _originalProxy = null;
+            _lastProxyEnable = _lastProxyServer = null;
+        }
+        catch (Exception ex) { DebugLog.Write("[代理] 回滚部分代理写入失败：" + ex.Message); }
+    }
+
+    private static void EnsureOriginalProxyCaptured(RegistryKey key)
+    {
+        var saved = _originalProxy;
+        if (saved is not null || TryLoadProxySnapshot(out saved))
+        {
+            var currentEnable = ReadRegistryValue(key, "ProxyEnable");
+            var currentServer = ReadRegistryValue(key, "ProxyServer");
+            if (saved is not null
+                && IsKnownSnapshotValue(currentEnable, saved.ProxyEnable, saved.WrittenEnable)
+                && IsKnownSnapshotValue(currentServer, saved.ProxyServer, saved.WrittenServer))
+            {
+                _originalProxy = saved;
+                _lastProxyEnable = saved.WrittenEnable;
+                _lastProxyServer = saved.WrittenServer;
+                return;
+            }
+
+            DebugLog.Write("[代理] 原代理快照与实时设置不符，丢弃陈旧快照并以当前值重新记录");
+            ClearProxySnapshot();
+        }
+
+        var enabled = ReadRegistryValue(key, "ProxyEnable");
+        var server = ReadRegistryValue(key, "ProxyServer");
+        if (IsGameLockerProxy(enabled, server))
+        {
+            DebugLog.Write("[代理] 缺少原始代理快照且系统代理已指向本地，保留现状以免断网");
+            return;
+        }
+        _originalProxy = new ProxySettingsSnapshot(enabled, server);
+        SaveProxySnapshot(_originalProxy);
+    }
+
+    private static bool RestoreOriginalProxy(RegistryKey key)
+    {
+        if (_originalProxy is null && TryLoadProxySnapshot(out var saved))
+        {
+            _originalProxy = saved;
+            _lastProxyEnable = saved?.WrittenEnable;
+            _lastProxyServer = saved?.WrittenServer;
+        }
+        if (_originalProxy is null)
+        {
+            var enabled = ReadRegistryValue(key, "ProxyEnable");
+            var server = ReadRegistryValue(key, "ProxyServer");
+            if (IsGameLockerProxy(enabled, server))
+            {
+                DebugLog.Write("[代理] 缺少原始代理快照；未猜测恢复值，也未停止可能仍被系统代理引用的内核");
+                return false;
+            }
+            return true;
+        }
+
+        var currentEnable = ReadRegistryValue(key, "ProxyEnable");
+        var currentServer = ReadRegistryValue(key, "ProxyServer");
+        var enableIsWritten = Matches(currentEnable, _lastProxyEnable);
+        var serverIsWritten = Matches(currentServer, _lastProxyServer);
+        var enableIsOriginal = Matches(currentEnable, _originalProxy.ProxyEnable);
+        var serverIsOriginal = Matches(currentServer, _originalProxy.ProxyServer);
+        var externalChange = (!enableIsWritten && !enableIsOriginal) || (!serverIsWritten && !serverIsOriginal);
+
+        if (externalChange)
+        {
+            DebugLog.Write("[代理] 检测到外部代理变化，整组跳过恢复并清除陈旧快照");
+            ClearProxySnapshot();
+            return true;
+        }
+
+        try
+        {
+            if (enableIsWritten && !enableIsOriginal)
+                RestoreRegistryValue(key, "ProxyEnable", _originalProxy.ProxyEnable);
+            if (serverIsWritten && !serverIsOriginal)
+                RestoreRegistryValue(key, "ProxyServer", _originalProxy.ProxyServer);
+        }
+        catch (Exception ex)
+        {
+            DebugLog.Write("[代理] 恢复系统代理失败：" + ex.Message);
+            return false;
+        }
+
+        DeleteProxySnapshot();
+        _originalProxy = null;
+        _lastProxyEnable = null;
+        _lastProxyServer = null;
+        return true;
+    }
+
+    private static ProxyValueSnapshot ReadRegistryValue(RegistryKey key, string name)
+    {
+        if (!key.GetValueNames().Contains(name, StringComparer.OrdinalIgnoreCase))
+            return new ProxyValueSnapshot(false, RegistryValueKind.Unknown, JsonSerializer.SerializeToElement<object?>(null));
+        var kind = key.GetValueKind(name);
+        var value = key.GetValue(name, null, RegistryValueOptions.DoNotExpandEnvironmentNames);
+        return new ProxyValueSnapshot(true, kind, JsonSerializer.SerializeToElement(value));
+    }
+
+    private static void RestoreRegistryValue(RegistryKey key, string name, ProxyValueSnapshot value)
+    {
+        if (!value.Exists) { key.DeleteValue(name, false); return; }
+        object? data = value.Kind switch
+        {
+            RegistryValueKind.DWord => value.Value.GetInt32(),
+            RegistryValueKind.QWord => value.Value.GetInt64(),
+            RegistryValueKind.Binary => value.Value.Deserialize<byte[]>(),
+            RegistryValueKind.MultiString => value.Value.Deserialize<string[]>(),
+            _ => value.Value.GetString()
+        };
+        if (data is null) throw new IOException("无法恢复注册表代理值 " + name);
+        key.SetValue(name, data, value.Kind);
+    }
+
+    private static bool Matches(ProxyValueSnapshot actual, ProxyValueSnapshot? expected) =>
+        expected is not null && actual.Exists == expected.Exists && actual.Kind == expected.Kind
+        && actual.Value.GetRawText() == expected.Value.GetRawText();
+
+    private static bool IsKnownSnapshotValue(ProxyValueSnapshot actual, ProxyValueSnapshot original, ProxyValueSnapshot? written) =>
+        Matches(actual, original) || Matches(actual, written);
+
+    private static bool IsGameLockerProxy(ProxyValueSnapshot enabled, ProxyValueSnapshot server)
+    {
+        if (!enabled.Exists || enabled.Kind != RegistryValueKind.DWord
+            || !enabled.Value.TryGetInt32(out var on) || on == 0
+            || !server.Exists || server.Kind != RegistryValueKind.String) return false;
+        var text = server.Value.GetString();
+        if (text is null) return false;
+        var match = Regex.Match(text, @"127\.0\.0\.1:(\d{1,5})", RegexOptions.IgnoreCase);
+        if (!match.Success || !int.TryParse(match.Groups[1].Value, out var port)) return false;
+        if (port == 7897) return true;
+        return ProxyPort(_lastProxyServer) == port || ProxyPort(_originalProxy?.WrittenServer) == port;
+    }
+
+    private static int ProxyPort(ProxyValueSnapshot? value)
+    {
+        if (value is not { Exists: true, Kind: RegistryValueKind.String }) return 0;
+        var match = Regex.Match(value.Value.GetString() ?? "", @"127\.0\.0\.1:(\d{1,5})", RegexOptions.IgnoreCase);
+        return match.Success && int.TryParse(match.Groups[1].Value, out var port) ? port : 0;
+    }
+
+    private static string ProxySnapshotPath => Path.Combine(
+        Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData), "GameLocker", "proxy-settings-backup.json");
+
+    private static void SaveProxySnapshot(ProxySettingsSnapshot snapshot)
+    {
+        var path = ProxySnapshotPath;
+        Directory.CreateDirectory(Path.GetDirectoryName(path)!);
+        var temp = path + ".tmp";
+        File.WriteAllText(temp, JsonSerializer.Serialize(snapshot));
+        File.Move(temp, path, overwrite: true);
+    }
+
+    private static bool TryLoadProxySnapshot(out ProxySettingsSnapshot? snapshot)
+    {
+        try { snapshot = JsonSerializer.Deserialize<ProxySettingsSnapshot>(File.ReadAllText(ProxySnapshotPath)); return snapshot is not null; }
+        catch { snapshot = null; return false; }
+    }
+
+    private static void ClearProxySnapshot()
+    {
+        DeleteProxySnapshot();
+        _originalProxy = null;
+        _lastProxyEnable = null;
+        _lastProxyServer = null;
+    }
+
+    private static void DeleteProxySnapshot()
+    {
+        try { File.Delete(ProxySnapshotPath); } catch { }
+    }
+
+    private static void NotifyProxyChanged()
+    {
+        InternetSetOption(IntPtr.Zero, OptionSettingsChanged, IntPtr.Zero, 0);
+        InternetSetOption(IntPtr.Zero, OptionRefresh, IntPtr.Zero, 0);
     }
 
     private static int NormalizePort(int port) => port is >= 1 and <= 65535 ? port : 7897;
 
     // ==================== A 键：开关连接 ====================
 
-    public static async Task<ToggleResult> ToggleAsync(LaunchItem item)
+    public static Task<ToggleResult> ToggleAsync(LaunchItem item) => RunOperationAsync(
+        () => ToggleCoreAsync(item), new ToggleResult(false, false, "代理正在关闭"));
+
+    private static async Task<ToggleResult> ToggleCoreAsync(LaunchItem item)
     {
         var port = NormalizePort(item.ProxyPort);
         var running = CoreProcessRunning();
@@ -233,9 +513,10 @@ public static class ProxyService
 
         if (running && proxyOn)
         {
+            if (!SetSystemProxy(false, port))
+                return new ToggleResult(false, true, "无法安全恢复原系统代理，内核保持运行以避免死端口");
             KillCore();
-            SetSystemProxy(false, port);
-            await RefreshAsync(item);
+            await RefreshCoreAsync(item);
             return new ToggleResult(true, false, "已断开连接");
         }
 
@@ -264,16 +545,16 @@ public static class ProxyService
             if (startError.Length > 0)
             {
                 KillCore();
-                SetSystemProxy(false, port);
-                await RefreshAsync(item);
+                await RefreshCoreAsync(item);
                 return new ToggleResult(false, false, startError);
             }
         }
 
         if (!SetSystemProxy(true, port))
         {
-            await RefreshAsync(item);
-            return new ToggleResult(false, false, "设置系统代理失败（注册表不可写）");
+            if (!_ownsCore.Equals(0) && !SystemProxyReferencesLoopback()) KillCore();
+            await RefreshCoreAsync(item);
+            return new ToggleResult(false, false, "设置系统代理失败（注册表不可写或安全快照不可用）");
         }
 
         await ApplyAsync(item); // 内核可能还在用旧设置：把当前模式与选中节点生效
@@ -287,7 +568,14 @@ public static class ProxyService
 
     // ==================== Y 键：更新订阅 + 测速选最快 ====================
 
-    public static async Task<FastestResult> RefreshFastestAsync(LaunchItem item)
+    public static Task<FastestResult> RefreshFastestAsync(LaunchItem item) => RunOperationAsync(async () =>
+    {
+        var wasRunning = CoreProcessRunning();
+        try { return await RefreshFastestCoreAsync(item); }
+        finally { if (!wasRunning) KillCore(); }
+    }, new FastestResult(false, "代理正在关闭"));
+
+    private static async Task<FastestResult> RefreshFastestCoreAsync(LaunchItem item)
     {
         var url = (item.ProxySubscription ?? "").Trim();
         if (url.Length == 0)
@@ -317,7 +605,7 @@ public static class ProxyService
 
         // 强制更新订阅（provider 名固定为 sub）
         await ApiAsync(HttpMethod.Put, "providers/proxies/sub", "{}", 8000);
-        await Task.Delay(800);
+        await DelayOperationAsync(800);
 
         var (ok, body) = await ApiAsync(HttpMethod.Get, "proxies", null, 3000);
         if (!ok)
@@ -421,7 +709,16 @@ public static class ProxyService
     /// 编辑页用：确保内核运行、强制更新一次订阅、对整组节点批量测速，返回可选的节点与延迟。
     /// 订阅 / 端口 / 模式跟正在运行的内核不一致时会先重启内核再拉取。
     /// </summary>
-    public static async Task<(bool Ok, string Message, List<NodeEntry> Nodes)> FetchNodesAsync(LaunchItem item)
+    public static Task<(bool Ok, string Message, List<NodeEntry> Nodes)> FetchNodesAsync(LaunchItem item) => RunOperationAsync(async () =>
+    {
+        var wasRunning = CoreProcessRunning();
+        if (wasRunning && _configSig != SignatureOf(item) && (_ownsCore == 0 || SystemProxyReferencesLoopback()))
+            return (false, "当前内核正在使用，无法替换配置测速；请先断开连接", []);
+        try { return await FetchNodesCoreAsync(item); }
+        finally { if (!wasRunning) KillCore(); }
+    }, (false, "代理正在关闭", new List<NodeEntry>()));
+
+    private static async Task<(bool Ok, string Message, List<NodeEntry> Nodes)> FetchNodesCoreAsync(LaunchItem item)
     {
         var url = (item.ProxySubscription ?? "").Trim();
         if (url.Length == 0) return (false, "先填订阅链接，保存后会自动获取节点列表", []);
@@ -442,7 +739,7 @@ public static class ProxyService
 
         // 强制更新订阅（provider 名固定为 sub）
         await ApiAsync(HttpMethod.Put, "providers/proxies/sub", "{}", 8000);
-        await Task.Delay(600);
+        await DelayOperationAsync(600);
 
         var group = GroupFor(item);
         var (ok, body) = await ApiAsync(HttpMethod.Get, "proxies/" + Uri.EscapeDataString(group), null, 3000);
@@ -508,7 +805,13 @@ public static class ProxyService
     private static readonly Dictionary<string, List<NodeEntry>> _nodeCache = [];
 
     /// <summary>把当前设置（代理模式 + 选中节点）应用到已运行的内核；内核没跑就直接返回</summary>
-    public static async Task ApplyAsync(LaunchItem item)
+    public static Task ApplyAsync(LaunchItem item) => RunOperationAsync(async () =>
+    {
+        await ApplyCoreAsync(item);
+        return true;
+    }, false);
+
+    private static async Task ApplyCoreAsync(LaunchItem item)
     {
         if (!CoreProcessRunning()) return;
         await ApiAsync(HttpMethod.Put, "configs",
@@ -546,27 +849,14 @@ public static class ProxyService
 
     private static void KillCore()
     {
+        if (Interlocked.Exchange(ref _ownsCore, 0) == 0) return;
         try
         {
             if (_core is { HasExited: false }) _core.Kill(entireProcessTree: true);
             _core?.Dispose();
         }
-        catch { }
+        catch (Exception ex) { DebugLog.Write("[代理] 停止自启内核失败：" + ex.Message); }
         _core = null;
-        try
-        {
-            foreach (var p in Process.GetProcessesByName("mihomo"))
-            {
-                try
-                {
-                    if (string.Equals(p.MainModule?.FileName, CoreExe, StringComparison.OrdinalIgnoreCase))
-                        p.Kill(entireProcessTree: true);
-                }
-                catch { }
-                finally { p.Dispose(); }
-            }
-        }
-        catch { }
     }
 
     /// <summary>确保内核存在：优先使用工作目录里的 mihomo.exe，没有则从 GitHub 下载最新版</summary>
@@ -609,7 +899,10 @@ public static class ProxyService
     public sealed record CoreUpdateResult(bool Ok, string Message, string Version);
 
     /// <summary>读取当前内核版本（执行 mihomo -v；未下载返回空串），结果本次运行内缓存</summary>
-    public static async Task<string> GetCoreVersionAsync()
+    public static Task<string> GetCoreVersionAsync() => RunOperationAsync(
+        GetCoreVersionCoreAsync, "");
+
+    private static async Task<string> GetCoreVersionCoreAsync()
     {
         if (_coreVersion.Length > 0) return _coreVersion;
         if (!File.Exists(CoreExe)) return "";
@@ -627,7 +920,9 @@ public static class ProxyService
             if (p is null) return "";
             var output = (await p.StandardOutput.ReadToEndAsync()).Trim();
             if (output.Length == 0) output = (await p.StandardError.ReadToEndAsync()).Trim();
-            await p.WaitForExitAsync();
+            using var cts = CancellationTokenSource.CreateLinkedTokenSource(OperationCancellation.Token);
+            cts.CancelAfter(TimeSpan.FromSeconds(10));
+            await p.WaitForExitAsync(cts.Token);
             var match = Regex.Match(output, @"v?\d+(?:\.\d+)+[^\s]*");
             _coreVersion = match.Success ? match.Value : output;
         }
@@ -636,7 +931,10 @@ public static class ProxyService
     }
 
     /// <summary>检查 GitHub 上是否有更新的内核；有则下载替换（内核运行中会先停、替换后按原配置重启）</summary>
-    public static async Task<CoreUpdateResult> CheckAndUpdateCoreAsync()
+    public static Task<CoreUpdateResult> CheckAndUpdateCoreAsync() => RunOperationAsync(
+        CheckAndUpdateCoreCoreAsync, new CoreUpdateResult(false, "代理正在关闭", ""));
+
+    private static async Task<CoreUpdateResult> CheckAndUpdateCoreCoreAsync()
     {
         var current = await GetCoreVersionAsync();
         var (url, tag) = await FindCoreReleaseAsync();
@@ -673,7 +971,7 @@ public static class ProxyService
             if (restart)
             {
                 KillCore();
-                await Task.Delay(300);   // 等文件句柄释放
+                await DelayOperationAsync(300);   // 等文件句柄释放
             }
             try
             {
@@ -718,9 +1016,9 @@ public static class ProxyService
             using var api = new HttpRequestMessage(HttpMethod.Get,
                 "https://api.github.com/repos/MetaCubeX/mihomo/releases/latest");
             api.Headers.TryAddWithoutValidation("User-Agent", "GameLocker");
-            using var apiResponse = await Http.SendAsync(api);
+            using var apiResponse = await Http.SendAsync(api, OperationCancellation.Token);
             if (!apiResponse.IsSuccessStatusCode) return (null, "");
-            using var doc = JsonDocument.Parse(await apiResponse.Content.ReadAsStringAsync());
+            using var doc = JsonDocument.Parse(await apiResponse.Content.ReadAsStringAsync(OperationCancellation.Token));
             var tag = doc.RootElement.TryGetProperty("tag_name", out var t) ? t.GetString() ?? "" : "";
             foreach (var asset in doc.RootElement.GetProperty("assets").EnumerateArray())
             {
@@ -734,13 +1032,16 @@ public static class ProxyService
         return (null, "");
     }
 
-    /// <summary>下载到临时文件（单次上限 2 分钟，太慢的源直接放弃换下一个）</summary>
+    private static Task DelayOperationAsync(int milliseconds) =>
+        Task.Delay(milliseconds, OperationCancellation.Token);
+
     private static async Task<bool> TryDownloadAsync(string url, string target)
     {
         try
         {
             using var client = new HttpClient { Timeout = TimeSpan.FromMinutes(5) };
-            using var cts = new CancellationTokenSource(TimeSpan.FromMinutes(2));
+            using var cts = CancellationTokenSource.CreateLinkedTokenSource(OperationCancellation.Token);
+            cts.CancelAfter(TimeSpan.FromMinutes(2));
             using var response = await client.SendAsync(new HttpRequestMessage(HttpMethod.Get, url),
                 HttpCompletionOption.ResponseHeadersRead, cts.Token);
             if (!response.IsSuccessStatusCode) return false;
@@ -757,6 +1058,12 @@ public static class ProxyService
 
     /// <summary>写配置并启动内核，等待 API 与订阅就绪；成功返回空串，失败返回原因</summary>
     private static async Task<string> StartCoreAsync(LaunchItem item)
+    {
+            if (_shuttingDown) return "代理正在关闭";
+            return await StartCoreCoreAsync(item);
+    }
+
+    private static async Task<string> StartCoreCoreAsync(LaunchItem item)
     {
         _lastItem = item.Clone();   // 内核更新后按这份配置重启
         var port = NormalizePort(item.ProxyPort);
@@ -781,6 +1088,7 @@ public static class ProxyService
             };
             _core = Process.Start(psi);
             if (_core is null) return "启动代理内核失败";
+            Interlocked.Exchange(ref _ownsCore, 1);
             _core.OutputDataReceived += (_, e) => AppendLog(e.Data);
             _core.ErrorDataReceived += (_, e) => AppendLog(e.Data);
             _core.BeginOutputReadLine();
@@ -790,7 +1098,7 @@ public static class ProxyService
             var apiReady = false;
             for (var i = 0; i < 30; i++)
             {
-                await Task.Delay(300);
+                await DelayOperationAsync(300);
                 if (_core.HasExited) return "代理内核启动失败：" + CoreLogTail();
                 var (ok, _) = await ApiAsync(HttpMethod.Get, "version", null, 1000);
                 if (ok) { apiReady = true; break; }
@@ -811,7 +1119,7 @@ public static class ProxyService
                             JsonSerializer.Serialize(new { name = selected }), 3000);
                     return "";
                 }
-                await Task.Delay(300);
+                await DelayOperationAsync(300);
             }
             return "订阅加载失败：请检查订阅链接是否有效（需要 Clash / Mihomo 格式的订阅）";
         }

@@ -12,6 +12,8 @@ public static partial class LosslessScalingService
     private static readonly OptiCaptureHostService OptiHost = new();
     private static readonly object OptiStartLock = new();
     private static CancellationTokenSource? _optiStart;
+    private static Task? _optiStartFinished;
+    private static bool _optiExiting;
     private static OptiSession? _optiSession;
 
     internal static string NormalizeFrameGenEngine(string? engine) => engine?.Trim().ToUpperInvariant() switch
@@ -30,7 +32,7 @@ public static partial class LosslessScalingService
     {
         lock (OptiStartLock)
         {
-            if (_optiInstalling || _optiStart is not null || IsOptiScalerRunning)
+            if (_optiExiting || _optiInstalling || _optiStart is not null || IsOptiScalerRunning)
                 throw new OptiCaptureBusyException();
             _optiInstalling = true;
         }
@@ -48,6 +50,30 @@ public static partial class LosslessScalingService
     internal static void CancelOptiScalerStart()
     {
         lock (OptiStartLock) _optiStart?.Cancel();
+    }
+
+    /// <summary>退出时取消启动并等待清理本服务持有的捕获宿主；不触碰游戏或其他进程。</summary>
+    internal static async Task<bool> StopOptiScalerForExitAsync()
+    {
+        Task? startup;
+        lock (OptiStartLock)
+        {
+            _optiExiting = true;
+            _optiStart?.Cancel();
+            startup = _optiStartFinished;
+        }
+        try
+        {
+            if (startup is not null) await startup.ConfigureAwait(false);
+            await OptiHost.StopAsync().ConfigureAwait(false);
+            Interlocked.Exchange(ref _optiSession, null);
+            return true;
+        }
+        catch (Exception ex)
+        {
+            DebugLog.Write($"OptiCaptureHost exit cleanup: {ex}");
+            return false;
+        }
     }
 
     internal sealed record OptiTelemetry(int HostPid, int GamePid, OptiCaptureHostStatus? Status, bool Confirmed);
@@ -98,14 +124,17 @@ public static partial class LosslessScalingService
 
         var restoreLauncher = false;
         using var start = new CancellationTokenSource();
+        var finished = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
         lock (OptiStartLock)
         {
-            if (_optiInstalling)
+            if (_optiExiting) return ScaleResult.FrameGenOff;
+            if (_optiInstalling || _optiStart is not null)
             {
-                OptiFailureReason = "组件正在更新，请稍后再试。";
+                OptiFailureReason = "组件正在启动或更新，请稍后再试。";
                 return ScaleResult.LaunchFailed;
             }
             _optiStart = start;
+            _optiStartFinished = finished.Task;
         }
         try
         {
@@ -143,7 +172,11 @@ public static partial class LosslessScalingService
             var (hostPid, status) = await OptiHost.ReadSessionAsync(start.Token);
             if (hostPid == 0) throw new InvalidOperationException("宿主在初始化后退出。");
             var session = new OptiSession(new(hostPid, (int)targetPid, status, false), profile.UsesFrameGeneration);
-            Volatile.Write(ref _optiSession, session);
+            lock (OptiStartLock)
+            {
+                start.Token.ThrowIfCancellationRequested();
+                Volatile.Write(ref _optiSession, session);
+            }
             var confirmed = session.UsesFrameGeneration && session.Evidence.Observe(status);
             var initialWait = Stopwatch.StartNew();
             while (session.UsesFrameGeneration && !confirmed && initialWait.Elapsed < TimeSpan.FromSeconds(5))
@@ -181,8 +214,21 @@ public static partial class LosslessScalingService
         }
         finally
         {
-            lock (OptiStartLock) _optiStart = null;
-            if (restoreLauncher) App.Main?.ShowFromTray();
+            try
+            {
+                bool showLauncher;
+                lock (OptiStartLock) showLauncher = restoreLauncher && !_optiExiting;
+                if (showLauncher) App.Main?.ShowFromTray();
+            }
+            finally
+            {
+                lock (OptiStartLock)
+                {
+                    _optiStart = null;
+                    _optiStartFinished = null;
+                    finished.TrySetResult();
+                }
+            }
         }
     }
 

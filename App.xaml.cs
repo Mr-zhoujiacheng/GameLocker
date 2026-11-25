@@ -11,6 +11,9 @@ public partial class App : Application
 
     private TrayHotkeyService? _tray;
     private Mutex? _instanceMutex;
+    private readonly CancellationTokenSource _startupCancellation = new();
+    private Task _startupWork = Task.CompletedTask;
+    private volatile bool _ownsMainInstance;
 
     public App()
     {
@@ -19,6 +22,8 @@ public partial class App : Application
         // 兜底：即使退出路径没有走到 MainWindow.Closed，也把「任务栏隐藏」恢复
         AppDomain.CurrentDomain.ProcessExit += (_, _) =>
         {
+            if (!_ownsMainInstance) return;
+            try { SystemKeyboardWatcher.Apply(false); } catch { }
             try { TaskbarControl.Shutdown(); } catch { }
             try { TopTaskbarMode.ForceRestore(); } catch { }
             try { StatusBarHost.Shutdown(); } catch { }
@@ -56,16 +61,36 @@ public partial class App : Application
         return false;
     }
 
+    private bool BeginDesktopSession()
+    {
+        if (!AcquireSingleInstance())
+        {
+            Exit();
+            return false;
+        }
+        TopTaskbarMode.SetRestoreOwner(true);
+        _ownsMainInstance = true;
+        return true;
+    }
+
     protected override void OnLaunched(LaunchActivatedEventArgs args)
     {
         // 提权监控助手模式（--monitor-helper <父进程PID>）：只跑 ETW 帧率采集并写共享内存，
         // 不创建主窗口，父进程退出或发出停止事件后自行结束。
         var argv = Environment.GetCommandLineArgs();
 
-        // 仅测试恢复顶部任务栏（--restore-taskbar）。
+        // 主实例未运行时，允许显式恢复上次异常退出留下的顶部任务栏状态。
         if (Array.IndexOf(argv, "--restore-taskbar") >= 0)
         {
-            TopTaskbarMode.ForceRestore();
+            try
+            {
+                if (AcquireSingleInstance())
+                {
+                    TopTaskbarMode.SetRestoreOwner(true);
+                    TopTaskbarMode.ForceRestore();
+                }
+            }
+            finally { Exit(); }
             return;
         }
 
@@ -116,6 +141,7 @@ public partial class App : Application
         // 仅显示系统顶栏（--statusbar-preview）：用于截图调样式，不启动启动器。
         if (Array.IndexOf(argv, "--statusbar-preview") >= 0)
         {
+            if (!BeginDesktopSession()) return;
             try
             {
                 _ = StatusBarHost.InitializeAsync();
@@ -129,6 +155,7 @@ public partial class App : Application
         // 仅显示底栏与系统顶栏（--dock-preview）：用于截图与调样式，不启动启动器。
         if (Array.IndexOf(argv, "--dock-preview") >= 0)
         {
+            if (!BeginDesktopSession()) return;
             try
             {
                 _ = DockHost.InitializeAsync();
@@ -175,59 +202,77 @@ public partial class App : Application
             Environment.Exit(0);
         }
 
-        if (!AcquireSingleInstance())
-        {
-            Exit();
-            return;
-        }
+        if (!BeginDesktopSession()) return;
 
         DebugLog.Write($"启动：PID={Environment.ProcessId} 程序={Environment.ProcessPath}");
         MigrateLegacyConfig();
-        SettingsService.EnsureAutoStartPath(); // 校正开机自启路径（程序移动/改名后 Run 键会失效）
-        var coreResult = GameCpuService.Configure(SettingsService.Current.GameCoreCount, SettingsService.Current.GameCoreMode);
-        if (!coreResult.Ok) LaunchService.Diag(coreResult.Message);
-
-        // 记录掌机原始基础电源方案：标准“平衡”方案可能不存在，切回平衡时用它恢复
-        PerformanceService.RememberBaseScheme();
-        // 先校准当前供电的保存目标，避免登录任务恢复成关机前另一套功耗。
-        PowerProfileService.SynchronizeSavedCpuTarget();
-        PowerProfileWatcher.Start();
-        // 睡眠/休眠唤醒后固件可能复位功耗限制：助手还连着时静默写回（与供电切换各自幂等）
-        PowerResumeWatcher.Resumed += CpuPowerAutoApply.ReapplyIfActive;
-        PowerResumeWatcher.Start();
-        // 保存过功耗目标即视为已接管：恢复展示并触发登录任务静默写回，重启/关机/睡眠唤醒后都不用再点启用
-        if (SettingsService.Current.CpuPowerPl1 > 0) CpuPowerService.ResumeSavedTakeover();
-
-        // 接管系统屏幕键盘：关掉触屏键盘自动弹出、收起 osk/TabTip，改用本程序键盘
-        SystemKeyboardWatcher.Apply(SettingsService.Current.TakeOverSystemKeyboard);
         Main = new MainWindow();
-        // 启动后不显示启动器，避免透明覆盖层吃掉桌面右键；需要时再呼出。
-        Main.HideToTray();
+        Main.Closed += (_, _) => SystemKeyboardWatcher.Apply(false);
+        var main = Main;
+        _tray = new TrayHotkeyService(
+            () => main.DispatcherQueue.TryEnqueue(main.ShowFromTray),
+            () => main.DispatcherQueue.TryEnqueue(main.ExitApp));
+        main.HideToTray(animate: false);
 
-        // 底栏与系统顶栏都由「启用系统」控制，默认关闭。
-        try
+        var token = _startupCancellation.Token;
+        _startupWork = Task.Run(() => InitializeBackground(token));
+        main.DispatcherQueue.TryEnqueue(Microsoft.UI.Dispatching.DispatcherQueuePriority.Low, async () =>
         {
-            _ = DockHost.InitializeAsync();
-        }
-        catch (Exception ex) { DebugLog.Write("底栏初始化失败：" + ex); }
-
-        try
-        {
-            _ = StatusBarHost.InitializeAsync();
-        }
-        catch (Exception ex) { DebugLog.Write("顶栏2 初始化失败：" + ex); }
-
-        _tray = new TrayHotkeyService();
-        // 事件在托盘 STA 线程触发，marshal 回 UI 线程
-        _tray.ShowRequested += () => Main?.DispatcherQueue.TryEnqueue(Main.ShowFromTray);
-        _tray.ExitRequested += () => Main?.DispatcherQueue.TryEnqueue(Main.ExitApp);
-
-        // 启动后驻留托盘，不自动弹出启动器；需要时用手柄组合键/键盘/边缘/托盘呼出。
-        // （此前原型阶段无条件 ShowFromTray，会留下一个覆盖桌面的透明窗口，导致桌面右键被吃掉。）
-
-        // 启动时后台检查 GitHub 最新版本（关于页可关闭）；失败静默，不阻塞启动
+            if (token.IsCancellationRequested) return;
+            SystemKeyboardWatcher.Apply(SettingsService.Current.TakeOverSystemKeyboard);
+            try { await DockHost.InitializeAsync(); }
+            catch (Exception ex) { DebugLog.Write("底栏初始化失败：" + ex); }
+            if (token.IsCancellationRequested) return;
+            try { await StatusBarHost.InitializeAsync(); }
+            catch (Exception ex) { DebugLog.Write("顶栏初始化失败：" + ex); }
+        });
         if (SettingsService.Current.AutoCheckUpdates)
-            _ = UpdateService.AutoCheckAsync();
+            _ = CheckUpdatesAfterStartupAsync(token);
+    }
+
+    private static void InitializeBackground(CancellationToken token)
+    {
+        try
+        {
+            SettingsService.EnsureAutoStartPath();
+            var settings = SettingsService.Current;
+            var coreResult = GameCpuService.Configure(settings.GameCoreCount, settings.GameCoreMode);
+            if (!coreResult.Ok) LaunchService.Diag(coreResult.Message);
+            PerformanceService.RememberBaseScheme();
+            if (token.IsCancellationRequested) return;
+            PowerProfileService.SynchronizeSavedCpuTarget();
+            PowerProfileWatcher.Start();
+            PowerResumeWatcher.Resumed += CpuPowerAutoApply.ReapplyIfActive;
+            PowerResumeWatcher.Start();
+            if (!token.IsCancellationRequested) CpuPowerService.ResumeSavedTakeover();
+        }
+        catch (Exception ex) { DebugLog.Write("后台初始化失败：" + ex); }
+    }
+
+    private static async Task CheckUpdatesAfterStartupAsync(CancellationToken token)
+    {
+        try
+        {
+            await Task.Delay(TimeSpan.FromSeconds(30), token);
+            if (SettingsService.Current.AutoCheckUpdates) await UpdateService.AutoCheckAsync();
+        }
+        catch (OperationCanceledException) when (token.IsCancellationRequested) { }
+        catch (Exception ex) { DebugLog.Write("自动检查更新失败：" + ex.Message); }
+    }
+
+    internal void BeginShutdown() => _startupCancellation.Cancel();
+
+    internal async Task StopBackgroundWorkAsync()
+    {
+        await _startupWork;
+        PowerResumeWatcher.Resumed -= CpuPowerAutoApply.ReapplyIfActive;
+        await PowerProfileWatcher.StopAsync();
+    }
+
+    internal void DisposeTray()
+    {
+        _tray?.Dispose();
+        _tray = null;
     }
 
     /// <summary>全局异常记录：写入 %APPDATA%\GameLocker\crash.log，便于定位闪退</summary>

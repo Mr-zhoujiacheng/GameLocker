@@ -30,6 +30,8 @@ internal static class DownloadModeService
     /// <summary>进入下载模式前处于前台的窗口（即用户所说的"下载页面"）</summary>
     public static IntPtr DownloadWindow { get; private set; }
 
+    private static readonly object Gate = new();
+    private static volatile bool _stopping;
     private static uint? _savedBrightness;
     private static (bool Mute, float Volume)? _savedAudio;
     private static PerformanceLevel? _savedPowerMode;
@@ -37,90 +39,97 @@ internal static class DownloadModeService
     private static long _lastBytes = -1;
     private static long _lastTick;
 
-    /// <summary>进入下载模式：录下亮度/音量与下载页面窗口，熄屏 + 静音 + 阻止睡眠 + 清内存 + 切能效（后台线程调用）</summary>
+    /// <summary>进入下载模式，保留返回桌面所需的系统设置。</summary>
     public static void Enter(int minutes, PowerAction after)
     {
-        DownloadWindow = GetForegroundWindow();
-        _savedBrightness = SystemPanelService.DimScreen();
-        _savedAudio = SystemPanelService.MuteOutput();
-
-        // 下载期间没有前台交互，把各进程工作集还给系统，并临时切到最佳能效
-        _savedPowerMode = PerformanceService.GetState() is { Available: true } state
-            ? state.Level
-            : null;
-        CleanWorkingSets();
-        if (_savedPowerMode is not null and not PerformanceLevel.Eco)
+        lock (Gate)
         {
-            PerformanceService.ApplyLevel(PerformanceLevel.Eco);
-            _ = PerformanceService.RefreshCacheAsync();
+            if (_stopping || IsActive) return;
+            try
+            {
+                DownloadWindow = GetForegroundWindow();
+                _savedBrightness = SystemPanelService.DimScreen();
+                _savedAudio = SystemPanelService.MuteOutput();
+                _savedPowerMode = PerformanceService.GetState() is { Available: true } state
+                    ? state.Level : null;
+                if (_savedPowerMode is not null and not PerformanceLevel.Eco)
+                {
+                    PerformanceService.ApplyLevel(PerformanceLevel.Eco);
+                    _ = PerformanceService.RefreshCacheAsync();
+                }
+
+                Minutes = Math.Clamp(minutes, 1, 24 * 60);
+                EndAt = DateTime.Now.AddMinutes(Minutes);
+                AfterAction = after;
+                IsActive = true;
+                KeepAwake(true);
+                _lastBytes = -1;
+                SampleBytesPerSecond();
+            }
+            catch
+            {
+                RestoreSettings();
+                throw;
+            }
         }
-
-        Minutes = Math.Clamp(minutes, 1, 24 * 60);
-        EndAt = DateTime.Now.AddMinutes(Minutes);
-        AfterAction = after;
-        _peeking = false;
-        IsActive = true;
-        KeepAwake(true);
-
-        _lastBytes = -1;      // 重新建立网速采样基线，避免把进入前的流量算进来
-        SampleBytesPerSecond();
     }
 
-    /// <summary>退出下载模式：恢复电源模式、亮度与声音，允许系统睡眠（后台线程调用）</summary>
+    public static void BeginShutdown() => _stopping = true;
+
+    /// <summary>退出下载模式并恢复已接管的设置，调用方在后台线程等待恢复完成。</summary>
     public static void Exit()
+    {
+        lock (Gate) RestoreSettings();
+    }
+
+    private static void RestoreSettings()
     {
         IsActive = false;
         _peeking = false;
         KeepAwake(false);
         if (_savedPowerMode is { } powerMode)
         {
-            PerformanceService.ApplyLevel(powerMode);
-            _ = PerformanceService.RefreshCacheAsync();
+            Restore(() =>
+            {
+                PerformanceService.ApplyLevel(powerMode);
+                _ = PerformanceService.RefreshCacheAsync();
+            });
             _savedPowerMode = null;
         }
-        if (_savedBrightness is { } brightness) SystemPanelService.RestoreScreen(brightness);
-        if (_savedAudio is { } audio) SystemPanelService.RestoreOutput(audio);
+        if (_savedBrightness is { } brightness) Restore(() => SystemPanelService.RestoreScreen(brightness));
+        if (_savedAudio is { } audio) Restore(() => SystemPanelService.RestoreOutput(audio));
         _savedBrightness = null;
         _savedAudio = null;
     }
 
-    /// <summary>把本机各进程的工作集清空（EmptyWorkingSet），把闲置物理内存还给系统</summary>
-    private static void CleanWorkingSets()
+    private static void Restore(Action action)
     {
-        foreach (var process in System.Diagnostics.Process.GetProcesses())
-        {
-            try
-            {
-                if (process.HasExited) continue;
-                EmptyWorkingSet(process.Handle);
-            }
-            catch
-            {
-                // 受保护/系统进程拿不到句柄，跳过
-            }
-            finally
-            {
-                process.Dispose();
-            }
-        }
+        try { action(); }
+        catch (Exception ex) { DebugLog.Write("[下载模式] 恢复系统设置失败：" + ex.Message); }
     }
 
     /// <summary>查看下载进度：先恢复亮度，并把进入前的前台窗口切回前台（窗口的最小化/还原由调用方做）</summary>
     public static void PeekBegin()
     {
-        if (!IsActive) return;
-        _peeking = true;
-        if (_savedBrightness is { } brightness) SystemPanelService.RestoreScreen(brightness);
-        if (DownloadWindow != IntPtr.Zero && IsWindow(DownloadWindow))
-            SetForegroundWindow(DownloadWindow);
+        lock (Gate)
+        {
+            if (_stopping || !IsActive) return;
+            _peeking = true;
+            if (_savedBrightness is { } brightness) SystemPanelService.RestoreScreen(brightness);
+            if (DownloadWindow != IntPtr.Zero && IsWindow(DownloadWindow))
+                SetForegroundWindow(DownloadWindow);
+        }
     }
 
     /// <summary>查看结束：重新熄屏</summary>
     public static void PeekEnd()
     {
-        if (!_peeking) return;
-        _peeking = false;
-        if (IsActive) SystemPanelService.DimScreen();
+        lock (Gate)
+        {
+            if (_stopping || !_peeking) return;
+            _peeking = false;
+            if (IsActive) SystemPanelService.DimScreen();
+        }
     }
 
     /// <summary>采样一次网速（字节/秒）：累加所有在线网卡的接收字节增量，每秒调用一次</summary>
@@ -200,10 +209,6 @@ internal static class DownloadModeService
         _awakeCts = null;
         ctsToCancel?.Cancel();
     }
-
-    [DllImport("psapi.dll")]
-    [return: MarshalAs(UnmanagedType.Bool)]
-    private static extern bool EmptyWorkingSet(IntPtr hProcess);
 
     [DllImport("kernel32.dll")]
     private static extern uint SetThreadExecutionState(uint flags);

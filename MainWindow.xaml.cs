@@ -28,13 +28,13 @@ public sealed partial class MainWindow : Window
     public KeyboardHookService KeyboardHook { get; } = new();
 
     private bool _exiting;
+    private bool _allowClose;
+    internal bool IsExiting => _exiting;
     private bool _fullscreen;
     private EdgeGestureService? _edgeGesture;
 
-    /// <summary>前台进程采样：修改器小组件据此判断"当前玩的是哪个游戏"。
-    /// 启动器是置顶侧边栏，点击磁贴时游戏往往不在前台，故需在后台持续记录最近的前台游戏进程。</summary>
-    private readonly Microsoft.UI.Xaml.DispatcherTimer _trainerTracker =
-        new() { Interval = TimeSpan.FromMilliseconds(1200) };
+    private readonly DispatcherTimer _foregroundFallback = new() { Interval = TimeSpan.FromSeconds(1) };
+    private bool _foregroundRefreshQueued;
 
     /// <summary>手柄是否派发到页面（与 Gamepad.RoutingEnabled 同步；仅窗口已呼出显示时为 true）</summary>
     private volatile bool _routing;
@@ -64,12 +64,7 @@ public sealed partial class MainWindow : Window
     /// <summary>启动器当前是否处于呼出显示状态（供屏幕翻译的覆盖层避让）</summary>
     public bool IsShown => _shown;
 
-    /// <summary>进入游戏窗口时最小化其他窗口：避免 Steam 等页面叠在游戏上方，呼出启动器时遮挡画面</summary>
-    private readonly DispatcherTimer _gameEnterWatch =
-        new() { Interval = TimeSpan.FromMilliseconds(800) };
-    private readonly DispatcherTimer _gamePresenceWatch =
-        new() { Interval = TimeSpan.FromMilliseconds(250) };
-    /// <summary>已整理过的游戏窗口：同一次进入只做一次，避免每 800ms 反复最小化</summary>
+    /// <summary>已整理过的游戏窗口：同一次进入只做一次。</summary>
     private IntPtr _minimizedForGame;
     private IntPtr _gameSwipeSource;
     private readonly OptiOverlayOrder _captureOrder = new();
@@ -163,48 +158,33 @@ public sealed partial class MainWindow : Window
         HideToTray();
     }
 
-    private void MinimizeOthersOnGameForeground()
+    private void UpdateFullscreenGame(IntPtr foreground)
     {
-        var fg = GetForegroundWindow();
-        if (fg == IntPtr.Zero || fg == _hwnd) return;
-        // 同一游戏窗口已经整理过：持续前台期间不再每 800ms 枚举一遍其他窗口
-        if (fg == _minimizedForGame) return;
-        _minimizedForGame = IntPtr.Zero;
-        GetWindowThreadProcessId(fg, out var pid);
-        // Minimizing the game can also hide the output; treat them as one session.
-        if ((int)pid == OwnProcessId || IsActiveCaptureProcess(pid) || !IsFullscreenGameWindow(fg, pid)) return;
-        _minimizedForGame = fg;
-        MinimizeOtherWindows(fg);
+        if (foreground == IntPtr.Zero || foreground == _hwnd) return;
+        GetWindowThreadProcessId(foreground, out var pid);
+        if ((int)pid == OwnProcessId) return;
+        if (foreground != _minimizedForGame) _minimizedForGame = IntPtr.Zero;
+        var target = (foreground, pid);
+        var shouldMinimize = _minimizedForGame == IntPtr.Zero && !IsActiveCaptureProcess(pid);
+        if (!shouldMinimize && _cpuRegisteredGame == target) return;
+        if (!GameWindowDetector.IsFullscreenGame(foreground, pid)) return;
+        if (shouldMinimize)
+        {
+            _minimizedForGame = foreground;
+            MinimizeOtherWindows(foreground);
+        }
+        if (_cpuRegisteredGame != target)
+        {
+            _cpuRegisteredGame = target;
+            GameCpuService.Register((int)pid);
+        }
     }
 
     private static bool IsActiveCaptureProcess(uint pid) => pid != 0 &&
         LosslessScalingService.ActiveOptiSession is { } capture &&
         (pid == capture.GamePid || pid == capture.HostPid);
 
-    /// <summary>前台全屏游戏若由外部启动，也纳入核心调度；只接受已验证为游戏的窗口。</summary>
-    private void RegisterForegroundGameForCpu()
-    {
-        var fg = GetForegroundWindow();
-        if (fg == IntPtr.Zero || fg == _hwnd) return;
-        GetWindowThreadProcessId(fg, out var pid);
-        if ((int)pid == OwnProcessId || !IsFullscreenGameWindow(fg, pid)) return;
-        var known = _cpuRegisteredGame;
-        if (known is { } prior)
-        {
-            try { using var p = System.Diagnostics.Process.GetProcessById(prior); if (!p.HasExited && p.MainWindowHandle == fg) return; }
-            catch { }
-        }
-        _cpuRegisteredGame = (int)pid;
-        GameCpuService.Register((int)pid);
-    }
-
-    private int? _cpuRegisteredGame;
-
-    /// <summary>是否"正在全屏运行的游戏"：窗口必须盖满所在显示器，且出现游戏强证据
-    /// （D3D 独占全屏 / 游戏库路径 / 游戏引擎窗口类 / 本启动器启动过的进程），
-    /// 兜底还要求进程不是桌面软件，避免浏览器、播放器、资源管理器被误判。</summary>
-    private static bool IsFullscreenGameWindow(IntPtr hwnd, uint pid) =>
-        GameWindowDetector.IsFullscreenGame(hwnd, pid);
+    private (IntPtr Window, uint Pid) _cpuRegisteredGame;
 
     /// <summary>最小化除游戏窗口与系统外壳之外的所有可见顶层窗口。</summary>
     private static void MinimizeOtherWindows(IntPtr game)
@@ -241,6 +221,7 @@ public sealed partial class MainWindow : Window
     private bool _edgePolicyReady;
     private bool _edgePolicyChanging;
     private bool _exitAfterEdgePolicy;
+    private Action? _afterExitCleanup;
     public string? EdgeGesturePolicyError { get; private set; }
 
     public async Task<bool> SetEdgeGestureEnabledAsync(bool enabled)
@@ -281,7 +262,7 @@ public sealed partial class MainWindow : Window
     /// <summary>只有系统策略已确认后才启动边缘监听；布局变化仅调整呼出方向，不重复提权。</summary>
     public void SyncEdgeGesture()
     {
-        if (_edgeGesture == null) return;
+        if (_exiting || _edgeGesture == null) return;
         if (!SettingsService.Current.EdgeGestureSummon || !_edgePolicyReady)
         {
             _edgeGesture.Stop();
@@ -446,21 +427,11 @@ public sealed partial class MainWindow : Window
         HookSwipeBack();
 
         _taskbarRevealWatch.Tick += (_, _) => RefreshRevealedTaskbar();
-        Closed += (_, _) =>
+        AppWindow.Closing += (_, args) =>
         {
-            ReleaseTaskbar();
-            StatusBarHost.Shutdown();    // 撤销顶栏2 的 AppBar 占位，恢复工作区
-            DockHost.Shutdown();         // 销毁底栏窗口，并恢复任务栏与工作区
-            // 下载模式中直接退出（Alt+F4 等）时也要把任务栏放回来
-            if (_dlTaskbar != IntPtr.Zero)
-            {
-                ShowWindowAsync(_dlTaskbar, SW_SHOW);
-                _dlTaskbar = IntPtr.Zero;
-            }
-            MonitorService.Stop();     // 销毁置顶悬浮条并停止 ETW 会话
-            KeyboardHook.Dispose();
-            if (_exiting)
-                Microsoft.UI.Xaml.Application.Current?.Exit();
+            if (_allowClose) return;
+            args.Cancel = true;
+            ExitApp();
         };
 
         Gamepad.ButtonPressed += OnGamepadButton;
@@ -481,6 +452,7 @@ public sealed partial class MainWindow : Window
         Gamepad.FullscreenCombo = SettingsService.Current.FullscreenCombo;
         Gamepad.FullscreenTriggered += () => DispatcherQueue.TryEnqueue(() =>
         {
+            if (_exiting) return;
             // 正在捕获组合键时忽略（避免按住新键位 1 秒把全屏切了）
             if ((Root.Content as ISettingsGamepad)?.IsCapturing == true) return;
             // 全屏组合键：隐藏时唤出并进入全屏；显示时开/关切换
@@ -496,8 +468,8 @@ public sealed partial class MainWindow : Window
         {
             if (Root.Content is MainPage page) page.SetDrawerSummoned(true);
         });
+        GamepadRemapService.Init(); // 订阅原始手柄事件，托盘状态也生效
         Gamepad.Start();
-        GamepadRemapService.Init(); // 手柄映射：订阅原始手柄按下（不经路由门控，隐藏到托盘时也生效）
 
         // 键盘呼出键：命中即刻呼出（对比：手柄呼出键需长按 1 秒）
         SyncKeyboardHook();
@@ -567,27 +539,11 @@ public sealed partial class MainWindow : Window
         }
         else Activated += OnFirstEdgePolicyActivation;
 
-        // 前台游戏进程采样（常驻运行：窗口隐藏期间也要能记录到正在玩的游戏）
-        _trainerTracker.Tick += (_, _) => TrainerService.CaptureForeground();
-        TrainerService.CaptureForeground();
-        _trainerTracker.Start();
-        // 进入游戏窗口后整理后台：把其他程序（含 Steam 等启动器页面）最小化，
-        // 这样游戏上方不再残留页面，之后呼出启动器时游戏画面不会被遮挡。
-        _gameEnterWatch.Tick += (_, _) =>
-        {
-            HideForMaximizedForeground();
-            MinimizeOthersOnGameForeground();
-            RegisterForegroundGameForCpu();
-        };
-        _gameEnterWatch.Start();
-        _gamePresenceWatch.Tick += (_, _) =>
-        {
-            var foreground = GetForegroundWindow();
-            if (foreground != IntPtr.Zero && foreground != _hwnd && foreground != _gameSwipeSource) _gameSwipeSource = IntPtr.Zero;
-            GamePresence.Refresh();
-        };
-        GamePresence.Refresh();
-        _gamePresenceWatch.Start();
+        ForegroundWatcherService.ForegroundWindowChanged += QueueForegroundRefresh;
+        ForegroundWatcherService.StartForegroundEvents();
+        _foregroundFallback.Tick += (_, _) => RefreshForeground();
+        QueueForegroundRefresh();
+        _foregroundFallback.Start();
 
         // 修改器无精确匹配时，弹窗让用户从相似结果里挑一个
         TrainerService.CandidatesReady += OnTrainerCandidates;
@@ -605,7 +561,7 @@ public sealed partial class MainWindow : Window
         OptiManualHintBar.HintTapped += key => HandleOptiManual(GamepadHintBar.ToGamepadButtons(key));
         SaveRestoreHintBar.HintTapped += key => _saveRestoreInput?.Invoke(GamepadHintBar.ToGamepadButtons(key));
 
-        Root.Navigate(typeof(MainPage));
+        // 根页面在首次唤出时创建，登录自启只初始化常驻入口。
 
         // 鼠标 / 触摸点击音效：挂在根 Frame 上并接收已被子控件处理的事件，
         // 只有真的点中控件（按钮/开关/下拉/磁贴等）才发声，点空白处保持安静。
@@ -643,11 +599,11 @@ public sealed partial class MainWindow : Window
         PrepareSummon();
         Activated += (_, e) =>
         {
+            if (_exiting) return;
             if (e.WindowActivationState != WindowActivationState.Deactivated)
             {
                 MonitorService.SetAppForeground(true);
                 ForegroundWatcherService.SetForeground(true);
-                _trainerTracker.Interval = TimeSpan.FromMilliseconds(1200);
                 _taskbarWatch.Interval = TimeSpan.FromMilliseconds(1000);
                 _startMenuAutoHide.Stop();
                 // 本窗口成为前台：隐藏边缘条（否则会吞掉本窗口边缘的触摸）
@@ -665,7 +621,6 @@ public sealed partial class MainWindow : Window
             {
                 MonitorService.SetAppForeground(false);
                 ForegroundWatcherService.SetForeground(false);
-                _trainerTracker.Interval = TimeSpan.FromMilliseconds(5000);
                 _taskbarWatch.Interval = TimeSpan.FromMilliseconds(5000);
                 // 显示期间保持置顶；失焦不降级，避免与层级维护定时器反复切换 TOPMOST。
                 if (SettingsService.Current.StartMenuMode && _shown)
@@ -678,6 +633,29 @@ public sealed partial class MainWindow : Window
             // 滑入结束再抢一次前台：Activate 是在窗口还在屏外时调的，系统有时因此不给键盘焦点
             AnimateMove(_summonStart, _summonTarget, 260, easeOut: true, OnSummonDone);
         };
+    }
+
+    private void QueueForegroundRefresh()
+    {
+        if (_exiting || _foregroundRefreshQueued) return;
+        _foregroundRefreshQueued = DispatcherQueue.TryEnqueue(() =>
+        {
+            _foregroundRefreshQueued = false;
+            RefreshForeground();
+        });
+    }
+
+    private void RefreshForeground()
+    {
+        if (_exiting) return;
+        var foreground = GetForegroundWindow();
+        if (foreground != IntPtr.Zero && foreground != _hwnd && foreground != _gameSwipeSource)
+            _gameSwipeSource = IntPtr.Zero;
+        GamePresence.Refresh();
+        ForegroundWatcherService.RefreshFrameGenTarget();
+        TrainerService.CaptureForeground();
+        HideForMaximizedForeground();
+        UpdateFullscreenGame(foreground);
     }
 
     private bool _saveRestoreOpen;
@@ -737,7 +715,7 @@ public sealed partial class MainWindow : Window
 
         var completion = new TaskCompletionSource<SaveRestoreChoice?>(TaskCreationOptions.RunContinuationsAsynchronously);
         SaveRestoreTitle.Text = "恢复存档";
-        SaveRestoreSubtitle.Text = $"{request.GameName} · {(request.Cloud ? CloudBackupProvider.DisplayName : "本地备份")} · 共 {request.Versions.Count} 个版本";
+        SaveRestoreSubtitle.Text = $"{request.GameName} · {request.SourceName} · 共 {request.Versions.Count} 个版本";
         SaveRestoreDescription.Text = "选择要恢复的版本，当前存档会自动备份。";
         SaveRestoreWarning.Text = "A 恢复：请先返回游戏主菜单。\nX 同步：A 键恢复无效时使用，会先退出游戏，再覆盖存档并重启游戏。";
         SaveRestoreHintBar.Hints = "DPAD:选择|A:恢复|X:同步|B:取消";
@@ -1498,6 +1476,7 @@ public sealed partial class MainWindow : Window
     /// <summary>托盘/热键唤起</summary>
     public void ShowFromTray()
     {
+        if (_exiting) return;
         if (_shown && LosslessScalingService.ActiveOptiSession is not null
             && IsWindowVisibleForLaunch(_hwnd) && !IsIconic(_hwnd))
         {
@@ -1511,8 +1490,9 @@ public sealed partial class MainWindow : Window
         Interlocked.Exchange(ref _pageSummonedAt, Environment.TickCount64);
         DockPopupWindow.HideCurrent();
         PowerModeService.SetEfficiencyMode(false);
-        (Root.Content as MainPage)?.CancelPendingLaunch();
         _shown = true;
+        if (Root.Content is null) Root.Navigate(typeof(MainPage));
+        (Root.Content as MainPage)?.CancelPendingLaunch();
         (Root.Content as MainPage)?.SetBackground(false);
         _edgeGesture?.SetStripVisible(false);
         PrepareSummon();
@@ -1631,6 +1611,7 @@ public sealed partial class MainWindow : Window
     /// 底栏没启用时给一次提示，不偷偷把它打开。</summary>
     private async Task SummonDockAsync()
     {
+        if (_exiting) return;
         DebugLog.Write($"[底栏] 呼出组合键命中：SystemEnabled={SettingsService.Current.SystemEnabled} " +
                        $"已显示={DockHost.IsVisible} 启动器={(_shown ? "显示中" : "已收起")}");
         if (!SettingsService.Current.SystemEnabled)
@@ -1708,28 +1689,87 @@ public sealed partial class MainWindow : Window
         RefreshRevealedTaskbar();
     }
 
-    /// <summary>托盘菜单退出</summary>
-    public void ExitApp()
+    internal void ExitForUpdate(Action startInstaller)
+    {
+        if (_exiting || _afterExitCleanup is not null) throw new InvalidOperationException("软件正在退出");
+        _afterExitCleanup = startInstaller;
+        ExitApp();
+    }
+
+    /// <summary>处理托盘退出和系统关窗。</summary>
+    public async void ExitApp()
     {
         if (_exiting) return;
         if (_edgePolicyChanging)
         {
             _exitAfterEdgePolicy = true;
-            return; // 等已授权的策略事务与设置落盘完成，再退出。
+            return;
         }
+
         _exiting = true;
-        TopTaskbarMode.ForceRestore(); // 先恢复顶部任务栏，避免 Close 流程被打断后任务栏残留隐藏
-        (Root.Content as MainPage)?.CancelPendingLaunch();
-        CpuPowerService.Shutdown();
-        GameCpuService.Shutdown();
-        _startMenuAutoHide.Stop();
-        _taskbarWatch.Stop();
-        _gameEnterWatch.Stop();
-        _gamePresenceWatch.Stop();
-        KeyboardHook.Dispose();
-        Gamepad.Dispose();
-        _edgeGesture?.Dispose();
-        Close();
+        var app = (App)Microsoft.UI.Xaml.Application.Current;
+        app.BeginShutdown();
+        DownloadModeService.BeginShutdown();
+        try
+        {
+            Root.IsEnabled = false;
+            _shown = false;
+            _summonPending = false;
+            RunExitStep("停止滑动动画", StopMoveAnimation);
+            RunExitStep("停止首页任务", () => (Root.Content as MainPage)?.PrepareForExit());
+            _startMenuAutoHide.Stop();
+            _taskbarWatch.Stop();
+            _foregroundFallback.Stop();
+            ForegroundWatcherService.ForegroundWindowChanged -= QueueForegroundRefresh;
+            RunExitStep("关闭前台事件", ForegroundWatcherService.StopForegroundEvents);
+            _bTimer?.Stop();
+            RunExitStep("恢复任务栏", () =>
+            {
+                ReleaseTaskbar();
+                EndDownloadOverlay();
+            });
+            RunExitStep("关闭顶栏", StatusBarHost.Shutdown);
+            RunExitStep("关闭底栏", DockHost.Shutdown);
+            RunExitStep("恢复键盘", () => SystemKeyboardWatcher.Apply(false));
+            RunExitStep("关闭托盘", app.DisposeTray);
+            RunExitStep("关闭键盘钩子", KeyboardHook.Dispose);
+            RunExitStep("关闭手柄", Gamepad.Dispose);
+            RunExitStep("关闭边缘手势", () => _edgeGesture?.Dispose());
+            RunExitStep("关闭屏幕翻译", ScreenTranslateService.Stop);
+            RunExitStep("停止文件传输", FileTransferService.Stop);
+            RunExitStep("关闭音效", () => { UiSound.Muted = true; UiSound.Close(); });
+
+            var proxy = RunExitStepAsync("停止代理", ProxyService.ShutdownAsync);
+            var capture = RunExitStepAsync("停止捕获助手", LosslessScalingService.StopOptiScalerForExitAsync);
+            var monitor = RunExitStepAsync("停止监控", MonitorService.ShutdownAsync);
+            await RunExitStepAsync("停止供电监听", app.StopBackgroundWorkAsync);
+            await RunExitStepAsync("恢复下载模式", () => Task.Run(DownloadModeService.Exit));
+            await Task.WhenAll(proxy, capture, monitor,
+                RunExitStepAsync("关闭功耗助手", CpuPowerService.ShutdownAsync),
+                RunExitStepAsync("恢复游戏 CPU 核心设置", () => Task.Run(GameCpuService.Shutdown)),
+                RunExitStepAsync("恢复冻结进程", () => Task.Run(ForegroundWatcherService.ResumeFrozenOnExit)));
+        }
+        catch (Exception ex) { DebugLog.Write($"[退出] {ex}"); }
+        finally
+        {
+            RunExitStep("恢复顶部任务栏", TopTaskbarMode.ForceRestore);
+            if (_afterExitCleanup is { } startInstaller) RunExitStep("启动更新安装器", startInstaller);
+            _allowClose = true;
+            try { Close(); }
+            finally { app.Exit(); }
+        }
+    }
+
+    private static void RunExitStep(string name, Action action)
+    {
+        try { action(); }
+        catch (Exception ex) { DebugLog.Write($"[退出] {name}失败：{ex.Message}"); }
+    }
+
+    private static async Task RunExitStepAsync(string name, Func<Task> action)
+    {
+        try { await action(); }
+        catch (Exception ex) { DebugLog.Write($"[退出] {name}失败：{ex.Message}"); }
     }
 
     public async Task HideForLaunchAsync(CancellationToken token)
@@ -1748,8 +1788,11 @@ public sealed partial class MainWindow : Window
     private static extern bool IsWindowVisibleForLaunch(IntPtr hwnd);
 
     /// <summary>隐藏到托盘：动画开启时先播放反向滑出（真实窗口移出屏外）再隐藏；关闭时直接隐藏</summary>
-    public void HideToTray()
+    public void HideToTray() => HideToTray(animate: true);
+
+    internal void HideToTray(bool animate)
     {
+        if (_exiting) return;
         // 立刻停手柄路由：一旦决定隐藏，滑出动画期间就不该再响应手柄
         // （否则刚启动游戏后晃动/误触按键会把启动器上的操作（如 Y 关闭程序）打到已经看不见的界面上）
         _shown = false;
@@ -1760,7 +1803,7 @@ public sealed partial class MainWindow : Window
         StopMoveAnimation();
         (Root.Content as MainPage)?.SetBackground(true);
         SetGamepadRouting(false);
-        if (!SettingsService.Current.SummonAnimation || wasAnimating)
+        if (!animate || !SettingsService.Current.SummonAnimation || wasAnimating)
         {
             AppWindow.Hide();
             _captureOrder.Detach(_hwnd);
@@ -2483,7 +2526,7 @@ public sealed partial class MainWindow : Window
     /// <summary>查看结束：还原并前置本窗口（全屏与置顶保持）</summary>
     public void ShowWindowAfterPeek()
     {
-        if (_hwnd == IntPtr.Zero) return;
+        if (_exiting || _hwnd == IntPtr.Zero) return;
         ShowWindowAsync(_hwnd, SW_RESTORE);
         SetForegroundWindow(_hwnd);
     }

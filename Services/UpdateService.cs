@@ -230,10 +230,19 @@ public static class UpdateService
         {
             try
             {
-                RunInstaller(path);
-                // 不能只依赖安装器的 Restart Manager：当前实例可能运行在开发目录或其他位置。
-                window.ExitApp();
-                completion.TrySetResult();
+                window.ExitForUpdate(() =>
+                {
+                    try
+                    {
+                        RunInstaller(path);
+                        completion.TrySetResult();
+                    }
+                    catch (Exception ex)
+                    {
+                        DebugLog.Write($"[更新] 安装器启动失败：{ex.Message}");
+                        completion.TrySetException(ex);
+                    }
+                });
             }
             catch (Exception ex)
             {

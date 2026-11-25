@@ -21,7 +21,8 @@ internal static class TaskbarControl
 
     private static readonly object Gate = new();
     private static Timer? _watchdog;
-    private static bool _watchdogActive;
+    private static int _requestedMode;
+    private static bool _shellHooked;
 
     /// <summary>任务栏当前是否由本程序彻底隐藏（供启动器其它逻辑避让）。</summary>
     public static bool IsHidden
@@ -34,49 +35,52 @@ internal static class TaskbarControl
     /// </summary>
     public static void Apply(int mode)
     {
-        mode = mode == 2 ? 2 : 0;
         lock (Gate)
         {
-            if (mode == _applied) return;
+            _requestedMode = mode == 2 ? 2 : 0;
+            if (_requestedMode == 0 && !_originalCaptured)
+                return;
+
+            if (!_shellHooked)
+            {
+                ShellRestartWatcher.TaskbarRecreated += OnTaskbarRecreated;
+                ShellRestartWatcher.Start();
+                _shellHooked = true;
+            }
+            ApplyRequestedMode();
         }
+    }
+
+    // 调用者持有 Gate，避免 Explorer 的重试覆盖较新的设置或在退出后重新隐藏。
+    private static void ApplyRequestedMode()
+    {
+        if (_requestedMode == _applied) return;
+        _applied = -1;
+        _hidden = false;
+        if (_requestedMode == 0 && !_originalCaptured) return;
 
         try
         {
             var tray = FindWindow(TrayClass, null);
             if (tray == IntPtr.Zero)
             {
-                lock (Gate) _applied = mode;
+                DebugLog.Write("[任务栏] Explorer 尚未就绪，等待重启广播后重试");
                 return;
             }
 
-            lock (Gate) CaptureOriginal(tray);
-
-            if (mode == 2)
+            if (_requestedMode == 2)
             {
-                // 自动隐藏态让资源管理器自己把工作区扩到整屏；再隐藏任务栏窗口。
-                // 不再反复 SPI_SETWORKAREA，避免与 Shell 互相覆盖导致最大化窗口跳动。
-                SetAutoHide(tray, true);
-                HideTaskbars();
-                lock (Gate)
-                {
-                    _hidden = true;
-                    _applied = 2;
-                }
-                StartWatchdog();
-                DebugLog.Write("[任务栏] 已彻底隐藏");
+                CaptureOriginal(tray);
+                if (!SetState(tray, ABS_AUTOHIDE) || !HideTaskbars() || IsWindowVisible(tray)) return;
+                _watchdog ??= new Timer(_ => WatchdogTick(), null, 100, 100);
+                _hidden = true;
             }
             else
             {
-                StopWatchdog();
-                SetAutoHide(tray, (_originalState & ABS_AUTOHIDE) != 0);
-                ShowTaskbars();
-                lock (Gate)
-                {
-                    _hidden = false;
-                    _applied = 0;
-                }
-                DebugLog.Write("[任务栏] 已恢复显示");
+                if (!SetState(tray, _originalState) || !ShowTaskbars()) return;
+                _originalCaptured = false;
             }
+            _applied = _requestedMode;
         }
         catch (Exception ex)
         {
@@ -84,96 +88,65 @@ internal static class TaskbarControl
         }
     }
 
+    private static void OnTaskbarRecreated()
+    {
+        lock (Gate)
+        {
+            if (!_shellHooked) return;
+            _applied = -1;
+            ApplyRequestedMode();
+        }
+    }
+
     /// <summary>退出前务必调用：恢复任务栏显示状态并停止看门狗。</summary>
     public static void Shutdown()
     {
-        try
-        {
-            if (IsHidden)
-            {
-                var tray = FindWindow(TrayClass, null);
-                StopWatchdog();
-                if (tray != IntPtr.Zero)
-                {
-                    SetAutoHide(tray, (_originalState & ABS_AUTOHIDE) != 0);
-                    ShowTaskbars();
-                }
-            }
-        }
-        catch { }
-
-        StopWatchdog();
         lock (Gate)
         {
-            _applied = -1;
-            _hidden = false;
-            _originalCaptured = false;
+            _requestedMode = 0;
+            ApplyRequestedMode();
+            if (_shellHooked)
+            {
+                ShellRestartWatcher.TaskbarRecreated -= OnTaskbarRecreated;
+                _shellHooked = false;
+            }
+            _watchdog?.Dispose();
+            _watchdog = null;
         }
-        _watchdog?.Dispose();
-        _watchdog = null;
     }
 
     private static void CaptureOriginal(IntPtr tray)
     {
         if (_originalCaptured) return;
-        var data = new APPBARDATA { cbSize = (uint)Marshal.SizeOf<APPBARDATA>(), hWnd = tray };
-        _originalState = (int)SHAppBarMessage(ABM_GETSTATE, ref data);
+        _originalState = ReadState(tray);
         _originalCaptured = true;
     }
 
-    private static void StartWatchdog()
-    {
-        lock (Gate)
-        {
-            _watchdogActive = true;
-        }
-        _watchdog ??= new Timer(_ => WatchdogTick(), null, 100, 100);
-    }
-
-    private static void StopWatchdog()
-    {
-        lock (Gate)
-        {
-            _watchdogActive = false;
-        }
-    }
-
-    /// <summary>看门狗：任务栏被任何外部操作重新显示时立刻隐藏。</summary>
     private static void WatchdogTick()
     {
         lock (Gate)
         {
-            if (!_watchdogActive || !_hidden) return;
+            if (_requestedMode != 2 || !_hidden) return;
+            try { HideTaskbars(); }
+            catch (Exception ex) { DebugLog.Write("[任务栏] 隐藏检查失败：" + ex.Message); }
         }
-
-        try
-        {
-            HideTaskbars();
-        }
-        catch { }
     }
 
-    private static void HideTaskbars()
+    private static bool HideTaskbars() => EnumWindows((hwnd, _) =>
     {
-        EnumWindows((hwnd, _) =>
-        {
-            var cls = ClassName(hwnd);
-            if (cls is not (TrayClass or SecondaryTrayClass)) return true;
-            if (IsWindowVisible(hwnd)) ShowWindow(hwnd, SW_HIDE);
-            return true;
-        }, IntPtr.Zero);
-    }
+        var cls = ClassName(hwnd);
+        if (cls is not (TrayClass or SecondaryTrayClass)) return true;
+        if (IsWindowVisible(hwnd)) ShowWindow(hwnd, SW_HIDE);
+        return !IsWindowVisible(hwnd);
+    }, IntPtr.Zero);
 
-    private static void ShowTaskbars()
+    private static bool ShowTaskbars() => EnumWindows((hwnd, _) =>
     {
-        EnumWindows((hwnd, _) =>
-        {
-            var cls = ClassName(hwnd);
-            if (cls is TrayClass or SecondaryTrayClass)
-                ShowWindow(hwnd, SW_SHOWNOACTIVATE);
-            return true;
-        }, IntPtr.Zero);
-    }
+        var cls = ClassName(hwnd);
+        if (cls is TrayClass or SecondaryTrayClass)
+            ShowWindow(hwnd, SW_SHOWNOACTIVATE);
+        return true;
+    }, IntPtr.Zero);
 
     private static string ClassName(IntPtr hwnd)
     {
@@ -182,15 +155,23 @@ internal static class TaskbarControl
         return n > 0 ? buf.ToString(0, n) : "";
     }
 
-    private static void SetAutoHide(IntPtr tray, bool enabled)
+    private static int ReadState(IntPtr tray)
+    {
+        var data = new APPBARDATA { cbSize = (uint)Marshal.SizeOf<APPBARDATA>(), hWnd = tray };
+        return (int)SHAppBarMessage(ABM_GETSTATE, ref data);
+    }
+
+    private static bool SetState(IntPtr tray, int state)
     {
         var data = new APPBARDATA
         {
             cbSize = (uint)Marshal.SizeOf<APPBARDATA>(),
             hWnd = tray,
-            lParam = enabled ? ABS_AUTOHIDE : ABS_ALWAYSONTOP
+            lParam = (state & ABS_AUTOHIDE) != 0 ? ABS_AUTOHIDE : ABS_ALWAYSONTOP
         };
-        SHAppBarMessage(ABM_SETSTATE, ref data);
+        return SHAppBarMessage(ABM_SETSTATE, ref data) != IntPtr.Zero
+            && (ReadState(tray) & ABS_AUTOHIDE) == (state & ABS_AUTOHIDE)
+            && FindWindow(TrayClass, null) == tray;
     }
 
     [StructLayout(LayoutKind.Sequential)]

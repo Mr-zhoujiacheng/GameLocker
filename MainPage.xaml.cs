@@ -156,7 +156,6 @@ public sealed partial class MainPage : Page
         MascotTrack.SizeChanged += (_, _) => PositionMascot();
 
         Unloaded += (_, _) => { if (ReferenceEquals(Current, this)) Current = null; };
-        UiSound.Open(); // 提前合成并打开音频设备，第一次手柄按键就有声
         HookStatusBubbles(); // 顶栏状态图标：单击快捷动作，长按进系统设置
         // 已读时间持久化：重启后仍能提示"上次打开通知中心之后到达"的通知；
         // 从未打开过时按"最近一天"起算，避免历史旧通知也亮绿点
@@ -285,6 +284,7 @@ public sealed partial class MainPage : Page
     private bool _perfRefreshAgain;   // 刷新进行中又被请求：本轮结束后再补一次
     private bool _imagesReleased;
     private int _backgroundVersion;
+    private bool _configurationWarningShown;
 
     public async void SetBackground(bool background)
     {
@@ -297,6 +297,11 @@ public sealed partial class MainPage : Page
                 LayoutTiles();
             }
             ResumePageWork();
+            if (!_configurationWarningShown && (SettingsService.IsRecovering || ConfigService.IsRecovering))
+            {
+                _configurationWarningShown = true;
+                ShowToast("部分配置无法读写，原文件已保留，本次更改仅在当前会话有效", ToastKind.Warning);
+            }
             return;
         }
 
@@ -714,7 +719,9 @@ public sealed partial class MainPage : Page
     {
         if (!_searchOpen) return;
         _searchOpen = false;
-        _searchCts?.Cancel();
+        var pendingSearch = _searchCts;
+        _searchCts = null;
+        pendingSearch?.Cancel();
         _searchHits = [];
         _appHits = [];
         _shellHits = [];
@@ -728,6 +735,7 @@ public sealed partial class MainPage : Page
     private void OnSearchTextChanged(object sender, TextChangedEventArgs e)
     {
         _searchCts?.Cancel();
+        if (!_searchOpen) return;
         var query = SearchBox.Text;
         if (string.IsNullOrWhiteSpace(query))
         {
@@ -747,12 +755,12 @@ public sealed partial class MainPage : Page
         _searchHits = _appHits;
         _searchPending = true;
         RenderSearchHits();
-        SearchIndexAsync(query);
+        _ = SearchIndexAsync(query);
     }
 
     /// <summary>后台检索：先查 shell:AppsFolder（控制面板等系统应用），再查 Windows 文件索引；
     /// 停手 250ms 后才查，并丢弃过期返回，避免每个字符都打一次索引</summary>
-    private async void SearchIndexAsync(string query)
+    private async Task SearchIndexAsync(string query)
     {
         var cts = new CancellationTokenSource();
         _searchCts = cts;
@@ -765,7 +773,7 @@ public sealed partial class MainPage : Page
             var shellTask = Task.Run(() => AppSearchService.SearchShellApps(query, 9), cts.Token);
 
             var index = await indexTask.WaitAsync(cts.Token);
-            if (cts.IsCancellationRequested || cts != _searchCts || !_searchOpen) return;
+            if (cts.IsCancellationRequested || cts != _searchCts || !_searchOpen || !_pageWorkActive) return;
 
             // 快捷方式结果补进"启动器/磁贴"一组（索引就绪前这一组只有磁贴命中）
             var names = _appHits.Select(a => a.Name).ToHashSet(StringComparer.OrdinalIgnoreCase);
@@ -781,7 +789,7 @@ public sealed partial class MainPage : Page
             }
 
             var shell = await shellTask;
-            if (cts.IsCancellationRequested || cts != _searchCts || !_searchOpen) return;
+            if (cts.IsCancellationRequested || cts != _searchCts || !_searchOpen || !_pageWorkActive) return;
 
             // 同名已经在前面出现的不重复列出（先出系统应用，文件索引慢，别一起等）
             _shellHits = shell.Where(s => !names.Contains(s.Name)).ToList();
@@ -790,7 +798,7 @@ public sealed partial class MainPage : Page
             RenderSearchHits();
 
             var files = await AppSearchService.SearchFilesAsync(query, 9, cts.Token);
-            if (cts.IsCancellationRequested || cts != _searchCts || !_searchOpen) return;
+            if (cts.IsCancellationRequested || cts != _searchCts || !_searchOpen || !_pageWorkActive) return;
             _fileHits = files
                 .Where(f => !names.Contains(f.Name))
                 .Where(f => !_appHits.Any(a =>
@@ -801,9 +809,23 @@ public sealed partial class MainPage : Page
             RenderSearchHits();
             DebugLog.Write($"搜索「{query.Trim()}」: 磁贴/快捷={_appHits.Count} 系统应用={_shellHits.Count} 文件={_fileHits.Count}");
         }
-        catch (OperationCanceledException)
+        catch (OperationCanceledException) when (cts.IsCancellationRequested)
         {
-            // 输入变化导致的取消：等新的查询结果
+            // 输入变化或页面离开导致的取消：等新的查询结果
+        }
+        catch (Exception ex)
+        {
+            DebugLog.Write($"搜索「{query.Trim()}」失败：{ex}");
+            if (cts == _searchCts)
+            {
+                _searchPending = false;
+                if (_searchOpen && _pageWorkActive) RenderSearchHits();
+            }
+        }
+        finally
+        {
+            if (cts == _searchCts) _searchCts = null;
+            cts.Dispose();
         }
     }
 
@@ -938,9 +960,13 @@ public sealed partial class MainPage : Page
         // 供电切换由全局 PowerProfileWatcher 应用，页面只负责在应用后同步读数
         PowerProfileWatcher.Applied += OnPowerProfileApplied;
         _pageWorkActive = true;
-        // 音乐小组件和猫娘共用系统媒体控制的播放状态。
+        if (_fileTransferOpen && !FileTransferService.IsRunning)
+        {
+            FileTransferService.Start(FileTransferService.SendFolder, FileTransferService.ReceiveFolder);
+            RenderFileTransfer();
+        }
         SystemMediaService.StateChanged += OnMusicStateChanged;
-        _ = SystemMediaService.InitAsync();
+        SyncMediaConsumers();
         RefreshMusicState();
         Mascot.SetPageActive(!_moving);
         UpdateClock();
@@ -955,7 +981,7 @@ public sealed partial class MainPage : Page
         RefreshWallpaperTiles();
         // 天气小组件：数据在后台线程取得，事件 marshal 后刷新磁贴；窗口显示时按需补一次刷新（30 分钟过期）
         WeatherService.StateChanged += OnWeatherChanged;
-        WeatherService.EnsureFresh();
+        if (_weatherRefs.Count > 0) WeatherService.EnsureFresh();
         RefreshWeatherTiles();
         // 修改器小组件：下载/搜索在后台线程执行，进度经提示条反馈
         TrainerService.StatusChanged += OnTrainerStatus;
@@ -1235,10 +1261,23 @@ public sealed partial class MainPage : Page
         PausePageWork();
     }
 
+    internal void PrepareForExit()
+    {
+        ++_backgroundVersion;
+        CancelPendingLaunch();
+        _dlPeekBack?.Stop();
+        _dlPeekBack = null;
+        CloseFileTransfer();
+        PausePageWork();
+        _clockTimer.Stop();
+    }
+
     private void PausePageWork()
     {
         if (!_pageWorkActive) return;
         _pageWorkActive = false;
+        PauseIdleFileTransfer();
+        CloseSearch();
         ApplyEditHeader(animate: false);
         Mascot.SetPageActive(false);
         PowerProfileWatcher.Applied -= OnPowerProfileApplied;
@@ -1249,6 +1288,8 @@ public sealed partial class MainPage : Page
         CancelLongPress();
         _clockTimer.Stop();
         SystemMediaService.StateChanged -= OnMusicStateChanged;
+        SystemMediaService.Pause();
+        RefreshMusicState();
         SlideshowService.CurrentChanged -= OnSlideshowChanged;
         SlideshowService.Stop();
         WallpaperService.Changed -= OnWallpaperChanged;
@@ -2036,6 +2077,8 @@ public sealed partial class MainPage : Page
 
         // 主页下方固定抽屉区域：按面板实际宽度重排（内容随宽度换行、高度随内容增长）
         RenderDrawerPanel();
+        SyncMediaConsumers();
+        if (_pageWorkActive && _weatherRefs.Count > 0) WeatherService.EnsureFresh();
 
         // 磁贴是每次重排新建的 Border，CreateTile 只画默认/标记/抓取描边；
         // 选中框由 UpdateSelection 叠加。呼出显示、组展开/收起、返回主页等都会触发
@@ -2044,7 +2087,20 @@ public sealed partial class MainPage : Page
         RefreshSettingsBadge();
     }
 
-    private void OnMascotTileViewChanged(object? sender, ScrollViewerViewChangedEventArgs e) => PositionMascot();
+    private void SyncMediaConsumers()
+    {
+        if (!_pageWorkActive) return;
+        if (_musicRefs.Count > 0 || MascotLayer.Visibility == Visibility.Visible)
+            _ = SystemMediaService.InitAsync(includeTrackDetails: _musicRefs.Count > 0);
+        else
+            SystemMediaService.Pause();
+    }
+
+    private void OnMascotTileViewChanged(object? sender, ScrollViewerViewChangedEventArgs e)
+    {
+        PositionMascot();
+        SyncMediaConsumers();
+    }
 
     internal bool IsMascotPointerCaptured => Mascot.IsPointerCaptured;
 
@@ -4797,22 +4853,7 @@ public sealed partial class MainPage : Page
         }
         else if (item.WidgetKind == WidgetKind.Monitor)
         {
-            // 性能监控小组件：A/点击 = 开启/关闭置顶悬浮监控条
-            MonitorService.Toggle();
-            RefreshMonitorTiles();
-            if (!MonitorService.IsRunning)
-            {
-                ShowToast("监控已关闭", ToastKind.Warning, sound: UiSoundKind.Select);
-            }
-            else if (MonitorService.LastError.Length > 0)
-            {
-                // 未提权且用户取消了 UAC：其余指标正常，仅帧率不可用
-                ShowToast("监控已开启（" + MonitorService.LastError + "）", ToastKind.Warning, sound: UiSoundKind.Select);
-            }
-            else
-            {
-                ShowToast("监控已开启", ToastKind.Success, sound: UiSoundKind.Select);
-            }
+            _ = ChangeMonitoringAsync(stopOnly: false);
         }
         else if (item.WidgetKind == WidgetKind.FileTransfer)
         {
@@ -5191,18 +5232,36 @@ public sealed partial class MainPage : Page
 
         if (item.Kind == LaunchKind.Widget && item.WidgetKind == WidgetKind.Monitor)
         {
-            // 性能监控：Y 键直接关闭监控（未开启时无动作）
-            if (MonitorService.IsRunning)
-            {
-                MonitorService.Stop();
-                RefreshMonitorTiles();
-                ShowToast("监控已关闭", ToastKind.Warning, sound: UiSoundKind.Select);
-            }
+            _ = ChangeMonitoringAsync(stopOnly: true);
             return;
         }
         if (item.Kind is LaunchKind.App or LaunchKind.Url or LaunchKind.Folder
             || item is { Kind: LaunchKind.Widget, WidgetKind: WidgetKind.Trainer })
             CloseItem(item);
+    }
+
+    private async Task ChangeMonitoringAsync(bool stopOnly)
+    {
+        if (App.Main?.IsExiting == true || MonitorService.IsStopping) return;
+        try
+        {
+            if (MonitorService.IsRunning) await MonitorService.StopAsync();
+            else if (stopOnly) return;
+            else MonitorService.Start();
+            if (App.Main?.IsExiting == true) return;
+            RefreshMonitorTiles();
+            if (!MonitorService.IsRunning)
+                ShowToast("监控已关闭", ToastKind.Warning, sound: UiSoundKind.Select);
+            else if (MonitorService.LastError.Length > 0)
+                ShowToast("监控已开启（" + MonitorService.LastError + "）", ToastKind.Warning, sound: UiSoundKind.Select);
+            else
+                ShowToast("监控已开启", ToastKind.Success, sound: UiSoundKind.Select);
+        }
+        catch (Exception ex)
+        {
+            DebugLog.Write("[监控] 切换失败：" + ex.Message);
+            if (App.Main?.IsExiting != true) ShowToast("切换监控失败", ToastKind.Warning);
+        }
     }
 
     /// <summary>当前选中的是否为顶层图片组磁贴（决定 LB/RB 是切图还是翻页）</summary>
@@ -5558,6 +5617,7 @@ public sealed partial class MainPage : Page
     private Microsoft.UI.Xaml.DispatcherTimer? _perfStatusTimer;   // 面板内状态提示的自动恢复计时
     private bool _perfTelemetryLoading;
     private int _perfTelemetryVersion;
+    private long _nextTelemetryAt;
 
     /// <summary>设备状态数值按数据类型着色：CPU 系暖色、GPU 系冷色、电池绿色、核心数中性；无数据弱化</summary>
     private static void Stamp(TextBlock target, double value, string unit, Brush color)
@@ -5604,7 +5664,9 @@ public sealed partial class MainPage : Page
 
     private async Task RefreshDeviceStatusAsync()
     {
-        if (!_perfOpen || _perfTelemetryLoading) return;
+        var now = Environment.TickCount64;
+        if (!_perfOpen || _perfTelemetryLoading || now < _nextTelemetryAt) return;
+        _nextTelemetryAt = now + 3000;
         var version = _perfTelemetryVersion;
         _perfTelemetryLoading = true;
         try
@@ -6235,12 +6297,17 @@ public sealed partial class MainPage : Page
         try
         {
             var disabling = _perfPowerState.Enabled;
-            var result = await Task.Run(() => disabling ? CpuPowerService.Disable() : CpuPowerService.Enable());
-            // 关闭功耗接管：清除保存的目标值，避免下次登录又把限制写回去
-            if (disabling && result.Ok)
-                SettingsService.Update(s => { s.CpuPowerPl1 = 0; s.CpuPowerPl2 = 0; s.CpuPowerFppt = 0; s.CpuPowerTakeover = false; });
+            var result = disabling
+                ? await CpuPowerService.DisableAsync()
+                : await Task.Run(CpuPowerService.Enable);
             _perfPowerState = await Task.Run(CpuPowerService.Read);
             ShowToast(result.Message, result.Ok ? ToastKind.Success : ToastKind.Warning);
+        }
+        catch (Exception ex)
+        {
+            DebugLog.Write("[功耗] 切换接管失败：" + ex.Message);
+            _perfPowerState = await Task.Run(CpuPowerService.Read);
+            ShowToast("功耗接管切换未完成，请检查设置能否保存", ToastKind.Warning);
         }
         finally { _perfPowerLoading = false; RenderCpuPower(); }
     }
@@ -6653,6 +6720,7 @@ public sealed partial class MainPage : Page
         _perfOpen = true;
         ++_perfSessionVersion;
         ++_perfTelemetryVersion;
+        _nextTelemetryAt = 0;
         ClearTelemetryValues();
         PerfTelemetryHint.Text = "正在读取设备传感器…";
         _ = RefreshDeviceStatusAsync();
@@ -7094,8 +7162,17 @@ public sealed partial class MainPage : Page
         FileTransferOverlay.Visibility = Visibility.Collapsed;
     }
 
-    private void OnFileTransferChanged() =>
-        DispatcherQueue.TryEnqueue(() => { if (_fileTransferOpen) RenderFileTransfer(); });
+    private void PauseIdleFileTransfer()
+    {
+        if (_fileTransferOpen) FileTransferService.StopIfIdle();
+    }
+
+    private void OnFileTransferChanged() => DispatcherQueue.TryEnqueue(() =>
+    {
+        if (!_fileTransferOpen) return;
+        if (_pageWorkActive) RenderFileTransfer();
+        else PauseIdleFileTransfer();
+    });
 
     private void OnFileTransferOverlaySizeChanged(object sender, SizeChangedEventArgs e) =>
         FitFileTransferPanel();
@@ -7442,14 +7519,21 @@ public sealed partial class MainPage : Page
             refs.PlayGlyph.Glyph = glyph;
             if (cover != null)
             {
-                refs.CoverBox.Background = new ImageBrush
+                if (refs.CoverBox.Background is not ImageBrush brush || !ReferenceEquals(brush.ImageSource, cover))
                 {
-                    ImageSource = cover,
-                    Stretch = Microsoft.UI.Xaml.Media.Stretch.UniformToFill
-                };
+                    refs.CoverBox.Background = new ImageBrush
+                    {
+                        ImageSource = cover,
+                        Stretch = Microsoft.UI.Xaml.Media.Stretch.UniformToFill
+                    };
+                }
                 refs.CoverBox.Visibility = Visibility.Visible;
             }
-            else refs.CoverBox.Visibility = Visibility.Collapsed;
+            else
+            {
+                refs.CoverBox.Background = null;
+                refs.CoverBox.Visibility = Visibility.Collapsed;
+            }
         }
     }
 
@@ -7651,6 +7735,7 @@ public sealed partial class MainPage : Page
             var minutes = _dlMinutes;
             var after = _dlAfter;
             await Task.Run(() => DownloadModeService.Enter(minutes, after));
+            if (App.Main?.IsExiting == true) return;
 
             _dlRunning = true;
             _dlFocus = 0;
@@ -7703,7 +7788,7 @@ public sealed partial class MainPage : Page
         if (_dlBusy) return;
         var after = DownloadModeService.AfterAction;
         await ExitDownloadModeAsync(showToast: false);
-        if (after is PowerAction.Sleep or PowerAction.Hibernate or PowerAction.Shutdown)
+        if (App.Main?.IsExiting != true && after is PowerAction.Sleep or PowerAction.Hibernate or PowerAction.Shutdown)
             _ = Task.Run(() => PowerService.Execute(after));
     }
 
@@ -8819,28 +8904,29 @@ public sealed partial class MainPage : Page
         using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(25));
         _pendingLaunch = timeout;
         var token = timeout.Token;
+        var hiddenForLaunch = AutoHideAfterLaunch && App.Main is not null;
         try
         {
-            if (App.Main is { } main) await main.HideForLaunchAsync(timeout.Token);
+            if (hiddenForLaunch && App.Main is { } main) await main.HideForLaunchAsync(timeout.Token);
             // 等服务完成取消清理，避免界面先报超时，而后台仍在打开程序或占着同一目标。
             var result = await Task.Run(() => LaunchService.LaunchOrActivateAsync(item, token));
             if (!result.Success)
             {
-                App.Main?.ShowFromTray();
+                if (hiddenForLaunch) App.Main?.ShowFromTray();
                 ShowToast($"{item.Name}：{result.Message}", ToastKind.Warning);
             }
         }
         catch (OperationCanceledException)
         {
             timeout.Cancel();
-            App.Main?.ShowFromTray();
+            if (hiddenForLaunch) App.Main?.ShowFromTray();
             ShowToast("已取消或超时，不会重复启动", ToastKind.Warning);
         }
         catch (Exception ex)
         {
             timeout.Cancel();
             LaunchService.Diag($"界面启动失败: {ex.GetType().Name} {ex.Message}");
-            App.Main?.ShowFromTray();
+            if (hiddenForLaunch) App.Main?.ShowFromTray();
             ShowToast($"打开失败：{ex.Message}", ToastKind.Warning);
         }
         finally { _pendingLaunch = null; _launchInProgress = false; }

@@ -1,3 +1,4 @@
+using Microsoft.Win32.SafeHandles;
 using System.Diagnostics;
 using System.Runtime.InteropServices;
 using System.Text;
@@ -31,11 +32,21 @@ namespace GameLocker.Services;
     private static readonly object _lifecycleLock = new();
     private static IntPtr _frameGenTargetWindow;
     private static readonly WinEventProc _foregroundCallback = OnForegroundChanged;
-    private static Thread? _foregroundThread;
-    private static uint _foregroundThreadId;
     private static IntPtr _foregroundHook;
-    private static System.Threading.Timer? _frameGenFallbackTimer;
-    private static bool _watching;
+    internal static event Action? ForegroundWindowChanged;
+
+    internal static void StartForegroundEvents()
+    {
+        if (_foregroundHook == IntPtr.Zero)
+            _foregroundHook = SetWinEventHook(3, 3, IntPtr.Zero, _foregroundCallback, 0, 0, 0);
+        RefreshFrameGenTarget();
+    }
+
+    internal static void StopForegroundEvents()
+    {
+        if (_foregroundHook != IntPtr.Zero) UnhookWinEvent(_foregroundHook);
+        _foregroundHook = IntPtr.Zero;
+    }
 
     /// <summary>独立于冻结目标的插帧候选窗口；零表示当前没有可用候选。</summary>
     public static IntPtr FrameGenTargetWindow
@@ -87,10 +98,8 @@ namespace GameLocker.Services;
         try
         {
             // 使用事件携带的 HWND，不重新采样，避免漏掉“桌面 -> 启动器”的短暂切换。
-            lock (_frameGenLock)
-            {
-                if (_watching) UpdateFrameGenTarget(hwnd);
-            }
+            lock (_frameGenLock) UpdateFrameGenTarget(hwnd);
+            ForegroundWindowChanged?.Invoke();
         }
         catch (Exception ex)
         {
@@ -99,9 +108,9 @@ namespace GameLocker.Services;
         }
     }
 
-    /// <summary>已被本小组件挂起的进程号集合：系统没有"是否被挂起"的查询接口，由本服务记录；
-    /// 按进程号而非单个标记记录，避免"冻结 A 后切到 B，A 再也无法解冻"（多进程访问，加锁保护）</summary>
-    private static readonly HashSet<int> _frozen = [];
+    // 持有原始进程句柄，退出恢复时不会误操作复用 PID 的新进程。
+    private static readonly Dictionary<int, SafeProcessHandle> _frozen = [];
+    private static bool _stopping;
 
     /// <summary>当前前台应用是否已被本小组件冻结</summary>
     public static bool IsFrozen
@@ -110,7 +119,7 @@ namespace GameLocker.Services;
         {
             var app = Current;
             if (app is null) return false;
-            lock (_frozen) return _frozen.Contains(app.ProcessId);
+            lock (_frozen) return _frozen.TryGetValue(app.ProcessId, out var handle) && IsAlive(handle);
         }
     }
 
@@ -124,47 +133,7 @@ namespace GameLocker.Services;
     public static void Start()
     {
         lock (_lifecycleLock)
-        {
-            if (_timer is not null) return;
-            lock (_frameGenLock) _watching = true;
-            using var ready = new ManualResetEventSlim();
-            _foregroundThread = new Thread(() =>
-            {
-                // OUTOFCONTEXT 事件必须在注册线程泵消息，不能依赖调用方是 UI 线程。
-                _foregroundThreadId = GetCurrentThreadId();
-                PeekMessage(out _, IntPtr.Zero, 0, 0, 0);
-                _foregroundHook = SetWinEventHook(3, 3, IntPtr.Zero, _foregroundCallback, 0, 0, 0);
-                ready.Set();
-                if (_foregroundHook == IntPtr.Zero) return;
-                try
-                {
-                    while (GetMessage(out var message, IntPtr.Zero, 0, 0) > 0)
-                    {
-                        TranslateMessage(ref message);
-                        DispatchMessage(ref message);
-                    }
-                }
-                finally
-                {
-                    UnhookWinEvent(_foregroundHook);
-                    _foregroundHook = IntPtr.Zero;
-                }
-            }) { IsBackground = true, Name = "ForegroundWindowEvents" };
-            _foregroundThread.Start();
-            ready.Wait();
-            if (_foregroundHook == IntPtr.Zero)
-            {
-                Debug.WriteLine("[Foreground] 前台事件注册失败，插帧候选降级为 400ms 采样，可能漏掉短暂桌面切换");
-                _frameGenFallbackTimer = new System.Threading.Timer(_ =>
-                {
-                    lock (_frameGenLock)
-                    {
-                        if (_watching) RefreshFrameGenTarget();
-                    }
-                }, null, 0, PollMsForeground);
-            }
-            _timer = new System.Threading.Timer(_ => Poll(), null, 0, _pollMs);
-        }
+            _timer ??= new System.Threading.Timer(_ => Poll(), null, 0, _pollMs);
     }
 
     /// <summary>暂停轮询，保留冻结记录，恢复后仍可解冻原来的应用。</summary>
@@ -175,18 +144,8 @@ namespace GameLocker.Services;
 
     private static void PauseCore()
     {
-        lock (_frameGenLock) _watching = false;
         _timer?.Dispose();
         _timer = null;
-        _frameGenFallbackTimer?.Dispose();
-        _frameGenFallbackTimer = null;
-        if (_foregroundThread is not null)
-        {
-            if (_foregroundThread.IsAlive) PostThreadMessage(_foregroundThreadId, 0x0012, UIntPtr.Zero, IntPtr.Zero);
-            _foregroundThread.Join();
-            _foregroundThread = null;
-            _foregroundThreadId = 0;
-        }
     }
 
     /// <summary>停止轮询并清除当前状态（退出时调用）</summary>
@@ -197,7 +156,23 @@ namespace GameLocker.Services;
             PauseCore();
             lock (_frameGenLock) _frameGenTargetWindow = IntPtr.Zero;
             Current = null;
-            lock (_frozen) _frozen.Clear();
+        }
+    }
+
+    internal static void ResumeFrozenOnExit()
+    {
+        lock (_frozen)
+        {
+            _stopping = true;
+            foreach (var (pid, handle) in _frozen)
+            {
+                using (handle)
+                {
+                    if (IsAlive(handle) && NtResumeProcess(handle) != 0)
+                        DebugLog.Write($"[前台应用] 退出时恢复冻结进程 {pid} 失败");
+                }
+            }
+            _frozen.Clear();
         }
     }
 
@@ -216,22 +191,32 @@ namespace GameLocker.Services;
     {
         var app = Current;
         if (app is null || IsProtected(app)) return (false, false);
-        var wasFrozen = IsFrozen;
-        var handle = OpenProcess(ProcessSuspendResume, false, app.ProcessId);
-        if (handle == IntPtr.Zero) return (false, wasFrozen);   // 权限不足（多为受保护进程）
-        try
+        bool frozen;
+        lock (_frozen)
         {
-            var nt = wasFrozen ? NtResumeProcess(handle) : NtSuspendProcess(handle);
-            if (nt != 0) return (false, wasFrozen);
-            lock (_frozen)
+            if (_stopping) return (false, false);
+            if (_frozen.TryGetValue(app.ProcessId, out var previous) && IsAlive(previous))
             {
-                if (wasFrozen) _frozen.Remove(app.ProcessId);
-                else _frozen.Add(app.ProcessId);
+                if (NtResumeProcess(previous) != 0) return (false, true);
+                _frozen.Remove(app.ProcessId);
+                previous.Dispose();
+                frozen = false;
             }
-            StateChanged?.Invoke();
-            return (true, !wasFrozen);
+            else
+            {
+                if (_frozen.Remove(app.ProcessId, out var ended)) ended.Dispose();
+                var handle = new SafeProcessHandle(OpenProcess(ProcessSuspendResume | Synchronize, false, app.ProcessId), ownsHandle: true);
+                if (handle.IsInvalid || NtSuspendProcess(handle) != 0)
+                {
+                    handle.Dispose();
+                    return (false, false);
+                }
+                _frozen.Add(app.ProcessId, handle);
+                frozen = true;
+            }
         }
-        finally { CloseHandle(handle); }
+        StateChanged?.Invoke();
+        return (true, frozen);
     }
 
     /// <summary>强制结束当前前台应用，成功后清空当前应用（下一次轮询会重新检测）</summary>
@@ -245,7 +230,10 @@ namespace GameLocker.Services;
         {
             if (!TerminateProcess(handle, 1)) return false;
             Current = null;
-            lock (_frozen) _frozen.Remove(app.ProcessId);
+            lock (_frozen)
+            {
+                if (_frozen.Remove(app.ProcessId, out var frozen)) frozen.Dispose();
+            }
             StateChanged?.Invoke();
             return true;
         }
@@ -266,10 +254,6 @@ namespace GameLocker.Services;
         if (Interlocked.Exchange(ref _polling, 1) == 1) return;   // 上一轮未结束：跳过
         try
         {
-            lock (_frameGenLock)
-            {
-                if (_watching) RefreshFrameGenTarget();
-            }
             PruneFrozen();
             var hwnd = GetForegroundWindow();
             if (hwnd == IntPtr.Zero) return;
@@ -293,19 +277,20 @@ namespace GameLocker.Services;
     /// <summary>清理已退出的冻结记录（进程被结束/顶替）：集合通常只有 0~1 项，逐项探测开销可忽略</summary>
     private static void PruneFrozen()
     {
-        if (_frozen.Count == 0) return;
-        List<int> dead = [];
+        int[] dead;
         lock (_frozen)
         {
-            foreach (var pid in _frozen)
+            if (_frozen.Count == 0) return;
+            dead = _frozen.Where(entry => !IsAlive(entry.Value)).Select(entry => entry.Key).ToArray();
+            foreach (var pid in dead)
             {
-                try { using var p = Process.GetProcessById(pid); }
-                catch { dead.Add(pid); }
+                if (_frozen.Remove(pid, out var handle)) handle.Dispose();
             }
-            foreach (var pid in dead) _frozen.Remove(pid);
         }
-        if (dead.Count > 0) StateChanged?.Invoke();
+        if (dead.Length > 0) StateChanged?.Invoke();
     }
+
+    private static bool IsAlive(SafeProcessHandle handle) => WaitForSingleObject(handle, 0) == 0x102;
 
     /// <summary>图标未缓存时后台提取，完成后通知刷新（磁贴据此把占位字形换成应用图标）</summary>
     private static async Task ExtractIconAsync(string exePath)
@@ -347,36 +332,11 @@ namespace GameLocker.Services;
     private delegate void WinEventProc(IntPtr hook, uint eventType, IntPtr hwnd,
         int objectId, int childId, uint threadId, uint eventTime);
 
-    [StructLayout(LayoutKind.Sequential)]
-    private struct NativeMessage
-    {
-        public IntPtr Hwnd;
-        public uint Message;
-        public UIntPtr WParam;
-        public IntPtr LParam;
-        public uint Time;
-        public int X;
-        public int Y;
-        public uint Private;
-    }
-
     [DllImport("user32.dll")]
     private static extern IntPtr SetWinEventHook(uint eventMin, uint eventMax, IntPtr module,
         WinEventProc callback, uint processId, uint threadId, uint flags);
     [DllImport("user32.dll")]
     private static extern bool UnhookWinEvent(IntPtr hook);
-    [DllImport("kernel32.dll")]
-    private static extern uint GetCurrentThreadId();
-    [DllImport("user32.dll")]
-    private static extern int GetMessage(out NativeMessage message, IntPtr hwnd, uint min, uint max);
-    [DllImport("user32.dll")]
-    private static extern bool PeekMessage(out NativeMessage message, IntPtr hwnd, uint min, uint max, uint remove);
-    [DllImport("user32.dll")]
-    private static extern bool TranslateMessage(ref NativeMessage message);
-    [DllImport("user32.dll")]
-    private static extern IntPtr DispatchMessage(ref NativeMessage message);
-    [DllImport("user32.dll")]
-    private static extern bool PostThreadMessage(uint threadId, uint message, UIntPtr wParam, IntPtr lParam);
     [DllImport("user32.dll")]
     private static extern bool IsWindow(IntPtr hwnd);
     [DllImport("user32.dll")]
@@ -388,6 +348,7 @@ namespace GameLocker.Services;
 
     private const uint ProcessTerminate = 0x0001;
     private const uint ProcessSuspendResume = 0x0800;
+    private const uint Synchronize = 0x00100000;
 
     [DllImport("user32.dll")]
     private static extern IntPtr GetForegroundWindow();
@@ -410,9 +371,12 @@ namespace GameLocker.Services;
     [DllImport("kernel32.dll", SetLastError = true)]
     private static extern bool TerminateProcess(IntPtr hProcess, uint uExitCode);
 
-    [DllImport("ntdll.dll")]
-    private static extern int NtSuspendProcess(IntPtr processHandle);
+    [DllImport("kernel32.dll")]
+    private static extern uint WaitForSingleObject(SafeProcessHandle handle, uint milliseconds);
 
     [DllImport("ntdll.dll")]
-    private static extern int NtResumeProcess(IntPtr processHandle);
+    private static extern int NtSuspendProcess(SafeProcessHandle processHandle);
+
+    [DllImport("ntdll.dll")]
+    private static extern int NtResumeProcess(SafeProcessHandle processHandle);
 }

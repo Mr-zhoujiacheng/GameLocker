@@ -8,22 +8,17 @@ internal static class EnergySaverService
     private static readonly Guid EnergySaver = new("a1841308-3541-4fab-bc81-f71556f20b4a");
     private static readonly Guid Balanced = new("381b4222-f694-41f0-9685-ff5bb260df2e");
 
-    public static bool IsEnergySaver()
+    public static bool IsEnergySaver() => ReadActiveScheme() == EnergySaver;
+
+    internal static Guid? ReadActiveScheme()
     {
         try
         {
-            if (PowerGetActiveScheme(IntPtr.Zero, out var pointer) != 0 || pointer == IntPtr.Zero) return false;
-            try
-            {
-                var scheme = Marshal.PtrToStructure<Guid>(pointer);
-                return scheme == EnergySaver;
-            }
-            finally
-            {
-                LocalFree(pointer);
-            }
+            if (PowerGetActiveScheme(IntPtr.Zero, out var pointer) != 0 || pointer == IntPtr.Zero) return null;
+            try { return Marshal.PtrToStructure<Guid>(pointer); }
+            finally { LocalFree(pointer); }
         }
-        catch { return false; }
+        catch { return null; }
     }
 
     public static bool SetEnergySaver(bool on)

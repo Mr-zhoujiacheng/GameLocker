@@ -57,10 +57,11 @@ internal static class PawnIoMsr
     /// 打开 PawnIO 设备并加载 IntelMSR 模块（只尝试一次）。
     /// <paramref name="installIfMissing"/> 只在提权助手里传 true：驱动缺失时静默安装。
     /// </summary>
-    public static bool EnsureReady(bool installIfMissing = false)
+    public static bool EnsureReady(bool installIfMissing = false, CancellationToken cancellationToken = default)
     {
         lock (Gate)
         {
+            cancellationToken.ThrowIfCancellationRequested();
             if (_tried) return Available;
             _tried = true;
             try
@@ -69,7 +70,7 @@ internal static class PawnIoMsr
                 if (_device == new IntPtr(-1) && installIfMissing)
                 {
                     Status = "驱动未安装，正在静默安装…";
-                    var installResult = InstallDriver();
+                    var installResult = InstallDriver(cancellationToken);
                     if (installResult.Length > 0)
                     {
                         Status = installResult;
@@ -78,6 +79,7 @@ internal static class PawnIoMsr
                     // 安装器返回成功后设备节点可能还要一小会儿才就绪，短暂重试几次
                     for (var attempt = 0; attempt < 5 && _device == new IntPtr(-1); attempt++)
                     {
+                        cancellationToken.ThrowIfCancellationRequested();
                         Thread.Sleep(400);
                         _device = OpenDevice();
                     }
@@ -105,6 +107,10 @@ internal static class PawnIoMsr
                 Status = "就绪";
                 return true;
             }
+            catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+            {
+                throw;
+            }
             catch (Exception ex)
             {
                 Status = "PawnIO 异常：" + ex.Message;
@@ -117,10 +123,12 @@ internal static class PawnIoMsr
         CreateFileW(DevicePath, 0xC0000000u, 3u, IntPtr.Zero, 3u, 0x80u, IntPtr.Zero);
 
     /// <summary>用随包附带的安装器静默安装驱动；成功返回空串，失败返回原因</summary>
-    private static string InstallDriver()
+    private static string InstallDriver(CancellationToken cancellationToken)
     {
         var exe = Path.Combine(AppContext.BaseDirectory, "PawnIO_setup.exe");
         if (!File.Exists(exe)) return "未找到 PawnIO_setup.exe，无法安装驱动";
+        cancellationToken.ThrowIfCancellationRequested();
+        Process? process = null;
         try
         {
             var psi = new ProcessStartInfo(exe, "-install -silent")
@@ -128,18 +136,36 @@ internal static class PawnIoMsr
                 UseShellExecute = false,
                 CreateNoWindow = true
             };
-            using var p = Process.Start(psi);
-            if (p is null) return "PawnIO 安装器启动失败";
-            p.WaitForExit(90_000);
+            process = Process.Start(psi);
+            if (process is null) return "PawnIO 安装器启动失败";
+            using var timeout = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+            timeout.CancelAfter(TimeSpan.FromSeconds(90));
+            try { process.WaitForExitAsync(timeout.Token).GetAwaiter().GetResult(); }
+            catch (OperationCanceledException) when (timeout.IsCancellationRequested)
+            {
+                try
+                {
+                    if (!process.HasExited) process.Kill(entireProcessTree: true);
+                    process.WaitForExit(3000);
+                }
+                catch (Exception ex) { DebugLog.Write("[PawnIO] 安装器终止失败：" + ex.Message); }
+                if (cancellationToken.IsCancellationRequested) throw;
+                return "PawnIO 安装失败：等待 90 秒超时，已终止本次安装器";
+            }
             // 0=成功；3010=需要重启（此时驱动一般已可用）
-            return p.HasExited && p.ExitCode is 0 or 3010
+            return process.ExitCode is 0 or 3010
                 ? ""
-                : "PawnIO 安装失败 exit=" + (p.HasExited ? p.ExitCode : -1);
+                : "PawnIO 安装失败 exit=" + process.ExitCode;
+        }
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+        {
+            throw;
         }
         catch (Exception ex)
         {
             return "PawnIO 安装异常：" + ex.Message;
         }
+        finally { process?.Dispose(); }
     }
 
     /// <summary>读取嵌入的 IntelMSR 模块（签名校验由驱动完成）</summary>

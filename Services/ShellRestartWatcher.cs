@@ -49,11 +49,11 @@ internal static class ShellRestartWatcher
         };
         RegisterClassEx(ref wc);
 
+        _taskbarCreatedMessage = RegisterTaskbarCreatedMessage();
         var hwnd = CreateWindowEx(0, className, "GameLockerShellRestart", 0,
             0, 0, 0, 0, IntPtr.Zero, IntPtr.Zero, instance, IntPtr.Zero);
         if (hwnd == IntPtr.Zero) return;
-
-        _taskbarCreatedMessage = RegisterWindowMessage("TaskbarCreated");
+        AllowTaskbarCreatedMessage(hwnd, _taskbarCreatedMessage);
 
         while (GetMessage(out var msg, IntPtr.Zero, 0, 0) > 0)
         {
@@ -130,6 +130,17 @@ internal static class ShellRestartWatcher
     [DllImport("user32.dll")]
     private static extern IntPtr DispatchMessage(ref MSG msg);
 
+    internal static uint RegisterTaskbarCreatedMessage() => RegisterWindowMessage("TaskbarCreated");
+
+    internal static void AllowTaskbarCreatedMessage(IntPtr hwnd, uint message)
+    {
+        // Explorer 通常以普通权限运行，允许它向已提权的窗口发送此广播。
+        if (message != 0) ChangeWindowMessageFilterEx(hwnd, message, 1, IntPtr.Zero);
+    }
+
     [DllImport("user32.dll", CharSet = CharSet.Unicode)]
     private static extern uint RegisterWindowMessage(string message);
+
+    [DllImport("user32.dll")]
+    private static extern bool ChangeWindowMessageFilterEx(IntPtr hwnd, uint message, uint action, IntPtr changeInfo);
 }

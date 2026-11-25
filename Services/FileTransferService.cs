@@ -139,8 +139,21 @@ public static class FileTransferService
         _beacon = new System.Threading.Timer(_ => Beacon(), null, 300, 2000);
     }
 
+    public static void StopIfIdle()
+    {
+        lock (Gate)
+        {
+            if (!_busy) StopLocked();
+        }
+    }
+
     /// <summary>停止发现与监听，断开连接</summary>
     public static void Stop()
+    {
+        lock (Gate) StopLocked();
+    }
+
+    private static void StopLocked()
     {
         if (Interlocked.Exchange(ref _running, 0) == 0) return;
         _beacon?.Dispose();
@@ -160,6 +173,7 @@ public static class FileTransferService
         lock (Gate)
         {
             Peers.Clear();
+            _lastSeen.Clear();
             LocalFiles.Clear();
             _status = "";
             _progress = 0;
@@ -202,23 +216,55 @@ public static class FileTransferService
     /// <summary>连接指定设备（供界面选择对端后调用）</summary>
     public static async Task ConnectAsync(Peer peer)
     {
-        if (!IsRunning || peer is null) return;
-        if (await EnsureConnectedAsync(peer))
+        if (peer is null) return;
+        CancellationToken token;
+        lock (Gate)
         {
-            SetStatus($"已连接 {peer.Name}");
+            if (_busy || !IsRunning || _cts is null) return;
+            token = _cts.Token;
+            _busy = true;
         }
-        else
+        try
         {
-            SetStatus($"连接 {peer.Name} 失败，对方可能未打开文件传输");
+            var connected = await EnsureConnectedAsync(peer);
+            if (!token.IsCancellationRequested) SetStatus(connected
+                ? $"已连接 {peer.Name}"
+                : $"连接 {peer.Name} 失败，对方可能未打开文件传输");
         }
+        finally { EndTransferOperation(token); }
     }
 
     /// <summary>把选中的文件发送给已连接设备</summary>
     public static async Task SendAsync(IReadOnlyList<string> paths)
     {
         if (paths.Count == 0) { SetStatus("没有待发送文件"); return; }
-        if (!IsRunning) { SetStatus("文件传输未启动"); return; }
+        CancellationToken token;
+        lock (Gate)
+        {
+            if (_busy || !IsRunning || _cts is null) return;
+            token = _cts.Token;
+            _busy = true;
+            _progress = 0;
+        }
+        try { await SendCoreAsync(paths, token); }
+        catch (Exception ex) when (!token.IsCancellationRequested) { SetStatus("发送失败：" + ex.Message); }
+        catch (Exception) when (token.IsCancellationRequested) { }
+        finally { EndTransferOperation(token); }
+    }
 
+    private static void EndTransferOperation(CancellationToken token)
+    {
+        lock (Gate)
+        {
+            if (token.IsCancellationRequested) return;
+            _busy = false;
+            _progress = 0;
+        }
+        Raise();
+    }
+
+    private static async Task SendCoreAsync(IReadOnlyList<string> paths, CancellationToken token)
+    {
         var peer = _connectedPeer ?? DiscoveredPeers.FirstOrDefault();
         if (peer is null) { SetStatus("没有已连接的设备，请先选择设备按 A 连接"); return; }
         if (!await EnsureConnectedAsync(peer)) { SetStatus("连接已断开，请重新连接设备"); return; }
@@ -243,54 +289,39 @@ public static class FileTransferService
         if (files.Count == 0) { SetStatus("待发送文件已不存在"); return; }
 
         var total = files.Sum(f => f.size);
-        lock (Gate) { _busy = true; _progress = 0; }
+        token.ThrowIfCancellationRequested();
         SetStatus($"正在等待 {peer.Name} 确认…");
-
-        try
+        await WriteLineAsync(stream, Serialize(new Msg
         {
-            var token = _cts?.Token ?? CancellationToken.None;
-            await WriteLineAsync(stream, Serialize(new Msg
-            {
-                t = "offer", files = files, n = files.Count, total = total, name = _deviceName
-            }), token);
+            t = "offer", files = files, n = files.Count, total = total, name = _deviceName
+        }), token);
 
-            var reply = await ReadLineAsync(stream, token);
-            if (reply is null || Deserialize(reply)?.t != "accept")
+        var reply = await ReadLineAsync(stream, token);
+        if (reply is null || Deserialize(reply)?.t != "accept")
+        {
+            SetStatus("对方拒绝了传输");
+            return;
+        }
+
+        long sent = 0;
+        SetStatus($"正在发送 {files.Count} 个文件…");
+        for (var i = 0; i < files.Count; i++)
+        {
+            var f = files[i];
+            await WriteLineAsync(stream, Serialize(new Msg { t = "file", name = f.name, total = f.size }), token);
+            await using var fs = File.OpenRead(sources[i]);
+            var buf = new byte[ChunkSize];
+            int read;
+            while ((read = await fs.ReadAsync(buf, token)) > 0)
             {
-                SetStatus("对方拒绝了传输");
-                lock (Gate) { _busy = false; _pendingOffer = null; }
-                return;
+                await stream.WriteAsync(buf.AsMemory(0, read), token);
+                sent += read;
+                SetProgress(total > 0 ? (double)sent / total : 0);
             }
-
-            long sent = 0;
-            SetStatus($"正在发送 {files.Count} 个文件…");
-            for (var i = 0; i < files.Count; i++)
-            {
-                var f = files[i];
-                await WriteLineAsync(stream, Serialize(new Msg { t = "file", name = f.name, total = f.size }), token);
-                await using var fs = File.OpenRead(sources[i]);
-                var buf = new byte[ChunkSize];
-                int read;
-                while ((read = await fs.ReadAsync(buf, token)) > 0)
-                {
-                    await stream.WriteAsync(buf.AsMemory(0, read), token);
-                    sent += read;
-                    SetProgress(total > 0 ? (double)sent / total : 0);
-                }
-            }
-            await WriteLineAsync(stream, Serialize(new Msg { t = "end", n = files.Count }), token);
-            var done = await ReadLineAsync(stream, token);
-            SetStatus(Deserialize(done ?? "")?.t == "done" ? $"发送完成（{files.Count} 个文件）" : "发送结束");
         }
-        catch (Exception ex)
-        {
-            SetStatus("发送失败：" + ex.Message);
-        }
-        finally
-        {
-            lock (Gate) { _busy = false; _progress = 0; }
-            Raise();
-        }
+        await WriteLineAsync(stream, Serialize(new Msg { t = "end", n = files.Count }), token);
+        var done = await ReadLineAsync(stream, token);
+        SetStatus(Deserialize(done ?? "")?.t == "done" ? $"发送完成（{files.Count} 个文件）" : "发送结束");
     }
 
     /// <summary>接受对端的传输请求（界面 A 键调用）</summary>
@@ -319,6 +350,7 @@ public static class FileTransferService
                 var changed = false;
                 lock (Gate)
                 {
+                    if (ct.IsCancellationRequested || !IsRunning) return;
                     if (!Peers.TryGetValue(id, out var old) || old.Name != name || old.Address != address)
                         changed = true;
                     Peers[id] = new Peer(id, name, address);
@@ -380,12 +412,14 @@ public static class FileTransferService
             catch (SocketException) { continue; }
             catch { return; }
 
-            _ = Task.Run(() => ServeAsync(client, ct), ct);
+            _ = ServeAsync(client, ct);
         }
     }
 
     private static async Task ServeAsync(TcpClient client, CancellationToken ct)
     {
+        TaskCompletionSource<bool>? currentDecision = null;
+        string? partialPath = null;
         try
         {
             using (client)
@@ -425,9 +459,10 @@ public static class FileTransferService
                         }
 
                         var decision = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
-                        _offerDecision = decision;
                         lock (Gate)
                         {
+                            if (ct.IsCancellationRequested || !IsRunning || _busy) return;
+                            _offerDecision = currentDecision = decision;
                             _pendingOffer = new IncomingOffer(peerName, files.Count, total);
                             _busy = true;
                             _progress = 0;
@@ -435,12 +470,16 @@ public static class FileTransferService
                         SetStatus($"{peerName} 想发送 {files.Count} 个文件（{FormatSize(total)}），等待接受…");
 
                         var accepted = await WaitDecisionAsync(decision, ct);
-                        lock (Gate) { _pendingOffer = null; }
+                        lock (Gate)
+                        {
+                            if (!ReferenceEquals(_offerDecision, decision) || ct.IsCancellationRequested) return;
+                            _pendingOffer = null;
+                        }
                         if (!accepted)
                         {
                             await WriteLineAsync(stream, "{\"t\":\"reject\"}", ct);
-                            SetStatus("已拒绝接收");
                             lock (Gate) _busy = false;
+                            SetStatus("已拒绝接收");
                             return;
                         }
 
@@ -464,7 +503,8 @@ public static class FileTransferService
                             if (size < 0 || size > MaxFileSize) throw new InvalidDataException("文件过大");
                             var dest = UniquePath(target, SanitizeName(fm.name!));
 
-                            await using (var fs = new FileStream(dest + ".part", FileMode.Create, FileAccess.Write, FileShare.None,
+                            partialPath = dest + "." + Guid.NewGuid().ToString("N") + ".part";
+                            await using (var fs = new FileStream(partialPath, FileMode.CreateNew, FileAccess.Write, FileShare.None,
                                              ChunkSize, FileOptions.Asynchronous))
                             {
                                 var buf = new byte[ChunkSize];
@@ -480,13 +520,15 @@ public static class FileTransferService
                                     SetProgress(total > 0 ? (double)got / total : 0);
                                 }
                             }
-                            File.Move(dest + ".part", dest, true);
+                            ct.ThrowIfCancellationRequested();
+                            File.Move(partialPath, dest);
+                            partialPath = null;
                             received++;
                         }
 
                         await WriteLineAsync(stream, Serialize(new Msg { t = "done", n = received }), ct);
-                        SetStatus($"接收完成（{received} 个文件）→ {target}");
                         lock (Gate) { _busy = false; _progress = 0; }
+                        SetStatus($"接收完成（{received} 个文件）→ {target}");
                         return;
                     }
                 }
@@ -495,12 +537,26 @@ public static class FileTransferService
         catch (OperationCanceledException) { }
         catch (Exception ex)
         {
+            lock (Gate)
+            {
+                if (currentDecision is null || !ReferenceEquals(_offerDecision, currentDecision)) return;
+                _busy = false;
+                _progress = 0;
+                _pendingOffer = null;
+            }
             SetStatus("接收中断：" + ex.Message);
-            lock (Gate) { _busy = false; _progress = 0; _pendingOffer = null; }
         }
         finally
         {
-            _offerDecision = null;
+            if (partialPath is not null)
+            {
+                try { File.Delete(partialPath); }
+                catch (Exception ex) { DebugLog.Write("删除临时接收文件失败：" + ex.Message); }
+            }
+            lock (Gate)
+            {
+                if (ReferenceEquals(_offerDecision, currentDecision)) _offerDecision = null;
+            }
             Raise();
         }
     }
@@ -519,33 +575,45 @@ public static class FileTransferService
 
     private static async Task<bool> EnsureConnectedAsync(Peer peer)
     {
-        if (_client is { Connected: true } && _clientStream is not null) return true;
+        CancellationToken lifetime;
+        lock (Gate)
+        {
+            if (!IsRunning || _cts is null) return false;
+            if (_client is { Connected: true } && _clientStream is not null && _connectedPeer == peer) return true;
+            lifetime = _cts.Token;
+        }
+
+        TcpClient? client = null;
         try
         {
-            _clientStream?.Dispose();
-            _client?.Dispose();
-            var client = new TcpClient { NoDelay = true };
-            using var timeout = new CancellationTokenSource(6000);
-            await client.ConnectAsync(IPAddress.Parse(peer.Address), TcpPort, timeout.Token);
+            client = new TcpClient { NoDelay = true };
+            using var timeout = CancellationTokenSource.CreateLinkedTokenSource(lifetime);
+            timeout.CancelAfter(TimeSpan.FromSeconds(6));
+            var token = timeout.Token;
+            await client.ConnectAsync(IPAddress.Parse(peer.Address), TcpPort, token);
             var stream = client.GetStream();
-            var token = _cts?.Token ?? CancellationToken.None;
-
             await WriteLineAsync(stream, Serialize(new Msg { t = "hello", id = _deviceId, name = _deviceName }), token);
             var reply = await ReadLineAsync(stream, token);
             var msg = Deserialize(reply ?? "");
             if (msg?.t != "welcome")
             {
-                client.Dispose();
                 if (msg?.t == "busy") SetStatus("对方正在传输，请稍后再试");
                 return false;
             }
 
-            _client = client;
-            _clientStream = stream;
-            _connectedPeer = peer;
-            return true;
+            lock (Gate)
+            {
+                if (lifetime.IsCancellationRequested || !IsRunning) return false;
+                _client?.Dispose();
+                _client = client;
+                _clientStream = stream;
+                _connectedPeer = peer;
+                client = null;
+                return true;
+            }
         }
         catch { return false; }
+        finally { client?.Dispose(); }
     }
 
     // ---------------- 协议工具 ----------------

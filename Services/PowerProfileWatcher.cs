@@ -8,7 +8,7 @@ internal static class PowerProfileWatcher
     private static bool? _lastApplied;
     private static long _lastAppliedAt;
     private static bool _pending;
-    private static bool _running;
+    private static Task _applying = Task.CompletedTask;
     private static bool _stopped;
     private static long _due;
     private static string _reason = "";
@@ -27,15 +27,17 @@ internal static class PowerProfileWatcher
         Request("启动", 2500);
     }
 
-    public static void Stop()
+    public static Task StopAsync()
     {
         lock (Gate)
         {
             _stopped = true;
+            _pending = false;
             _timer?.Dispose();
             _timer = null;
             PowerResumeWatcher.Resumed -= OnResume;
             PowerResumeWatcher.StateChanged -= OnStateChanged;
+            return _applying;
         }
     }
 
@@ -58,7 +60,7 @@ internal static class PowerProfileWatcher
     {
         lock (Gate)
         {
-            if (_stopped || _running) return;
+            if (_stopped || !_applying.IsCompleted) return;
             var onAc = PowerProfileService.ReadOnAc();
             if (onAc is null) return;
             if (!_pending && _lastApplied != onAc)
@@ -71,8 +73,7 @@ internal static class PowerProfileWatcher
             _pending = false;
             // 同一供电方式刚应用过：亮屏/解锁/唤醒常连发多次，5 秒内不重复写硬件。
             if (_lastApplied == onAc && Environment.TickCount64 - _lastAppliedAt < 5000) return;
-            _running = true;
-            _ = ApplyAsync(onAc.Value, _reason);
+            _applying = ApplyAsync(onAc.Value, _reason);
         }
     }
 
@@ -92,6 +93,5 @@ internal static class PowerProfileWatcher
             DebugLog.Write("[供电校准] 失败：" + ex.Message);
             Request("失败重试", 10000);
         }
-        finally { lock (Gate) _running = false; }
     }
 }

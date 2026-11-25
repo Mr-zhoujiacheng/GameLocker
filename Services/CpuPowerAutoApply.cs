@@ -11,21 +11,23 @@ internal static class CpuPowerAutoApply
     /// <summary>登录计划任务入口：写入后直接退出，不恢复，让设置持续生效。</summary>
     public static void RunFromTask()
     {
-        PowerProfileService.SynchronizeSavedCpuTarget();
-        var settings = SettingsService.Current;
-        if (settings.CpuPowerPl1 <= 0) return;   // 没有保存过功耗，任务什么都不做
         var deadline = DateTime.UtcNow.AddSeconds(StartupWaitSeconds);
         while (true)
         {
             try
             {
+                if (ReadLogonTarget() is null) return;
                 using var backend = new CpuPowerBackend();
                 var state = backend.Read();
                 if (state.Supported && state.Limits.Length > 0)
                 {
-                    RememberOriginals(state);
-                    var targets = BuildTargets(state, settings.CpuPowerPl1, settings.CpuPowerPl2, settings.CpuPowerFppt);
-                    ApplyAll(targets, state.Limits.Select(l => l.Watts).ToArray(), backend.Apply);
+                    // 初始化驱动可能耗时，写入前重新确认主程序没有关闭接管。
+                    if (ReadLogonTarget() is not { } target) return;
+                    var targets = BuildTargets(state, target.Pl1, target.Pl2, target.Fppt);
+                    ApplyAll(targets, state.Limits.Select(l => l.Watts).ToArray(), (index, watts) =>
+                        ReadLogonTarget() is null
+                            ? new CpuPowerService.Result(false, "自动接管已关闭，取消后续写入")
+                            : backend.Apply(index, watts));
                     return;
                 }
                 DebugLog.Write("[功耗] 登录恢复暂不可用：" + state.Message);
@@ -37,12 +39,25 @@ internal static class CpuPowerAutoApply
         }
     }
 
+    private static (int Pl1, int Pl2, int Fppt)? ReadLogonTarget()
+    {
+        var settings = SettingsService.ReadSavedSettings();
+        if (settings is not { CpuPowerTakeover: true }) return null;
+        if (settings.SeparatePowerProfiles && PowerProfileService.ReadOnAc() is { } onAc)
+        {
+            var profile = onAc ? settings.AcProfile : settings.BatteryProfile;
+            if (profile.CpuPowerEnabled && profile.CpuPowerPl1 > 0)
+                return (profile.CpuPowerPl1, profile.CpuPowerPl2, profile.CpuPowerFppt);
+        }
+        return settings.CpuPowerPl1 > 0 ? (settings.CpuPowerPl1, settings.CpuPowerPl2, settings.CpuPowerFppt) : null;
+    }
+
     /// <summary>睡眠唤醒后重新写回。没有提权助手时交给登录计划任务（管理员权限，不弹 UAC）静默写回。</summary>
     public static void ReapplyIfActive()
     {
         PowerProfileService.SynchronizeSavedCpuTarget();
         var settings = SettingsService.Current;
-        if (settings.CpuPowerPl1 <= 0) return;
+        if (!settings.CpuPowerTakeover || settings.CpuPowerPl1 <= 0) return;
         if (!CpuPowerService.Active)
         {
             CpuPowerService.TriggerLogonTask();

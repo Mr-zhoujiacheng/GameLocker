@@ -2,118 +2,84 @@ using GameLocker.Models;
 
 namespace GameLocker.Services;
 
-/// <summary>云端备份的网盘统一入口：按设置里的当前网盘分发到天翼云或百度网盘。</summary>
+/// <summary>云端备份的网盘统一入口：按操作开始时捕获的账号分发，不随设置变化。</summary>
 public sealed record CloudFileEntry(string Href, string Name, DateTimeOffset Modified, long Size);
+
+internal sealed class CloudBackupSession(
+    CloudProvider provider,
+    string rootFolder,
+    BaiduAccount? baiduAccount,
+    TianyiAccount? tianyiAccount)
+{
+    public CloudProvider Provider { get; } = provider;
+    public string RootFolder { get; } = rootFolder;
+    internal BaiduAccount? BaiduAccount { get; } = baiduAccount;
+    internal TianyiAccount? TianyiAccount { get; } = tianyiAccount;
+    public string DisplayName => Provider == CloudProvider.Baidu ? "百度网盘" : "天翼云";
+}
 
 public static class CloudBackupProvider
 {
     public static CloudProvider Current => SettingsService.Current.CloudProvider;
 
     public static string DisplayName => Current == CloudProvider.Baidu ? "百度网盘" : "天翼云";
-
     public static string RootFolder
     {
         get
         {
-            var raw = Current == CloudProvider.Baidu
-                ? SettingsService.Current.BaiduRootFolder
-                : SettingsService.Current.TianyiRootFolder;
+            var settings = SettingsService.Current;
+            var raw = Current == CloudProvider.Baidu ? settings.BaiduRootFolder : settings.TianyiRootFolder;
             return string.IsNullOrWhiteSpace(raw) ? "GameLocker" : raw;
         }
     }
-
     public static bool IsSignedIn => Current == CloudProvider.Baidu
         ? BaiduCloudService.CurrentAccount() is not null
         : TianyiCloudService.CurrentAccount() is not null;
+    public static string AccountName => Current == CloudProvider.Baidu
+        ? BaiduCloudService.CurrentAccount()?.User ?? ""
+        : TianyiCloudService.CurrentAccount()?.User ?? "";
 
-    public static string AccountName
+    internal static CloudBackupSession CaptureSession()
     {
-        get
-        {
-            if (Current == CloudProvider.Baidu) return BaiduCloudService.CurrentAccount()?.User ?? "";
-            return TianyiCloudService.CurrentAccount()?.User ?? "";
-        }
+        var settings = SettingsService.Current;
+        var provider = settings.CloudProvider;
+        var rawRoot = provider == CloudProvider.Baidu ? settings.BaiduRootFolder : settings.TianyiRootFolder;
+        var root = string.IsNullOrWhiteSpace(rawRoot) ? "GameLocker" : rawRoot;
+        var baidu = provider == CloudProvider.Baidu ? BaiduCloudService.CurrentAccount() : null;
+        var tianyi = provider == CloudProvider.Baidu ? null : TianyiCloudService.CurrentAccount();
+        if (baidu is null && tianyi is null)
+            throw new IOException($"{(provider == CloudProvider.Baidu ? "百度网盘" : "天翼云")}未登录，请扫码登录。");
+        return new CloudBackupSession(provider, root, baidu, tianyi);
     }
 
-    public static async Task EnsureFolderAsync(string path)
-    {
-        if (Current == CloudProvider.Baidu)
-        {
-            var account = BaiduCloudService.CurrentAccount()
-                ?? throw new IOException("百度网盘未登录，请扫码登录。");
-            await BaiduCloudService.EnsureFolderAsync(account, path);
-        }
-        else
-        {
-            var account = TianyiCloudService.CurrentAccount()
-                ?? throw new IOException("天翼云未登录，请扫码登录。");
-            await TianyiCloudService.EnsureFolderAsync(account, path);
-        }
-    }
+    internal static Task EnsureFolderAsync(CloudBackupSession session, string path) =>
+        session.Provider == CloudProvider.Baidu
+            ? BaiduCloudService.EnsureFolderAsync(session.BaiduAccount!, path)
+            : TianyiCloudService.EnsureFolderAsync(session.TianyiAccount!, path);
 
-    public static async Task<IReadOnlyList<CloudFileEntry>> ListAsync(string path)
+    internal static async Task<IReadOnlyList<CloudFileEntry>> ListAsync(CloudBackupSession session, string path)
     {
-        if (Current == CloudProvider.Baidu)
+        if (session.Provider == CloudProvider.Baidu)
         {
-            var account = BaiduCloudService.CurrentAccount()
-                ?? throw new IOException("百度网盘未登录，请扫码登录。");
-            var list = await BaiduCloudService.ListAsync(account, path);
+            var list = await BaiduCloudService.ListAsync(session.BaiduAccount!, path);
             return list.Select(e => new CloudFileEntry(e.Href, e.Name, e.Modified, e.Size)).ToArray();
         }
-        else
-        {
-            var account = TianyiCloudService.CurrentAccount()
-                ?? throw new IOException("天翼云未登录，请扫码登录。");
-            var list = await TianyiCloudService.ListAsync(account, path);
-            return list.Select(e => new CloudFileEntry(e.Href, e.Name, e.Modified, e.Size)).ToArray();
-        }
+        var tianyi = await TianyiCloudService.ListAsync(session.TianyiAccount!, path);
+        return tianyi.Select(e => new CloudFileEntry(e.Href, e.Name, e.Modified, e.Size)).ToArray();
     }
 
-    public static async Task UploadAsync(string path, string fileName, string localPath)
-    {
-        if (Current == CloudProvider.Baidu)
-        {
-            var account = BaiduCloudService.CurrentAccount()
-                ?? throw new IOException("百度网盘未登录，请扫码登录。");
-            await BaiduCloudService.UploadAsync(account, path, fileName, localPath);
-        }
-        else
-        {
-            var account = TianyiCloudService.CurrentAccount()
-                ?? throw new IOException("天翼云未登录，请扫码登录。");
-            await TianyiCloudService.UploadAsync(account, path, fileName, localPath);
-        }
-    }
+    internal static Task UploadAsync(CloudBackupSession session, string path, string fileName, string localPath) =>
+        session.Provider == CloudProvider.Baidu
+            ? BaiduCloudService.UploadAsync(session.BaiduAccount!, path, fileName, localPath)
+            : TianyiCloudService.UploadAsync(session.TianyiAccount!, path, fileName, localPath);
 
-    public static async Task DownloadAsync(string href, string localPath)
-    {
-        if (Current == CloudProvider.Baidu)
-        {
-            var account = BaiduCloudService.CurrentAccount()
-                ?? throw new IOException("百度网盘未登录，请扫码登录。");
-            await BaiduCloudService.DownloadAsync(account, href, localPath);
-        }
-        else
-        {
-            var account = TianyiCloudService.CurrentAccount()
-                ?? throw new IOException("天翼云未登录，请扫码登录。");
-            await TianyiCloudService.DownloadAsync(account, href, localPath);
-        }
-    }
+    internal static Task DownloadAsync(CloudBackupSession session, string href, string localPath) =>
+        session.Provider == CloudProvider.Baidu
+            ? BaiduCloudService.DownloadAsync(session.BaiduAccount!, href, localPath)
+            : TianyiCloudService.DownloadAsync(session.TianyiAccount!, href, localPath);
 
-    public static async Task DeleteAsync(string path, string href)
-    {
-        if (Current == CloudProvider.Baidu)
-        {
-            var account = BaiduCloudService.CurrentAccount()
-                ?? throw new IOException("百度网盘未登录，请扫码登录。");
-            await BaiduCloudService.DeleteAsync(account, path, href);
-        }
-        else
-        {
-            var account = TianyiCloudService.CurrentAccount()
-                ?? throw new IOException("天翼云未登录，请扫码登录。");
-            await TianyiCloudService.DeleteAsync(account, path, href);
-        }
-    }
+    internal static Task DeleteAsync(CloudBackupSession session, string path, string href) =>
+        session.Provider == CloudProvider.Baidu
+            ? BaiduCloudService.DeleteAsync(session.BaiduAccount!, path, href)
+            : TianyiCloudService.DeleteAsync(session.TianyiAccount!, path, href);
 }

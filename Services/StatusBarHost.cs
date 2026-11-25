@@ -123,7 +123,7 @@ internal static class StatusBarHost
         }
 
         // 系统项：始终接管任务栏所在的上/下边缘，隐藏任务栏并用顶栏填满预留条
-        if (TopTaskbarMode.TryEnable(out var message))
+        if (TopTaskbarMode.TryEnable(settings.StatusBarLarge, out var message))
         {
             _topTaskbar = true;
         }

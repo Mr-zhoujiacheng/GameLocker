@@ -511,11 +511,13 @@ public static class ProxyService
         var running = CoreProcessRunning();
         var proxyOn = IsSystemProxyOn() && SystemProxyServer().Contains($":{port}", StringComparison.Ordinal);
 
-        if (running && proxyOn)
+        if (running && proxyOn && !SetSystemProxy(false, port))
+            return new ToggleResult(false, true, "无法安全恢复原系统代理，内核保持运行以避免死端口");
+
+        if (running)
         {
-            if (!SetSystemProxy(false, port))
-                return new ToggleResult(false, true, "无法安全恢复原系统代理，内核保持运行以避免死端口");
-            KillCore();
+            if (!KillCore())
+                return new ToggleResult(false, proxyOn, "无法停止代理内核：请检查是否以管理员权限运行");
             await RefreshCoreAsync(item);
             return new ToggleResult(true, false, "已断开连接");
         }
@@ -836,7 +838,7 @@ public static class ProxyService
             {
                 try
                 {
-                    if (string.Equals(p.MainModule?.FileName, CoreExe, StringComparison.OrdinalIgnoreCase))
+                    if (string.Equals(GetProcessImagePath(p), CoreExe, StringComparison.OrdinalIgnoreCase))
                         return true;
                 }
                 catch { }
@@ -847,16 +849,122 @@ public static class ProxyService
         return false;
     }
 
-    private static void KillCore()
+    private static bool KillCore()
     {
-        if (Interlocked.Exchange(ref _ownsCore, 0) == 0) return;
+        if (Interlocked.Exchange(ref _ownsCore, 0) == 0) return true;
+        var core = _core;
+        _core = null;
+        var coreStopped = core is null || StopProcess(core);
+        core?.Dispose();
+
+        var found = false;
         try
         {
-            if (_core is { HasExited: false }) _core.Kill(entireProcessTree: true);
-            _core?.Dispose();
+            foreach (var process in Process.GetProcessesByName("mihomo"))
+            {
+                try
+                {
+                    if (!string.Equals(GetProcessImagePath(process), CoreExe, StringComparison.OrdinalIgnoreCase))
+                        continue;
+
+                    found = true;
+                    if (!StopProcess(process)) coreStopped = false;
+                }
+                catch (Exception ex)
+                {
+                    DebugLog.Write("[代理] 检查 mihomo 进程路径失败：" + ex.Message);
+                }
+                finally { process.Dispose(); }
+            }
         }
-        catch (Exception ex) { DebugLog.Write("[代理] 停止自启内核失败：" + ex.Message); }
-        _core = null;
+        catch (Exception ex)
+        {
+            DebugLog.Write("[代理] 查找内核进程失败：" + ex.Message);
+            return false;
+        }
+
+        if (found && !coreStopped)
+            DebugLog.Write("[代理] mihomo.exe 仍在运行或没有终止权限");
+        return coreStopped;
+    }
+
+    private static string? GetProcessImagePath(Process process)
+    {
+        try
+        {
+            var path = process.MainModule?.FileName;
+            if (!string.IsNullOrWhiteSpace(path)) return path;
+        }
+        catch { }
+
+        var handle = OpenProcess(0x1000, false, (uint)process.Id);
+        if (handle == IntPtr.Zero) return null;
+        try
+        {
+            var buffer = new StringBuilder(32768);
+            uint length = (uint)buffer.Capacity;
+            return QueryFullProcessImageName(handle, 0, buffer, ref length) ? buffer.ToString() : null;
+        }
+        finally { CloseHandle(handle); }
+    }
+
+    [DllImport("kernel32.dll", SetLastError = true)]
+    private static extern IntPtr OpenProcess(uint desiredAccess, bool inheritHandle, uint processId);
+
+    [DllImport("kernel32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    private static extern bool QueryFullProcessImageName(IntPtr process, uint flags, StringBuilder imageName, ref uint size);
+
+    [DllImport("kernel32.dll")]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    private static extern bool CloseHandle(IntPtr handle);
+
+    private static bool StopProcess(Process? process)
+    {
+        if (process is null) return true;
+        try
+        {
+            if (process.HasExited) return true;
+            process.Kill(entireProcessTree: true);
+            return process.WaitForExit(3000) || process.HasExited;
+        }
+        catch (InvalidOperationException) { return true; }
+        catch (System.ComponentModel.Win32Exception ex) when (ex.NativeErrorCode == 5)
+        {
+            return StopElevated(process);
+        }
+        catch (Exception ex)
+        {
+            DebugLog.Write("[代理] 停止内核进程失败：" + ex.Message);
+            return false;
+        }
+    }
+
+    private static bool StopElevated(Process process)
+    {
+        try
+        {
+            using var killer = Process.Start(new ProcessStartInfo(
+                Path.Combine(Environment.SystemDirectory, "taskkill.exe"),
+                $"/PID {process.Id} /T /F")
+            {
+                UseShellExecute = true,
+                Verb = "runas",
+                WindowStyle = ProcessWindowStyle.Hidden
+            });
+            if (killer is null || !killer.WaitForExit(15000)) return false;
+            return process.WaitForExit(1000) || process.HasExited;
+        }
+        catch (System.ComponentModel.Win32Exception ex)
+        {
+            DebugLog.Write("[代理] 管理员授权未完成，无法停止提升权限的内核：" + ex.Message);
+            return false;
+        }
+        catch (Exception ex)
+        {
+            DebugLog.Write("[代理] 请求管理员权限停止内核失败：" + ex.Message);
+            return false;
+        }
     }
 
     /// <summary>确保内核存在：优先使用工作目录里的 mihomo.exe，没有则从 GitHub 下载最新版</summary>

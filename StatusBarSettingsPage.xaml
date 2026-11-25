@@ -92,7 +92,7 @@
                 <!-- 规划样张：说明目标形态，不代表已实现 -->
                 <StackPanel Spacing="6">
                     <Grid>
-                        <TextBlock Text="系统预览（顶栏2 + 底栏）" FontSize="11.5" Opacity="0.55"
+                        <TextBlock Text="系统预览（顶栏 + 底栏）" FontSize="11.5" Opacity="0.55"
                                    VerticalAlignment="Center"/>
                         <Border HorizontalAlignment="Right" Padding="9,3" CornerRadius="8"
                                 Background="#14FFFFFF" BorderThickness="1" BorderBrush="#1FFFFFFF">

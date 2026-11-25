@@ -8908,11 +8908,13 @@ public sealed partial class MainPage : Page
         try
         {
             if (hiddenForLaunch && App.Main is { } main) await main.HideForLaunchAsync(timeout.Token);
+            else App.Main?.PrepareForExternalLaunch();
             // 等服务完成取消清理，避免界面先报超时，而后台仍在打开程序或占着同一目标。
             var result = await Task.Run(() => LaunchService.LaunchOrActivateAsync(item, token));
             if (!result.Success)
             {
                 if (hiddenForLaunch) App.Main?.ShowFromTray();
+                else App.Main?.RestoreAfterExternalLaunchFailure();
                 ShowToast($"{item.Name}：{result.Message}", ToastKind.Warning);
             }
         }
@@ -8920,11 +8922,13 @@ public sealed partial class MainPage : Page
         {
             timeout.Cancel();
             if (hiddenForLaunch) App.Main?.ShowFromTray();
+            else App.Main?.RestoreAfterExternalLaunchFailure();
             ShowToast("已取消或超时，不会重复启动", ToastKind.Warning);
         }
         catch (Exception ex)
         {
             timeout.Cancel();
+            App.Main?.RestoreAfterExternalLaunchFailure();
             LaunchService.Diag($"界面启动失败: {ex.GetType().Name} {ex.Message}");
             if (hiddenForLaunch) App.Main?.ShowFromTray();
             ShowToast($"打开失败：{ex.Message}", ToastKind.Warning);

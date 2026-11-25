@@ -20,6 +20,22 @@ namespace GameLocker.Services;
 internal static class DockGamepad
 {
     private static bool _initialized;
+    private static volatile bool _focusMode;
+
+    public static bool FocusMode => _focusMode;
+
+    public static bool ToggleFocusMode()
+    {
+        _focusMode = !_focusMode;
+        StopRepeat();
+        return _focusMode;
+    }
+
+    public static void ClearFocusMode()
+    {
+        _focusMode = false;
+        StopRepeat();
+    }
 
     /// <summary>方向键长按连发（GamepadService 的连发只走 RoutingEnabled 的页面通道，底栏要自己来）。</summary>
     private static readonly object RepeatGate = new();
@@ -110,12 +126,17 @@ internal static class DockGamepad
         DockHost.HandleGamepad(dir);
     }
 
-    internal static bool CanRouteDockInput() => SettingsService.Current.DockGamepadEnabled && DockHost.IsVisible
-        && App.Main?.OwnsPageGamepadInput != true && ForegroundAllowsDock();
+    internal static bool CanRouteDockInput()
+    {
+        var gameDockRevealed = DockHost.GamepadInputRevealed;
+        return SettingsService.Current.DockGamepadEnabled && DockHost.IsVisible
+            && (gameDockRevealed || App.Main?.OwnsPageGamepadInput != true)
+            && (gameDockRevealed || ForegroundAllowsDock());
+    }
 
     /// <summary>
     /// 前台是否允许底栏接管手柄：桌面/本进程窗口直接放行；全屏游戏、游戏引擎窗口、
-    /// 游戏库目录里的程序一律不接管（那里按 A/方向是游戏输入）。
+    /// 游戏库目录里的程序一律不接管（那里按 A/方向是游戏输入）；游戏态底栏显式呼出时除外。
     /// </summary>
     private static bool ForegroundAllowsDock()
     {

@@ -102,8 +102,11 @@ internal static class DockHost
         }
     }
 
-    private static bool _gameMode;
-    private static bool _revealedInGame;
+    private static volatile bool _gameMode;
+    private static volatile bool _revealedInGame;
+
+    /// <summary>游戏态底栏已被显式呼出且当前配置仍启用。</summary>
+    public static bool GamepadInputRevealed => _gameMode && _revealedInGame && IsVisible;
 
     /// <summary>当前是否处在"游戏里"（底栏默认彻底隐藏，靠手势呼出）。</summary>
     public static bool GameMode => _gameMode;

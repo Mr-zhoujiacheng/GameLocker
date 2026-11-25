@@ -99,6 +99,9 @@ public sealed partial class StatusBarSettingsPage : Page, ISettingsGamepad
             v => _ = SetTaskbarDirectionAsync(v == 0));
 
         AddSection("顶栏设置", "TOP BAR");
+        AddCycle("顶栏大小", "大尺寸会同步使用 Windows 大任务栏高度", "\uE740",
+            new[] { "小", "大" }, s.StatusBarLarge ? 1 : 0,
+            v => SettingsService.Update(x => x.StatusBarLarge = v == 1));
         AddCycle("顶栏主题", "深色/浅色/纯色/渐变/高透；始终保持左右渐变透明", "\uE793",
             DockThemes.Names, Math.Clamp(s.StatusBarTheme, 0, DockThemes.All.Length - 1),
             v => SettingsService.Update(x => x.StatusBarTheme = v));
@@ -125,9 +128,16 @@ public sealed partial class StatusBarSettingsPage : Page, ISettingsGamepad
         AddToggle("自动隐藏", "鼠标离开后收起，留一条边缘触发带", "\uE8AB",
             s.DockAutoHide, v => SettingsService.Update(x => x.DockAutoHide = v));
 
-        AddLiveSlider("图标大小", "条高随图标自动缩放", "\uE740",
-            AppSettings.DockIconMin, AppSettings.DockIconMax, s.DockIconSize,
-            v => SettingsService.Update(x => x.DockIconSize = v));
+        AddCycle("图标大小", "条高随图标自动缩放", "\uE740",
+            new[] { "小", "中", "大" },
+            Array.IndexOf(new[] { AppSettings.DockIconSmall, AppSettings.DockIconMedium, AppSettings.DockIconLarge },
+                AppSettings.DockIconPreset(s.DockIconSize)),
+            v => SettingsService.Update(x => x.DockIconSize = v switch
+            {
+                0 => AppSettings.DockIconSmall,
+                1 => AppSettings.DockIconMedium,
+                _ => AppSettings.DockIconLarge
+            }));
 
         UpdateMasterGate(s.SystemEnabled);
     }
@@ -274,7 +284,7 @@ public sealed partial class StatusBarSettingsPage : Page, ISettingsGamepad
         panel.Children.Add(_comboText);
         panel.Children.Add(_comboButton);
 
-        AddRow("呼出组合键", "长按 1 秒亮出底栏（自动隐藏时展开）；启动器呼出键在「控制」里单独设", "\uE7A7",
+        AddRow("呼出组合键", "长按 1 秒呼出底栏；启动器页面显示时切换底栏/页面的手柄焦点，再次长按切回", "\uE7A7",
             panel, StartComboCapture);
     }
 
@@ -569,7 +579,7 @@ public sealed partial class StatusBarSettingsPage : Page, ISettingsGamepad
     private void UpdatePreview()
     {
         var s = SettingsService.Current;
-        PreviewBar.Height = Math.Clamp(s.StatusBarHeight + 12, 36, 56);
+        PreviewBar.Height = s.StatusBarLarge ? 52 : 44;
 
         switch (Math.Clamp(s.StatusBarBackdropMode, 0, 3))
         {

@@ -531,7 +531,7 @@ public sealed partial class DockWindow : Window
 		AppSettings current = SettingsService.Current;
 		RefreshScale();
 		ApplyTheme(DockThemes.Get(current.DockTheme));
-		_iconSize = Math.Clamp(current.DockIconSize, 36, 64);
+		_iconSize = Math.Clamp(current.DockIconSize, AppSettings.DockIconMin, AppSettings.DockIconMax);
 		_magnify = current.DockMagnify;
 		_showRunning = current.DockShowRunning;
 		_indicatorStyle = (current.DockShowRunning ? Math.Clamp(current.DockIndicatorStyle, 0, 2) : 0);
@@ -649,7 +649,7 @@ public sealed partial class DockWindow : Window
 
 	private static bool IsDockItem(LaunchItem item)
 	{
-		if (item.DockHidden)
+		if (item.DockHidden || !item.LauncherHidden || string.IsNullOrWhiteSpace(item.Target))
 		{
 			return false;
 		}
@@ -657,17 +657,22 @@ public sealed partial class DockWindow : Window
 		{
 			return item.Members.Count > 0;
 		}
-		// 只有从底栏"小组件"入口加入的组件才进底栏（LauncherHidden），最多 5 个
+		// 只有从底栏入口加入并标记为 LauncherHidden 的项目才属于底栏。
 		if (item.Kind == LaunchKind.Widget)
 		{
-			return item.LauncherHidden && !string.IsNullOrWhiteSpace(item.Target);
+			return true;
 		}
 		LaunchKind kind = item.Kind;
-		if ((uint)kind > 2u)
-		{
-			return false;
-		}
-		return !string.IsNullOrWhiteSpace(item.Target);
+		return (uint)kind <= 2u;
+	}
+
+	private static void AddKnownDockIdentity(LaunchItem item, HashSet<string> exes, HashSet<string> families)
+	{
+		if (string.IsNullOrWhiteSpace(item.Target)) return;
+		string exe = AppWindows.ProcessNameOf(item.Target);
+		if (!string.IsNullOrEmpty(exe)) exes.Add(exe);
+		string family = AppWindows.PackageFamilyOfAppId(AppWindows.AppIdOfTarget(item.Target));
+		if (family.Length > 0) families.Add(family);
 	}
 
 	private async Task RebuildAsync()
@@ -732,17 +737,12 @@ public sealed partial class DockWindow : Window
 			select x.Entry).ToList();
 		HashSet<string> knownExes = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
 		HashSet<string> knownFamilies = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
-		foreach (LaunchItem item6 in list)
+		foreach (LaunchItem item6 in source)
 		{
-			string text = AppWindows.ProcessNameOf(item6.Target);
-			if (!string.IsNullOrEmpty(text))
+			AddKnownDockIdentity(item6, knownExes, knownFamilies);
+			foreach (LaunchItem member in item6.Members)
 			{
-				knownExes.Add(text);
-			}
-			string text2 = AppWindows.PackageFamilyOfAppId(AppWindows.AppIdOfTarget(item6.Target));
-			if (text2.Length > 0)
-			{
-				knownFamilies.Add(text2);
+				AddKnownDockIdentity(member, knownExes, knownFamilies);
 			}
 		}
 		foreach (TrayAppEntry item7 in trayEntries)
@@ -1759,7 +1759,7 @@ public sealed partial class DockWindow : Window
 	}
 
 	private bool CanApplyGamepadInput() => SettingsService.Current.SystemEnabled
-		&& App.Main?.OwnsPageGamepadInput != true && IsWindowVisible(Hwnd);
+		&& (DockHost.GamepadInputRevealed || App.Main?.OwnsPageGamepadInput != true) && IsWindowVisible(Hwnd);
 
 	/// <summary>清掉手柄选中框（鼠标/触摸接管、重建格子、收起时调用）。</summary>
 	public void ClearGamepadSelection()
@@ -2305,7 +2305,8 @@ public sealed partial class DockWindow : Window
 		{
 			// 自动隐藏开启时，点击底栏以外（桌面/其它窗口/页面）就收起；
 			// 关掉自动隐藏 = 一直显示，点别处不再收起（只有手柄 B / 下滑手势才收）
-			if (_autoHide && !IsCollapsed && GetWindowRect(Hwnd, out var rect)
+			var cardWindowOpen = DockPopupWindow.IsOpen || DockPreviewHost.IsVisible;
+			if (_autoHide && !cardWindowOpen && !IsCollapsed && GetWindowRect(Hwnd, out var rect)
 				&& (screenX < rect.Left || screenX > rect.Right || screenY < rect.Top || screenY > rect.Bottom))
 			{
 				_dispatcher?.TryEnqueue(delegate { SetCollapsed(collapsed: true); });
@@ -2827,6 +2828,7 @@ public sealed partial class DockWindow : Window
 
 	private void SetCollapsed(bool collapsed)
 	{
+		if (collapsed && (DockPopupWindow.IsOpen || DockPreviewHost.IsVisible)) return;
 		if (IsCollapsed != collapsed)
 		{
 			IsCollapsed = collapsed;

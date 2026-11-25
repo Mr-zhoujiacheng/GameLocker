@@ -370,18 +370,38 @@ internal static class TrayAppService
     }
 
     /// <summary>打开 Windows 自己的通知区域浮出窗口（Win+B 再 Enter）。</summary>
-    public static void OpenSystemTray()
+    private static int _opening;
+
+    public static void OpenSystemTray() => _ = OpenSystemTrayAsync();
+
+    public static async Task OpenSystemTrayAsync()
     {
+        if (Interlocked.Exchange(ref _opening, 1) != 0) return;
         try
         {
-            // 顶部任务栏模式下任务栏是隐藏的，不要再把它 ShowWindow 出来：
-            // 看门狗 150ms 后会把任务栏重新藏掉，连带把刚打开的托盘面板一起带走。
+            // 顶部任务栏模式下任务栏保持隐藏，使用 Windows 原生快捷键打开托盘。
             var sentB = KeySendService.Send((int)'B', KeySendService.ModWin);
-            Thread.Sleep(260);
+            await Task.Delay(260);
             var sentEnter = KeySendService.Send(0x0D, 0);
+            await Task.Delay(100);
+            HideSystemTrayFocusCue();
             DebugLog.Write($"[顶栏] 已请求打开系统托盘（Win+B={sentB} Enter={sentEnter}）");
         }
         catch (Exception ex) { DebugLog.Write("[顶栏] 打开系统托盘失败：" + ex.Message); }
+        finally { Interlocked.Exchange(ref _opening, 0); }
+    }
+
+    private static void HideSystemTrayFocusCue()
+    {
+        var hwnd = FindWindow("TopLevelWindowForOverflowXamlIsland", null);
+        if (hwnd == IntPtr.Zero || !IsWindowVisible(hwnd)) return;
+
+        const uint WM_CHANGEUISTATE = 0x0127;
+        const int UIS_SET = 1;
+        const int UISF_HIDEFOCUS = 0x1;
+        var action = (uint)(UIS_SET | (UISF_HIDEFOCUS << 16));
+        SendMessageTimeout(hwnd, WM_CHANGEUISTATE, new UIntPtr(action), IntPtr.Zero,
+            0x0002, 100, out _);
     }
 
     /// <summary>系统托盘溢出面板当前是否打开。</summary>
@@ -578,6 +598,10 @@ internal static class TrayAppService
 
     [DllImport("user32.dll", CharSet = CharSet.Unicode)]
     private static extern IntPtr FindWindowEx(IntPtr parent, IntPtr after, string? className, string? windowName);
+
+    [DllImport("user32.dll", SetLastError = true)]
+    private static extern IntPtr SendMessageTimeout(IntPtr hwnd, uint message, UIntPtr wParam,
+        IntPtr lParam, uint flags, uint timeout, out IntPtr result);
 
     [DllImport("user32.dll")]
     private static extern bool IsWindow(IntPtr hwnd);

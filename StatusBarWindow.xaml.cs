@@ -124,7 +124,7 @@ public sealed partial class StatusBarWindow : Window
         var s = SettingsService.Current;
         RefreshScale();
 
-        _barHeight = Math.Clamp(s.StatusBarHeight, 24, 40);
+        _barHeight = s.StatusBarLarge ? 40 : 32;
         _fontSize = Math.Clamp(s.StatusBarFontSize, 10, 18);
 
         _timerMinutes = Math.Clamp(s.StatusBarTimerMinutes, 5, 120);
@@ -750,13 +750,13 @@ public sealed partial class StatusBarWindow : Window
         UpdateNotifications();
     }
 
-    private void OnTrayTapped(object sender, TappedRoutedEventArgs e)
+    private async void OnTrayTapped(object sender, TappedRoutedEventArgs e)
     {
         // 只打开 / 关闭 Windows 自己的通知区域
         StatusBarControlCenterWindow.CloseIfOpen();
 
         if (TrayAppService.IsSystemTrayOpen()) TrayAppService.CloseSystemTray();
-        else TrayAppService.OpenSystemTray();
+        else await TrayAppService.OpenSystemTrayAsync();
 
         UpdateTrayState();
     }
@@ -814,18 +814,16 @@ public sealed partial class StatusBarWindow : Window
 
     private void OnSegmentPointerPressed(object sender, PointerRoutedEventArgs e)
     {
-        if (sender is not Border b || b.RenderTransform is not CompositeTransform t) return;
-        t.CenterX = b.ActualWidth / 2;
-        t.CenterY = b.ActualHeight / 2;
-        t.ScaleX = 0.94;
-        t.ScaleY = 0.94;
+        if (sender is not Border b) return;
+        b.CapturePointer(e.Pointer);
+        b.Opacity = 0.72;
     }
 
     private void OnSegmentPointerReleased(object sender, PointerRoutedEventArgs e)
     {
-        if (sender is not Border b || b.RenderTransform is not CompositeTransform t) return;
-        t.ScaleX = 1;
-        t.ScaleY = 1;
+        if (sender is not Border b) return;
+        try { b.ReleasePointerCapture(e.Pointer); } catch { }
+        b.Opacity = 1;
     }
 
     // ---------------- 窗口样式 ----------------

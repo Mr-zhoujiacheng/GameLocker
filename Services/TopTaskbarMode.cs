@@ -59,8 +59,8 @@ internal static class TopTaskbarMode
         return edge == TaskbarEdge.Top;
     }
 
-    /// <summary>尝试启用。任务栏不在顶部时返回 false，message 给用户看。</summary>
-    public static bool TryEnable(out string message)
+    /// <summary>尝试启用。任务栏不在顶部或底部时返回 false，message 给用户看。</summary>
+    public static bool TryEnable(bool large, out string message)
     {
         lock (Gate)
         {
@@ -68,11 +68,6 @@ internal static class TopTaskbarMode
             {
                 message = "只有主实例可以更改系统任务栏状态";
                 return false;
-            }
-            if (_active)
-            {
-                message = "";
-                return true;
             }
         }
 
@@ -87,34 +82,63 @@ internal static class TopTaskbarMode
             return false;
         }
 
+        var desiredSize = large ? 0 : SmallTaskbarSize;
+        bool wasActive;
+        TaskbarEdge previousEdge;
         lock (Gate)
         {
-            if (_active)
+            wasActive = _active;
+            previousEdge = Edge;
+            if (_active && Edge == edge &&
+                (edge != TaskbarEdge.Top || ReadTaskbarSize() == desiredSize))
             {
                 message = "";
                 return true;
             }
+        }
+
+        if (wasActive && previousEdge == TaskbarEdge.Top && edge == TaskbarEdge.Bottom)
+        {
+            RestoreTaskbarSize();
+            BroadcastSettingsChange();
+        }
+
+        lock (Gate)
+        {
             HeightDip = height;
             Edge = edge;
             _active = true;
         }
 
-        // 只有任务栏在顶部时，才把它切成“小”以压缩顶部预留条；底部保持原高度
+        // 顶部任务栏用小/大预留区匹配顶栏；底部任务栏保持 Windows 当前尺寸。
         if (Edge == TaskbarEdge.Top)
         {
             CaptureTaskbarSize();
-            if (ReadTaskbarSize() != SmallTaskbarSize)
+            if (ReadTaskbarSize() != desiredSize)
             {
-                WriteTaskbarSize(SmallTaskbarSize);
+                WriteTaskbarSize(desiredSize);
                 BroadcastSettingsChange();
-                Thread.Sleep(450);
-                if (TaskbarEdgeService.TryGet(out _, out var newHeight)) HeightDip = newHeight;
+                if (wasActive)
+                {
+                    _ = Task.Run(async () =>
+                    {
+                        await Task.Delay(500);
+                        if (!TaskbarEdgeService.TryGet(out _, out var newHeight)) return;
+                        lock (Gate) HeightDip = newHeight;
+                        StateChanged?.Invoke();
+                    });
+                }
+                else
+                {
+                    Thread.Sleep(450);
+                    if (TaskbarEdgeService.TryGet(out _, out var newHeight)) HeightDip = newHeight;
+                }
             }
         }
 
         HideTaskbars();
         _watchdog ??= new Timer(_ => WatchdogTick(), null, 150, 150);
-        DebugLog.Write($"[任务栏] 顶部模式：已隐藏任务栏，高度 {HeightDip} DIP（小任务栏）");
+        DebugLog.Write($"[任务栏] 顶部模式：已隐藏任务栏，高度 {HeightDip} DIP（{(large ? "大" : "小")}任务栏）");
         message = "";
         return true;
     }

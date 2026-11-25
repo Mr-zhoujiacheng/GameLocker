@@ -252,6 +252,9 @@ public class AppSettings
     /// <summary>顶栏2 字号（10–18，DIP）</summary>
     public int StatusBarFontSize { get; set; } = 12;
 
+    /// <summary>顶栏尺寸：false=小，true=大。</summary>
+    public bool StatusBarLarge { get; set; }
+
     /// <summary>顶栏2：前台全屏时自动隐藏</summary>
     public bool StatusBarFullscreenHide { get; set; } = true;
 
@@ -412,11 +415,23 @@ public class AppSettings
     /// <summary>启动器收起后允许手柄操作底栏（固定开启）</summary>
     public bool DockGamepadEnabled { get => true; set { } }
 
-    /// <summary>图标边长（36–64）。条高由它推导，不再单独保存。</summary>
-    public int DockIconSize { get; set; } = 40;
+    /// <summary>图标边长：小/中/大三档。条高由它推导，不再单独保存。</summary>
+    public int DockIconSize { get; set; } = DockIconSmall;
 
-    public const int DockIconMin = 36;
-    public const int DockIconMax = 64;
+    public const int DockIconSmall = 40;
+    public const int DockIconMedium = 48;
+    public const int DockIconLarge = 56;
+    public const int DockIconMin = DockIconSmall;
+    public const int DockIconMax = DockIconLarge;
+
+    public static int DockIconPreset(int value)
+    {
+        var smallMedium = (DockIconSmall + DockIconMedium) / 2;
+        var mediumLarge = (DockIconMedium + DockIconLarge) / 2;
+        return value <= smallMedium ? DockIconSmall
+            : value <= mediumLarge ? DockIconMedium
+            : DockIconLarge;
+    }
 
     /// <summary>运行指示在图标下方额外占用的高度（DIP）</summary>
     public static int DockIndicatorExtra(bool showRunning, int style, int size) =>
@@ -430,7 +445,6 @@ public class AppSettings
     public static int DockBarHeight(int iconSize, int indicatorExtra) =>
         (int)Math.Ceiling((Math.Clamp(iconSize, DockIconMin, DockIconMax) + Math.Max(0, indicatorExtra)) * 1.14) + 8;
 
-    /// <summary>图标尺寸落在合法区间；旧配置里的条高字段已废弃，这里只校正图标。</summary>
-    public void NormalizeDockGeometry() =>
-        DockIconSize = Math.Clamp(DockIconSize, DockIconMin, DockIconMax);
+    /// <summary>图标尺寸归一化到小/中/大预设；旧配置里的条高字段已废弃。</summary>
+    public void NormalizeDockGeometry() => DockIconSize = DockIconPreset(DockIconSize);
 }

@@ -503,16 +503,20 @@ public sealed partial class MainWindow : Window
 
         // 平板边缘手势呼出
         _edgeGesture = new EdgeGestureService();
-        _edgeGesture.EdgeTouched += () => DispatcherQueue.TryEnqueue(() => KeyboardHook.BeginStartUiBlockWatch());
-        _edgeGesture.SummonTriggered += () => DispatcherQueue.TryEnqueue(() =>
+        _edgeGesture.EdgeTouched += () => KeyboardHook.BeginStartUiBlockWatch();
+        _edgeGesture.SummonTriggered += () =>
         {
+            // 先在手势线程启动阻断，再把窗口显示切换交给 UI 线程。
             KeyboardHook.BeginStartUiBlockWatch();
-            if (!_shown || GetForegroundWindow() != _hwnd)
+            DispatcherQueue.TryEnqueue(() =>
             {
-                DebugLog.Write("任务栏联动: 边缘手势呼出");
-                ShowFromTray();
-            }
-        });
+                if (!_shown || GetForegroundWindow() != _hwnd)
+                {
+                    DebugLog.Write("任务栏联动: 边缘手势呼出");
+                    ShowFromTray();
+                }
+            });
+        };
         // 收起手势（呼出的反方向）：走原始输入触摸通道，与页面内容无关，任何页面都生效（现为"直接最小化"）
         _edgeGesture.DismissTriggered += () => DispatcherQueue.TryEnqueue(OnDismissGesture);
         // 向下滑：返回上一级（主页则最小化）
@@ -1523,6 +1527,20 @@ public sealed partial class MainWindow : Window
         BringToForeground();
     }
 
+    /// <summary>外部应用启动前暂时降级层级，避免开始菜单模式的启动器盖住目标窗口。</summary>
+    public void PrepareForExternalLaunch()
+    {
+        if (_shown && SettingsService.Current.StartMenuMode)
+            SetAlwaysOnTop(false);
+    }
+
+    /// <summary>外部应用启动失败或取消时恢复启动器置顶。</summary>
+    public void RestoreAfterExternalLaunchFailure()
+    {
+        if (_shown && SettingsService.Current.StartMenuMode)
+            SetAlwaysOnTop(true);
+    }
+
     /// <summary>按当前设置同步键盘呼出键（控制页捕获保存后调用）</summary>
     public void SyncKeyboardHook()
     {
@@ -1607,8 +1625,7 @@ public sealed partial class MainWindow : Window
         else HideToTray();
     }
 
-    /// <summary>底栏呼出组合键：先收起启动器（否则底栏被它挡住），再把底栏亮出来。
-    /// 底栏没启用时给一次提示，不偷偷把它打开。</summary>
+    /// <summary>底栏呼出组合键：启动器显示时切换页面/底栏手柄焦点；启动器隐藏时展开底栏。</summary>
     private async Task SummonDockAsync()
     {
         if (_exiting) return;
@@ -1617,6 +1634,15 @@ public sealed partial class MainWindow : Window
         if (!SettingsService.Current.SystemEnabled)
         {
             FloatingToastService.Show("底栏未启用：设置 → 系统 → 打开「启用系统」", warning: true);
+            return;
+        }
+        if (_shown && DockHost.IsVisible)
+        {
+            var focused = DockGamepad.ToggleFocusMode();
+            if (focused) await DockHost.SummonAsync();
+            FloatingToastService.Show(focused
+                ? "手柄已切换到底栏，再次长按底栏呼出组合键切回页面"
+                : "手柄已切回当前页面");
             return;
         }
         if (_shown) HideToTray();
@@ -1796,6 +1822,7 @@ public sealed partial class MainWindow : Window
         // 立刻停手柄路由：一旦决定隐藏，滑出动画期间就不该再响应手柄
         // （否则刚启动游戏后晃动/误触按键会把启动器上的操作（如 Y 关闭程序）打到已经看不见的界面上）
         _shown = false;
+        DockGamepad.ClearFocusMode();
         _gameSwipeSource = IntPtr.Zero;
         _summonPending = false;
         (Root.Content as MainPage)?.CloseSearch();
@@ -2164,6 +2191,7 @@ public sealed partial class MainWindow : Window
         get
         {
             if (!_routing || _hwnd == IntPtr.Zero || !IsWindowVisibleForLaunch(_hwnd) || IsIconic(_hwnd)) return false;
+            if (DockHost.GamepadInputRevealed || DockGamepad.FocusMode) return false;
             var foreground = GetForegroundWindow();
             if (foreground == _hwnd || foreground == IntPtr.Zero) return true;
             if (DockPopupWindow.IsOpen) return false;

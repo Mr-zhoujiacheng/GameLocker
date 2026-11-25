@@ -140,83 +140,49 @@ public sealed partial class DockSettingsPage : Page, ISettingsGamepad
     /// </summary>
     private void AddDockSizeRows(AppSettings s)
     {
-        var iconValue = new TextBlock
+        var labels = new[] { "小", "中", "大" };
+        var sizes = new[] { AppSettings.DockIconSmall, AppSettings.DockIconMedium, AppSettings.DockIconLarge };
+        var index = Array.IndexOf(sizes, AppSettings.DockIconPreset(s.DockIconSize));
+        var value = new TextBlock
         {
-            Text = s.DockIconSize.ToString(),
+            Text = labels[Math.Max(0, index)],
             FontSize = 12.5,
-            Opacity = 0.75,
-            MinWidth = 24,
-            TextAlignment = TextAlignment.Right,
+            FontWeight = Microsoft.UI.Text.FontWeights.SemiBold,
             VerticalAlignment = VerticalAlignment.Center
         };
-        var heightHint = new TextBlock
-        {
-            FontSize = 10.5,
-            Opacity = 0.5,
-            MinWidth = 52,
-            TextAlignment = TextAlignment.Right,
-            VerticalAlignment = VerticalAlignment.Center
-        };
-
-        var iconSlider = new Slider
-        {
-            Minimum = AppSettings.DockIconMin,
-            Maximum = AppSettings.DockIconMax,
-            Value = s.DockIconSize,
-            StepFrequency = 1,
-            Width = 150,
-            VerticalAlignment = VerticalAlignment.Center
-        };
-
-        // 滑杆跟随主题蓝，避免使用系统强调色（可能是橙/紫等），与其它设置页的蓝色控件一致
-        var sliderAccent = Windows.UI.Color.FromArgb(0xFF, 0x4C, 0xC2, 0xFF);
-        var sliderAccentHover = Windows.UI.Color.FromArgb(0xFF, 0x7A, 0xD0, 0xFF);
-        var sliderAccentPressed = Windows.UI.Color.FromArgb(0xFF, 0xA6, 0xE0, 0xFF);
-        var sliderTrack = new SolidColorBrush(Windows.UI.Color.FromArgb(0x33, 0xFF, 0xFF, 0xFF));
-        var sliderTrackHover = new SolidColorBrush(Windows.UI.Color.FromArgb(0x4D, 0xFF, 0xFF, 0xFF));
-        var sliderTrackPressed = new SolidColorBrush(Windows.UI.Color.FromArgb(0x66, 0xFF, 0xFF, 0xFF));
-        iconSlider.Resources["SliderThumbBackground"] = new SolidColorBrush(sliderAccent);
-        iconSlider.Resources["SliderThumbBackgroundPointerOver"] = new SolidColorBrush(sliderAccentHover);
-        iconSlider.Resources["SliderThumbBackgroundPressed"] = new SolidColorBrush(sliderAccentPressed);
-        iconSlider.Resources["SliderOuterThumbBackground"] = new SolidColorBrush(Microsoft.UI.Colors.Transparent);
-        iconSlider.Resources["SliderThumbBorderBrush"] = new SolidColorBrush(Microsoft.UI.Colors.Transparent);
-        iconSlider.Resources["SliderTrackValueFill"] = new SolidColorBrush(sliderAccent);
-        iconSlider.Resources["SliderTrackValueFillPointerOver"] = new SolidColorBrush(sliderAccentHover);
-        iconSlider.Resources["SliderTrackValueFillPressed"] = new SolidColorBrush(sliderAccentPressed);
-        iconSlider.Resources["SliderTrackFill"] = sliderTrack;
-        iconSlider.Resources["SliderTrackFillPointerOver"] = sliderTrackHover;
-        iconSlider.Resources["SliderTrackFillPressed"] = sliderTrackPressed;
-
-        void RefreshHeightHint(int iconSize)
-        {
-            var current = SettingsService.Current;
-            var extra = AppSettings.DockIndicatorExtra(current.DockShowRunning, current.DockIndicatorStyle,
-                current.DockIndicatorSize);
-            heightHint.Text = $"条高 {AppSettings.DockBarHeight(iconSize, extra)}";
-        }
-
-        iconSlider.ValueChanged += (_, e) =>
-        {
-            var v = (int)e.NewValue;
-            iconValue.Text = v.ToString();
-            RefreshHeightHint(v);
-            SettingsService.Update(x => x.DockIconSize = v);
-            UpdatePreview();
-            ApplyAsync();
-        };
-
-        RefreshHeightHint(s.DockIconSize);
-
-        var panel = new StackPanel
+        var content = new StackPanel
         {
             Orientation = Orientation.Horizontal,
             Spacing = 8,
             VerticalAlignment = VerticalAlignment.Center
         };
-        panel.Children.Add(iconSlider);
-        panel.Children.Add(iconValue);
-        panel.Children.Add(heightHint);
-        AddRow("图标大小", "条高随图标自动缩放", "\uE740", panel, () => { });
+        content.Children.Add(value);
+        content.Children.Add(new FontIcon
+        {
+            Glyph = "\uE76C",
+            FontSize = 10,
+            Opacity = 0.55,
+            VerticalAlignment = VerticalAlignment.Center
+        });
+
+        var pill = new Border
+        {
+            Background = new SolidColorBrush(Windows.UI.Color.FromArgb(0x1A, 0x4C, 0xC2, 0xFF)),
+            BorderBrush = new SolidColorBrush(Windows.UI.Color.FromArgb(0x33, 0x4C, 0xC2, 0xFF)),
+            BorderThickness = new Thickness(1),
+            CornerRadius = new CornerRadius(8),
+            Padding = new Thickness(10, 4, 8, 4),
+            VerticalAlignment = VerticalAlignment.Center,
+            Child = content
+        };
+
+        AddRow("图标大小", "小 / 中 / 大；方向键和 A 键可调节", "\uE740", pill, () =>
+        {
+            index = (index + 1) % sizes.Length;
+            value.Text = labels[index];
+            SettingsService.Update(x => x.DockIconSize = sizes[index]);
+            ApplyAsync();
+        });
     }
 
     /// <summary>统一的设置行：左侧强调条 + 图标底盘 + 标题/说明，右侧放开关、循环值或滑杆。</summary>

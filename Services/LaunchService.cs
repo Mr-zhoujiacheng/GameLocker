@@ -273,11 +273,27 @@ public static class LaunchService
 
     private static void Start(LaunchItem item, string? path)
     {
-        using var process = Process.Start(new ProcessStartInfo
+        Process? process;
+        if (item.Target.StartsWith("shell:AppsFolder\\", StringComparison.OrdinalIgnoreCase))
         {
-            FileName = item.Target, UseShellExecute = true, WindowStyle = ProcessWindowStyle.Maximized,
-            WorkingDirectory = path is not null ? Path.GetDirectoryName(path) ?? "" : ""
-        });
+            // Process.Start 直接把 shell:AppsFolder 当 FileName 在部分 Windows 版本上只会
+            // 返回一个 Shell 引导进程，不会真正激活 AUMID；交给 Explorer 解析才可靠。
+            process = Process.Start(new ProcessStartInfo
+            {
+                FileName = "explorer.exe",
+                Arguments = $"\"{item.Target}\"",
+                UseShellExecute = true,
+                WindowStyle = ProcessWindowStyle.Normal
+            });
+        }
+        else
+        {
+            process = Process.Start(new ProcessStartInfo
+            {
+                FileName = item.Target, UseShellExecute = true, WindowStyle = ProcessWindowStyle.Maximized,
+                WorkingDirectory = path is not null ? Path.GetDirectoryName(path) ?? "" : ""
+            });
+        }
         var record = Records.GetOrAdd(item.Target, _ => new LaunchRecord());
         if (process is not null && ReadIdentity(process.Id) is { } identity)
         {
@@ -532,9 +548,21 @@ public static class LaunchService
                 // 这类窗口（QQ/Electron 一类）被外部强行 Show + 最大化后，自身状态机常常停在
                 // 隐藏时的布局上，表现为窗口出来了但界面卡住不刷新。
                 if (IsIconic(main)) ShowWindowAsync(main, 9);
-                // 关键一步：ShowWindow 只让 DWM 把最后一帧贴出来，Chromium/Electron 的渲染进程
-                // 仍停在"隐藏"状态——窗口看着正常，鼠标却点不动。补一次激活消息 + 1px 尺寸变化，
-                // 强制它重新走一遍"窗口被激活/尺寸变化"的流程，页面才真正恢复（实测 QQ 有效）。
+                // 仅对普通窗口做 1px 往返调整，触发 Chromium/Electron 的尺寸变化刷新；
+                // 不移动窗口、不改 Z 序、不抢焦点，也不改变最大化窗口的几何状态。
+                if (!IsZoomed(main) && GetWindowRect(main, out var rect))
+                {
+                    var width = rect.Right - rect.Left;
+                    var height = rect.Bottom - rect.Top;
+                    if (width > 0 && height > 0)
+                    {
+                        const uint noMoveNoZOrderNoActivate = 0x0002 | 0x0004 | 0x0010;
+                        SetWindowPos(main, IntPtr.Zero, 0, 0, width + 1, height,
+                            noMoveNoZOrderNoActivate);
+                        SetWindowPos(main, IntPtr.Zero, 0, 0, width, height,
+                            noMoveNoZOrderNoActivate);
+                    }
+                }
             }
             else if (canMaximize)
             {

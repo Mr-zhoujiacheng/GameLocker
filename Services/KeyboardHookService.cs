@@ -384,6 +384,7 @@ public sealed class KeyboardHookService : IDisposable
                 return IntPtr.Zero;
             case WM_LBUTTONDOWN:
                 if (!_startMenuMode) break;
+                BeginStartUiBlockWatch();
                 _coverDown = true;
                 SetCapture(hwnd); // 保证抬起一定回到本窗口（即使手指滑出按钮）
                 return IntPtr.Zero; // 吞掉，绝不让点击到达任务栏
@@ -400,6 +401,7 @@ public sealed class KeyboardHookService : IDisposable
             // 也保证触摸事件完全落在本窗口、不会路由到任务栏
             case WM_POINTERDOWN:
                 if (!_startMenuMode) break;
+                BeginStartUiBlockWatch();
                 _coverDown = true;
                 return IntPtr.Zero;
             case WM_POINTERUP:
@@ -452,17 +454,10 @@ public sealed class KeyboardHookService : IDisposable
 
     private static void HideStartWindow(IntPtr hwnd)
     {
-        try
-        {
-            if (GetForegroundWindow() == hwnd)
-            {
-                KeySendService.SendKeyOnly(VK_ESCAPE, up: false, InjectMarker);
-                KeySendService.SendKeyOnly(VK_ESCAPE, up: true, InjectMarker);
-            }
-        }
-        catch { /* 注入失败：直接隐藏 */ }
+        // 不发送 Esc：它会触发系统开始菜单的收起动画，造成先出现再闪退的视觉效果。
+        // 直接隐藏已识别的开始/搜索窗口，不结束宿主进程，也不影响同宿主内其它 Shell 界面。
         ShowWindow(hwnd, SW_HIDE);
-        DebugLog.Write($"开始菜单: 已隐藏系统开始/搜索窗口 hwnd={hwnd}");
+        DebugLog.Write($"开始菜单: 已立即隐藏系统开始/搜索窗口 hwnd={hwnd}");
     }
 
     /// <summary>呼出/切换时开启约 2.5 秒封锁期，每 50ms 阻断系统开始/搜索界面。</summary>
@@ -558,7 +553,11 @@ public sealed class KeyboardHookService : IDisposable
                     if (msg == WM_LBUTTONDOWN)
                     {
                         _suppressStartClick = IsStartButtonClick(data.pt);
-                        if (_suppressStartClick) return (IntPtr)1;
+                        if (_suppressStartClick)
+                        {
+                            BeginStartUiBlockWatch();
+                            return (IntPtr)1;
+                        }
                     }
                 }
             }
@@ -697,7 +696,6 @@ public sealed class KeyboardHookService : IDisposable
     private const int VK_SHIFT = 0x10;
     private const int VK_CONTROL = 0x11;
     private const int VK_MENU = 0x12;
-    private const int VK_ESCAPE = 0x1B;
     private const int VK_LWIN = 0x5B;
     private const int VK_RWIN = 0x5C;
     private const uint EVENT_SYSTEM_FOREGROUND = 0x0003;

@@ -41,6 +41,7 @@ internal static class TrayAppService
     }
 
     private static readonly object Gate = new();
+    private static readonly HashSet<string> Switching = new(StringComparer.OrdinalIgnoreCase);
     private static List<Runtime>? _items;
 
     private static string FilePath =>
@@ -129,47 +130,165 @@ internal static class TrayAppService
         }
     }
 
-    /// <summary>点击条目：把该应用的主窗口唤到前台。</summary>
-    public static string Activate(TrayAppEntry entry)
+    /// <summary>仅在窗口可见、未最小化且已在前台时收起；否则恢复窗口。</summary>
+    public static async Task<string> ToggleAsync(TrayAppEntry entry, CancellationToken token = default)
     {
+        IntPtr window;
+        uint pid;
         lock (Gate)
         {
             EnsureLoaded();
             Refresh();
-
             var match = Find(entry);
             if (match is null) return "没有登记这个应用";
-            return ActivateLocked(match);
+            window = match.Window;
+            if (window == IntPtr.Zero && !IsProcessAlive(match) && !UsesOwnTrayRestore(entry.ExePath)) return "应用没有在运行";
+            pid = match.Pid;
+            if (!Switching.Add(entry.ExePath)) return "";
         }
-    }
 
-    /// <summary>
-    /// 点击条目：窗口已经在前台就收起（最小化），否则唤出。
-    /// 对应 MiniDock 的 clickToggle 行为：同一个图标点两下等于"开关"。
-    /// </summary>
-    public static string Toggle(TrayAppEntry entry)
-    {
-        lock (Gate)
+        try
         {
-            EnsureLoaded();
-            Refresh();
-
-            var match = Find(entry);
-            if (match is null) return "没有登记这个应用";
-            if (match.Window == IntPtr.Zero) return ActivateLocked(match);
-
-            var foreground = GetForegroundWindow();
-            if (foreground != IntPtr.Zero &&
-                (foreground == match.Window || GetAncestor(foreground, GA_ROOT) == match.Window))
+            token.ThrowIfCancellationRequested();
+            // A hidden tray window has app-managed state. Showing its HWND skips that state transition.
+            if (window == IntPtr.Zero || !IsWindowVisible(window))
             {
-                ShowWindow(match.Window, SW_MINIMIZE);
-                DebugLog.Write($"[底栏] 收起托盘应用 {match.Entry.DisplayName} hwnd=0x{match.Window.ToInt64():X}");
-                return "";
+                var visibleWindow = FindVisibleTrayWindow(entry, pid);
+                if (visibleWindow == IntPtr.Zero) return await WakeFromTrayAsync(entry, pid, token);
+                window = visibleWindow;
+                GetWindowThreadProcessId(window, out pid);
             }
+            if (!MatchesProcess(window, pid)) return "应用窗口已关闭";
+            if (IsHungAppWindow(window)) return $"{entry.DisplayName} 窗口未响应，请稍后再试。";
 
-            return ActivateLocked(match);
+            var minimized = IsIconic(window);
+            var hide = ShouldMinimize(true, minimized, IsForeground(window));
+            // 异步发送显示命令，不让底栏等另一个进程的窗口线程。
+            if ((hide || minimized) && !ShowWindowAsync(window, hide ? SW_MINIMIZE : SW_RESTORE))
+                return $"无法切换 {entry.DisplayName} 的窗口";
+
+            var deadline = Environment.TickCount64 + 1200;
+            var focusRequested = false;
+            while (true)
+            {
+                token.ThrowIfCancellationRequested();
+                if (!MatchesProcess(window, pid)) return "应用窗口已关闭";
+                var shown = IsWindowVisible(window) && !IsIconic(window);
+                if (hide ? !shown : shown && IsForeground(window))
+                {
+                    DebugLog.Write($"[底栏] {(hide ? "收起" : "唤出")}托盘应用 {entry.DisplayName} hwnd=0x{window.ToInt64():X}");
+                    return "";
+                }
+
+                if (Environment.TickCount64 >= deadline)
+                    return !hide && shown ? $"{entry.DisplayName} 已显示，但未切到前台。" : $"{entry.DisplayName} 窗口未及时响应。";
+
+                if (!hide && shown && !focusRequested)
+                {
+                    focusRequested = true;
+                    SetForegroundWindow(window);
+                }
+                await Task.Delay(40, token);
+            }
+        }
+        finally
+        {
+            lock (Gate) Switching.Remove(entry.ExePath);
         }
     }
+
+    internal static bool ShouldMinimize(bool visible, bool minimized, bool foreground) =>
+        visible && !minimized && foreground;
+
+    internal static bool UsesOwnTrayRestore(string? path) =>
+        !string.IsNullOrEmpty(path) && string.Equals(Path.GetFileName(path), "QQ.exe", StringComparison.OrdinalIgnoreCase);
+
+    internal static void RequestNativeOpen(string path)
+    {
+        // The desktop entry lets QQ's single-instance handling wake its existing UI.
+        using var process = Process.Start(new ProcessStartInfo(path)
+        {
+            UseShellExecute = true,
+            WorkingDirectory = Path.GetDirectoryName(path) ?? ""
+        });
+    }
+
+    private static async Task<string> WakeFromTrayAsync(TrayAppEntry entry, uint pid, CancellationToken token)
+    {
+        var ownRestore = UsesOwnTrayRestore(entry.ExePath);
+        var taskbar = FindWindow("Shell_TrayWnd", null);
+        // The taskbar replacement can hide the notification area from UI Automation.
+        var tryTrayFirst = !ownRestore || IsWindowVisible(taskbar);
+        if (tryTrayFirst && await TryTrayIconAsync(entry, pid, token)) return "";
+
+        if (ownRestore && Path.IsPathFullyQualified(entry.ExePath) && File.Exists(entry.ExePath))
+        {
+            token.ThrowIfCancellationRequested();
+            DebugLog.Write($"[底栏] 请求应用原生入口恢复：{entry.DisplayName}");
+            await Task.Run(() => RequestNativeOpen(entry.ExePath), token);
+            if (await WaitForTrayRestoreAsync(entry, pid, token)) return "";
+        }
+
+        if (!tryTrayFirst && await TryTrayIconAsync(entry, pid, token)) return "";
+        return $"未能从托盘唤出 {entry.DisplayName}，请尝试 Windows 托盘中的原应用图标。";
+    }
+
+    private static async Task<bool> TryTrayIconAsync(TrayAppEntry entry, uint pid, CancellationToken token)
+    {
+        var pids = pid == 0 ? new HashSet<int>() : new HashSet<int> { (int)pid };
+        using var trayTimeout = CancellationTokenSource.CreateLinkedTokenSource(token);
+        var trayToken = trayTimeout.Token;
+        trayTimeout.CancelAfter(3500);
+        try
+        {
+            var clicked = await Task.Run(() => TrayIconService.Click(trayToken, false,
+                entry.ExePath, pids, entry.DisplayName, Path.GetFileNameWithoutExtension(entry.ExePath)), trayToken)
+                .WaitAsync(trayToken);
+            return clicked && await WaitForTrayRestoreAsync(entry, pid, token);
+        }
+        catch (OperationCanceledException) when (!token.IsCancellationRequested) { return false; }
+    }
+
+    private static async Task<bool> WaitForTrayRestoreAsync(TrayAppEntry entry, uint pid, CancellationToken token)
+    {
+        var deadline = Environment.TickCount64 + 2400;
+        do
+        {
+            token.ThrowIfCancellationRequested();
+            var window = FindVisibleTrayWindow(entry, pid);
+            if (window != IntPtr.Zero && !IsIconic(window) && !IsHungAppWindow(window) && IsForeground(window))
+            {
+                DebugLog.Write($"[底栏] 应用已自行从托盘恢复：{entry.DisplayName}");
+                return true;
+            }
+            await Task.Delay(100, token);
+        } while (Environment.TickCount64 < deadline);
+        return false;
+    }
+
+    private static IntPtr FindVisibleTrayWindow(TrayAppEntry entry, uint knownPid)
+    {
+        var window = IntPtr.Zero;
+        EnumWindows((candidate, _) =>
+        {
+            if (!IsCandidateWindow(candidate) || !string.Equals(ClassOf(candidate), entry.ClassName, StringComparison.Ordinal)
+                || !string.Equals(TitleOf(candidate), entry.Title, StringComparison.Ordinal)) return true;
+            GetWindowThreadProcessId(candidate, out var owner);
+            if (owner == 0 || (owner != knownPid && !string.Equals(ExePathOf(owner), entry.ExePath, StringComparison.OrdinalIgnoreCase))) return true;
+            window = candidate;
+            return !IsForeground(candidate);
+        }, IntPtr.Zero);
+        return window;
+    }
+
+    private static bool IsForeground(IntPtr window)
+    {
+        var foreground = GetForegroundWindow();
+        return foreground != IntPtr.Zero && (foreground == window || GetAncestor(foreground, GA_ROOT) == window);
+    }
+
+    private static bool MatchesProcess(IntPtr window, uint pid) =>
+        GetWindowThreadProcessId(window, out var owner) != 0 && owner == pid;
 
     /// <summary>按 exe 路径找已登记条目（底栏的合成条目只带路径）。</summary>
     public static TrayAppEntry? FindEntry(string exePath)
@@ -189,7 +308,8 @@ internal static class TrayAppService
         {
             EnsureLoaded();
             Refresh();
-            return Find(entry)?.Window ?? IntPtr.Zero;
+            var window = Find(entry)?.Window ?? IntPtr.Zero;
+            return IsWindowVisible(window) ? window : IntPtr.Zero;
         }
     }
 
@@ -228,25 +348,6 @@ internal static class TrayAppService
 
             return list;
         }
-    }
-
-    /// <summary>唤出（已持有锁的内部实现）。</summary>
-    private static string ActivateLocked(Runtime match)
-    {
-        if (match.Window == IntPtr.Zero)
-        {
-            // 进程还在但窗口找不到：和原版一样，明确告诉用户下一步该做什么
-            return IsProcessAlive(match)
-                ? "应用在运行但找不到它的主窗口，请先从系统托盘打开一次"
-                : "应用没有在运行";
-        }
-
-        if (IsIconic(match.Window)) ShowWindow(match.Window, SW_RESTORE);
-        else ShowWindow(match.Window, SW_SHOW);
-
-        SetForegroundWindow(match.Window);
-        DebugLog.Write($"[顶栏] 唤出托盘应用 {match.Entry.DisplayName} hwnd=0x{match.Window.ToInt64():X}");
-        return "";
     }
 
     private static Runtime? Find(TrayAppEntry entry)
@@ -425,7 +526,6 @@ internal static class TrayAppService
     private const uint SYNCHRONIZE = 0x00100000;
     private const uint PROCESS_QUERY_LIMITED_INFORMATION = 0x1000;
     private const uint WAIT_TIMEOUT = 0x00000102;
-    private const int SW_SHOW = 5;
     private const int SW_RESTORE = 9;
     private const int SW_MINIMIZE = 6;
     private const int GW_OWNER = 4;
@@ -486,7 +586,10 @@ internal static class TrayAppService
     private static extern bool IsIconic(IntPtr hwnd);
 
     [DllImport("user32.dll")]
-    private static extern bool ShowWindow(IntPtr hwnd, int cmd);
+    private static extern bool ShowWindowAsync(IntPtr hwnd, int cmd);
+
+    [DllImport("user32.dll")]
+    private static extern bool IsHungAppWindow(IntPtr hwnd);
 
     [DllImport("user32.dll")]
     private static extern bool SetForegroundWindow(IntPtr hwnd);

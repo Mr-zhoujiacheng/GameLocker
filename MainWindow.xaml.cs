@@ -37,7 +37,8 @@ public sealed partial class MainWindow : Window
         new() { Interval = TimeSpan.FromMilliseconds(1200) };
 
     /// <summary>手柄是否派发到页面（与 Gamepad.RoutingEnabled 同步；仅窗口已呼出显示时为 true）</summary>
-    private bool _routing;
+    private volatile bool _routing;
+    private long _pageSummonedAt;
 
     /// <summary>开始菜单模式：失焦后延迟自动收起（点击面板外部即收起）</summary>
     private readonly Microsoft.UI.Xaml.DispatcherTimer _startMenuAutoHide =
@@ -66,8 +67,12 @@ public sealed partial class MainWindow : Window
     /// <summary>进入游戏窗口时最小化其他窗口：避免 Steam 等页面叠在游戏上方，呼出启动器时遮挡画面</summary>
     private readonly DispatcherTimer _gameEnterWatch =
         new() { Interval = TimeSpan.FromMilliseconds(800) };
+    private readonly DispatcherTimer _gamePresenceWatch =
+        new() { Interval = TimeSpan.FromMilliseconds(250) };
     /// <summary>已整理过的游戏窗口：同一次进入只做一次，避免每 800ms 反复最小化</summary>
     private IntPtr _minimizedForGame;
+    private IntPtr _gameSwipeSource;
+    private readonly OptiOverlayOrder _captureOrder = new();
     private readonly DispatcherTimer _taskbarRevealWatch =
         new() { Interval = TimeSpan.FromMilliseconds(250) };
 
@@ -75,7 +80,8 @@ public sealed partial class MainWindow : Window
     {
         // 开始菜单模式：呼出时把任务栏一并显示出来（对齐系统开始菜单的行为），
         // 否则全屏游戏/最大化窗口运行时任务栏不可见，看起来像"开始菜单少了任务栏"。
-        if (SettingsService.Current.StartMenuMode) ShowSystemTaskbar();
+        if (SettingsService.Current.StartMenuMode && LosslessScalingService.ActiveOptiSession is null)
+            ShowSystemTaskbar();
         // 只维护软件自己的 Z 序，不再移动/抬高任务栏，避免双方反复抢占。
         RefreshRevealedTaskbar();
         _taskbarRevealWatch.Start();
@@ -115,8 +121,10 @@ public sealed partial class MainWindow : Window
     /// <summary>侧边栏覆盖任务栏区域：任务栏被 Shell 重新提起时，仅校正双方顺序，不抢键盘焦点。</summary>
     private void EnsureLauncherAboveTaskbar()
     {
-        if (!_shown || _exiting
-            || OnScreenKeyboard.IsVisible || _hwnd == IntPtr.Zero || !IsWindowVisibleForLaunch(_hwnd)) return;
+        if (!_shown || _exiting || _hwnd == IntPtr.Zero) return;
+        // Win32 ownership keeps the launcher above the output without repeatedly raising either window.
+        if (_captureOrder.Update(_hwnd, LosslessScalingService.ActiveOptiSession?.HostPid ?? 0)) return;
+        if (OnScreenKeyboard.IsVisible || !IsWindowVisibleForLaunch(_hwnd)) return;
         // 开始菜单模式：任务栏必须保持可见（全屏游戏/其他置顶窗口会把它重新盖住）。
         if (SettingsService.Current.StartMenuMode) ShowSystemTaskbar();
         var sidebarTopmost = (GetWindowLongPtr(_hwnd, GWL_EXSTYLE).ToInt64() & 0x8) != 0;
@@ -141,13 +149,17 @@ public sealed partial class MainWindow : Window
     [return: MarshalAs(UnmanagedType.Bool)]
     private static extern bool IsZoomed(IntPtr hwnd);
 
+    [DllImport("user32.dll")]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    private static extern bool IsIconic(IntPtr hwnd);
+
     private void HideForMaximizedForeground()
     {
         if (!_shown || _exiting || _summonPending || _animating) return;
         var foreground = GetForegroundWindow();
         if (foreground == IntPtr.Zero || foreground == _hwnd || !IsZoomed(foreground)) return;
         GetWindowThreadProcessId(foreground, out var pid);
-        if ((int)pid == OwnProcessId) return;
+        if ((int)pid == OwnProcessId || foreground == _gameSwipeSource || IsActiveCaptureProcess(pid)) return;
         HideToTray();
     }
 
@@ -159,10 +171,15 @@ public sealed partial class MainWindow : Window
         if (fg == _minimizedForGame) return;
         _minimizedForGame = IntPtr.Zero;
         GetWindowThreadProcessId(fg, out var pid);
-        if ((int)pid == OwnProcessId || !IsFullscreenGameWindow(fg, pid)) return;
+        // Minimizing the game can also hide the output; treat them as one session.
+        if ((int)pid == OwnProcessId || IsActiveCaptureProcess(pid) || !IsFullscreenGameWindow(fg, pid)) return;
         _minimizedForGame = fg;
         MinimizeOtherWindows(fg);
     }
+
+    private static bool IsActiveCaptureProcess(uint pid) => pid != 0 &&
+        LosslessScalingService.ActiveOptiSession is { } capture &&
+        (pid == capture.GamePid || pid == capture.HostPid);
 
     /// <summary>前台全屏游戏若由外部启动，也纳入核心调度；只接受已验证为游戏的窗口。</summary>
     private void RegisterForegroundGameForCpu()
@@ -270,8 +287,8 @@ public sealed partial class MainWindow : Window
             _edgeGesture.Stop();
             return;
         }
-        _edgeGesture.Start();
         _edgeGesture.SetEdge(CurrentSummonEdge());
+        _edgeGesture.Start();
     }
 
     /// <summary>是否"满幅悬浮"形态（全屏 / 居中停靠）：这两种模式窗口很宽，
@@ -298,8 +315,7 @@ public sealed partial class MainWindow : Window
 
     private SummonEdge CurrentSummonEdge()
     {
-        // 开始菜单模式：呼出手势跟着任务栏走（任务栏在下方就从屏幕底边向上滑）
-        if (SettingsService.Current.StartMenuMode) return TaskbarEdge();
+        if (SettingsService.Current.StartMenuMode) return StartMenuEdge();
         // 全屏与居中都是"上方悬浮"形态，边缘手势统一走顶边
         if (_fullscreen || SettingsService.Current.SidebarSide == DockSide.Center) return SummonEdge.Top;
         return SettingsService.Current.SidebarSide == DockSide.Right
@@ -335,8 +351,9 @@ public sealed partial class MainWindow : Window
         return (fallback, work.X, work.Y, work.Width, work.Height);
     }
 
-    /// <summary>任务栏所在的屏幕边缘</summary>
-    private static SummonEdge TaskbarEdge() => TaskbarState().edge;
+    /// <summary>启用系统时跟随自绘底栏；否则跟随 Windows 任务栏。</summary>
+    private static SummonEdge StartMenuEdge() =>
+        SettingsService.Current.StartMenuUsesBottomEdge ? SummonEdge.Bottom : TaskbarState().edge;
 
     /// <summary>
     /// 开始按钮在任务栏长度方向上的归属：靠左（起始端） / 居中 / 靠右（末端）。
@@ -433,7 +450,7 @@ public sealed partial class MainWindow : Window
         {
             ReleaseTaskbar();
             StatusBarHost.Shutdown();    // 撤销顶栏2 的 AppBar 占位，恢复工作区
-            TaskbarControl.Shutdown();   // 恢复被「任务栏隐藏」占用的任务栏与工作区
+            DockHost.Shutdown();         // 销毁底栏窗口，并恢复任务栏与工作区
             // 下载模式中直接退出（Alt+F4 等）时也要把任务栏放回来
             if (_dlTaskbar != IntPtr.Zero)
             {
@@ -534,7 +551,7 @@ public sealed partial class MainWindow : Window
         GameSwipeService.TopBarPeekRequested += () => DispatcherQueue.TryEnqueue(() => StatusBarHost.Peek());
         GameSwipeService.TopBarHideRequested += () => DispatcherQueue.TryEnqueue(StatusBarHost.HideByGesture);
         GameSwipeService.DockSummonRequested += () => DispatcherQueue.TryEnqueue(SummonDockBySwipe);
-        GameSwipeService.DockHideRequested += () => DispatcherQueue.TryEnqueue(DockHost.HideForGame);
+        GameSwipeService.DockHideRequested += () => DispatcherQueue.TryEnqueue(HideDockBySwipe);
 
         // 游戏态：进游戏顶栏收起、底栏让路；离开游戏按各自设置恢复
         GamePresence.Changed += inGame =>
@@ -543,7 +560,12 @@ public sealed partial class MainWindow : Window
             StatusBarHost.SetGameMode(inGame);
         };
         // 首次激活后检查持久化策略；旧配置开启但尚未授权时弹出 UAC。
-        Activated += OnFirstEdgePolicyActivation;
+        if (SettingsService.Current.EdgeGestureSummon && SystemEdgeSwipePolicy.IsAlreadyBlocked())
+        {
+            _edgePolicyReady = true;
+            SyncEdgeGesture();
+        }
+        else Activated += OnFirstEdgePolicyActivation;
 
         // 前台游戏进程采样（常驻运行：窗口隐藏期间也要能记录到正在玩的游戏）
         _trainerTracker.Tick += (_, _) => TrainerService.CaptureForeground();
@@ -556,10 +578,16 @@ public sealed partial class MainWindow : Window
             HideForMaximizedForeground();
             MinimizeOthersOnGameForeground();
             RegisterForegroundGameForCpu();
-            // 游戏态：顶栏/底栏在游戏里让路，离开游戏恢复
-            GamePresence.Refresh();
         };
         _gameEnterWatch.Start();
+        _gamePresenceWatch.Tick += (_, _) =>
+        {
+            var foreground = GetForegroundWindow();
+            if (foreground != IntPtr.Zero && foreground != _hwnd && foreground != _gameSwipeSource) _gameSwipeSource = IntPtr.Zero;
+            GamePresence.Refresh();
+        };
+        GamePresence.Refresh();
+        _gamePresenceWatch.Start();
 
         // 修改器无精确匹配时，弹窗让用户从相似结果里挑一个
         TrainerService.CandidatesReady += OnTrainerCandidates;
@@ -1316,7 +1344,7 @@ public sealed partial class MainWindow : Window
     private int _animMs;
     private Action? _animDone;
 
-    /// <summary>目标位置对应的屏外起点：开始菜单=任务栏外侧（从任务栏后方滑出），
+    /// <summary>目标位置对应的屏外起点：开始菜单=系统底栏或 Windows 任务栏所在的一侧，
     /// 左停靠=左侧屏外，右停靠=右侧屏外，全屏/居中=上方屏外</summary>
     private Windows.Graphics.PointInt32 OffscreenPos(
         Windows.Graphics.PointInt32 target, Windows.Graphics.SizeInt32 size)
@@ -1324,7 +1352,7 @@ public sealed partial class MainWindow : Window
         if (SettingsService.Current.StartMenuMode)
         {
             var outer = Microsoft.UI.Windowing.DisplayArea.Primary.OuterBounds;
-            return TaskbarEdge() switch
+            return StartMenuEdge() switch
             {
                 SummonEdge.Top => new Windows.Graphics.PointInt32(target.X, outer.Y - size.Height),
                 SummonEdge.Left => new Windows.Graphics.PointInt32(outer.X - size.Width, target.Y),
@@ -1470,9 +1498,18 @@ public sealed partial class MainWindow : Window
     /// <summary>托盘/热键唤起</summary>
     public void ShowFromTray()
     {
+        if (_shown && LosslessScalingService.ActiveOptiSession is not null
+            && IsWindowVisibleForLaunch(_hwnd) && !IsIconic(_hwnd))
+        {
+            if (!_animating && !_summonPending) BringToForeground();
+            return;
+        }
         // 开始菜单模式：底栏此时已创建，重新按底栏上沿收一次高度（启动时底栏还没建）
+        GamePresence.Refresh();
         if (SettingsService.Current.StartMenuMode) ApplySidebarLayout();
         // 回前台：先退出效率模式，避免滑入动画与手柄响应被系统降频
+        Interlocked.Exchange(ref _pageSummonedAt, Environment.TickCount64);
+        DockPopupWindow.HideCurrent();
         PowerModeService.SetEfficiencyMode(false);
         (Root.Content as MainPage)?.CancelPendingLaunch();
         _shown = true;
@@ -1594,9 +1631,9 @@ public sealed partial class MainWindow : Window
     /// 底栏没启用时给一次提示，不偷偷把它打开。</summary>
     private async Task SummonDockAsync()
     {
-        DebugLog.Write($"[底栏] 呼出组合键命中：DockEnabled={SettingsService.Current.DockEnabled} " +
+        DebugLog.Write($"[底栏] 呼出组合键命中：SystemEnabled={SettingsService.Current.SystemEnabled} " +
                        $"已显示={DockHost.IsVisible} 启动器={(_shown ? "显示中" : "已收起")}");
-        if (!SettingsService.Current.DockEnabled)
+        if (!SettingsService.Current.SystemEnabled)
         {
             FloatingToastService.Show("底栏未启用：设置 → 系统 → 打开「启用系统」", warning: true);
             return;
@@ -1607,14 +1644,30 @@ public sealed partial class MainWindow : Window
     }
 
     /// <summary>游戏内底部边缘上滑：呼出底栏；Windows 开始菜单模式下同时把启动器叫出来。</summary>
-    private void SummonDockBySwipe()
+    private async void SummonDockBySwipe()
     {
-        if (!SettingsService.Current.DockEnabled) return;
-        DebugLog.Write($"[底栏] 手势呼出：DockEnabled=True StartMenuMode={SettingsService.Current.StartMenuMode} " +
+        if (_exiting || !SettingsService.Current.SystemEnabled || !GamePresence.InGame) return;
+        DebugLog.Write($"[底栏] 手势呼出：StartMenuMode={SettingsService.Current.StartMenuMode} " +
                        $"启动器={(_shown ? "显示中" : "已收起")}");
-        if (SettingsService.Current.StartMenuMode && !_shown) ShowFromTray();
-        try { _ = DockHost.SummonAsync(); }
+        var source = GetForegroundWindow();
+        try
+        {
+            await DockHost.SummonAsync();
+            if (!_exiting && !_shown && SettingsService.Current.StartMenuUsesBottomEdge
+                && GamePresence.InGame && source != IntPtr.Zero && source == GetForegroundWindow())
+            {
+                _gameSwipeSource = source;
+                ShowFromTray();
+            }
+        }
         catch (Exception ex) { DebugLog.Write("[底栏] 手势呼出失败：" + ex.Message); }
+    }
+
+    private void HideDockBySwipe()
+    {
+        if (!GamePresence.InGame) return;
+        DockHost.HideForGame();
+        if (_gameSwipeSource != IntPtr.Zero && _shown) HideToTray();
     }
 
     /// <summary>Y 关闭目标程序后调用：等待目标窗口销毁、系统焦点转移完成，再把启动器重新置顶聚焦（保持前台不最小化）</summary>
@@ -1671,6 +1724,8 @@ public sealed partial class MainWindow : Window
         GameCpuService.Shutdown();
         _startMenuAutoHide.Stop();
         _taskbarWatch.Stop();
+        _gameEnterWatch.Stop();
+        _gamePresenceWatch.Stop();
         KeyboardHook.Dispose();
         Gamepad.Dispose();
         _edgeGesture?.Dispose();
@@ -1698,6 +1753,7 @@ public sealed partial class MainWindow : Window
         // 立刻停手柄路由：一旦决定隐藏，滑出动画期间就不该再响应手柄
         // （否则刚启动游戏后晃动/误触按键会把启动器上的操作（如 Y 关闭程序）打到已经看不见的界面上）
         _shown = false;
+        _gameSwipeSource = IntPtr.Zero;
         _summonPending = false;
         (Root.Content as MainPage)?.CloseSearch();
         var wasAnimating = _animating;
@@ -1707,6 +1763,7 @@ public sealed partial class MainWindow : Window
         if (!SettingsService.Current.SummonAnimation || wasAnimating)
         {
             AppWindow.Hide();
+            _captureOrder.Detach(_hwnd);
             PowerModeService.SetEfficiencyMode(true); // 完全隐藏后进入效率模式，降低常驻功耗
             ReleaseTaskbar();
             _edgeGesture?.SetStripVisible(true); // 窗口隐藏后恢复边缘条，任意前台都能触摸呼出
@@ -1720,6 +1777,7 @@ public sealed partial class MainWindow : Window
         {
             if (_shown) return;
             AppWindow.Hide();
+            _captureOrder.Detach(_hwnd);
             PowerModeService.SetEfficiencyMode(true); // 完全隐藏后进入效率模式，降低常驻功耗
             ReleaseTaskbar();
             _edgeGesture?.SetStripVisible(true);
@@ -1759,8 +1817,7 @@ public sealed partial class MainWindow : Window
         int x, y, width, height;
         if (SettingsService.Current.StartMenuMode)
         {
-            // 开始菜单模式：面板贴住任务栏所在的那条屏幕边（留 12px 缝），对面留边距，
-            // 看起来就是从任务栏后方升起的整块面板。宽度沿用居中模式的倍率换算（38% ≈ 70% 屏宽）
+            // 贴住和呼出手势相同的边缘，对面留边距。宽度沿用居中模式的倍率（38% ≈ 70% 屏宽）。
             var menuPct = Math.Min(pct / 0.38 * 0.70, 0.96);
             var work = area.WorkArea;
             const int gap = 12; // 与任务栏之间的缝
@@ -1770,7 +1827,7 @@ public sealed partial class MainWindow : Window
             // 面板位置跟随开始按钮在任务栏长轴上的位置：居中→居中，靠某端→同端（留少量屏幕边距）
             var side = StartButtonSide();
             var alignX = AlignAxis(work.X, work.Width, width, side, sideGap);
-            switch (TaskbarEdge())
+            switch (StartMenuEdge())
             {
                 case SummonEdge.Top: // 任务栏在上方：面板贴顶，下方留边
                     height = work.Height - inset - gap;
@@ -1996,6 +2053,16 @@ public sealed partial class MainWindow : Window
     /// <summary>主页选择遮罩确认后：进入小组件页</summary>
     public void RootNavigateWidget() => Root.Navigate(typeof(WidgetPage));
 
+    internal async void ReturnToDock(object page)
+    {
+        if (_exiting || !IsCurrentPage(page)) return;
+        if (Root.CanGoBack) Root.GoBack();
+        else ShowMainPage();
+        HideToTray();
+        try { await DockHost.SummonAsync(); }
+        catch (Exception ex) { DebugLog.Write("[底栏] 返回底栏失败：" + ex.Message); }
+    }
+
     /// <summary>底栏性能组件：呼出启动器，并在主页里按 Y 打开完整性能面板。</summary>
     public void OpenPerformanceFromDock()
     {
@@ -2049,6 +2116,21 @@ public sealed partial class MainWindow : Window
     /// 手柄输出目标则相反，仅此时才有意义）</summary>
     public bool IsLauncherForeground => GetForegroundWindow() == _hwnd;
 
+    internal bool OwnsPageGamepadInput
+    {
+        get
+        {
+            if (!_routing || _hwnd == IntPtr.Zero || !IsWindowVisibleForLaunch(_hwnd) || IsIconic(_hwnd)) return false;
+            var foreground = GetForegroundWindow();
+            if (foreground == _hwnd || foreground == IntPtr.Zero) return true;
+            if (DockPopupWindow.IsOpen) return false;
+            GetWindowThreadProcessId(foreground, out var pid);
+            if (pid == (uint)OwnProcessId) return true;
+            // Allow the activation/animation to settle, and keep existing in-game overlay navigation.
+            return Environment.TickCount64 - Interlocked.Read(ref _pageSummonedAt) < 600 || GamePresence.InGame;
+        }
+    }
+
     /// <summary>外部（手柄映射服务）把目标手柄键派发到当前页面（手柄输出仅在本启动器内生效）</summary>
     public void DispatchGamepad(GamepadButtons buttons) =>
         DispatcherQueue.TryEnqueue(() => OnGamepadButton(buttons));
@@ -2074,9 +2156,12 @@ public sealed partial class MainWindow : Window
             if (Root.Content is ISettingsGamepad page) page.NotifyAllReleased();
         });
 
-    private void OnGamepadButton(GamepadButtons buttons) =>
-        // 轮询线程触发，marshal 回 UI 线程
-        DispatcherQueue.TryEnqueue(() => DispatchButtons(buttons));
+    private void OnGamepadButton(GamepadButtons buttons)
+    {
+        // Check ownership before queuing as well as before dispatching.
+        if (OwnsPageGamepadInput)
+            DispatcherQueue.TryEnqueue(() => DispatchButtons(buttons));
+    }
 
     /// <summary>
     /// 鼠标 / 触摸 / 笔点击的统一反馈：与 A 键同一个确认音（常规设置关闭「操作音效」时静默）。
@@ -2162,9 +2247,8 @@ public sealed partial class MainWindow : Window
     /// <summary>手柄按键派发（UI 线程）。allowDeferB=false 专用于"双击 B 判定到期"后补发单击 B 的原有行为</summary>
     private void DispatchButtons(GamepadButtons buttons, bool allowDeferB = true)
     {
-        // 双保险：入队后窗口可能已经隐藏/失去前台，此时一律不处理手柄
-        // （否则"在游戏里按 Y"会命中启动器上一次选中的磁贴，把游戏关掉）
-        if (!_routing) return;
+        // 入队后输入归属可能已变化，执行前再确认一次。
+        if (!OwnsPageGamepadInput) return;
 
         var overlay = _saveRestoreInput is not null || _trainerChoiceOpen || _optiOpen || _optiManualOpen;
         var cue = IsCapturingNow() && !overlay ? null : DefaultCue(buttons);
@@ -2571,7 +2655,7 @@ public sealed partial class MainWindow : Window
         }
         // 向下滑（竖直向下、横向偏移小）→ 返回上一级。全屏停靠时"向下"即呼出方向，不会与上面的反向滑冲突
         // 起点在已滚动的内容里时不当返回（那是用户在往下翻看列表）
-        else if (!_swipeFromScroll && fast && dy > 120 && Math.Abs(dx) < 80
+        else if (_gameSwipeSource == IntPtr.Zero && !_swipeFromScroll && fast && dy > 120 && Math.Abs(dx) < 80
             && Environment.TickCount64 - Math.Max(_backAt, _dismissAt) > 600)
         {
             _swipeDone = true;

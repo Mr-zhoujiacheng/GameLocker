@@ -40,70 +40,38 @@ internal static class GameSwipeService
     /// </summary>
     public static bool TryHandleGesture(int startX, int startY, int endX, int endY, long elapsedMs)
     {
-        if (!GamePresence.InGame) return false;
-
-        // 呼出看起点在不在边缘带，收起看终点在不在边缘带（上滑/下滑的收尾都会贴到边上）
-        var startBar = BarZone(startX, startY);
-        var endBar = BarZone(endX, endY);
-        var startDock = DockZone(startY);
-        var endDock = DockZone(endY);
-
-        var barHandled = startBar || endBar;
-        var dockHandled = !barHandled && (startDock || endDock);
-        if (!barHandled && !dockHandled) return false;
+        if (!SettingsService.Current.SystemEnabled || !GamePresence.InGame) return false;
 
         var dx = endX - startX;
         var dy = endY - startY;
-        var vertical = Math.Abs(dy) >= SwipeDistance && Math.Abs(dx) < Math.Abs(dy);
-        DebugLog.Write($"[手势] {startX},{startY} -> {endX},{endY} dx={dx} dy={dy} ms={elapsedMs} " +
-                       $"zone={(barHandled ? "bar" : "dock")} startEdge={(startBar || startDock)} endEdge={(endBar || endDock)} " +
-                       $"vertical={vertical}");
-
-        if (elapsedMs <= MaxDurationMs && vertical)
-        {
-            if (barHandled)
-            {
-                // 顶栏在顶部：从顶边往下滑=滑出，往上滑回顶边=收起；在底部时方向相反
-                var barAtTop = StatusBarHost.IsAtTop;
-                var hide = endBar && !startBar;                      // 手指收在边缘带上 = 收起方向
-                var peek = !hide && (barAtTop ? dy > 0 : dy < 0);    // 从边缘往里滑 = 滑出
-                Dispatch(peek ? TopBarPeekRequested : TopBarHideRequested,
-                    $"顶栏{(peek ? "滑出" : "收起")} atTop={barAtTop}");
-            }
-            else if (dy < 0)
-            {
-                Dispatch(DockSummonRequested, "底栏呼出");
-            }
-            else
-            {
-                Dispatch(DockHideRequested, "底栏收起");
-            }
-        }
-
-        // 即使位移不够也吃掉这次手势，避免启动器把它当成呼出/返回
-        return true;
-    }
-
-    /// <summary>右上/右下角手势区：屏幕顶部或底部的边缘带，且靠右。</summary>
-    private static bool BarZone(int x, int y)
-    {
-        if (!SettingsService.Current.StatusBarEnabled || !StatusBarHost.IsEnabled) return false;
         var bounds = Monitors.Primary().Bounds;
         var width = bounds.Right - bounds.Left;
-        if (width <= 0) return false;
-        if (x < bounds.Left + width * RightZoneRatio) return false;
-        var top = y - bounds.Top <= EdgeZone;
-        var bottom = bounds.Bottom - y <= EdgeZone;
-        return top || bottom;
-    }
+        if (dy == 0 || width <= 0 || bounds.Bottom <= bounds.Top) return false;
 
-    /// <summary>屏幕底部边缘带（底栏手势区）。</summary>
-    private static bool DockZone(int y)
-    {
-        if (!SettingsService.Current.DockEnabled || !DockHost.IsVisible) return false;
-        var bounds = Monitors.Primary().Bounds;
-        if (bounds.Bottom - bounds.Top <= 0) return false;
-        return bounds.Bottom - y <= EdgeZone;
+        // The bottom-right belongs to the status bar only when it is actually at the bottom.
+        // Inward gestures start at the edge; outward gestures must end there.
+        var atTop = StatusBarHost.IsAtTop;
+        var towardBar = atTop ? dy < 0 : dy > 0;
+        var barX = towardBar ? endX : startX;
+        var barY = towardBar ? endY : startY;
+        var barHandled = StatusBarHost.IsEnabled && barX >= bounds.Left + width * RightZoneRatio
+            && barX < bounds.Right && (atTop ? AtTop(barY) : AtBottom(barY));
+
+        var dockX = dy < 0 ? startX : endX;
+        var dockY = dy < 0 ? startY : endY;
+        var dockHandled = !barHandled && DockHost.IsVisible && dockX >= bounds.Left && dockX < bounds.Right && AtBottom(dockY);
+        if (!barHandled && !dockHandled) return false;
+
+        if (elapsedMs <= MaxDurationMs && Math.Abs(dy) >= SwipeDistance && Math.Abs(dx) < Math.Abs(dy))
+        {
+            if (barHandled) Dispatch(towardBar ? TopBarHideRequested : TopBarPeekRequested,
+                towardBar ? "顶栏收起" : "顶栏滑出");
+            else Dispatch(dy < 0 ? DockSummonRequested : DockHideRequested, dy < 0 ? "底栏呼出" : "底栏收起");
+        }
+        return true;
+
+        bool AtTop(int y) => y >= bounds.Top && y < bounds.Bottom && y - bounds.Top <= EdgeZone;
+        bool AtBottom(int y) => y >= bounds.Top && y < bounds.Bottom && bounds.Bottom - y <= EdgeZone;
     }
 
     private static void Dispatch(Action? handler, string log)

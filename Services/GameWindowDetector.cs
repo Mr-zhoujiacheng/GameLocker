@@ -73,6 +73,37 @@ internal static class GameWindowDetector
         "parsec", "moonlight", "steamlink", "gamebar", "xboxgamebar"
     };
 
+    internal static bool IsUsableWindow(nint hwnd) =>
+        hwnd != 0 && IsWindowVisible(hwnd) && !IsIconic(hwnd) && !IsCloaked(hwnd);
+
+    /// <summary>Detect a game for the system bars without using geometry or launch history as identity.</summary>
+    internal static bool IsGameForSystemBars(nint hwnd, uint pid)
+    {
+        if (pid == 0 || pid == Environment.ProcessId || !IsUsableWindow(hwnd)) return false;
+        var cls = WindowClass(hwnd);
+        var path = KeyboardHookService.ProcessImagePath(pid);
+        var exe = Path.GetFileNameWithoutExtension(path);
+        if (IsUserExcluded(exe)) return false;
+
+        // Only the owned capture session's game or presentation window counts, not its settings UI.
+        if (LosslessScalingService.ActiveOptiSession is { } capture &&
+            (pid == capture.GamePid || (pid == capture.HostPid && cls == "OptiCaptureHostOverlay"))) return true;
+
+        if (exe.Equals("LosslessScaling", StringComparison.OrdinalIgnoreCase) && cls == "LosslessScalingBlk") return true;
+        if (exe.Length == 0 || IsDesktopApp(exe, cls) || !TrainerService.IsGameLikeProcess(hwnd, exe)) return false;
+        if (HasBarGameEvidence(path, cls)) return true;
+
+        // D3D exclusive fullscreen needs both the OS signal and an actual borderless fullscreen window.
+        var style = GetWindowLongPtr(hwnd, GWL_STYLE).ToInt64();
+        return (style & WS_CAPTION) != WS_CAPTION && (style & WS_THICKFRAME) == 0
+            && QueryNotificationState() == QUNS_RUNNING_D3D_FULL_SCREEN && CoversOwnMonitor(hwnd);
+    }
+
+    // SDL and GLFW are also used by editors and players, so the class alone is insufficient.
+    internal static bool HasBarGameEvidence(string path, string cls) =>
+        IsGameLibraryPath(path) || (IsGameWindowClass(cls)
+            && cls.ToUpperInvariant() is not ("SDL_APP" or "SDL2" or "GLFW30" or "GLFW20"));
+
     /// <summary>前台窗口是否是正在全屏运行的游戏。</summary>
     public static bool IsFullscreenGame(IntPtr hwnd, uint pid)
     {
@@ -182,6 +213,7 @@ internal static class GameWindowDetector
             case "notepad": case "notepad++": case "code": case "devenv": case "idea64":
             case "pycharm64": case "sublime_text": case "winword": case "excel":
             case "powerpnt": case "outlook": case "onenote":
+            case "deepseek harness": case "deepseekharness": case "opticapturelauncher": case "opticapturehost":
                 return true;
         }
         foreach (var token in DesktopAppTokens)

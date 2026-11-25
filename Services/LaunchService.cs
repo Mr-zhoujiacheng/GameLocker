@@ -84,6 +84,12 @@ public static class LaunchService
             if (hwnd != 0) return await ActivateResultAsync(hwnd, token);
             if (state.Pids.Count > 0)
             {
+                if (path is not null && TrayAppService.UsesOwnTrayRestore(path))
+                {
+                    token.ThrowIfCancellationRequested();
+                    await Task.Run(() => TrayAppService.RequestNativeOpen(path), token);
+                    return new(LaunchOutcome.Launched);
+                }
                 // 按 MiniDock 的 RevealHiddenWindow 做法：应用关到托盘只是把主窗口 Hide 了，
                 // 直接把窗口 Show 出来再拉前台，不动鼠标、不点托盘、不重开实例。
                 var hidden = await RevealHiddenWindowAsync(item, state.Pids, token);
@@ -150,7 +156,7 @@ public static class LaunchService
                 var entry = TrayAppService.FindEntry(item.Target);
                 if (entry is null) return new(LaunchOutcome.Failed, "没有登记这个托盘应用");
 
-                var message = TrayAppService.Toggle(entry);
+                var message = await TrayAppService.ToggleAsync(entry, token);
                 return message.Length == 0
                     ? new(LaunchOutcome.Activated)
                     : new(LaunchOutcome.Failed, message);

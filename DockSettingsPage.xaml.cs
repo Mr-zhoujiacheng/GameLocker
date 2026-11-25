@@ -37,10 +37,6 @@ public sealed partial class DockSettingsPage : Page, ISettingsGamepad
     {
         var s = SettingsService.Current;
 
-        AddToggle("启用底栏", "关闭后底栏不显示", "\uE7E8",
-            s.DockEnabled,
-            v => SettingsService.Update(x => x.DockEnabled = v));
-
         AddCycle("外观主题", "深浅玻璃 / 纯色 / 渐变 / 高透",
             "\uE790",
             DockThemes.Names,
@@ -382,7 +378,7 @@ public sealed partial class DockSettingsPage : Page, ISettingsGamepad
         Windows.UI.Color color;
         double opacity;
 
-        if (!s.DockEnabled)
+        if (!s.SystemEnabled)
         {
             text = "已关闭";
             color = Windows.UI.Color.FromArgb(0xFF, 0x8A, 0x8A, 0x92);

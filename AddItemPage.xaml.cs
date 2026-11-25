@@ -1965,7 +1965,8 @@ public sealed partial class AddItemPage : Page, ISettingsGamepad
     {
         // 图标文件按目标路径哈希命名，可能被多个快捷项共用，取消时不删除（孤立文件无害）
         if (App.Main is { } main) main.PendingDrawerInsert = null;   // 放弃本次新建：连带放弃"放进抽屉"的一次性请求
-        App.Main?.ShowMainPage();
+        if (_dockAdd) App.Main?.ReturnToDock(this);
+        else App.Main?.ShowMainPage();
     }
 
     // ---- 磁贴抽屉：抽屉列表的切换 / 改名 / 增删（内容在主页放入）----
@@ -2352,7 +2353,7 @@ public sealed partial class AddItemPage : Page, ISettingsGamepad
             if (kind != LaunchKind.Url && it.IconFile == null)
                 it.IconFile = await IconExtractService.ExtractAsync(target);
             // 从主页抽屉内部按 X 发起的新建：直接放进该抽屉（放不下则报错且不落盘）
-            var req = App.Main?.PendingDrawerInsert;
+            var req = _dockAdd ? null : App.Main?.PendingDrawerInsert;
             if (req is not null)
             {
                 App.Main!.PendingDrawerInsert = null;   // 一次性请求，消费即清
@@ -2374,8 +2375,9 @@ public sealed partial class AddItemPage : Page, ISettingsGamepad
         {
             _ = DockHost.ApplyAsync();  // 从底栏添加后立刻重绘底栏图标
             FloatingToastService.Show($"「{items[^1].Name}」已加到底栏");
+            App.Main?.ReturnToDock(this);
         }
-        App.Main?.ShowMainPage();
+        else App.Main?.ShowMainPage();
     }
 
     /// <summary>把壁纸编辑页的来源/轮番速度写回目标项（保存与"下载到本地"共用）</summary>

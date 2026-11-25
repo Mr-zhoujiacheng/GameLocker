@@ -21,6 +21,17 @@ internal static class SystemEdgeSwipePolicy
     private static readonly SemaphoreSlim Gate = new(1, 1);
     internal readonly record struct Result(bool Ok, string Message);
 
+    internal static bool IsAlreadyBlocked()
+    {
+        try
+        {
+            using var machine = RegistryKey.OpenBaseKey(RegistryHive.LocalMachine, RegistryView.Registry64);
+            using var key = machine.OpenSubKey(KeyPath);
+            return IsBlocked(key);
+        }
+        catch (Exception ex) when (ex is UnauthorizedAccessException or System.Security.SecurityException or IOException) { return false; }
+    }
+
     public static async Task<Result> SetAsync(bool block)
     {
         await Gate.WaitAsync();

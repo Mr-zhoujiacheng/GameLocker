@@ -74,8 +74,8 @@ public sealed partial class StatusBarSettingsPage : Page, ISettingsGamepad
         var s = SettingsService.Current;
 
         ToggleSwitch? master = null;
-        master = AddToggle("启用系统", "打开后隐藏任务栏，顶栏跟随任务栏所在的上/下边缘", "\uE7E8",
-            s.StatusBarEnabled && s.DockEnabled, v =>
+        master = AddToggle("启用系统", "打开后隐藏任务栏，顶栏跟随任务栏所在的上/下边缘", "\uE950",
+            s.SystemEnabled, v =>
             {
                 if (v && !TaskbarEdgeService.CanUse(out var message))
                 {
@@ -85,13 +85,12 @@ public sealed partial class StatusBarSettingsPage : Page, ISettingsGamepad
                 }
                 SettingsService.Update(x =>
                 {
-                    x.StatusBarEnabled = v;
-                    x.DockEnabled = v;
-                    x.StatusBarTaskbarTopMode = v;
+                    x.SystemEnabled = v;
                     x.DockTaskbarMode = 0;
                 });
                 // 关闭「启用系统」后，下面所有设置项一起变灰且不可操作
                 UpdateMasterGate(v);
+                if (SettingsService.Current.StartMenuMode) App.Main?.ApplySidebarLayout();
             });
 
         var currentTop = !TaskbarEdgeService.TryGet(out var edge, out _) || edge == TaskbarEdge.Top;
@@ -100,11 +99,11 @@ public sealed partial class StatusBarSettingsPage : Page, ISettingsGamepad
             v => _ = SetTaskbarDirectionAsync(v == 0));
 
         AddSection("顶栏设置", "TOP BAR");
-        AddCycle("顶栏主题", "深色/浅色/纯色/渐变/高透；始终保持左右渐变透明", "\uE790",
+        AddCycle("顶栏主题", "深色/浅色/纯色/渐变/高透；始终保持左右渐变透明", "\uE793",
             DockThemes.Names, Math.Clamp(s.StatusBarTheme, 0, DockThemes.All.Length - 1),
             v => SettingsService.Update(x => x.StatusBarTheme = v));
 
-        AddToggle("控制中心", "打开用本程序控制中心；关闭改用 Windows 自带控制中心（Win+A）", "\uE713",
+        AddToggle("控制中心类型", "打开用本程序控制中心；关闭改用 Windows 自带控制中心（Win+A）", "\uE713",
             s.StatusBarCustomControlCenter, v => SettingsService.Update(x => x.StatusBarCustomControlCenter = v));
 
         BuildTopControlsGroup(s);
@@ -113,11 +112,11 @@ public sealed partial class StatusBarSettingsPage : Page, ISettingsGamepad
 
         AddComboCapture();
 
-        AddCycle("外观主题", "深浅玻璃 / 纯色 / 渐变 / 高透", "\uE7C3",
+        AddCycle("底栏主题", "深浅玻璃 / 纯色 / 渐变 / 高透", "\uE771",
             DockThemes.Names, Math.Clamp(s.DockTheme, 0, DockThemes.All.Length - 1),
             v => SettingsService.Update(x => x.DockTheme = v));
 
-        AddToggle("悬停放大", "鼠标经过时图标弹簧放大", "\uE962",
+        AddToggle("悬停放大", "鼠标经过时图标弹簧放大", "\uE8A3",
             s.DockMagnify, v => SettingsService.Update(x => x.DockMagnify = v));
 
         AddToggle("按压反馈", "按下图标时轻微缩小", "\uE7FC",
@@ -130,7 +129,7 @@ public sealed partial class StatusBarSettingsPage : Page, ISettingsGamepad
             AppSettings.DockIconMin, AppSettings.DockIconMax, s.DockIconSize,
             v => SettingsService.Update(x => x.DockIconSize = v));
 
-        UpdateMasterGate(s.StatusBarEnabled && s.DockEnabled);
+        UpdateMasterGate(s.SystemEnabled);
     }
 
     /// <summary>
@@ -195,7 +194,7 @@ public sealed partial class StatusBarSettingsPage : Page, ISettingsGamepad
         _topControlsPanel = new StackPanel { Spacing = 12, Visibility = Visibility.Collapsed };
         Rows.Children.Add(_topControlsPanel);
 
-        _topControlRows.Add(AddToggle("时间日期", "左侧显示当前时间与日期", "\uE917",
+        _topControlRows.Add(AddToggle("时间日期", "左侧显示当前时间与日期", "\uE787",
             s.StatusBarShowClock, v => SettingsService.Update(x => x.StatusBarShowClock = v), _topControlsPanel));
         _topControlRows.Add(AddToggle("电量", "电池百分比与充电闪电；台式机自动隐藏", "\uE850",
             s.StatusBarShowBattery, v => SettingsService.Update(x => x.StatusBarShowBattery = v), _topControlsPanel));
@@ -209,7 +208,7 @@ public sealed partial class StatusBarSettingsPage : Page, ISettingsGamepad
             s.StatusBarFocusMode, v => SettingsService.Update(x => x.StatusBarFocusMode = v), _topControlsPanel));
         _topControlRows.Add(AddToggle("托盘图标", "在顶栏显示托盘图标；点击直接打开 Windows 系统托盘（Win+B）", "\uE8B7",
             s.StatusBarShowTray, v => SettingsService.Update(x => x.StatusBarShowTray = v), _topControlsPanel));
-        _topControlRows.Add(AddToggle("控制中心", "Wi-Fi / 蓝牙 / 夜间模式 / 静音 / 音量 / 亮度", "\uE8F1",
+        _topControlRows.Add(AddToggle("控制中心入口", "Wi-Fi / 蓝牙 / 夜间模式 / 静音 / 音量 / 亮度", "\uE890",
             s.StatusBarShowControlCenter, v => SettingsService.Update(x => x.StatusBarShowControlCenter = v), _topControlsPanel));
         _topControlRows.Add(AddToggle("资源监视", "CPU / 内存，2 秒刷新；点击打开任务管理器", "\uE9D9",
             s.StatusBarShowResources, v => SettingsService.Update(x => x.StatusBarShowResources = v), _topControlsPanel));
@@ -493,7 +492,7 @@ public sealed partial class StatusBarSettingsPage : Page, ISettingsGamepad
             BorderThickness = new Thickness(1),
             BorderBrush = new SolidColorBrush(Windows.UI.Color.FromArgb(0x3D, 0x7A, 0xD9, 0xC4)),
             VerticalAlignment = VerticalAlignment.Center,
-            Child = new FontIcon { Glyph = glyph, FontSize = 16 }
+            Child = new FontIcon { Glyph = glyph, FontFamily = new FontFamily("Segoe MDL2 Assets"), FontSize = 16 }
         };
 
         var grid = new Grid { ColumnSpacing = 12 };
@@ -556,6 +555,7 @@ public sealed partial class StatusBarSettingsPage : Page, ISettingsGamepad
         {
             await StatusBarHost.ApplyAsync();
             await DockHost.ApplyAsync();
+            if (SettingsService.Current.StartMenuMode && App.Main is { IsShown: true } main) main.ApplySidebarLayout();
             UpdatePreview();
             UpdateStatus();
         }
@@ -629,7 +629,7 @@ public sealed partial class StatusBarSettingsPage : Page, ISettingsGamepad
         Windows.UI.Color color;
         string text;
 
-        if (!s.StatusBarEnabled)
+        if (!s.SystemEnabled)
         {
             text = "未启用";
             color = Windows.UI.Color.FromArgb(0xFF, 0x8A, 0x8A, 0x92);
@@ -647,7 +647,7 @@ public sealed partial class StatusBarSettingsPage : Page, ISettingsGamepad
 
         StatusText.Text = text;
         StatusDot.Fill = new SolidColorBrush(color);
-        PreviewBar.Opacity = s.StatusBarEnabled ? 1 : 0.45;
+        PreviewBar.Opacity = s.SystemEnabled ? 1 : 0.45;
     }
 
     private static Windows.UI.Color ParseColor(string? value, bool forceOpaque = false)

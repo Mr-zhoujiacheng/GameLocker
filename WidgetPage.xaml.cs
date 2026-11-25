@@ -553,7 +553,10 @@ public sealed partial class WidgetPage : Page
 
         if (b.HasFlag(GamepadButtons.A) || b.HasFlag(GamepadButtons.X)) ActivateForm();
         else if (b.HasFlag(GamepadButtons.B) || b.HasFlag(GamepadButtons.View))
-            App.Main?.ShowMainPage();
+        {
+            if (_dockAdd) App.Main?.ReturnToDock(this);
+            else App.Main?.ShowMainPage();
+        }
     }
 
     private void ActivateForm()
@@ -784,8 +787,9 @@ public sealed partial class WidgetPage : Page
         {
             _ = DockHost.ApplyAsync();  // 添加后立刻重绘底栏图标
             FloatingToastService.Show($"组件「{it.Name}」已加到底栏");
+            App.Main?.ReturnToDock(this);
         }
-        App.Main?.ShowMainPage();
+        else App.Main?.ShowMainPage();
         return true;
     }
 

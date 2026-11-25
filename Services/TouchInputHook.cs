@@ -3,18 +3,9 @@ using System.Runtime.InteropServices;
 namespace GameLocker.Services;
 
 /// <summary>
-/// 底栏的全局触摸输入通道（原始输入 HID 触摸屏）。
-///
-/// 为什么需要它：底栏是 WS_EX_NOACTIVATE 的浮层，XAML 内容又托管在独立的
-/// DesktopChildSiteBridge 子窗口里，鼠标靠 <see cref="DockInputHook"/> 的
-/// WH_MOUSE_LL 兜住才有反应。触摸则不同——触摸帧被 WinUI 的指针管道吃掉，
-/// 不再提升成鼠标消息，WH_MOUSE_LL 一条也收不到，于是"鼠标能点、手指点不了"。
-///
-/// 这里用 RegisterRawInputDevices(RIDEV_INPUTSINK) 在屏外 sink 窗口上接收触摸屏
-/// 原始 HID 报文，直接解析出首触点坐标（字段偏移、逻辑范围换算与
-/// <see cref="EdgeGestureService"/> 的触摸通道同一套，已在该通道验证过），
-/// 再按"按下 / 移动 / 抬起"抛给底栏合成为一次左键点击。
-/// RIDEV_INPUTSINK 是驱动级数据流，完全不受窗口命中测试 / Z 序 / 前台状态影响。
+/// 底栏和边缘手势共用的全局触摸输入通道（原始输入 HID 触摸屏）。
+/// 每个进程对同类设备只能登记一个接收窗口；两个功能都订阅这里，不能各自注册。
+/// 在屏外窗口接收原始 HID 报文并分发首触点的按下、移动和抬起，不依赖前台窗口或鼠标提升。
 /// </summary>
 internal static class TouchInputHook
 {
@@ -77,16 +68,20 @@ internal static class TouchInputHook
 
     private static int _logCount;
 
-    /// <summary>启动全局触摸监听（幂等）。只在第一块底栏创建时调用。</summary>
+    private static readonly object StartGate = new();
+
+    /// <summary>启动进程共用的触摸监听；关闭边缘手势不影响底栏。</summary>
     public static void Start()
     {
-        if (_running || _thread?.IsAlive == true) return;
-        _running = true;
-        var thread = new Thread(Run) { IsBackground = true, Name = "DockTouchSink" };
-        // 与 EdgeGestureService 一致用 MTA：STA 会和 WinUI3 的 CoreMessaging/COM 公寓冲突
-        thread.SetApartmentState(ApartmentState.MTA);
-        _thread = thread;
-        thread.Start();
+        lock (StartGate)
+        {
+            if (_thread?.IsAlive == true) return;
+            _running = true;
+            var thread = new Thread(Run) { IsBackground = true, Name = "TouchInputSink" };
+            thread.SetApartmentState(ApartmentState.MTA);
+            _thread = thread;
+            thread.Start();
+        }
     }
 
     /// <summary>停止监听并清理 sink 窗口。</summary>
@@ -125,6 +120,8 @@ internal static class TouchInputHook
         finally
         {
             Cleanup();
+            _threadId = 0;
+            _running = false;
         }
     }
 
@@ -169,7 +166,8 @@ internal static class TouchInputHook
             }
         };
         var ok = RegisterRawInputDevices(devices, 1, (uint)Marshal.SizeOf<RAWINPUTDEVICE>());
-        Log($"touch sink created hwnd=0x{hwnd.ToInt64():X} reg={ok} err={Marshal.GetLastWin32Error()}");
+        if (!ok) throw new System.ComponentModel.Win32Exception(Marshal.GetLastWin32Error());
+        Log($"shared touch sink registered hwnd=0x{hwnd.ToInt64():X}");
     }
 
     private static void Cleanup()
@@ -199,7 +197,7 @@ internal static class TouchInputHook
                     try { ParseRawInput(lParam); }
                     catch (Exception ex) { Log("触摸解析异常：" + ex.GetType().Name + ": " + ex.Message); }
                 }
-                return IntPtr.Zero;
+                return wParam == IntPtr.Zero ? DefWindowProc(hwnd, msg, wParam, lParam) : IntPtr.Zero;
             case WM_DESTROY:
                 PostQuitMessage(0);
                 return IntPtr.Zero;
@@ -395,13 +393,10 @@ internal static class TouchInputHook
     private static void Invoke(Action<int, int>? handler, int x, int y)
     {
         if (handler is null) return;
-        try
+        foreach (Action<int, int> subscriber in handler.GetInvocationList())
         {
-            handler(x, y);
-        }
-        catch (Exception ex)
-        {
-            Log("触摸回调异常：" + ex.GetType().Name + ": " + ex.Message);
+            try { subscriber(x, y); }
+            catch (Exception ex) { Log("触摸回调异常：" + ex.GetType().Name + ": " + ex.Message); }
         }
     }
 

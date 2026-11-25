@@ -40,7 +40,6 @@ public sealed partial class StatusBarWindow : Window
     private readonly DispatcherTimer _networkTimer = new();
     private readonly DispatcherTimer _imeTimer = new();
     private readonly DispatcherTimer _notificationTimer = new();
-    private readonly DispatcherTimer _fullscreenTimer = new();
     private readonly DispatcherTimer _resourceTimer = new();
     private readonly DispatcherTimer _batteryHealthTimer = new();
     private readonly DispatcherTimer _timerTicker = new() { Interval = TimeSpan.FromSeconds(1) };
@@ -51,7 +50,6 @@ public sealed partial class StatusBarWindow : Window
     private double _scale = 1;
     private int _barHeight = 32;
     private int _fontSize = 12;
-    private bool _fullscreenHidden;
     private DateTime _notificationSeen = DateTime.Now;
     private bool _notificationOpen;
 
@@ -62,9 +60,6 @@ public sealed partial class StatusBarWindow : Window
 
     /// <summary>DPI / 分辨率变化，宿主据此重新占位与摆放。</summary>
     public Action? LayoutInvalidated { get; set; }
-
-    /// <summary>前台全屏状态变化（true=应隐藏顶栏）。由宿主执行真正的隐藏/占位撤销。</summary>
-    public Action<bool>? FullscreenChanged { get; set; }
 
     public nint Hwnd => WindowNative.GetWindowHandle(this);
 
@@ -98,8 +93,6 @@ public sealed partial class StatusBarWindow : Window
         _notificationTimer.Tick += (_, _) => UpdateNotifications();
         _trayStateTimer.Tick += (_, _) => UpdateTrayState();
         _maximizedTimer.Tick += (_, _) => UpdateMaximizedState();
-        _fullscreenTimer.Interval = TimeSpan.FromSeconds(1);
-        _fullscreenTimer.Tick += (_, _) => CheckFullscreen();
         _resourceTimer.Interval = TimeSpan.FromSeconds(2);
         _resourceTimer.Tick += (_, _) => UpdateResource();
         _batteryHealthTimer.Interval = TimeSpan.FromMinutes(5);
@@ -119,7 +112,7 @@ public sealed partial class StatusBarWindow : Window
                 };
             }
         };
-        Closed += (_, _) => StopAllTimers();
+        Closed += (_, _) => StopSegmentTimers();
         Root.SizeChanged += (_, e) =>
             DebugLog.Write($"[顶栏2] size {e.NewSize.Width:0.#}x{e.NewSize.Height:0.#} scale={Scale:0.##} " +
                            $"content={ContentGrid.ActualWidth:0.#} right={RightPanel.ActualWidth:0.#}/{RightPanel.Visibility}");
@@ -384,7 +377,7 @@ public sealed partial class StatusBarWindow : Window
     private void StartTimers()
     {
         var s = SettingsService.Current;
-        StopAllTimers();
+        StopSegmentTimers();
 
         if (s.StatusBarShowClock) ScheduleClock();
         if (s.StatusBarShowBattery) _batteryTimer.Start();
@@ -393,7 +386,6 @@ public sealed partial class StatusBarWindow : Window
         if (s.StatusBarShowNotifications) _notificationTimer.Start();
         if (s.StatusBarShowTray) _trayStateTimer.Start();
         _maximizedTimer.Start();
-        if (s.StatusBarFullscreenHide) _fullscreenTimer.Start();
         if (s.StatusBarShowResources) _resourceTimer.Start();
         if (s.StatusBarShowBatteryHealth)
         {
@@ -415,12 +407,6 @@ public sealed partial class StatusBarWindow : Window
         _resourceTimer.Stop();
         _batteryHealthTimer.Stop();
         _timerTicker.Stop();
-    }
-
-    private void StopAllTimers()
-    {
-        StopSegmentTimers();
-        _fullscreenTimer.Stop();
     }
 
     private void ScheduleClock()
@@ -664,24 +650,6 @@ public sealed partial class StatusBarWindow : Window
         {
             BatteryHealthSegment.Visibility = Visibility.Collapsed;
         }
-    }
-
-    private void CheckFullscreen()
-    {
-        if (!SettingsService.Current.StatusBarFullscreenHide)
-        {
-            if (_fullscreenHidden)
-            {
-                _fullscreenHidden = false;
-                FullscreenChanged?.Invoke(false);
-            }
-            return;
-        }
-
-        var fullscreen = FullscreenDetector.IsForegroundFullscreen();
-        if (fullscreen == _fullscreenHidden) return;
-        _fullscreenHidden = fullscreen;
-        FullscreenChanged?.Invoke(fullscreen);
     }
 
     // ---------------- 点击 ----------------

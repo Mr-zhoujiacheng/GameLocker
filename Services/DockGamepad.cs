@@ -13,7 +13,7 @@ namespace GameLocker.Services;
 /// 但只在"手柄确实该归底栏"时接管：
 /// ① 设置里开启了「手柄操作底栏」；
 /// ② 底栏可见；
-/// ③ 启动器没有处于呼出状态（启动器在场时手柄归它的页面）；
+/// ③ 启动器页面当前未接管手柄；
 /// ④ 前台不是全屏游戏/游戏库程序（避免在游戏里按 A 把底栏应用拉起来）。
 /// 弹层（应用组/文件夹/右键菜单/开始菜单列表）打开时优先交给弹层自己导航。
 /// </summary>
@@ -43,10 +43,11 @@ internal static class DockGamepad
         try
         {
             if (pressed == GamepadButtons.None) return;
-            if (!SettingsService.Current.DockGamepadEnabled) return;
-
-            // 启动器已呼出：手柄由 MainWindow 正常分发，底栏不抢
-            if (App.Main?.IsShown == true) return;
+            if (!CanRouteDockInput())
+            {
+                StopRepeat();
+                return;
+            }
 
             // 底栏弹层优先：它自己维护选中项，未识别的键也不再往下传，防止误触底栏
             if (DockPopupWindow.IsOpen)
@@ -55,9 +56,6 @@ internal static class DockGamepad
                 DockPopupWindow.HandleGamepad(pressed);
                 return;
             }
-
-            if (!DockHost.IsVisible) return;
-            if (!ForegroundAllowsDock()) return;
 
             var handled = DockHost.HandleGamepad(pressed);
             var dir = pressed & (GamepadButtons.DPadLeft | GamepadButtons.DPadRight);
@@ -103,11 +101,7 @@ internal static class DockGamepad
 
         // 松手 / 底栏消失 / 启动器被呼出 / 设置关闭 → 停止连发
         var current = App.Main?.Gamepad.Current ?? GamepadButtons.None;
-        if ((current & dir) == 0
-            || App.Main?.IsShown == true
-            || !SettingsService.Current.DockGamepadEnabled
-            || !DockHost.IsVisible
-            || DockPopupWindow.IsOpen)
+        if ((current & dir) == 0 || DockPopupWindow.IsOpen || !CanRouteDockInput())
         {
             StopRepeat();
             return;
@@ -115,6 +109,9 @@ internal static class DockGamepad
 
         DockHost.HandleGamepad(dir);
     }
+
+    internal static bool CanRouteDockInput() => SettingsService.Current.DockGamepadEnabled && DockHost.IsVisible
+        && App.Main?.OwnsPageGamepadInput != true && ForegroundAllowsDock();
 
     /// <summary>
     /// 前台是否允许底栏接管手柄：桌面/本进程窗口直接放行；全屏游戏、游戏引擎窗口、
@@ -129,12 +126,14 @@ internal static class DockGamepad
         if (pid == 0) return true;
         if (pid == (uint)Environment.ProcessId) return true; // 自己的弹层/窗口
 
+        var cls = ClassNameOf(fg);
+        var exe = ProcessPathOf(pid);
+        if (GameWindowDetector.IsGameForSystemBars(fg, pid)) return false;
+        if (GameWindowDetector.IsDesktopApp(Path.GetFileNameWithoutExtension(exe), cls)) return true;
         if (GameWindowDetector.IsFullscreenGame(fg, pid)) return false;
 
-        var cls = ClassNameOf(fg);
         if (!string.IsNullOrEmpty(cls) && GameWindowDetector.IsGameWindowClass(cls)) return false;
 
-        var exe = ProcessPathOf(pid);
         if (exe.Length > 0 && GameWindowDetector.IsGameLibraryPath(exe)) return false;
 
         return true;

@@ -8,14 +8,10 @@ public enum SummonEdge { Left, Right, Top, Bottom }
 /// <summary>
 /// 平板边缘手势呼出：双通道监听"从屏幕边缘向中心"的滑动即触发呼出。
 /// ① 全局低级鼠标钩子（WH_MOUSE_LL）：捕获鼠标拖动及触摸合成的鼠标消息（桌面/无触摸处理的前台时有效）；
-/// ② 原始输入（Raw Input）触摸通道：RegisterRawInputDevices(RIDEV_INPUTSINK, HID 页 0x0D/用法 0x04 触摸屏)
-///    + WM_INPUT 解析 HID 触摸报告（HidP_*）——驱动级数据流，**完全绕过窗口命中测试/Z 序/前台状态**，
-///    任意应用（含最大化、独占触摸处理）前台时都能拿到触点坐标。
-///    此前透明边缘条方案失败原因：shell 边缘预留地窗压在 TOPMOST 带上吞掉命中测试，WM_POINTER 永不投递。
-/// 接收窗口为屏外 1x1 不可交互 sink，不再遮挡/吞掉任何边缘点击。两通道共用 600ms 冷却去重。
-/// 钩子+sink 运行在独立 MTA 线程消息循环上；事件在该线程触发，订阅方需 marshal 回 UI 线程。
+/// ② <see cref="TouchInputHook"/> 提供原始触摸按下和抬起，不受窗口命中测试影响。
+/// 触摸坐标投递到鼠标钩子线程，两通道共用 600ms 冷却。事件在该线程触发，订阅方需 marshal 回 UI 线程。
 /// 仅监听手势；系统边缘滑动策略由设置开关通过独立提权助手管理。
-/// 诊断：边缘附近事件与 HID 触摸帧写入 %APPDATA%\GameLocker\edge.log。
+/// 诊断：边缘手势事件写入 %APPDATA%\GameLocker\edge.log。
 /// </summary>
 public sealed class EdgeGestureService : IDisposable
 {
@@ -23,7 +19,8 @@ public sealed class EdgeGestureService : IDisposable
     private const int WM_LBUTTONDOWN = 0x0201;
     private const int WM_LBUTTONUP = 0x0202;
     private const uint WM_QUIT = 0x0012;
-    private const uint WM_INPUT = 0x00FF;
+    private const uint WM_TOUCH_DOWN = 0x8001;
+    private const uint WM_TOUCH_UP = 0x8002;
 
     /// <summary>按下点距边缘在此范围内（物理像素）才视为边缘手势起点</summary>
     private const int EdgeZone = 70;
@@ -50,22 +47,9 @@ public sealed class EdgeGestureService : IDisposable
     /// 该手势期间原始输入通道不再把它当返回，交给列表正常滚动</summary>
     public long BackSuppressedUntil { get; set; }
 
-    // ---- Raw Input 触摸 sink（屏外 1x1 窗口，仅接收 WM_INPUT）----
-    private IntPtr _sink = 0;
-    private readonly string _sinkClassName = $"GLEdgeSink_{Guid.NewGuid():N}";
-    private WndProcDelegate? _sinkProc; // 窗口类存在期间保持同一个委托
-    private IntPtr _rawBuf = 0;         // WM_INPUT 解析缓冲（非托管）
-    private uint _rawBufSize;
-    private readonly Dictionary<IntPtr, IntPtr> _preparsed = new(); // hDevice → HID preparsed data（-1=非触摸设备跳过）
-    // hDevice → 含 TipSwitch 的 Finger 数组集合 LinkCollection 索引（首个 count>0 帧探测一次）
-    private readonly Dictionary<IntPtr, ushort[]> _fingerLc = new();
-    // 触摸 X/Y HID 逻辑单位 → 屏幕像素 线性映射（_lxMax=0 未初始化，-1 取不到范围保持原始值）
-    private int _lxMin, _lxMax, _lyMin, _lyMax;
-    // diag 变化门控：仅 (count,tip,x>>5,y>>5) 变化时记录，防 60Hz 刷屏
-    private (int, int, int, int) _lastDiag = (-1, -1, -1, -1);
     // HID 触摸手势状态（单指即可判定边缘滑动）
     private bool _tDown;
-    private int _tStartX, _tStartY, _tLastX, _tLastY;
+    private int _tStartX, _tStartY;
     private long _tDownAt;
 
     /// <summary>边缘向内滑动被识别 → 请求呼出</summary>
@@ -130,7 +114,7 @@ public sealed class EdgeGestureService : IDisposable
         _edge = edge;
     }
 
-    /// <summary>兼容旧接口：sink 在屏外不遮挡任何输入，无需显隐控制</summary>
+    /// <summary>兼容旧接口：原始触摸监听不遮挡输入，无需显隐控制。</summary>
     public void SetStripVisible(bool visible) { }
 
     private void Run()
@@ -146,28 +130,33 @@ public sealed class EdgeGestureService : IDisposable
                 Log($"SetWindowsHookEx failed err={Marshal.GetLastWin32Error()}");
                 return;
             }
-            CreateSink();
+            TouchInputHook.Down += QueueTouchDown;
+            TouchInputHook.Up += QueueTouchUp;
+            TouchInputHook.Start();
 
-            var msg = new MSG();
-            // 必须 out/ref 传递，否则 WM_INPUT 不会投递到 sink。
-            while (_running && GetMessage(out msg, IntPtr.Zero, 0, 0) > 0)
+            while (_running && GetMessage(out var msg, IntPtr.Zero, 0, 0) > 0)
             {
-                TranslateMessage(ref msg);
-                DispatchMessage(ref msg);
+                switch (msg.message)
+                {
+                    case WM_TOUCH_DOWN:
+                        OnTouchDown(msg.wParam.ToInt32(), msg.lParam.ToInt32());
+                        break;
+                    case WM_TOUCH_UP:
+                        OnTouchUp(msg.wParam.ToInt32(), msg.lParam.ToInt32());
+                        break;
+                    default:
+                        TranslateMessage(ref msg);
+                        DispatchMessage(ref msg);
+                        break;
+                }
             }
         }
         catch (Exception ex) { Log($"gesture thread EX: {ex}"); }
         finally
         {
             _running = false;
-            if (_sink != 0) { DestroyWindow(_sink); _sink = 0; }
-            UnregisterClass(_sinkClassName, GetModuleHandle(null));
-            if (_rawBuf != 0) { Marshal.FreeHGlobal(_rawBuf); _rawBuf = 0; }
-            if (_capsBuf != 0) { Marshal.FreeHGlobal(_capsBuf); _capsBuf = 0; }
-            foreach (var v in _preparsed.Values)
-                if (v != new IntPtr(-1)) Marshal.FreeHGlobal(v);
-            _preparsed.Clear();
-            _fingerLc.Clear();
+            TouchInputHook.Down -= QueueTouchDown;
+            TouchInputHook.Up -= QueueTouchUp;
             UnhookWindowsHookEx(_hook);
             _hook = 0;
             _threadId = 0;
@@ -175,305 +164,81 @@ public sealed class EdgeGestureService : IDisposable
         }
     }
 
-    /// <summary>创建屏外 1x1 sink 窗口并注册全局原始输入（RIDEV_INPUTSINK：非前台也收 WM_INPUT）</summary>
-    private void CreateSink()
+    private void QueueTouchDown(int x, int y) => QueueTouch(WM_TOUCH_DOWN, x, y);
+    private void QueueTouchUp(int x, int y) => QueueTouch(WM_TOUCH_UP, x, y);
+
+    private void QueueTouch(uint message, int x, int y)
     {
-        _sinkProc ??= SinkWndProc;
-        var hInst = GetModuleHandle(null);
-        var cls = new WNDCLASSEX
-        {
-            cbSize = (uint)Marshal.SizeOf<WNDCLASSEX>(),
-            lpfnWndProc = Marshal.GetFunctionPointerForDelegate(_sinkProc),
-            hInstance = hInst,
-            lpszClassName = _sinkClassName
-        };
-        if (RegisterClassEx(ref cls) == 0)
-            throw new System.ComponentModel.Win32Exception(Marshal.GetLastWin32Error());
-
-        var h = CreateWindowEx(WS_EX_TOOLWINDOW | WS_EX_NOACTIVATE,
-            _sinkClassName, "", WS_POPUP,
-            -32000, -32000, 1, 1, IntPtr.Zero, IntPtr.Zero, hInst, IntPtr.Zero);
-        if (h == IntPtr.Zero)
-            throw new System.ComponentModel.Win32Exception(Marshal.GetLastWin32Error());
-        _sink = h;
-        // 屏外 1x1 也必须 Show：从未显示的窗口可能收不到 WM_INPUT（隐藏 vs 屏外可见的投递差异）
-        ShowWindow(h, SW_SHOWNOACTIVATE);
-        _rawBufSize = 16384;
-        _rawBuf = Marshal.AllocHGlobal((int)_rawBufSize);
-        _capsBuf = Marshal.AllocHGlobal(128); // HIDP_VALUE_CAPS 原生仅 72
-
-        // 注册触摸屏全局原始输入（通配 UsagePage=0/Usage=0 非法：err=87，且会连累整批）
-        var cbSize = (uint)Marshal.SizeOf<RAWINPUTDEVICE>();
-        var touch = new[] { new RAWINPUTDEVICE { UsagePage = 0x0D, Usage = 0x04, Flags = RIDEV_INPUTSINK, Target = h } };
-        var okTouch = RegisterRawInputDevices(touch, 1, cbSize);
-        Log($"sink created hwnd={h} shown touch reg={okTouch} err={Marshal.GetLastWin32Error()}");
+        var id = _threadId;
+        if (_running && id != 0) PostThreadMessage(id, message, (IntPtr)x, (IntPtr)y);
     }
 
-    private IntPtr SinkWndProc(IntPtr hwnd, uint msg, IntPtr wParam, IntPtr lParam)
+    private void OnTouchDown(int x, int y)
     {
-        if (msg == WM_INPUT && _running)
-        {
-            // 兜底：解析异常绝不崩溃进程（本会话已三次崩溃），记录后继续
-            try { ParseRawInput(lParam); }
-            catch (Exception ex) { DiagLog($"parse EX: {ex.GetType().Name}: {ex.Message}"); }
-        }
-        return DefWindowProc(hwnd, msg, wParam, lParam);
+        _tDown = true;
+        _tStartX = x;
+        _tStartY = y;
+        _tDownAt = Environment.TickCount64;
+        var near = NearEdge(x, y);
+        if (near) NotifyEdgeTouched();
+        Log($"touch down ({x},{y}) nearEdge={near}");
     }
 
-    /// <summary>解析 WM_INPUT：HID 触摸屏报告 → 首触点坐标 → 边缘滑动手势状态机</summary>
-    private void ParseRawInput(IntPtr lParam)
+    private void OnTouchUp(int x, int y)
     {
-        uint size = 0;
-        GetRawInputData(lParam, RID_INPUT, IntPtr.Zero, ref size, (uint)Marshal.SizeOf<RAWINPUTHEADER>());
-        if (size < 32 || size > _rawBufSize) { DiagLog($"rid size={size}"); return; }
-        if (GetRawInputData(lParam, RID_INPUT, _rawBuf, ref size, (uint)Marshal.SizeOf<RAWINPUTHEADER>()) != size)
-        { DiagLog("rid read fail"); return; }
-
-        // x64 RAWINPUT 布局：header24字节(dwType@0 dwSize@4 hDevice@8 wParam@16)
-        // | RAWHID: SizeHid@24 Count@28 数据@32
-        var type = Marshal.ReadInt32(_rawBuf, 0);
-        if (type != RIM_TYPEHID) { DiagLog($"type={type} (not HID)"); return; }
-        var hDevice = Marshal.ReadIntPtr(_rawBuf, 8);
-        var sizeHid = Marshal.ReadInt32(_rawBuf, 24);
-        var count = Marshal.ReadInt32(_rawBuf, 28);
-        var data = _rawBuf + 32;
-        if (sizeHid <= 0 || count <= 0 || 32L + (long)sizeHid * count > size)
-        { DiagLog($"bad frame sizeHid={sizeHid} count={count} size={size}"); return; }
-
-        // 设备 → 预解析数据缓存；-1 表示已判定非触摸屏设备（无 Contact Count 字段）
-        if (!_preparsed.TryGetValue(hDevice, out var pp))
+        if (!_tDown) return;
+        _tDown = false;
+        var elapsed = Environment.TickCount64 - _tDownAt;
+        // 游戏内右上/底部边缘：交给顶栏/底栏手势，启动器这次不再响应
+        if (GameSwipeService.TryHandleGesture(_tStartX, _tStartY, x, y, elapsed))
         {
-            // 每设备记录一次设备路径（定位触摸屏的实际 HID 接口）
-            uint nameLen = 260;
-            var nameBuf = new System.Text.StringBuilder((int)nameLen);
-            GetRawInputDeviceInfo(hDevice, RIDI_DEVICENAME, nameBuf, ref nameLen);
-            DiagLog($"new device {hDevice} path={nameBuf}");
-            // RIDI_PREPARSEDDATA：先传 NULL 取所需大小，再拷入自分配缓冲（API 不返回内部指针）
-            uint ppSize = 0;
-            GetRawInputDeviceInfo(hDevice, RIDI_PREPARSEDDATA, IntPtr.Zero, ref ppSize);
-            if (ppSize == 0) { _preparsed[hDevice] = new IntPtr(-1); DiagLog("preparse size=0"); return; }
-            var buf = Marshal.AllocHGlobal((int)ppSize);
-            var r = GetRawInputDeviceInfo(hDevice, RIDI_PREPARSEDDATA, buf, ref ppSize);
-            DiagLog($"preparse r={r} size={ppSize} err={Marshal.GetLastWin32Error()}");
-            if (r == 0 || r == 0xFFFFFFFF)
-            { Marshal.FreeHGlobal(buf); _preparsed[hDevice] = new IntPtr(-1); return; }
-            pp = buf;
-            _preparsed[hDevice] = pp;
-        }
-        if (pp == new IntPtr(-1)) return;
-
-        // Contact Count（页 0x0D 用法 0x54）：读不到就不是触摸屏
-        var st = HidP_GetUsageValue(HidP_Input, 0x0D, 0, 0x54, out var contactCount, pp, data, (uint)sizeHid);
-        if (st != HIDP_STATUS_SUCCESS)
-        {
-            _preparsed[hDevice] = new IntPtr(-1);
-            Log($"device {hDevice} not a touchscreen (status 0x{st:X})");
+            Log("game swipe consumed (touch)");
             return;
         }
-
-        // 首触点：TipSwitch(0x0D/0x42) 是数组用法（GetUsageValue 读不到，上轮探测已证实），
-        // 用 HidP_GetUsages 枚举 Finger 集合内数组用法判定按下；
-        // X/Y(0x09/0x30,0x31) 是变量字段，GetUsageValue + 集合索引读取。
-        if (contactCount > 0 && !_fingerLc.ContainsKey(hDevice))
+        var inward = _edge switch
         {
-            var lcs = ProbeFingerCollections(pp, data, (uint)sizeHid);
-            DiagLog($"finger probe: [{string.Join(",", lcs)}]");
-            if (lcs.Length > 0) _fingerLc[hDevice] = lcs;
-        }
-        bool tip = false; int x = 0, y = 0;
-        bool okX = false, okY = false;
-        if (contactCount > 0 && _fingerLc.TryGetValue(hDevice, out var fingerLcs))
+            SummonEdge.Left => x - _tStartX,
+            SummonEdge.Right => _tStartX - x,
+            SummonEdge.Bottom => _tStartY - y,
+            _ => y - _tStartY
+        };
+        var nearEdge = NearEdge(_tStartX, _tStartY);
+        Log($"touch up ({x},{y}) inward={inward} nearEdge={nearEdge} ms={elapsed}");
+        var cross = _edge is SummonEdge.Left or SummonEdge.Right
+            ? Math.Abs(y - _tStartY) : Math.Abs(x - _tStartX);
+        if (nearEdge && inward >= Threshold && cross < inward && elapsed < 800 &&
+            (Environment.TickCount64 - _lastTrigger) > 600)
         {
-            ushort tipLc = 0;
-            foreach (var lc in fingerLcs)
-                if (HasTipSwitch(lc, pp, data, (uint)sizeHid)) { tip = true; tipLc = lc; break; }
-            if (tip)
-            {
-                okX = TryReadXY(0x30, tipLc, pp, data, (uint)sizeHid, out x);
-                okY = TryReadXY(0x31, tipLc, pp, data, (uint)sizeHid, out y);
-                if (okX && okY) MapTouchXY(tipLc, pp, ref x, ref y);
-                if (!_dumped) { _dumped = true; DumpRawBytes(data, (uint)sizeHid); }
-            }
+            _lastTrigger = Environment.TickCount64;
+            try { SummonTriggered?.Invoke(); Log("touch summon dispatched"); }
+            catch (Exception ex) { Log($"summon invoke EX: {ex.GetType().Name}: {ex.Message}"); }
         }
-        var diagKey = ((int)contactCount, tip ? 1 : 0, x >> 5, y >> 5);
-        if (diagKey != _lastDiag)
+        else if (!nearEdge && _edge == SummonEdge.Top && -inward >= DismissThreshold &&
+            cross < 80 && elapsed < 500 && Environment.TickCount64 - _lastDismiss > 600)
         {
-            _lastDiag = diagKey;
-            DiagLog($"count={contactCount} tip={(tip ? 1 : 0)} xOk={(okX ? 1 : 0)} yOk={(okY ? 1 : 0)} ({x},{y})");
+            _lastDismiss = Environment.TickCount64;
+            try { DismissTriggered?.Invoke(); Log("touch dismiss dispatched (top)"); }
+            catch (Exception ex) { Log($"dismiss invoke EX: {ex.GetType().Name}: {ex.Message}"); }
         }
-        if (contactCount > 0 && tip && okX && okY)
+        // 向下滑：起点在窗口内部、竖直向下快滑（横向偏移小，避开横向拖拽）→ 返回上一级
+        else if (!nearEdge && (y - _tStartY) >= DismissThreshold && Math.Abs(x - _tStartX) < 80 &&
+            elapsed < 500 && (Environment.TickCount64 - _lastBack) > 600 &&
+            Environment.TickCount64 > BackSuppressedUntil)
         {
-            if (!_tDown)
-            {
-                _tDown = true;
-                _tStartX = x; _tStartY = y;
-                _tDownAt = Environment.TickCount64;
-                var near = NearEdge(x, y);
-                if (near) NotifyEdgeTouched();
-                Log($"touch down ({x},{y}) nearEdge={near}");
-            }
-            _tLastX = x; _tLastY = y;
+            _lastBack = Environment.TickCount64;
+            try { BackTriggered?.Invoke(); Log("touch back dispatched"); }
+            catch (Exception ex) { Log($"back invoke EX: {ex.GetType().Name}: {ex.Message}"); }
         }
-        else if (_tDown)
+        // 滑到屏幕左/右边缘（终点在边缘带内、横向快滑且位移够大）→ 最小化；
+        // 起点在中间、停在中间的横滑不触发（留给主页切副页）
+        else if (!nearEdge && NearSideEdge(x) && Math.Abs(x - _tStartX) >= DismissThreshold &&
+            Math.Abs(y - _tStartY) < 80 && elapsed < 500 &&
+            (Environment.TickCount64 - _lastDismiss) > 600)
         {
-            // 手指抬起：判定手势。呼出=从边缘向中心内滑；收起=与呼出反向（从内部朝边缘快滑）
-            _tDown = false;
-            var elapsed = Environment.TickCount64 - _tDownAt;
-            // 游戏内右上/底部边缘：交给顶栏/底栏手势，启动器这次不再响应
-            if (GameSwipeService.TryHandleGesture(_tStartX, _tStartY, _tLastX, _tLastY, elapsed))
-            {
-                Log("game swipe consumed (touch)");
-                return;
-            }
-            var inward = _edge switch
-            {
-                SummonEdge.Left => _tLastX - _tStartX,
-                SummonEdge.Right => _tStartX - _tLastX,
-                SummonEdge.Bottom => _tStartY - _tLastY,
-                _ => _tLastY - _tStartY
-            };
-            var nearEdge = NearEdge(_tStartX, _tStartY);
-            Log($"touch up ({_tLastX},{_tLastY}) inward={inward} nearEdge={nearEdge} ms={elapsed}");
-            var cross = _edge is SummonEdge.Left or SummonEdge.Right
-                ? Math.Abs(_tLastY - _tStartY) : Math.Abs(_tLastX - _tStartX);
-            if (nearEdge && inward >= Threshold && cross < inward && elapsed < 800 &&
-                (Environment.TickCount64 - _lastTrigger) > 600)
-            {
-                _lastTrigger = Environment.TickCount64;
-                try { SummonTriggered?.Invoke(); Log("touch summon dispatched"); }
-                catch (Exception ex) { Log($"summon invoke EX: {ex.GetType().Name}: {ex.Message}"); }
-            }
-            else if (!nearEdge && _edge == SummonEdge.Top && -inward >= DismissThreshold &&
-                cross < 80 && elapsed < 500 && Environment.TickCount64 - _lastDismiss > 600)
-            {
-                _lastDismiss = Environment.TickCount64;
-                try { DismissTriggered?.Invoke(); Log("touch dismiss dispatched (top)"); }
-                catch (Exception ex) { Log($"dismiss invoke EX: {ex.GetType().Name}: {ex.Message}"); }
-            }
-            // 向下滑：起点在窗口内部、竖直向下快滑（横向偏移小，避开横向拖拽）→ 返回上一级
-            else if (!nearEdge && (_tLastY - _tStartY) >= DismissThreshold && Math.Abs(_tLastX - _tStartX) < 80 &&
-                elapsed < 500 && (Environment.TickCount64 - _lastBack) > 600 &&
-                Environment.TickCount64 > BackSuppressedUntil)
-            {
-                _lastBack = Environment.TickCount64;
-                try { BackTriggered?.Invoke(); Log("touch back dispatched"); }
-                catch (Exception ex) { Log($"back invoke EX: {ex.GetType().Name}: {ex.Message}"); }
-            }
-            // 滑到屏幕左/右边缘（终点在边缘带内、横向快滑且位移够大）→ 最小化；
-            // 起点在中间、停在中间的横滑不触发（留给主页切副页）
-            else if (!nearEdge && NearSideEdge(_tLastX) && Math.Abs(_tLastX - _tStartX) >= DismissThreshold &&
-                Math.Abs(_tLastY - _tStartY) < 80 && elapsed < 500 &&
-                (Environment.TickCount64 - _lastDismiss) > 600)
-            {
-                _lastDismiss = Environment.TickCount64;
-                try { DismissTriggered?.Invoke(); Log("touch dismiss dispatched"); }
-                catch (Exception ex) { Log($"dismiss invoke EX: {ex.GetType().Name}: {ex.Message}"); }
-            }
+            _lastDismiss = Environment.TickCount64;
+            try { DismissTriggered?.Invoke(); Log("touch dismiss dispatched"); }
+            catch (Exception ex) { Log($"dismiss invoke EX: {ex.GetType().Name}: {ex.Message}"); }
         }
-    }
-
-    /// <summary>探测含 TipSwitch 数组用法的 LinkCollection 索引（即 Finger 集合）；空结果不缓存，下帧重试</summary>
-    private ushort[] ProbeFingerCollections(IntPtr pp, IntPtr data, uint sizeHid)
-    {
-        var found = new List<ushort>();
-        for (ushort lc = 1; lc < 64; lc++) // 0=顶层搜索，Finger 字段必然失败，从 1 起
-            if (HasTipSwitch(lc, pp, data, sizeHid)) found.Add(lc);
-        return found.ToArray();
-    }
-
-    private readonly ushort[] _usageList = new ushort[64];
-    // caps 输出用裸 IntPtr 缓冲（128 字节，原生写入上限 72）——
-    // 本会话 coreclr 崩溃都在 P/Invoke 结构体/数组编组路径，ABI 必须零编组风险
-    private IntPtr _capsBuf = 0;
-    private bool _dumped;
-    private bool _xyLogged;
-
-    /// <summary>X/Y 读取：0x30/0x31 属于 0x01（通用桌面）页，位于各 Finger 集合内，逐集合读取。
-    /// 关键修正——此前误用 0x09（Button）页 → 原生返回 USAGE_NOT_FOUND，触摸通道从未取到坐标，
-    /// 手势实际只依赖鼠标钩子（触摸被提升为鼠标消息时才有效，前台应用原生处理触摸时失效）。</summary>
-    private bool TryReadXY(ushort usage, ushort tipLc, IntPtr pp, IntPtr data, uint sizeHid, out int value)
-    {
-        if (HidP_GetUsageValue(HidP_Input, UsagePageDesktop, tipLc, usage, out var v, pp, data, sizeHid) == HIDP_STATUS_SUCCESS)
-        { value = (int)v; LogXYOnce(usage, $"Value@lc{tipLc}={v}"); return true; }
-        if (HidP_GetUsageValue(HidP_Input, UsagePageDesktop, 0, usage, out v, pp, data, sizeHid) == HIDP_STATUS_SUCCESS)
-        { value = (int)v; LogXYOnce(usage, $"Value@top={v}"); return true; }
-        if (!_xyLogged)
-        {
-            _xyLogged = true; // 失败也只记一次，防 60Hz 刷屏
-            ushort n = 1;
-            var st = HidP_GetSpecificValueCaps(HidP_Input, UsagePageDesktop, tipLc, usage, _capsBuf, ref n, pp);
-            DiagLog($"XY {usage:X} read failed, caps st=0x{st:X} n={n}");
-        }
-        value = 0; return false;
-    }
-
-    /// <summary>X/Y 读取成功只记一次（防刷屏，同时保留首个真实值以便核对量纲）</summary>
-    private void LogXYOnce(ushort usage, string info)
-    {
-        if (_xyLogged) return;
-        _xyLogged = true;
-        DiagLog($"XY {usage:X} via {info}");
-    }
-
-    /// <summary>一次性 dump 当前帧原始字节（无需任何 HID API，兜底诊断）</summary>
-    private static void DumpRawBytes(IntPtr data, uint sizeHid)
-    {
-        var n = (int)Math.Min(sizeHid, 64);
-        var bytes = new byte[n];
-        Marshal.Copy(data, bytes, 0, n);
-        DiagLog($"raw[{sizeHid}]: {BitConverter.ToString(bytes).Replace("-", " ")}");
-    }
-
-    /// <summary>指定 Finger 集合当前帧的数组用法列表中是否含 TipSwitch(0x42)=触点按下</summary>
-    private bool HasTipSwitch(ushort lc, IntPtr pp, IntPtr data, uint sizeHid)
-    {
-        uint len = (uint)_usageList.Length;
-        if (HidP_GetUsages(HidP_Input, 0x0D, lc, _usageList, ref len, pp, data, sizeHid) != HIDP_STATUS_SUCCESS)
-            return false;
-        for (uint i = 0; i < len && i < (uint)_usageList.Length; i++)
-            if (_usageList[i] == 0x42) return true;
-        return false;
-    }
-
-    /// <summary>一次性 dump caps 原始字节（人工核对字段偏移；裸缓冲无编组）</summary>
-    private void DumpCaps(string tag, int n)
-    {
-        var bytes = new byte[48];
-        Marshal.Copy(_capsBuf, bytes, 0, bytes.Length);
-        DiagLog($"caps {tag} n={n}: {BitConverter.ToString(bytes).Replace("-", " ")}");
-    }
-
-    /// <summary>HID 逻辑单位 → 屏幕像素线性映射（范围取不到则保持原始值并只记一次日志）</summary>
-    private void MapTouchXY(ushort lc, IntPtr pp, ref int x, ref int y)
-    {
-        if (_lxMax == 0) // 未初始化：从 value caps 查询 X/Y 逻辑范围（裸缓冲+手动偏移 LogicalMin@40/LogicalMax@44）
-        {
-            ushort n = 1;
-            var stX = HidP_GetSpecificValueCaps(HidP_Input, UsagePageDesktop, lc, 0x30, _capsBuf, ref n, pp);
-            int minX = 0, maxX = 0, minY = 0, maxY = 0;
-            if (stX == HIDP_STATUS_SUCCESS)
-            {
-                DumpCaps("X", n);
-                minX = Marshal.ReadInt32(_capsBuf, 40); maxX = Marshal.ReadInt32(_capsBuf, 44);
-            }
-            n = 1;
-            var stY = HidP_GetSpecificValueCaps(HidP_Input, UsagePageDesktop, lc, 0x31, _capsBuf, ref n, pp);
-            if (stY == HIDP_STATUS_SUCCESS)
-            {
-                DumpCaps("Y", n);
-                minY = Marshal.ReadInt32(_capsBuf, 40); maxY = Marshal.ReadInt32(_capsBuf, 44);
-            }
-            if (stX == HIDP_STATUS_SUCCESS && stY == HIDP_STATUS_SUCCESS &&
-                maxX > minX && maxY > minY)
-            {
-                _lxMin = minX; _lxMax = maxX; _lyMin = minY; _lyMax = maxY;
-                DiagLog($"logical X[{_lxMin},{_lxMax}] Y[{_lyMin},{_lyMax}]");
-            }
-            else { _lxMax = -1; DiagLog($"value caps unavailable X=0x{stX:X} Y=0x{stY:X}, raw coords"); }
-        }
-        if (_lxMax <= 0) return;
-        x = (int)Math.Round((x - _lxMin) * (double)(GetSystemMetrics(0) - 1) / (_lxMax - _lxMin));
-        y = (int)Math.Round((y - _lyMin) * (double)(GetSystemMetrics(1) - 1) / (_lyMax - _lyMin));
     }
 
     private IntPtr HookCallback(int nCode, IntPtr wParam, IntPtr lParam)
@@ -596,16 +361,6 @@ public sealed class EdgeGestureService : IDisposable
     /// <summary>窗口层诊断写入：与手势日志同一文件，便于对照"窗口内指针通道"与"原始输入通道"</summary>
     internal static void Trace(string text) => Log(text);
 
-    /// <summary>高频解析诊断：每进程限 40 条，防 HID 帧刷屏</summary>
-    private static int _diagCount;
-    private static void DiagLog(string text)
-    {
-        if (_diagCount > 40) return;
-        if (_diagCount == 40) { _diagCount++; Log("diag capped"); return; }
-        _diagCount++;
-        Log($"[diag] {text}");
-    }
-
     public void Dispose()
     {
         if (_disposed) return;
@@ -615,57 +370,6 @@ public sealed class EdgeGestureService : IDisposable
 
     // ---- P/Invoke ----
     private delegate IntPtr HookProcDelegate(int nCode, IntPtr wParam, IntPtr lParam);
-    private delegate IntPtr WndProcDelegate(IntPtr hwnd, uint msg, IntPtr wParam, IntPtr lParam);
-
-    private const int WS_POPUP = unchecked((int)0x80000000);
-    private const int WS_EX_TOOLWINDOW = 0x00000080;   // 不进 Alt-Tab
-    private const int WS_EX_NOACTIVATE = 0x08000000;   // 永不激活抢焦点
-
-    private const uint RIDEV_INPUTSINK = 0x00000100;
-    private const uint RID_INPUT = 0x10000003;
-    private const int RIM_TYPEHID = 2;
-    private const uint RIDI_PREPARSEDDATA = 0x20000005;
-    private const uint RIDI_DEVICENAME = 0x20000007;
-    private const uint HidP_Input = 0;
-    /// <summary>通用桌面页：X/Y(0x30/0x31) 在此页（此前误用 0x09 Button 页 → 坐标读不到）</summary>
-    private const ushort UsagePageDesktop = 0x01;
-    private const int HIDP_STATUS_SUCCESS = 0x00110000;
-
-    [StructLayout(LayoutKind.Sequential)]
-    private struct RAWINPUTDEVICE
-    {
-        public ushort UsagePage;
-        public ushort Usage;
-        public uint Flags;
-        public IntPtr Target;
-    }
-
-    [StructLayout(LayoutKind.Sequential)]
-    private struct RAWINPUTHEADER
-    {
-        public uint dwType;
-        public uint dwSize;
-        public IntPtr hDevice;
-        public IntPtr wParam;
-    }
-
-    [StructLayout(LayoutKind.Sequential, CharSet = CharSet.Unicode)]
-    private struct WNDCLASSEX
-    {
-        public uint cbSize;
-        public uint style;
-        public IntPtr lpfnWndProc;
-        public int cbClsExtra;
-        public int cbWndExtra;
-        public IntPtr hInstance;
-        public IntPtr hIcon;
-        public IntPtr hCursor;
-        public IntPtr hbrBackground;
-        public string? lpszMenuName;
-        public string? lpszClassName;
-        public IntPtr hIconSm;
-    }
-
     [StructLayout(LayoutKind.Sequential)]
     private struct MSLLHOOKSTRUCT
     {
@@ -719,60 +423,4 @@ public sealed class EdgeGestureService : IDisposable
 
     [DllImport("kernel32.dll", CharSet = CharSet.Unicode)]
     private static extern IntPtr GetModuleHandle(string? lpModuleName);
-
-    [DllImport("user32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
-    private static extern ushort RegisterClassEx(ref WNDCLASSEX lpwcx);
-
-    [DllImport("user32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
-    private static extern bool UnregisterClass(string className, IntPtr instance);
-
-    [DllImport("user32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
-    private static extern IntPtr CreateWindowEx(int dwExStyle, string lpClassName, string lpWindowName,
-        int dwStyle, int x, int y, int nWidth, int nHeight,
-        IntPtr hWndParent, IntPtr hMenu, IntPtr hInstance, IntPtr lpParam);
-
-    [DllImport("user32.dll")]
-    private static extern bool DestroyWindow(IntPtr hWnd);
-
-    [DllImport("user32.dll")]
-    private static extern bool ShowWindow(IntPtr hWnd, int nCmdShow);
-
-    private const int SW_SHOWNOACTIVATE = 4;
-
-    [DllImport("user32.dll")]
-    private static extern IntPtr DefWindowProc(IntPtr hWnd, uint msg, IntPtr wParam, IntPtr lParam);
-
-    [DllImport("user32.dll", SetLastError = true)]
-    private static extern bool RegisterRawInputDevices(RAWINPUTDEVICE[] pRawInputDeviceList,
-        uint uiNumDevices, uint cbSize);
-
-    [DllImport("user32.dll")]
-    private static extern uint GetRawInputData(IntPtr hRawInput, uint uiCommand,
-        IntPtr pData, ref uint pcbSize, uint cbSizeHeader);
-
-    [DllImport("user32.dll", CharSet = CharSet.Unicode)]
-    private static extern uint GetRawInputDeviceInfo(IntPtr hDevice, uint uiCommand,
-        System.Text.StringBuilder pData, ref uint pcbSize);
-
-    [DllImport("user32.dll", CharSet = CharSet.Unicode)]
-    private static extern uint GetRawInputDeviceInfo(IntPtr hDevice, uint uiCommand,
-        IntPtr pData, ref uint pcbSize);
-
-    [DllImport("hid.dll")]
-    private static extern int HidP_GetUsageValue(uint reportType, ushort usagePage, ushort linkCollection,
-        ushort usage, out uint usageValue, IntPtr preparsedData, IntPtr report, uint reportLength);
-
-    [DllImport("hid.dll")]
-    private static extern int HidP_GetUsages(uint reportType, ushort usagePage, ushort linkCollection,
-        ushort[] usageList, ref uint usageListLength, IntPtr preparsedData, IntPtr report, uint reportLength);
-
-    /// <summary>HIDP_VALUE_CAPS（hidpi.h pack=4，总 72 字节）输出用裸缓冲（调用方保证 ≥72），杜绝结构体编组。
-    /// 原生签名有 7 个参数：ValueCapsLength(PUSHORT) 是 in/out 的"结构体个数"——
-    /// 漏传该参数（旧签名只有 6 个）会让原生把 preparsed 缓冲当长度指针写入、把栈上垃圾当 preparsedData
-    /// → 返回 0xC0110001 INVALID_PREPARSED_DATA，且破坏 preparsed 数据（历史 coreclr AV 的隐患）</summary>
-    [DllImport("hid.dll")]
-    private static extern int HidP_GetSpecificValueCaps(uint reportType, ushort usagePage, ushort linkCollection,
-        ushort usage, IntPtr valueCaps, ref ushort valueCapsLength, IntPtr preparsedData);
-
-
 }

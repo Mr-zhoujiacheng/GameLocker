@@ -59,11 +59,18 @@ public static partial class LosslessScalingService
         internal readonly OptiCaptureHostFrameEvidence Evidence = new();
     }
 
+    internal static OptiTelemetry? ActiveOptiSession
+    {
+        get
+        {
+            var session = Volatile.Read(ref _optiSession);
+            return session is null ? null : Volatile.Read(ref session.Telemetry);
+        }
+    }
+
     internal static OptiTelemetry? ReadOptiScalerTelemetry()
     {
-        var session = Volatile.Read(ref _optiSession);
-        if (session is null) return null;
-        var value = Volatile.Read(ref session.Telemetry);
+        if (ActiveOptiSession is not { } value) return null;
         return value.Status is { } status && OptiCaptureHostStatus.GetTickCount64() - status.Stamp <= OptiCaptureHostStatus.MaxAgeMs
             ? value : value with { Status = null, Confirmed = false };
     }

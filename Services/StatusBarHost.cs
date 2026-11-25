@@ -14,8 +14,6 @@ internal static class StatusBarHost
     private static int _registeredHeight;
     private static bool _shellHooked;
     private static bool _suspended;
-    private static bool _fullscreenHidden;
-    private static bool _force; // --statusbar-preview：忽略设置里的总开关
     private static bool _topTaskbar;
     private static bool _topModeEventHooked;
     private static AppBarHost.RECT _reserved;
@@ -23,29 +21,23 @@ internal static class StatusBarHost
     // 游戏内边缘手势：临时唤出（5 秒）或临时隐藏
     private static DispatcherQueueTimer? _peekTimer;
     private static bool _peekActive;
-    private static bool _gestureHidden;
 
-    public static bool IsVisible => _window is not null;
+    public static bool IsVisible => IsEnabled;
 
     /// <summary>顶栏是否已启用（窗口存在）。</summary>
-    public static bool IsEnabled => _window is not null;
+    public static bool IsEnabled => SettingsService.Current.SystemEnabled && _window is not null;
 
     /// <summary>顶栏贴在屏幕顶部（任务栏在底部时贴底）。</summary>
     public static bool IsAtTop => !_topTaskbar || TopTaskbarMode.Edge != TaskbarEdge.Bottom;
 
-    /// <summary>
-    /// 游戏内从边缘滑出顶栏：即使正在全屏隐藏也先显示，<paramref name="durationMs"/> 毫秒后。
-    /// 再次自动隐藏（游戏里退出全屏仍由 OnFullscreenChanged 恢复）。
-    /// </summary>
+    /// <summary>游戏内从边缘临时呼出顶栏，默认显示 5 秒。</summary>
     public static void Peek(int durationMs = 5000)
     {
-        if (_window is null) return;
-        _gestureHidden = false;
+        if (!IsEnabled || !_gameMode || _suspended || _dispatcher is null) return;
         _peekActive = true;
         Relayout();
-        _window.SetVisible(true);
+        UpdateVisibility();
 
-        if (_dispatcher is null) return;
         _peekTimer ??= _dispatcher.CreateTimer();
         _peekTimer.Stop();
         _peekTimer.Interval = TimeSpan.FromMilliseconds(Math.Max(500, durationMs));
@@ -61,29 +53,27 @@ internal static class StatusBarHost
         sender.Stop();
         if (!_peekActive) return;
         _peekActive = false;
-        _gestureHidden = true;
-        _window?.SetVisible(false);
+        UpdateVisibility();
         DebugLog.Write("[顶栏2] 手势唤出结束，重新隐藏");
     }
 
-    /// <summary>游戏内反向滑动：立刻收起顶栏（直到退出全屏或改设置才恢复）。</summary>
+    /// <summary>游戏内反向滑动：立刻收起顶栏。</summary>
     public static void HideByGesture()
     {
-        if (_window is null) return;
-        _peekTimer?.Stop();
-        _peekActive = false;
-        _gestureHidden = true;
-        _window.SetVisible(false);
+        if (!_gameMode || !IsEnabled) return;
+        ResetPeek();
+        UpdateVisibility();
         DebugLog.Write("[顶栏2] 手势反滑，收起顶栏");
     }
 
-    /// <summary>恢复正常显示（退出全屏/改设置时调用）。</summary>
-    private static void ResetGestureVisibility()
+    private static void ResetPeek()
     {
         _peekActive = false;
-        _gestureHidden = false;
         _peekTimer?.Stop();
     }
+
+    private static void UpdateVisibility() =>
+        _window?.SetVisible(SettingsService.Current.SystemEnabled && !_suspended && (!_gameMode || _peekActive));
 
     private static bool _gameMode;
 
@@ -98,27 +88,14 @@ internal static class StatusBarHost
     {
         if (_gameMode == inGame) return;
         _gameMode = inGame;
-        if (_window is null) return;
-
-        if (inGame)
-        {
-            _peekTimer?.Stop();
-            _peekActive = false;
-            _gestureHidden = false;
-            _window.SetVisible(false);
-            DebugLog.Write("[顶栏2] 进入游戏：顶栏让路（滑出边缘可临时唤出）");
-        }
-        else
-        {
-            ResetGestureVisibility();
-            _window.SetVisible(!_suspended && !_fullscreenHidden);
-            DebugLog.Write("[顶栏2] 离开游戏：恢复显示");
-        }
+        ResetPeek();
+        EnsureRegistration();
+        Relayout();
+        UpdateVisibility();
     }
 
-    public static async Task InitializeAsync(bool force = false)
+    public static async Task InitializeAsync()
     {
-        _force = force;
         _dispatcher = DispatcherQueue.GetForCurrentThread();
 
         if (!_topModeEventHooked)
@@ -135,9 +112,8 @@ internal static class StatusBarHost
     public static async Task ApplyAsync()
     {
         var settings = SettingsService.Current;
-        ResetGestureVisibility();
 
-        if (!settings.StatusBarEnabled && !_force)
+        if (!settings.SystemEnabled)
         {
             TopTaskbarMode.Disable();
             _topTaskbar = false;
@@ -157,9 +133,6 @@ internal static class StatusBarHost
                 FloatingToastService.Show(message, warning: true);
         }
 
-        // 关闭「全屏自动隐藏」后，即使之前因全屏被藏起来也要立即恢复
-        if (!settings.StatusBarFullscreenHide) _fullscreenHidden = false;
-
         if (_window is null)
         {
             var window = new StatusBarWindow();
@@ -168,7 +141,6 @@ internal static class StatusBarHost
                 ReRegister();
                 Relayout();
             };
-            window.FullscreenChanged = OnFullscreenChanged;
             _window = window;
 
             // 只有真正创建顶栏时才启动 Explorer 重启监听，未启用时不占线程
@@ -180,11 +152,13 @@ internal static class StatusBarHost
             }
         }
 
-        await _window.ApplySettingsAsync();
-        if (_topTaskbar) _window.SetTopTaskbarHeight(TopTaskbarMode.DisplayHeightDip);
+        var current = _window;
+        await current.ApplySettingsAsync();
+        if (!SettingsService.Current.SystemEnabled || _window != current) return;
+        if (_topTaskbar) current.SetTopTaskbarHeight(TopTaskbarMode.DisplayHeightDip);
         EnsureRegistration();
         Relayout();
-        _window.SetVisible(!_suspended && !_fullscreenHidden && !_gestureHidden && !_gameMode);
+        UpdateVisibility();
 
         // 顶栏跟随任务栏边缘后，底栏的折叠/展开位置也要重新计算
         DockHost.Relayout();
@@ -222,17 +196,9 @@ internal static class StatusBarHost
         _suspended = suspended;
         if (_window is null) return;
 
-        if (suspended)
-        {
-            RemoveAppBar();
-            _window.SetVisible(false);
-        }
-        else if (!_fullscreenHidden)
-        {
-            ReRegister();
-            Relayout();
-            _window.SetVisible(true);
-        }
+        EnsureRegistration();
+        if (!suspended) Relayout();
+        UpdateVisibility();
     }
 
     public static void Shutdown()
@@ -245,11 +211,11 @@ internal static class StatusBarHost
         TopTaskbarMode.Disable();
         _topTaskbar = false;
         CloseWindow();
-        _force = false;
     }
 
     private static void CloseWindow()
     {
+        ResetPeek();
         if (_window is null) return;
         try
         {
@@ -263,7 +229,6 @@ internal static class StatusBarHost
         finally
         {
             _window = null;
-            _fullscreenHidden = false;
             _suspended = false;
         }
     }
@@ -277,7 +242,7 @@ internal static class StatusBarHost
         if (_topTaskbar) return;
 
         var settings = SettingsService.Current;
-        if (!settings.StatusBarReserveSpace || _suspended || _fullscreenHidden) return;
+        if (!settings.StatusBarReserveSpace || _suspended || _gameMode) return;
 
         try
         {
@@ -310,7 +275,7 @@ internal static class StatusBarHost
             return;
         }
 
-        if (!settings.StatusBarReserveSpace || _suspended || _fullscreenHidden)
+        if (!settings.StatusBarReserveSpace || _suspended || _gameMode)
         {
             RemoveAppBar();
             return;
@@ -329,40 +294,6 @@ internal static class StatusBarHost
         finally { _registered = false; _registeredHeight = 0; }
     }
 
-    private static void OnFullscreenChanged(bool hidden)
-    {
-        // 顶部任务栏模式下顶栏就是那条预留区，全屏时也保持显示（任务栏占位仍在）
-        if (_topTaskbar)
-        {
-            _fullscreenHidden = false;
-            // 退出全屏时把手势造成的临时隐藏收回，避免顶栏一直不回来
-            if (!hidden && _window is not null)
-            {
-                ResetGestureVisibility();
-                if (!_suspended && !_gameMode) _window.SetVisible(true);
-            }
-            return;
-        }
-
-        _fullscreenHidden = hidden;
-        if (_window is null) return;
-
-        if (hidden)
-        {
-            RemoveAppBar();
-            _window.SetVisible(false);
-            DebugLog.Write("[顶栏2] 前台全屏，暂时隐藏");
-            return;
-        }
-
-        if (_suspended) return;
-        ResetGestureVisibility();   // 退出全屏：手势的临时显隐一并复位
-        ReRegister();
-        Relayout();
-        _window.SetVisible(!_gameMode);
-        DebugLog.Write("[顶栏2] 退出全屏，恢复显示");
-    }
-
     private static void OnTaskbarRecreated()
     {
         _dispatcher?.TryEnqueue(() =>
@@ -370,7 +301,7 @@ internal static class StatusBarHost
             if (_window is null) return;
             ReRegister();
             Relayout();
-            _window.SetVisible(!_suspended && !_fullscreenHidden && !_gestureHidden && !_gameMode);
+            UpdateVisibility();
         });
     }
 }

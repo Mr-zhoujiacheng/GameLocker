@@ -228,12 +228,8 @@ public class AppSettings
     /// <summary>顶栏显示搜索图标（固定在图标组最左侧，点击打开自制搜索浮层）</summary>
     public bool ShowSearch { get; set; } = true;
 
-    /// <summary>
-    /// 系统顶栏（设置页「顶栏2」）总开关。
-    /// 当前只记录偏好：窗口与各信息段尚未实现，开启后不会创建任何界面。
-    /// 开发清单见 docs/topbar2-development-plan.md。
-    /// </summary>
-    public bool StatusBarEnabled { get; set; }
+    /// <summary>设置页「启用系统」：显式开启后才创建顶栏和底栏。</summary>
+    public bool SystemEnabled { get; set; }
 
     /// <summary>顶栏2：AppBar 占位（最大化窗口避让）。关闭则浮在屏幕上、不改变工作区</summary>
     public bool StatusBarReserveSpace { get; set; } = true;
@@ -258,12 +254,6 @@ public class AppSettings
 
     /// <summary>顶栏2：前台全屏时自动隐藏</summary>
     public bool StatusBarFullscreenHide { get; set; } = true;
-
-    /// <summary>
-    /// 顶栏2：顶部任务栏模式。需先把系统任务栏位置设为“顶部”；
-    /// 开启后强制隐藏任务栏，顶栏2 按任务栏高度填满顶部预留条，不再注册 AppBar。
-    /// </summary>
-    public bool StatusBarTaskbarTopMode { get; set; }
 
     /// <summary>顶栏2：显示时间日期段</summary>
     public bool StatusBarShowClock { get; set; } = true;
@@ -335,6 +325,8 @@ public class AppSettings
     /// Win 键与任务栏开始按钮改为呼出/收起本启动器（新用户默认开启）</summary>
     public bool StartMenuMode { get; set; } = true;
 
+    internal bool StartMenuUsesBottomEdge => StartMenuMode && SystemEnabled;
+
     /// <summary>呼出组合键（长按 1 秒唤起启动器窗口），默认 LT+RT</summary>
     public GamepadButtons SummonCombo { get; set; } =
         GamepadButtons.LeftTrigger | GamepadButtons.RightTrigger;
@@ -369,10 +361,6 @@ public class AppSettings
     public CloudProvider CloudProvider { get; set; } = CloudProvider.Tianyi;
 
     // ---------------- 底栏 ----------------
-    // 字段在一次文件回退中丢失，这里按底栏现有读取点补回默认值。
-
-    /// <summary>底栏总开关</summary>
-    public bool DockEnabled { get; set; } = true;
 
     /// <summary>外观主题下标，见 <see cref="DockThemes"/></summary>
     public int DockTheme { get; set; }

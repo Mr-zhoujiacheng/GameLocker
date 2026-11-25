@@ -1699,7 +1699,7 @@ public sealed partial class DockWindow : Window
 	/// </summary>
 	public bool HandleGamepad(GamepadButtons buttons)
 	{
-		if (buttons == GamepadButtons.None) return false;
+		if (buttons == GamepadButtons.None || !IsWindowVisible(Hwnd)) return false;
 
 		bool left = buttons.HasFlag(GamepadButtons.DPadLeft) || buttons.HasFlag(GamepadButtons.LeftShoulder);
 		bool right = buttons.HasFlag(GamepadButtons.DPadRight) || buttons.HasFlag(GamepadButtons.RightShoulder);
@@ -1709,7 +1709,10 @@ public sealed partial class DockWindow : Window
 
 		if (IsCollapsed)
 		{
-			_dispatcher?.TryEnqueue(delegate { SetCollapsed(collapsed: false); });
+			_dispatcher?.TryEnqueue(delegate
+			{
+				if (CanApplyGamepadInput()) SetCollapsed(collapsed: false);
+			});
 			return true;
 		}
 
@@ -1718,6 +1721,7 @@ public sealed partial class DockWindow : Window
 		{
 			_dispatcher?.TryEnqueue(delegate
 			{
+				if (!CanApplyGamepadInput()) return;
 				if (left) DockPreviewHost.SelectRelative(-1);
 				else if (right) DockPreviewHost.SelectRelative(1);
 				else if (buttons.HasFlag(GamepadButtons.A)) DockPreviewHost.ActivateSelected();
@@ -1738,6 +1742,7 @@ public sealed partial class DockWindow : Window
 
 		_dispatcher?.TryEnqueue(delegate
 		{
+			if (!CanApplyGamepadInput()) return;
 			if (left) MovePadSelection(-1);
 			else if (right) MovePadSelection(1);
 			else if (buttons.HasFlag(GamepadButtons.A)) ActivatePadSelection();
@@ -1752,6 +1757,9 @@ public sealed partial class DockWindow : Window
 		});
 		return true;
 	}
+
+	private bool CanApplyGamepadInput() => SettingsService.Current.SystemEnabled
+		&& App.Main?.OwnsPageGamepadInput != true && IsWindowVisible(Hwnd);
 
 	/// <summary>清掉手柄选中框（鼠标/触摸接管、重建格子、收起时调用）。</summary>
 	public void ClearGamepadSelection()
@@ -2463,7 +2471,7 @@ public sealed partial class DockWindow : Window
 			}
 			else if (from < _slots.Count)
 			{
-				ActivateSlot(_pressSlot, from);
+				ActivateSlot(releasedSlot, from);
 			}
 		});
 		return true;
@@ -2483,12 +2491,7 @@ public sealed partial class DockWindow : Window
 		}
 		if (slot.Item.Kind == LaunchKind.Tray)
 		{
-			TrayAppEntry? entry = TrayAppService.FindEntry(slot.Item.Target);
-			if (entry != null)
-			{
-				string text = TrayAppService.Toggle(entry);
-				if (text.Length > 0) DebugLog.Write("[底栏] 托盘应用：" + text);
-			}
+			_ = ToggleLaunchAsync(slot.Item);
 			return;
 		}
 		if (slot.Item.Kind == LaunchKind.Widget)
@@ -2788,7 +2791,12 @@ public sealed partial class DockWindow : Window
 		KickScan();
 		try
 		{
-			await LaunchService.ToggleAsync(item, CancellationToken.None, SettingsService.Current.DockTrayWake);
+			var result = await LaunchService.ToggleAsync(item, CancellationToken.None, SettingsService.Current.DockTrayWake);
+			if (item.Kind == LaunchKind.Tray && result.Outcome == LaunchOutcome.Failed && result.Message.Length > 0)
+			{
+				DebugLog.Write("[底栏] 托盘应用：" + result.Message);
+				FloatingToastService.Show(result.Message, warning: true);
+			}
 		}
 		catch (Exception ex)
 		{

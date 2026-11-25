@@ -17,7 +17,7 @@ internal static class DockHost
 
     private static readonly List<Bar> Bars = [];
 
-    public static bool IsVisible => Bars.Count > 0;
+    public static bool IsVisible => SettingsService.Current.SystemEnabled && Bars.Count > 0;
 
     public static async Task InitializeAsync()
     {
@@ -33,7 +33,7 @@ internal static class DockHost
     /// </summary>
     public static bool HandleGamepad(GamepadButtons buttons)
     {
-        if (Bars.Count == 0) return false;
+        if (!IsVisible) return false;
         var primary = Monitors.Primary().Handle;
         var bar = Bars.FirstOrDefault(b => b.Monitor == primary) ?? Bars[0];
         try
@@ -62,12 +62,15 @@ internal static class DockHost
     /// </summary>
     public static async Task SummonAsync()
     {
-        if (!SettingsService.Current.DockEnabled) return;
+        if (!SettingsService.Current.SystemEnabled) return;
+        if (_gameMode) _revealedInGame = true;
         if (Bars.Count == 0) await ApplyAsync();
+        if (!SettingsService.Current.SystemEnabled || (_gameMode && !_revealedInGame)) return;
         foreach (var bar in Bars)
         {
             try
             {
+                if (_gameMode) bar.Window.AutoHide = false;
                 bar.Window.SetVisible(true);   // 游戏里被整体藏起来时，手势呼出要先放出来
                 bar.Window.Reveal();
             }
@@ -91,6 +94,7 @@ internal static class DockHost
     /// </summary>
     public static void HideForGame()
     {
+        _revealedInGame = false;
         foreach (var bar in Bars)
         {
             try { bar.Window.SetVisible(false); }
@@ -99,6 +103,7 @@ internal static class DockHost
     }
 
     private static bool _gameMode;
+    private static bool _revealedInGame;
 
     /// <summary>当前是否处在"游戏里"（底栏默认彻底隐藏，靠手势呼出）。</summary>
     public static bool GameMode => _gameMode;
@@ -111,6 +116,7 @@ internal static class DockHost
     {
         if (_gameMode == inGame) return;
         _gameMode = inGame;
+        _revealedInGame = false;
         foreach (var bar in Bars)
         {
             try
@@ -135,11 +141,10 @@ internal static class DockHost
     {
         var settings = SettingsService.Current;
 
-        // 任务栏隐藏独立于底栏开关，先应用；底栏关闭时也保持一致
-        TaskbarControl.Apply(settings.DockTaskbarMode);
-
-        if (!settings.DockEnabled)
+        TaskbarControl.Apply(settings.SystemEnabled ? settings.DockTaskbarMode : 0);
+        if (!settings.SystemEnabled)
         {
+            _revealedInGame = false;
             CloseAll();
             return;
         }
@@ -157,10 +162,11 @@ internal static class DockHost
         // 为新出现的屏建窗口
         foreach (var monitor in targets)
         {
+            if (!SettingsService.Current.SystemEnabled) return;
             var existing = Bars.FirstOrDefault(b => b.Monitor == monitor.Handle);
             if (existing is not null)
             {
-                existing.Window.AutoHide = settings.DockAutoHide;
+                existing.Window.AutoHide = settings.DockAutoHide && !_revealedInGame;
                 await existing.Window.ApplySettingsAsync();
                 continue;
             }
@@ -168,17 +174,15 @@ internal static class DockHost
             var window = new DockWindow();
             window.LayoutInvalidated = Relayout;
             window.CollapsedChanged = Relayout;
-            window.AutoHide = settings.DockAutoHide;
+            window.AutoHide = settings.DockAutoHide && !_revealedInGame;
 
             Bars.Add(new Bar { Window = window, Monitor = monitor.Handle });
             await window.ApplySettingsAsync();
         }
 
+        if (!SettingsService.Current.SystemEnabled) return;
         Relayout();
-        foreach (var bar in Bars) bar.Window.SetVisible(true);
-
-        // 游戏里改设置：应用完仍然让路，不把底栏重新翻出来盖住游戏
-        if (_gameMode) HideForGame();
+        foreach (var bar in Bars) bar.Window.SetVisible(!_gameMode || _revealedInGame);
     }
 
     /// <summary>按设置决定要挂在哪几块屏上。</summary>
@@ -236,7 +240,7 @@ internal static class DockHost
     /// <summary>下载模式等全屏遮罩期间挂起：隐藏窗口但不销毁。</summary>
     public static void Suspend(bool suspended)
     {
-        foreach (var bar in Bars) bar.Window.SetVisible(!suspended);
+        foreach (var bar in Bars) bar.Window.SetVisible(!suspended && (!_gameMode || _revealedInGame));
         if (!suspended) Relayout();
     }
 

@@ -118,7 +118,7 @@ public partial class App : Application
         {
             try
             {
-                _ = StatusBarHost.InitializeAsync(force: true);
+                _ = StatusBarHost.InitializeAsync();
                 _ = new StatusBarSettingsPage(); // 验证设置页 XAML 可构造
                 DebugLog.Write("[预览] 顶栏2 已创建");
             }
@@ -132,7 +132,7 @@ public partial class App : Application
             try
             {
                 _ = DockHost.InitializeAsync();
-                _ = StatusBarHost.InitializeAsync(force: true);
+                _ = StatusBarHost.InitializeAsync();
                 // 构建设置页，验证 XAML 与行构建不会在运行时抛异常
                 _ = new DockSettingsPage();
                 DebugLog.Write("[预览] 底栏已创建");
@@ -204,14 +204,13 @@ public partial class App : Application
         // 启动后不显示启动器，避免透明覆盖层吃掉桌面右键；需要时再呼出。
         Main.HideToTray();
 
-        // 底栏：默认开启（见设置），窗口创建后按设置显示。
+        // 底栏与系统顶栏都由「启用系统」控制，默认关闭。
         try
         {
             _ = DockHost.InitializeAsync();
         }
         catch (Exception ex) { DebugLog.Write("底栏初始化失败：" + ex); }
 
-        // 顶栏2（系统顶栏）：默认关；开启后创建常驻窗口并按设置占位。
         try
         {
             _ = StatusBarHost.InitializeAsync();

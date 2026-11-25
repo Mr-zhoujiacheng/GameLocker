@@ -31,6 +31,7 @@ public static class FloatingToastService
     private static DispatcherQueue? _queue;
     private static DispatcherQueueTimer? _hideTimer;
     private static DispatcherQueueTimer? _followTimer;
+    private static readonly OptiOverlayOrder CaptureOrder = new();
     private static string _text = "";
     private static bool _warning;
     private static IntPtr _monitor;
@@ -65,6 +66,7 @@ public static class FloatingToastService
             _followTimer!.Stop();
             EnsureWindow();
             RenderForForeground();
+            UpdateCaptureOrder();
             Raise();
             _hideTimer.Start();
             // 游戏切到前台、小黄鸭输出层出现后仍保持可见，并跟随显示器的变化。
@@ -116,11 +118,15 @@ public static class FloatingToastService
             throw new Win32Exception(Marshal.GetLastWin32Error());
     }
 
+    private static bool UpdateCaptureOrder() =>
+        CaptureOrder.Update(_hwnd, LosslessScalingService.ActiveOptiSession?.HostPid ?? 0);
+
     private static void OnHideTick(DispatcherQueueTimer sender, object args)
     {
         sender.Stop();
         _followTimer?.Stop();
         if (_hwnd != IntPtr.Zero) ShowWindow(_hwnd, SW_HIDE);
+        CaptureOrder.Detach(_hwnd);
     }
 
     private static void OnFollowTick(DispatcherQueueTimer sender, object args)
@@ -136,8 +142,7 @@ public static class FloatingToastService
             var monitor = MonitorFromWindow(foreground, 2 /* MONITOR_DEFAULTTONEAREST */);
             var dpi = foreground != IntPtr.Zero ? GetDpiForWindow(foreground) : 96u;
             if (monitor != _monitor || dpi != _dpi) RenderForForeground();
-            // 每轮都重新置顶：小黄鸭输出层是全屏置顶窗口，否则会把提示挡在下面。
-            Raise();
+            if (!UpdateCaptureOrder()) Raise();
         }
         catch (Exception ex)
         {
@@ -164,6 +169,7 @@ public static class FloatingToastService
     private static void DestroyToast()
     {
         if (_hwnd == IntPtr.Zero) return;
+        CaptureOrder.Detach(_hwnd);
         DestroyWindow(_hwnd);
         _hwnd = IntPtr.Zero;
     }

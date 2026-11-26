@@ -241,7 +241,7 @@
                     <!-- 固定高度（而不是 MaxHeight）：窗口变窄时只有内容等比缩小，盘面高度保持不变，
                          侧边栏 / 居中 / 开始菜单三种模式看起来一样高。
                          高度从 32 提到 44，配合下面各 GamepadHintBar 的 BadgeScale / TextScale 一起放大整条提示条。 -->
-                    <Viewbox Height="44" Margin="14,5,14,5"
+                    <Viewbox Height="36" Margin="12,4,12,4"
                              Stretch="Uniform" StretchDirection="DownOnly">
                     <StackPanel Orientation="Horizontal" VerticalAlignment="Center" Spacing="10">
                         <!-- 动态区在左、固定区在右：整条右沿钉在窗口边缘，动态区变宽只向左长，

@@ -22,9 +22,10 @@ public sealed partial class StatusBarSettingsPage : Page, ISettingsGamepad
     private int _index;
     private bool _ready;
     private GamepadButtons _capturedCombo;
+    private GamepadButtons _comboBefore;
     private TextBlock? _comboText;
     private Button? _comboButton;
-    /// <summary>录制阶段：0=空闲，1=倒计时（不响应输入，给手留出松开 A 的时间），2=正式录制</summary>
+    /// <summary>录制阶段：0=空闲，1=5 秒录制窗口（窗口内按下的键会记录）</summary>
     private int _comboPhase;
     private int _comboSecondsLeft;
     private DispatcherTimer? _comboTimer;
@@ -294,7 +295,14 @@ public sealed partial class StatusBarSettingsPage : Page, ISettingsGamepad
             panel, StartComboCapture);
     }
 
-    /// <summary>点「录制」或在该行按 A：先走 5 秒倒计时，倒计时结束后才开始吃手柄输入。</summary>
+    /// <summary>默认底栏呼出键：LS + RS（与 GamepadService 的初始值一致）</summary>
+    private const GamepadButtons DefaultDockCombo =
+        GamepadButtons.LeftThumb | GamepadButtons.RightThumb;
+
+    /// <summary>
+    /// 点「录制」或在该行按 A：立刻进入 5 秒录制窗口。
+    /// 窗口内按下并松开任意组合就保存；5 秒到还没录到，就停在默认呼出键（LS+RS）。
+    /// </summary>
     private void StartComboCapture()
     {
         if (_comboPhase != 0)
@@ -303,10 +311,13 @@ public sealed partial class StatusBarSettingsPage : Page, ISettingsGamepad
             return;
         }
 
+        _comboBefore = SettingsService.Current.DockSummonCombo;
         _comboPhase = 1;
         _comboSecondsLeft = 5;
         _capturedCombo = GamepadButtons.None;
-        if (_comboText is not null) _comboText.Text = $"{_comboSecondsLeft} 秒后开始录制…";
+        // 先恢复默认：5 秒内没录到组合键就停在默认呼出键
+        ApplyDockCombo(DefaultDockCombo);
+        UpdateComboText();
         if (_comboButton is not null) _comboButton.Content = "取消";
 
         _comboTimer ??= new DispatcherTimer { Interval = TimeSpan.FromSeconds(1) };
@@ -315,27 +326,45 @@ public sealed partial class StatusBarSettingsPage : Page, ISettingsGamepad
         _comboTimer.Start();
     }
 
+    private void UpdateComboText()
+    {
+        if (_comboText is null) return;
+        _comboText.Text = _capturedCombo == GamepadButtons.None
+            ? $"5 秒内按下组合键…（剩 {_comboSecondsLeft} 秒）"
+            : $"{FormatCombo(_capturedCombo)}（剩 {_comboSecondsLeft} 秒）";
+    }
+
     private void OnComboTick(object? sender, object e)
     {
+        if (_comboPhase != 1) return;
         _comboSecondsLeft--;
-        if (_comboPhase == 1)
+        if (_comboSecondsLeft > 0)
         {
-            if (_comboSecondsLeft > 0)
-            {
-                if (_comboText is not null) _comboText.Text = $"{_comboSecondsLeft} 秒后开始录制…";
-                return;
-            }
-            // 倒计时结束：正式录制，再给 10 秒窗口，避免一直卡在录制态
-            _comboPhase = 2;
-            _comboSecondsLeft = 10;
-            if (_comboText is not null) _comboText.Text = "请按手柄组合键…";
+            UpdateComboText();
             return;
         }
 
-        if (_comboPhase == 2 && _comboSecondsLeft <= 0)
+        // 5 秒到：录到了就保存，没录到就保持刚刚恢复的默认键
+        _comboTimer?.Stop();
+        var captured = _capturedCombo;
+        _comboPhase = 0;
+        _capturedCombo = GamepadButtons.None;
+        if (captured != GamepadButtons.None)
         {
-            FinishComboCapture();   // 超时：没按任何键，保持原组合键
+            if (captured == SettingsService.Current.SummonCombo)
+                FloatingToastService.Show("该组合已是启动器呼出键，已恢复默认", warning: true);
+            else
+                ApplyDockCombo(captured);
         }
+        FinishComboCapture();
+    }
+
+    private void ApplyDockCombo(GamepadButtons combo)
+    {
+        if (SettingsService.Current.DockSummonCombo == combo) return;
+        SettingsService.Update(x => x.DockSummonCombo = combo);
+        App.Main?.Gamepad.SetDockSummonCombo(combo);
+        DebugLog.Write($"[系统] 底栏呼出组合键改为 {FormatCombo(combo)}");
     }
 
     private void CancelComboCapture()
@@ -343,6 +372,8 @@ public sealed partial class StatusBarSettingsPage : Page, ISettingsGamepad
         _comboTimer?.Stop();
         _comboPhase = 0;
         _comboSecondsLeft = 0;
+        _capturedCombo = GamepadButtons.None;
+        ApplyDockCombo(_comboBefore);   // 取消：恢复点击前的组合键
         FinishComboCapture();
     }
 
@@ -800,33 +831,13 @@ public sealed partial class StatusBarSettingsPage : Page, ISettingsGamepad
 
     public void CaptureButtons(GamepadButtons pressed)
     {
-        if (_comboPhase == 1)
-        {
-            // 倒计时阶段不记录任何按键（这时手还按在 A 上），只允许 B 取消
-            if (pressed.HasFlag(GamepadButtons.B)) CancelComboCapture();
-            return;
-        }
-        if (_comboPhase != 2 || pressed == GamepadButtons.None) return;
+        if (_comboPhase != 1 || pressed == GamepadButtons.None) return;
         _capturedCombo |= pressed;
-        if (_comboText is not null) _comboText.Text = FormatCombo(_capturedCombo);
+        UpdateComboText();
     }
 
     public void NotifyAllReleased()
     {
-        if (_comboPhase != 2) return;
-        if (_capturedCombo != GamepadButtons.None)
-        {
-            if (_capturedCombo == SettingsService.Current.SummonCombo)
-            {
-                FloatingToastService.Show("该组合已是启动器呼出键，请换一个", warning: true);
-            }
-            else
-            {
-                SettingsService.Update(x => x.DockSummonCombo = _capturedCombo);
-                App.Main?.Gamepad.SetDockSummonCombo(_capturedCombo);
-                DebugLog.Write($"[系统] 底栏呼出组合键改为 {FormatCombo(_capturedCombo)}");
-            }
-        }
-        FinishComboCapture();
+        // 录制窗口只在 5 秒计时结束时收尾，这里不提前结束（避免按住 A 时被误判）
     }
 }

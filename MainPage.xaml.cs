@@ -1004,6 +1004,9 @@ public sealed partial class MainPage : Page
         RefreshPerformanceCacheAsync();
         // 全局锁帧：启动时后台读一次，读完刷新磁贴（磁贴可直接显示当前锁帧值）
         _ = FrameLimitService.RefreshCacheAsync().ContinueWith(_ => QueuePageRefresh(RefreshPerformanceTiles));
+
+        // 从设置页返回/首次进入：重新贴一次选中框（光晕要等布局完成，内部会延后一帧）
+        UpdateSelection(scrollToSelection: false);
     }
 
     /// <summary>系统小组件首次读数：射频 + 亮度都在后台线程读，读完刷新磁贴（避免 UI 线程做 WMI 调用）</summary>
@@ -8642,10 +8645,31 @@ public sealed partial class MainPage : Page
         if (scrollToSelection && !_inDrawer && _selected >= 0 && _selected < _tiles.Count)
             TileScroll.ChangeView(null,
                 Math.Max(0, Canvas.GetTop(_tiles[_selected]) - 40), null, false);
+        QueueSelectionHaloRefresh();  // 首次呼出/从设置页返回时磁贴还没测量，布局完成后再贴一次光晕
         UpdateDrawerSelection(); // 区域内部焦点描边 / 面板"在区域内"强调色
         UpdateWallpaperInfo();   // 壁纸磁贴：选中时显示标题与壁纸信息，光标移开即隐藏
         SyncPerformanceFocus();  // 性能磁贴：光标移开后恢复当前已生效的电源模式
         RefreshHomeHints();      // 顶部提示条动态区：随选中磁贴换文案（固定区不动）
+    }
+
+    private bool _haloRefreshQueued;
+
+    /// <summary>
+    /// 布局完成后再贴一次选中光晕：首次呼出/从设置页返回时磁贴还没测量，
+    /// 当场贴会因为没有实际尺寸被跳过，表现为"选中框只剩普通白框、没有光晕"。
+    /// </summary>
+    private void QueueSelectionHaloRefresh()
+    {
+        if (_haloRefreshQueued) return;
+        _haloRefreshQueued = true;
+        DispatcherQueue.TryEnqueue(Microsoft.UI.Dispatching.DispatcherQueuePriority.Low, () =>
+        {
+            _haloRefreshQueued = false;
+            if (_inDrawer || _selected < 0 || _selected >= _tiles.Count) return;
+            var tile = _tiles[_selected];
+            if (tile.ActualWidth <= 0 || tile.ActualHeight <= 0) return;
+            ShowSelectionHalo(TileHost, tile, Microsoft.UI.Colors.White, TileStyle.Radius);
+        });
     }
 
     /// <summary>选中框柔光：多层同色圆环叠出"由内向外渐隐"的光晕（不遮内容、不占布局）。</summary>

@@ -1073,8 +1073,9 @@ public sealed partial class MainPage : Page
     {
         var padding = TileScroll.Padding;
         var margin = HomeHintShell.Margin;
-        var right = Math.Max(8, padding.Right);
-        // 靠右对齐但不贴边：右沿留一个 padding 的呼吸位，窄窗再大就靠 MaxWidth 缩字兜底。
+        // 提示条的右沿与磁贴最右列的右边缘对齐（tileOffset 是磁贴组在可用区内的居中偏移，
+        // 磁贴少时整组居中，提示条就跟着那条竖线走，而不是死贴窗口右边）。
+        var right = Math.Max(8, availableWidth + padding.Right - tileOffset - tileWidth);
         HomeHintShell.Margin = new Thickness(padding.Left, margin.Top, right, margin.Bottom);
         // 宽度策略：优先"拉长"而不是"缩小"，上限给到整窗可用宽；只有窗口真的塞不下时才由 Viewbox 缩字兜底。
         HomeHintPlate.MaxWidth = Math.Max(220, availableWidth + 24 - padding.Left - right);
@@ -4200,19 +4201,25 @@ public sealed partial class MainPage : Page
     /// <summary>内层磁贴焦点描边 + 面板"在区域内"强调色（仅在区域内顶点亮；拖拽悬停高亮期间不覆盖）</summary>
     private void UpdateDrawerSelection()
     {
+        var haloHost = _drawerInnerTiles.Count > 0
+            ? VisualTreeHelper.GetParent(_drawerInnerTiles[0]) as Canvas
+            : null;
+        if (haloHost is not null) HideSelectionHalo(haloHost);
         for (var i = 0; i < _drawerInnerTiles.Count; i++)
         {
             var t = _drawerInnerTiles[i];
             // 未进入区域时不点亮内层磁贴：焦点在磁贴区时内层不该"看起来被选中"
             var focused = _inDrawer && i == _drawerFocusPos;
             var isAdd = ReferenceEquals(t, _drawerAddTile); // 编辑模式的"添加磁贴"：失焦时保留强调色描边
-            t.BorderThickness = new Thickness(focused ? 4 : isAdd ? 1.5 : 1);
+            t.BorderThickness = new Thickness(focused ? 2.5 : isAdd ? 1.5 : 1);
             t.BorderBrush = new SolidColorBrush(focused
                 ? Microsoft.UI.Colors.White
                 : isAdd
                     ? Windows.UI.Color.FromArgb(0x66, 0x4C, 0xC2, 0xFF)
                     : Windows.UI.Color.FromArgb(0x40, 0xFF, 0xFF, 0xFF));
             Microsoft.UI.Xaml.Controls.Canvas.SetZIndex(t, focused ? 2 : 0);
+            if (focused && haloHost is not null)
+                ShowSelectionHalo(haloHost, t, Microsoft.UI.Colors.White, TileStyle.Radius);
         }
         SyncPerformanceFocus(); // 抽屉内移动光标同样要还原性能磁贴的待应用档位
         // 收起成手牌时刷新热卡样式；展开时大卡描边由 BuildDrawerSheet 保持
@@ -8596,16 +8603,19 @@ public sealed partial class MainPage : Page
         // 手柄光标是磁贴描边：先撤掉可能残留的系统焦点框（呼出/重建磁贴后音乐播放键等
         // 控件若曾拿到焦点，会多出一圈框，且随页面滚动和选中框一起移动）
         FocusRing.HideCurrent(XamlRoot);
+        HideSelectionHalo(TileHost);
         for (var i = 0; i < _tiles.Count; i++)
         {
             var t = _tiles[i];
             // 焦点在抽屉区域时不点亮磁贴区选中框（避免与内层焦点/面板强调色混淆）
             if (!_inDrawer && i == _selected)
             {
-                // 选中效果用粗内描边 + 提升 Z 序：Border 描边向内绘制不会溢出边界被相邻磁贴盖住
-                t.BorderThickness = new Thickness(4);
+                // 选中效果：细描边 + 外侧柔光 + 提升 Z 序。
+                // 颜色固定白色：三种主题下磁贴配色差异大，跟随磁贴强调色会"同色不突出"。
+                t.BorderThickness = new Thickness(2.5);
                 t.BorderBrush = new SolidColorBrush(Microsoft.UI.Colors.White);
                 Microsoft.UI.Xaml.Controls.Canvas.SetZIndex(t, 1);
+                ShowSelectionHalo(TileHost, t, Microsoft.UI.Colors.White, TileStyle.Radius);
             }
             else
             {
@@ -8636,6 +8646,74 @@ public sealed partial class MainPage : Page
         UpdateWallpaperInfo();   // 壁纸磁贴：选中时显示标题与壁纸信息，光标移开即隐藏
         SyncPerformanceFocus();  // 性能磁贴：光标移开后恢复当前已生效的电源模式
         RefreshHomeHints();      // 顶部提示条动态区：随选中磁贴换文案（固定区不动）
+    }
+
+    /// <summary>选中框柔光：多层同色圆环叠出"由内向外渐隐"的光晕（不遮内容、不占布局）。</summary>
+    private static readonly double[] HaloThickness = { 2, 5, 9, 14, 20 };
+    private static readonly byte[] HaloAlpha = { 0x40, 0x22, 0x14, 0x0A, 0x05 };
+    private readonly Dictionary<Canvas, Border?[]> _haloRings = new();
+
+    /// <summary>把颜色往白里提亮，避免暗色强调色的光晕看起来像一圈黑影。</summary>
+    private static Windows.UI.Color Lighten(Windows.UI.Color color, double amount) =>
+        Windows.UI.Color.FromArgb(color.A,
+            (byte)(color.R + (255 - color.R) * amount),
+            (byte)(color.G + (255 - color.G) * amount),
+            (byte)(color.B + (255 - color.B) * amount));
+
+    /// <summary>在指定画布上给磁贴套一圈光晕（主页磁贴区、抽屉内层各自一层）。</summary>
+    private void ShowSelectionHalo(Canvas host, Border tile, Windows.UI.Color accent, double radius)
+    {
+        if (tile.ActualWidth <= 0 || tile.ActualHeight <= 0) return;
+        Windows.Foundation.Rect rect;
+        try
+        {
+            rect = tile.TransformToVisual(host).TransformBounds(
+                new Windows.Foundation.Rect(0, 0, tile.ActualWidth, tile.ActualHeight));
+        }
+        catch
+        {
+            return;
+        }
+
+        if (!_haloRings.TryGetValue(host, out var rings))
+        {
+            rings = new Border?[HaloThickness.Length];
+            _haloRings[host] = rings;
+        }
+
+        var glow = Lighten(accent, 0.35);
+        for (var i = 0; i < rings.Length; i++)
+        {
+            var grow = HaloThickness[i];
+            var ring = rings[i] ??= new Border
+            {
+                IsHitTestVisible = false,
+                Visibility = Visibility.Collapsed,
+                BorderBrush = new SolidColorBrush(Microsoft.UI.Colors.Transparent)
+            };
+            if (ring.Parent is null) host.Children.Add(ring);
+
+            ring.Width = rect.Width + grow * 2;
+            ring.Height = rect.Height + grow * 2;
+            ring.CornerRadius = new CornerRadius(radius + grow);
+            ring.BorderThickness = new Thickness(grow);
+            ((SolidColorBrush)ring.BorderBrush!).Color =
+                Windows.UI.Color.FromArgb(HaloAlpha[i], glow.R, glow.G, glow.B);
+            Canvas.SetLeft(ring, rect.X - grow);
+            Canvas.SetTop(ring, rect.Y - grow);
+            Canvas.SetZIndex(ring, 0);
+            ring.Visibility = Visibility.Visible;
+        }
+    }
+
+    private void HideSelectionHalo(Canvas? host = null)
+    {
+        foreach (var (canvas, rings) in _haloRings)
+        {
+            if (host is not null && !ReferenceEquals(canvas, host)) continue;
+            foreach (var ring in rings)
+                if (ring is not null) ring.Visibility = Visibility.Collapsed;
+        }
     }
 
     /// <summary>壁纸磁贴信息条：只有当前选中的壁纸磁贴显示，其它一律隐藏</summary>

@@ -18,8 +18,8 @@ public sealed partial class DockSettingsPage : Page, ISettingsGamepad
     private int _index;
     private bool _ready;
 
-    private static readonly SolidColorBrush FocusBrush =
-        new(Windows.UI.Color.FromArgb(0xE6, 0xFF, 0xFF, 0xFF));
+    private static readonly SolidColorBrush FocusBrush = SelectionGlow.CursorBrush;
+    private SelectionGlow? _glow;
     private static readonly SolidColorBrush IdleBrush =
         new(Microsoft.UI.Colors.Transparent);
 
@@ -28,6 +28,7 @@ public sealed partial class DockSettingsPage : Page, ISettingsGamepad
         InitializeComponent();
         // 设置项行用手绘白框当光标：子控件拿到焦点时不再画系统焦点框
         FocusRing.Attach(this);
+        if (Content is Panel root) _glow = SelectionGlow.Attach(root);
         Build();
         Loaded += (_, _) => { _ready = true; UpdatePreview(); UpdateCursor(); };
         Unloaded += (_, _) => _ready = false;
@@ -396,6 +397,8 @@ public sealed partial class DockSettingsPage : Page, ISettingsGamepad
         FocusRing.HideCurrent(XamlRoot);
         for (var i = 0; i < _rows.Count; i++)
             _rows[i].BorderBrush = i == _index ? FocusBrush : IdleBrush;
+        if (_index >= 0 && _index < _rows.Count) _glow?.Show(_rows[_index], 10);
+        else _glow?.Hide();
         if (_index >= 0 && _index < _rows.Count) _rows[_index].StartBringIntoView();
     }
 

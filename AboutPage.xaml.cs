@@ -23,10 +23,10 @@ public sealed partial class AboutPage : Page, ISettingsGamepad
     /// <summary>点在卡片内的「导出」按钮上时，抑制卡片本身的一次点击</summary>
     private bool _suppressCardClick;
 
-    private static readonly SolidColorBrush CursorBrush =
-        new(Windows.UI.Color.FromArgb(0xCC, 0xFF, 0xFF, 0xFF));
+    private static readonly SolidColorBrush CursorBrush = SelectionGlow.CursorBrush;
     private static readonly SolidColorBrush ClearBrush =
         new(Microsoft.UI.Colors.Transparent);
+    private SelectionGlow? _glow;
 
     /// <summary>本轮会话中找到的新版本（null=已是最新或尚未检查）</summary>
     private UpdateInfo? _update;
@@ -45,6 +45,7 @@ public sealed partial class AboutPage : Page, ISettingsGamepad
         InitializeComponent();
         // 卡片用手绘白框当光标：子控件拿到焦点时不再画系统焦点框
         FocusRing.Attach(this);
+        if (Content is Panel root) _glow = SelectionGlow.Attach(root);
 
         var v = typeof(AboutPage).Assembly.GetName().Version;
         VersionText.Text = $"版本 {v?.Major ?? 1}.{v?.Minor ?? 0}.{v?.Build ?? 0}";
@@ -236,6 +237,8 @@ public sealed partial class AboutPage : Page, ISettingsGamepad
         FocusRing.HideCurrent(XamlRoot);
         for (var i = 0; i < _cards.Length; i++)
             _cards[i].BorderBrush = i == index ? CursorBrush : ClearBrush;
+        if (index >= 0 && index < _cards.Length) _glow?.Show(_cards[index], 10);
+        else _glow?.Hide();
     }
 
     /// <summary>鼠标/触摸点击卡片直接执行</summary>

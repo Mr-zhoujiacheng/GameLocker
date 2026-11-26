@@ -19,6 +19,8 @@ public sealed partial class GamepadHintBar : UserControl
     private const double DefaultScale = 0.85;
 
     private double _scale = DefaultScale;
+    /// <summary>只作用于说明文字的额外缩放（不动徽章），主页提示条据此单独放大字号</summary>
+    private double _textScale = 1;
 
     public GamepadHintBar()
     {
@@ -43,6 +45,23 @@ public sealed partial class GamepadHintBar : UserControl
     {
         get => (double)GetValue(BadgeScaleProperty);
         set => SetValue(BadgeScaleProperty, value);
+    }
+
+    /// <summary>说明文字的额外缩放：只放大/缩小文字，键帽直径不变（默认 1，主页提示条用 &gt;1）</summary>
+    public static readonly DependencyProperty TextScaleProperty = DependencyProperty.Register(
+        nameof(TextScale), typeof(double), typeof(GamepadHintBar),
+        new PropertyMetadata(1.0, (d, e) =>
+        {
+            var bar = (GamepadHintBar)d;
+            var value = (double)e.NewValue;
+            bar._textScale = value > 0 ? value : 1;
+            bar.SetHints(bar.Hints);
+        }));
+
+    public double TextScale
+    {
+        get => (double)GetValue(TextScaleProperty);
+        set => SetValue(TextScaleProperty, value);
     }
 
     /// <summary>XAML 声明式配置入口（等价于调用 SetHints）</summary>
@@ -151,7 +170,7 @@ public sealed partial class GamepadHintBar : UserControl
                 RootPanel.Children.Add(new TextBlock
                 {
                     Text = label,
-                    FontSize = (Highlight ? 12.5 : 11) * _scale,
+                    FontSize = (Highlight ? 12.5 : 11) * _scale * _textScale,
                     FontFamily = PixelFont,
                     FontWeight = Highlight ? FontWeights.SemiBold : FontWeights.Normal,
                     Opacity = Highlight ? 0.95 : 0.75,
@@ -177,7 +196,7 @@ public sealed partial class GamepadHintBar : UserControl
             row.Children.Add(new TextBlock
             {
                 Text = label,
-                FontSize = 11,
+                FontSize = 11 * _textScale,
                 FontFamily = PixelFont,
                 Opacity = 0.75,
                 VerticalAlignment = VerticalAlignment.Center
@@ -195,7 +214,7 @@ public sealed partial class GamepadHintBar : UserControl
             stack.Children.Add(new TextBlock
             {
                 Text = label,
-                FontSize = 11.5,
+                FontSize = 11.5 * _textScale,
                 FontFamily = PixelFont,
                 Opacity = 0.75,
                 HorizontalAlignment = HorizontalAlignment.Center

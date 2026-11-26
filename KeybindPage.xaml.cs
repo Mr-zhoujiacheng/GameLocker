@@ -37,7 +37,8 @@ public sealed partial class KeybindPage : Page, ISettingsGamepad
     private readonly Brush _cardIdleBg = CardGradient(0x22, 0x33);
     private readonly Brush _cardFocusBg = CardGradient(0x2E, 0x4D);
     private readonly Brush _lineIdle = new SolidColorBrush(Windows.UI.Color.FromArgb(0x26, 0xFF, 0xFF, 0xFF));
-    private readonly Brush _lineFocus = new SolidColorBrush(Windows.UI.Color.FromArgb(0xE6, 0xFF, 0xFF, 0xFF));
+    private readonly Brush _lineFocus = SelectionGlow.CursorBrush;
+    private SelectionGlow? _glow;
 
     /// <summary>卡片底色：白→浅灰竖向渐变（与关于页同一套灰阶）</summary>
     private static LinearGradientBrush CardGradient(byte topAlpha, byte bottomAlpha) => new()
@@ -62,6 +63,7 @@ public sealed partial class KeybindPage : Page, ISettingsGamepad
         InitializeComponent();
         // 快捷映射卡片用手绘白框当光标：子控件（捕获按钮）拿到焦点时不再画系统焦点框
         FocusRing.Attach(this);
+        if (Content is Panel root) _glow = SelectionGlow.Attach(root);
         CaptureText.Text = GamepadService.Describe(SettingsService.Current.SummonCombo);
         KeyCaptureText.Text = KeySendService.MappingLabel(0, SettingsService.Current.KeyboardSummonKey,
             SettingsService.Current.KeyboardSummonMods);
@@ -274,6 +276,8 @@ public sealed partial class KeybindPage : Page, ISettingsGamepad
             _cards[i].BorderBrush = on ? _lineFocus : _lineIdle;
             _cards[i].Background = on ? _cardFocusBg : _cardIdleBg;
         }
+        if (_focus >= 0 && _focus < _cards.Length) _glow?.Show(_cards[_focus], 12);
+        else _glow?.Hide();
     }
 
     /// <summary>确保当前卡片完整可见：只在它超出可视区时才滚最小距离（留 8px 余量），

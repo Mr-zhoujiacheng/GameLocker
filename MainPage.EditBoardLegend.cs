@@ -168,7 +168,7 @@ public sealed partial class MainPage
 
         var (a, y) = item.WidgetKind switch
         {
-            WidgetKind.Music => ("播放/暂停", "切歌"),
+            WidgetKind.Music => ("播放/暂停", ""),   // Y 对音乐组件无动作，切歌实际在 LB/RB
             WidgetKind.Photos => ("下一张", "上一张"),
             WidgetKind.Settings => ("设置", "编辑"),
             WidgetKind.Weather => ("刷新", ""),

@@ -1,3 +1,4 @@
+using GameLocker.Services;
 using Microsoft.UI.Xaml;
 using Microsoft.UI.Xaml.Automation;
 using Microsoft.UI.Xaml.Media;
@@ -15,11 +16,29 @@ public sealed partial class MainPage
     /// <summary>动态区最近一次写入的按键配置；相同则跳过重建，避免光标移动时整条闪烁</summary>
     private string _homeHintSpec = "";
 
+    /// <summary>上一次刷新时是否处于编辑态：变模式时播"提示换了一套"的过渡动画</summary>
+    private bool _hintEditing;
+
     /// <summary>按当前选中项刷新动态区（A 启动/播放、Y 最小化、LB/RB 切歌…）。
     /// 固定区（选择·添加·编辑·返回）在主页态不动，进入编辑态才换成编辑键位。</summary>
     private void RefreshHomeHints(bool force = false)
     {
+        try
+        {
+            RefreshHomeHintsCore(force);
+        }
+        catch (Exception ex)
+        {
+            // 提示条只是辅助：动画/重建出错不能把整个界面崩掉（UI 线程异常会直接闪退）
+            DebugLog.Write("[提示条] 刷新异常：" + ex);
+        }
+    }
+
+    private void RefreshHomeHintsCore(bool force)
+    {
         var editing = _moving;
+        var modeChanged = editing != _hintEditing;
+        _hintEditing = editing;
         var (edit, home) = GetBoardLegend();
         ApplyFixedHintChips(editing);
 
@@ -34,7 +53,7 @@ public sealed partial class MainPage
         var describe = items.Count == 0
             ? "当前磁贴没有专属快捷操作"
             : string.Join("，", items.Select(row => $"{KeySpoken(row.Key)} {row.Text}"));
-        if (!force && spec == _homeHintSpec) return;
+        if (!force && !modeChanged && spec == _homeHintSpec) return;
 
         var wasEmpty = _homeHintSpec.Length == 0;
         _homeHintSpec = spec;
@@ -49,6 +68,12 @@ public sealed partial class MainPage
         if (!hasDynamic) return;
 
         HomeHintDynamic.Hints = spec;
+        if (modeChanged && !wasEmpty && !force)
+        {
+            // 进入/退出编辑态：整条换了一套键位，给一个更明显的过渡
+            PlayHomeHintModeChange();
+            return;
+        }
         if (force || wasEmpty)
         {
             // 首次出现/强制刷新不做动效，免得启动或切模式时闪一下
@@ -119,6 +144,78 @@ public sealed partial class MainPage
         timeline.Children.Add(fade);
 
         timeline.Begin();
+    }
+
+    /// <summary>
+    /// 进入/退出编辑态时整条提示条的过渡：动态区从左侧滑入淡入、固定键位盘回弹放大、
+    /// 整条轻微放大后回落——一眼能看出"操作提示换了一套"。
+    /// </summary>
+    private void PlayHomeHintModeChange()
+    {
+        HomeHintDynamicSlide.X = 0;
+        HomeHintDynamicHost.Opacity = 1;
+
+        if (!HeaderMotionEnabled)
+        {
+            SnapHomeHintMotion();
+            return;
+        }
+
+        var plateWidth = HomeHintPlate.ActualWidth;
+        var plateHeight = HomeHintPlate.ActualHeight;
+        if (plateWidth > 0 && plateHeight > 0)
+            HomeHintPlate.CenterPoint = new System.Numerics.Vector3((float)(plateWidth / 2), (float)(plateHeight / 2), 0);
+        var fixedWidth = HomeHintFixed.ActualWidth;
+        var fixedHeight = HomeHintFixed.ActualHeight;
+        if (fixedWidth > 0 && fixedHeight > 0)
+            HomeHintFixed.CenterPoint = new System.Numerics.Vector3((float)(fixedWidth / 2), (float)(fixedHeight / 2), 0);
+
+        var ease = new CubicEase { EasingMode = EasingMode.EaseOut };
+        var pop = new BackEase { EasingMode = EasingMode.EaseOut, Amplitude = 0.35 };
+        var timeline = new Storyboard();
+
+        // 动态区：比"换磁贴"幅度更大，配合淡入
+        timeline.Children.Add(HintAnimation(HomeHintDynamicSlide, nameof(TranslateTransform.X), -14, 0, 220, ease));
+        timeline.Children.Add(HintAnimation(HomeHintDynamicHost, nameof(UIElement.Opacity), 0, 1, 180, ease));
+
+        // 固定键位盘：0.9 → 1 回弹 + 淡入
+        HomeHintFixedScale.ScaleX = 0.9;
+        HomeHintFixedScale.ScaleY = 0.9;
+        timeline.Children.Add(HintAnimation(HomeHintFixedScale, nameof(ScaleTransform.ScaleX), 0.9, 1, 260, pop));
+        timeline.Children.Add(HintAnimation(HomeHintFixedScale, nameof(ScaleTransform.ScaleY), 0.9, 1, 260, pop));
+        timeline.Children.Add(HintAnimation(HomeHintFixed, nameof(UIElement.Opacity), 0.25, 0.9, 200, ease));
+
+        // 整条：轻轻放大再回落，像"刷新了一下"
+        timeline.Children.Add(HintAnimation(HomeHintPlateScale, nameof(ScaleTransform.ScaleX), 1.02, 1, 240, ease));
+        timeline.Children.Add(HintAnimation(HomeHintPlateScale, nameof(ScaleTransform.ScaleY), 1.02, 1, 240, ease));
+
+        timeline.Begin();
+    }
+
+    private static DoubleAnimation HintAnimation(DependencyObject target, string property,
+        double from, double to, int milliseconds, EasingFunctionBase easing)
+    {
+        var animation = new DoubleAnimation
+        {
+            From = from,
+            To = to,
+            Duration = TimeSpan.FromMilliseconds(milliseconds),
+            EasingFunction = easing
+        };
+        Storyboard.SetTarget(animation, target);
+        Storyboard.SetTargetProperty(animation, property);
+        return animation;
+    }
+
+    private void SnapHomeHintMotion()
+    {
+        HomeHintDynamicSlide.X = 0;
+        HomeHintDynamicHost.Opacity = 1;
+        HomeHintFixedScale.ScaleX = 1;
+        HomeHintFixedScale.ScaleY = 1;
+        HomeHintFixed.Opacity = 0.9;
+        HomeHintPlateScale.ScaleX = 1;
+        HomeHintPlateScale.ScaleY = 1;
     }
 
     // ── 猫娘躲提示条 ───────────────────────────────────────────────────────────

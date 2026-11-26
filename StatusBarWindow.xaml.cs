@@ -44,8 +44,31 @@ public sealed partial class StatusBarWindow : Window
     private readonly DispatcherTimer _batteryHealthTimer = new();
     private readonly DispatcherTimer _timerTicker = new() { Interval = TimeSpan.FromSeconds(1) };
     private readonly DispatcherTimer _trayStateTimer = new() { Interval = TimeSpan.FromMilliseconds(300) };
-    private readonly DispatcherTimer _maximizedTimer = new() { Interval = TimeSpan.FromMilliseconds(700) };
-    private bool _maximizedWindow;
+    /// <summary>前台最大化状态采样周期</summary>
+    private readonly DispatcherTimer _maximizedTimer = new() { Interval = TimeSpan.FromMilliseconds(300) };
+    /// <summary>状态确认缓冲：采样到变化后先等一小段，状态稳定才真正切换底色</summary>
+    private readonly DispatcherTimer _maximizedConfirmTimer = new() { Interval = TimeSpan.FromMilliseconds(MaximizedConfirmMs) };
+    /// <summary>底色过渡逐帧推进</summary>
+    private readonly DispatcherTimer _barFadeTimer = new() { Interval = TimeSpan.FromMilliseconds(16) };
+    private const int MaximizedConfirmMs = 280;
+    private const int BarFadeMs = 300;
+
+    /// <summary>桌面态的渐变停靠点与 alpha 结构（最大化态全部为不透明同色）</summary>
+    private static readonly double[] BarStopOffsets = { 0, 0.45, 0.65, 0.85, 1 };
+    private static readonly byte[] BarDesktopAlphas = { 0x00, 0x00, 0x48, 0xB8, 0xE8 };
+
+    private bool _maximizedWindow;      // 已生效（过渡目标）的状态
+    private bool? _maximizedSeen;       // 上次采样到的状态，用于判断"真的变了"
+    private bool _maximizedInitialized;
+    private double _barOpacity = 1;     // 0=桌面渐变透明，1=最大化不透明
+    private double _barOpacityFrom;
+    private double _barOpacityTo;
+    private bool _barFading;
+    private System.Diagnostics.Stopwatch? _barFadeWatch;
+    private LinearGradientBrush? _barBrush;
+    private GradientStop[]? _barStops;
+    private readonly Windows.UI.Color[] _barDesktopColors = new Windows.UI.Color[5];
+    private readonly Windows.UI.Color[] _barOpaqueColors = new Windows.UI.Color[5];
 
     private double _scale = 1;
     private int _barHeight = 32;
@@ -78,7 +101,6 @@ public sealed partial class StatusBarWindow : Window
     {
         InitializeComponent();
         Title = "GameLocker Status Bar";
-        ToolTipService.SetToolTip(TraySegment, "打开 Windows 系统托盘");
         ApplyChrome();
         RefreshScale();
 
@@ -93,6 +115,8 @@ public sealed partial class StatusBarWindow : Window
         _notificationTimer.Tick += (_, _) => UpdateNotifications();
         _trayStateTimer.Tick += (_, _) => UpdateTrayState();
         _maximizedTimer.Tick += (_, _) => UpdateMaximizedState();
+        _maximizedConfirmTimer.Tick += (_, _) => ConfirmMaximizedState();
+        _barFadeTimer.Tick += (_, _) => OnBarFadeTick();
         _resourceTimer.Interval = TimeSpan.FromSeconds(2);
         _resourceTimer.Tick += (_, _) => UpdateResource();
         _batteryHealthTimer.Interval = TimeSpan.FromMinutes(5);
@@ -112,7 +136,12 @@ public sealed partial class StatusBarWindow : Window
                 };
             }
         };
-        Closed += (_, _) => StopSegmentTimers();
+        Closed += (_, _) =>
+        {
+            StopSegmentTimers();
+            _maximizedConfirmTimer.Stop();
+            _barFadeTimer.Stop();
+        };
         Root.SizeChanged += (_, e) =>
             DebugLog.Write($"[顶栏2] size {e.NewSize.Width:0.#}x{e.NewSize.Height:0.#} scale={Scale:0.##} " +
                            $"content={ContentGrid.ActualWidth:0.#} right={RightPanel.ActualWidth:0.#}/{RightPanel.Visibility}");
@@ -253,13 +282,21 @@ public sealed partial class StatusBarWindow : Window
         if (SystemBackdrop is not TransparentBackdrop)
             SystemBackdrop = new TransparentBackdrop();
 
-        // 有最大化窗口：不透明纯色，不染色；桌面：右深左透明的渐变
-        if (_maximizedWindow)
-        {
-            Bar.Background = new SolidColorBrush(ParseColor(s.StatusBarColor, forceOpaque: true));
-            return;
-        }
+        // 两套底色都先算好：桌面=右深左透明的渐变，最大化=不透明纯色。
+        // 之后在两者之间按进度插值，切换时就是"慢慢变过去"而不是硬切。
+        RebuildBarPalette(s);
+        EnsureBarBrush();
 
+        // 设置变更/首次创建直接落到当前状态，不播放过渡
+        _barFadeTimer.Stop();
+        _barFading = false;
+        _barOpacity = _maximizedWindow ? 1 : 0;
+        ApplyBarColors(_barOpacity);
+    }
+
+    /// <summary>按当前主题/底色算出"桌面渐变透明"与"最大化不透明"两套停靠点颜色。</summary>
+    private void RebuildBarPalette(AppSettings s)
+    {
         // 主题只改底色，左右渐变透明的 alpha 结构保持不变
         var themeIndex = Math.Clamp(s.StatusBarTheme, 0, DockThemes.All.Length - 1);
         var theme = DockThemes.Get(themeIndex);
@@ -269,24 +306,83 @@ public sealed partial class StatusBarWindow : Window
         var endColor = themeIndex == 0
             ? baseColor
             : ParseColor(theme.Bar2 ?? theme.Bar, forceOpaque: true);
-        var gradient = new LinearGradientBrush
-        {
-            StartPoint = new Windows.Foundation.Point(0, 0.5),
-            EndPoint = new Windows.Foundation.Point(1, 0.5)
-        };
 
-        void Stop(double offset, byte alpha, Windows.UI.Color color) => gradient.GradientStops.Add(new GradientStop
+        for (var i = 0; i < BarStopOffsets.Length; i++)
         {
-            Offset = offset,
-            Color = Windows.UI.Color.FromArgb(alpha, color.R, color.G, color.B)
-        });
+            var color = i >= 3 ? endColor : baseColor;   // 前三点用主色，末两点用第二色
+            _barDesktopColors[i] = Windows.UI.Color.FromArgb(BarDesktopAlphas[i], color.R, color.G, color.B);
+        }
 
-        Stop(0.00, 0x00, baseColor);
-        Stop(0.45, 0x00, baseColor);
-        Stop(0.65, 0x48, baseColor);
-        Stop(0.85, 0xB8, endColor);
-        Stop(1.00, 0xE8, endColor);
-        Bar.Background = gradient;
+        var solid = ParseColor(s.StatusBarColor, forceOpaque: true);
+        var opaque = Windows.UI.Color.FromArgb(0xFF, solid.R, solid.G, solid.B);
+        for (var i = 0; i < _barOpaqueColors.Length; i++) _barOpaqueColors[i] = opaque;
+    }
+
+    /// <summary>创建/复用渐变笔刷并挂到 Bar 上（ApplyBackdrop 可能换过 Bar.Background，这里重新挂回）。</summary>
+    private void EnsureBarBrush()
+    {
+        if (_barBrush is null)
+        {
+            _barBrush = new LinearGradientBrush
+            {
+                StartPoint = new Windows.Foundation.Point(0, 0.5),
+                EndPoint = new Windows.Foundation.Point(1, 0.5)
+            };
+            _barStops = new GradientStop[BarStopOffsets.Length];
+            for (var i = 0; i < _barStops.Length; i++)
+            {
+                _barStops[i] = new GradientStop { Offset = BarStopOffsets[i] };
+                _barBrush.GradientStops.Add(_barStops[i]);
+            }
+        }
+        if (!ReferenceEquals(Bar.Background, _barBrush)) Bar.Background = _barBrush;
+    }
+
+    /// <summary>按进度铺底色：0=桌面渐变透明，1=最大化不透明。</summary>
+    private void ApplyBarColors(double progress)
+    {
+        if (_barStops is null) return;
+        var p = Math.Clamp(progress, 0, 1);
+        for (var i = 0; i < _barStops.Length; i++)
+            _barStops[i].Color = LerpColor(_barDesktopColors[i], _barOpaqueColors[i], p);
+    }
+
+    private static Windows.UI.Color LerpColor(Windows.UI.Color from, Windows.UI.Color to, double t)
+    {
+        byte Mix(byte a, byte b) => (byte)Math.Round(a + (b - a) * t);
+        return Windows.UI.Color.FromArgb(Mix(from.A, to.A), Mix(from.R, to.R), Mix(from.G, to.G), Mix(from.B, to.B));
+    }
+
+    /// <summary>开始过渡：从当前进度平滑走到目标（中途反向也不会跳）。</summary>
+    private void StartBarFade(bool toOpaque)
+    {
+        var target = toOpaque ? 1 : 0;
+        if (!_barFading && Math.Abs(_barOpacity - target) < 0.001) return;
+        _barOpacityFrom = _barOpacity;
+        _barOpacityTo = target;
+        _barFadeWatch = System.Diagnostics.Stopwatch.StartNew();
+        _barFading = true;
+        _barFadeTimer.Start();
+    }
+
+    private void OnBarFadeTick()
+    {
+        if (!_barFading || _barFadeWatch is null)
+        {
+            _barFadeTimer.Stop();
+            return;
+        }
+
+        var t = Math.Clamp(_barFadeWatch.Elapsed.TotalMilliseconds / BarFadeMs, 0, 1);
+        var k = 1 - Math.Pow(1 - t, 3);   // ease-out：起步快、收尾慢
+        _barOpacity = _barOpacityFrom + (_barOpacityTo - _barOpacityFrom) * k;
+        ApplyBarColors(_barOpacity);
+        if (t < 1) return;
+
+        _barOpacity = _barOpacityTo;
+        ApplyBarColors(_barOpacity);
+        _barFading = false;
+        _barFadeTimer.Stop();
     }
 
     private void ApplyFontAndColor(AppSettings s)
@@ -424,7 +520,6 @@ public sealed partial class StatusBarWindow : Window
         var now = DateTime.Now;
         ClockText.Text = now.ToString("HH:mm");
         DateText.Text = $"周{"日一二三四五六"[(int)now.DayOfWeek]} {now.Month}月";
-        ToolTipService.SetToolTip(ClockSegment, now.ToString("yyyy年M月d日 dddd"));
     }
 
     private void UpdateBattery()
@@ -448,7 +543,6 @@ public sealed partial class StatusBarWindow : Window
         BatteryIcon.Foreground = new SolidColorBrush(color);
         BatteryText.Text = $"{pct.Value}%";
         BatteryBolt.Visibility = BatteryService.GetOnAc() == true ? Visibility.Visible : Visibility.Collapsed;
-        ToolTipService.SetToolTip(BatterySegment, BatteryService.GetOnAc() == true ? "已接通电源" : "使用电池");
     }
 
     private void UpdateNetwork()
@@ -466,19 +560,16 @@ public sealed partial class StatusBarWindow : Window
         {
             NetworkIcon.Glyph = "\uE701";
             NetworkIcon.Foreground = brush;
-            ToolTipService.SetToolTip(NetworkSegment, "Wi-Fi 已连接");
         }
         else if (NetworkInterface.GetIsNetworkAvailable())
         {
             NetworkIcon.Glyph = "\uE839";
             NetworkIcon.Foreground = brush;
-            ToolTipService.SetToolTip(NetworkSegment, "有线网络已连接");
         }
         else
         {
             NetworkIcon.Glyph = "\uE783";
             NetworkIcon.Foreground = new SolidColorBrush(Windows.UI.Color.FromArgb(0xFF, 0xB9, 0xBE, 0xC6));
-            ToolTipService.SetToolTip(NetworkSegment, "未连接网络");
         }
     }
 
@@ -500,7 +591,6 @@ public sealed partial class StatusBarWindow : Window
         ImeSegment.Visibility = Visibility.Visible;
         ImeText.Text = chinese.Value ? "中" : "EN";
         ImeSegment.Background = new SolidColorBrush(Microsoft.UI.Colors.Transparent);
-        ToolTipService.SetToolTip(ImeSegment, chinese.Value ? "中文输入" : "英文输入");
     }
 
     private void UpdateNotifications()
@@ -517,7 +607,6 @@ public sealed partial class StatusBarWindow : Window
         {
             NotificationIcon.Glyph = "\uE7ED";
             NotificationCount.Visibility = Visibility.Collapsed;
-            ToolTipService.SetToolTip(NotificationSegment, "专注模式：仅隐藏通知计数");
             return;
         }
 
@@ -525,7 +614,6 @@ public sealed partial class StatusBarWindow : Window
         var count = NotificationService.CountSince(_notificationSeen);
         NotificationCount.Text = count > 99 ? "99+" : count.ToString();
         NotificationCount.Visibility = count > 0 ? Visibility.Visible : Visibility.Collapsed;
-        ToolTipService.SetToolTip(NotificationSegment, count > 0 ? $"{count} 个应用有新通知" : "通知中心");
     }
 
     /// <summary>专注模式：只改本程序表现（高亮入口、通知段变免打扰），不碰系统勿扰。</summary>
@@ -539,23 +627,49 @@ public sealed partial class StatusBarWindow : Window
             ? new SolidColorBrush(Windows.UI.Color.FromArgb(0xFF, 0x7A, 0xD9, 0xC4))
             : new SolidColorBrush(ParseColor(SettingsService.Current.StatusBarTextColor));
         FocusIcon.Opacity = on ? 1 : 0.78;
-        ToolTipService.SetToolTip(FocusSegment, on ? "专注模式：开（点击关闭）" : "专注模式：关（点击开启）");
     }
 
+    /// <summary>
+    /// 前台最大化/桌面切换 → 顶栏底色在"渐变透明"和"不透明"之间过渡。
+    /// 采样到变化后先等一个缓冲期（切换窗口、显示桌面时前台会来回跳），
+    /// 状态稳定了再用 <see cref="BarFadeMs"/> 慢慢变过去。
+    /// </summary>
     private void UpdateMaximizedState()
     {
         var next = WindowStateWatcher.HasVisibleMaximizedWindow();
+
+        // 首次（创建/应用设置）直接落位，不播过渡
+        if (!_maximizedInitialized)
+        {
+            _maximizedInitialized = true;
+            _maximizedSeen = next;
+            if (next == _maximizedWindow) return;
+            _maximizedWindow = next;
+            ApplyFloatingBar(SettingsService.Current);
+            return;
+        }
+
+        if (next == _maximizedSeen) return;   // 与上次采样一致，不重开缓冲
+        _maximizedSeen = next;
+        _maximizedConfirmTimer.Stop();
+        _maximizedConfirmTimer.Start();       // 状态保持一个缓冲期后才确认
+    }
+
+    private void ConfirmMaximizedState()
+    {
+        _maximizedConfirmTimer.Stop();
+        var next = WindowStateWatcher.HasVisibleMaximizedWindow();
         if (next == _maximizedWindow) return;
         _maximizedWindow = next;
-        DebugLog.Write($"[顶栏2] 最大化窗口={next}，顶栏改为{(next ? "不透明" : "渐变透明")}");
-        ApplyFloatingBar(SettingsService.Current);
+        _maximizedSeen = next;
+        DebugLog.Write($"[顶栏2] 最大化窗口={next}，顶栏开始{(next ? "渐变为不透明" : "渐变回透明")}（{BarFadeMs}ms）");
+        StartBarFade(next);
     }
 
     private void UpdateTrayState()
     {
         var open = TrayAppService.IsSystemTrayOpen();
         TrayIcon.Glyph = open ? "\uE70D" : "\uE70E"; // 打开=向下，关闭=向上
-        ToolTipService.SetToolTip(TraySegment, open ? "关闭系统托盘" : "打开 Windows 系统托盘");
     }
 
     private void UpdateTimer()
@@ -572,11 +686,6 @@ public sealed partial class StatusBarWindow : Window
         TimerSegment.Background = new SolidColorBrush(_timerRunning
             ? Windows.UI.Color.FromArgb(0x40, 0x7A, 0xD9, 0xC4)
             : Microsoft.UI.Colors.Transparent);
-        ToolTipService.SetToolTip(TimerSegment, _timerRunning
-            ? "计时中，点击暂停"
-            : _timerRemaining <= TimeSpan.Zero
-                ? "时间到，点击重新开始"
-                : "点击开始计时");
     }
 
     private void TickTimer()
@@ -619,8 +728,6 @@ public sealed partial class StatusBarWindow : Window
         var memory = SystemResourceSampler.MemoryPercent();
         ResourceText.Text = cpu is null ? "CPU --" : $"CPU {cpu}%";
         if (memory is not null) ResourceText.Text += $" · {memory}%";
-        ToolTipService.SetToolTip(ResourceSegment,
-            $"CPU {cpu?.ToString() ?? "--"}% · 内存 {memory?.ToString() ?? "--"}%");
     }
 
     private async Task UpdateBatteryHealthAsync()
@@ -642,9 +749,6 @@ public sealed partial class StatusBarWindow : Window
 
             BatteryHealthSegment.Visibility = Visibility.Visible;
             BatteryHealthText.Text = $"健康 {health.HealthPercent}%";
-            ToolTipService.SetToolTip(BatteryHealthSegment,
-                $"设计容量 {health.DesignCapacity} mWh · 满充 {health.FullChargeCapacity} mWh" +
-                (health.CycleCount is null ? "" : $" · 循环 {health.CycleCount} 次"));
         }
         catch
         {

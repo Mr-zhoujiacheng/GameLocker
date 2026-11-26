@@ -1,15 +1,31 @@
 using System.Net;
 using System.Security.Cryptography;
 using System.Text.Json;
+using System.Text.RegularExpressions;
 
 namespace GameLocker.Services;
 
-internal sealed record OptiCaptureHostRelease(Version Version, string Tag, Uri DownloadUri, long Size, string Sha256);
+internal sealed record OptiCaptureHostRelease(Version Version, string Tag, Uri DownloadUri, long Size, string Sha256)
+{
+    /// <summary>api.github.com 的资产端点（会 302 到 release-assets.githubusercontent.com）。
+    /// 部分网络能访问 API 却连不上 github.com，下载时优先用它，直链只作兜底。</summary>
+    internal Uri? ApiAssetUri { get; init; }
+}
 
 /// <summary>Downloads and activates official OptiCaptureHost runtimes without changing an existing runtime in place.</summary>
 internal sealed class OptiCaptureHostUpdateService
 {
     private const string ReleaseRoot = "https://github.com/tegraultra/OptiCaptureHost/releases/download/";
+    private const string AssetApiRoot = "https://api.github.com/repos/tegraultra/OptiCaptureHost/releases/assets/";
+
+    /// <summary>
+    /// 上游全量包资产名。上游改过命名（<c>OptiCaptureHost-2.10.80_Full.Pack.rar</c> →
+    /// <c>OptiCaptureHost_v2.12.00_Full.Pack.rar</c> → <c>OptiCaptureHost_v2.12.68_HotFIX_Full.Pack.rar</c>），
+    /// 所以这里只认「版本号 + Full.Pack + 压缩后缀」，不绑定前缀分隔符和 HotFIX 标记。
+    /// </summary>
+    private static readonly Regex FullPackageName = new(
+        @"^OptiCaptureHost[-_]v?\.?(?<version>\d+\.\d+\.\d+)(?:_HotFIX)?_Full\.Pack\.(?:rar|zip|7z)$",
+        RegexOptions.IgnoreCase | RegexOptions.CultureInvariant);
     private const string ActiveFile = "active-runtime.txt";
     private const long MaxArchiveBytes = 1024L * 1024 * 1024;
     private const int MaxMetadataBytes = 1024 * 1024;
@@ -132,13 +148,43 @@ internal sealed class OptiCaptureHostUpdateService
     private async Task DownloadAsync(OptiCaptureHostRelease release, string archive, Action<long, long?>? onProgress,
         CancellationToken cancellationToken)
     {
-        using var timeout = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
-        timeout.CancelAfter(TimeSpan.FromMinutes(15));
-        var url = release.DownloadUri;
+        Exception? failure = null;
+        foreach (var start in DownloadStarts(release))
+        {
+            using var timeout = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+            timeout.CancelAfter(TimeSpan.FromMinutes(15));
+            try
+            {
+                await DownloadFromAsync(start, release, archive, onProgress, timeout.Token).ConfigureAwait(false);
+                return;
+            }
+            catch (Exception error) when (error is HttpRequestException or TaskCanceledException or IOException &&
+                                          !cancellationToken.IsCancellationRequested)
+            {
+                // 网络问题换个端点再试一次；内容校验失败（InvalidDataException）不重试。
+                failure = error;
+                TryDeleteFile(archive);
+            }
+        }
+        throw failure ?? new InvalidDataException("The OptiCaptureHost download could not be started.");
+    }
+
+    /// <summary>下载入口顺序：api.github.com 资产端点优先，github.com 直链兜底。
+    /// 部分网络能访问 API 却连不上 github.com，只用直链会直接报“更新不可用”。</summary>
+    private static IEnumerable<Uri> DownloadStarts(OptiCaptureHostRelease release)
+    {
+        if (release.ApiAssetUri is not null) yield return release.ApiAssetUri;
+        yield return release.DownloadUri;
+    }
+
+    private async Task DownloadFromAsync(Uri start, OptiCaptureHostRelease release, string archive,
+        Action<long, long?>? onProgress, CancellationToken cancellationToken)
+    {
+        var url = start;
         for (var redirects = 0; ; redirects++)
         {
             using var request = CreateRequest(url, "application/octet-stream");
-            using var response = await _http.SendAsync(request, HttpCompletionOption.ResponseHeadersRead, timeout.Token)
+            using var response = await _http.SendAsync(request, HttpCompletionOption.ResponseHeadersRead, cancellationToken)
                 .ConfigureAwait(false);
             if (response.StatusCode is HttpStatusCode.MovedPermanently or HttpStatusCode.Found or
                 HttpStatusCode.SeeOther or HttpStatusCode.TemporaryRedirect or HttpStatusCode.PermanentRedirect)
@@ -155,7 +201,7 @@ internal sealed class OptiCaptureHostUpdateService
                 (response.Content.Headers.ContentLength is { } length && length != release.Size))
                 throw new InvalidDataException("OptiCaptureHost download length differs from GitHub release metadata.");
 
-            await using var source = await response.Content.ReadAsStreamAsync(timeout.Token).ConfigureAwait(false);
+            await using var source = await response.Content.ReadAsStreamAsync(cancellationToken).ConfigureAwait(false);
             await using var destination = new FileStream(archive, FileMode.CreateNew, FileAccess.Write, FileShare.None,
                 bufferSize: 65536, useAsync: true);
             using var hash = IncrementalHash.CreateHash(HashAlgorithmName.SHA256);
@@ -168,13 +214,20 @@ internal sealed class OptiCaptureHostUpdateService
                 if (Environment.TickCount64 - lastReport < 200 || copied == release.Size) return;
                 lastReport = Environment.TickCount64;
                 onProgress?.Invoke(copied, release.Size);
-            }, timeout.Token).ConfigureAwait(false);
+            }, cancellationToken).ConfigureAwait(false);
             if (copied != release.Size || !Convert.ToHexString(hash.GetHashAndReset()).Equals(release.Sha256,
                 StringComparison.OrdinalIgnoreCase))
                 throw new InvalidDataException("OptiCaptureHost download failed SHA-256 or length verification.");
             onProgress?.Invoke(copied, release.Size);
             return;
         }
+    }
+
+    private static void TryDeleteFile(string path)
+    {
+        try { File.Delete(path); }
+        catch (IOException) { }
+        catch (UnauthorizedAccessException) { }
     }
 
     private static async Task ReadBoundedAsync(Stream source, Stream destination, long limit, Action<byte[], int>? report,
@@ -227,6 +280,7 @@ internal sealed class OptiCaptureHostUpdateService
 
         var tag = "v" + version.ToString(3);
         OptiCaptureHostRelease? release = null;
+        var releaseIsHotFix = false;
         foreach (var asset in assets.EnumerateArray())
         {
             var name = ReadString(asset, "name");
@@ -237,10 +291,23 @@ internal sealed class OptiCaptureHostUpdateService
                 !size.TryGetInt64(out var length) || digest is null || !digest.StartsWith("sha256:", StringComparison.Ordinal) ||
                 ReadString(asset, "browser_download_url") != ReleaseRoot + tag + "/" + name)
                 throw new InvalidDataException("GitHub returned invalid OptiCaptureHost full-pack metadata.");
-            if (release is not null)
+            var hotFix = name.Contains("HotFIX", StringComparison.OrdinalIgnoreCase);
+            var candidate = new OptiCaptureHostRelease(version, tag, new Uri(ReleaseRoot + tag + "/" + name), length,
+                digest[7..])
+            {
+                ApiAssetUri = AssetApiUri(asset)
+            };
+            ValidateRelease(candidate);
+            // 同一版本同时挂普通包和 HotFIX 包时取 HotFIX（修正版）；同类重复视为元数据异常。
+            if (release is null || (hotFix && !releaseIsHotFix))
+            {
+                release = candidate;
+                releaseIsHotFix = hotFix;
+            }
+            else if (hotFix == releaseIsHotFix)
+            {
                 throw new InvalidDataException("GitHub returned multiple OptiCaptureHost full packs for the same version.");
-            release = new(version, tag, new Uri(ReleaseRoot + tag + "/" + name), length, digest[7..]);
-            ValidateRelease(release);
+            }
         }
         return release ?? throw new InvalidDataException("The official release does not contain a supported OptiCaptureHost full pack.");
     }
@@ -249,9 +316,17 @@ internal sealed class OptiCaptureHostUpdateService
         element.ValueKind == JsonValueKind.Object && element.TryGetProperty(key, out var value) &&
         value.ValueKind == JsonValueKind.String ? value.GetString() : null;
 
-    private static bool IsFullPackage(string name, Version version) =>
-        name == "OptiCaptureHost-" + version.ToString(3) + "_Full.Pack.rar" ||
-        name == "OptiCaptureHost-" + version.ToString(3) + "_Full.Pack.zip";
+    /// <summary>资产 id → api.github.com 下载端点；没有 id 时返回 null（只用直链）。</summary>
+    private static Uri? AssetApiUri(JsonElement asset)
+    {
+        if (!asset.TryGetProperty("id", out var id) || id.ValueKind != JsonValueKind.Number ||
+            !id.TryGetInt64(out var value) || value <= 0) return null;
+        return new Uri(AssetApiRoot + value.ToString(System.Globalization.CultureInfo.InvariantCulture));
+    }
+
+    private static bool IsFullPackage(string? name, Version version) =>
+        name is not null && FullPackageName.Match(name) is { Success: true } match &&
+        match.Groups["version"].Value == version.ToString(3);
 
     private static void ValidateRelease(OptiCaptureHostRelease release)
     {

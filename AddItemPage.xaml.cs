@@ -282,7 +282,8 @@ public sealed partial class AddItemPage : Page, ISettingsGamepad
     private readonly Microsoft.UI.Xaml.Media.SolidColorBrush LabelMappedBrush = MakeBrush(0xFF, 0xFF, 0xFF);
 
     // 手柄导航光标描边（白色 0xCC，与全局卡片式控件的光标高亮一致）
-    private readonly Microsoft.UI.Xaml.Media.SolidColorBrush CursorBrush = MakeBrush(0xCC, 0xFF, 0xFF, 0xFF);
+    private readonly Microsoft.UI.Xaml.Media.SolidColorBrush CursorBrush = SelectionGlow.CursorBrush;
+    private SelectionGlow? _glow;
     /// <summary>电源参数卡片的默认描边（光标移走时恢复）</summary>
     private readonly Microsoft.UI.Xaml.Media.Brush _perfSeparateCardBorder;
 
@@ -302,6 +303,7 @@ public sealed partial class AddItemPage : Page, ISettingsGamepad
         // 页面用手绘光标：控件被自动聚焦时不再画系统焦点框，避免两个框
         // （FocusWithRing 指定的光标控件与文本输入框仍保留焦点框）
         FocusRing.Attach(this);
+        if (Content is Panel root) _glow = SelectionGlow.Attach(root);
         _dockAdd = PendingDockAdd;
         PendingDockAdd = false;
         _perfSeparateCardBorder = PerfSeparateCard.BorderBrush;
@@ -1773,6 +1775,7 @@ public sealed partial class AddItemPage : Page, ISettingsGamepad
     private void FocusForm(int i)
     {
         var c = _formControls[i];
+        _glow?.Show(c, 8);
         // 手柄图热区（Button）的"光标"用热区自身描边表达：默认焦点视觉在 BorderThickness=0 的
         // 透明按钮上看不见，必须显式画一圈白框
         UpdateZoneCursor(_mapZones.FirstOrDefault(z => ReferenceEquals(z.Hit, c))?.Hit);

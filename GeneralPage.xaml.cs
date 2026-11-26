@@ -19,6 +19,7 @@ public sealed partial class GeneralPage : Page, ISettingsGamepad
     private (Button row, ToggleSwitch toggle)[] _switchRows = [];
     private int _index;
     private bool _ready;
+    private SelectionGlow? _glow;
 
     public GeneralPage()
     {
@@ -26,6 +27,7 @@ public sealed partial class GeneralPage : Page, ISettingsGamepad
         // 页面用手绘白框当光标：控件被焦点（含页面加载时 WinUI 自动聚焦）不再画系统焦点框，
         // 避免行描边 + 行内开关焦点框两个框；FocusWithRing 指定的光标控件仍保留
         FocusRing.Attach(this);
+        if (Content is Panel root) _glow = SelectionGlow.Attach(root);
 
         var s = SettingsService.Current;
         AutoStartToggle.IsOn = s.AutoStart;
@@ -269,7 +271,7 @@ public sealed partial class GeneralPage : Page, ISettingsGamepad
         EnsureVisible(c);
     }
 
-    /// <summary>高亮当前光标所在控件：单选/开关行=白框描边</summary>
+    /// <summary>高亮当前光标所在控件：单选/开关行=白框描边 + 外侧柔光</summary>
     private void UpdateCursor(Control? cursor)
     {
         foreach (var ctl in _controls)
@@ -278,17 +280,17 @@ public sealed partial class GeneralPage : Page, ISettingsGamepad
             switch (ctl)
             {
                 case RadioButton rb:
-                    rb.BorderBrush = on
-                        ? new SolidColorBrush(Windows.UI.Color.FromArgb(0xCC, 0xFF, 0xFF, 0xFF))
+                    rb.BorderBrush = on ? SelectionGlow.CursorBrush
                         : new SolidColorBrush(Microsoft.UI.Colors.Transparent);
                     break;
                 case Button row:
-                    row.BorderBrush = on
-                        ? new SolidColorBrush(Windows.UI.Color.FromArgb(0xCC, 0xFF, 0xFF, 0xFF))
+                    row.BorderBrush = on ? SelectionGlow.CursorBrush
                         : new SolidColorBrush(Microsoft.UI.Colors.Transparent);
                     break;
             }
         }
+        if (cursor is not null) _glow?.Show(cursor, 10);
+        else _glow?.Hide();
     }
 
     /// <summary>触屏/鼠标点击开关行卡片：先选中再切换（与手柄 A 一致）</summary>

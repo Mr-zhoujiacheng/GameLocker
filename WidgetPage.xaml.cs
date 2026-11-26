@@ -242,12 +242,14 @@ public sealed partial class WidgetPage : Page
     /// <summary>从底栏开始按钮的"小组件"卡片进入：添加后只进底栏，不占启动器主页。</summary>
     public static bool PendingDockAdd;
     private readonly bool _dockAdd;
+    private SelectionGlow? _glow;
 
     public WidgetPage()
     {
         InitializeComponent();
         // 卡片用手绘白框当光标：控件被自动聚焦时不再画系统焦点框，避免两个框
         FocusRing.Attach(this);
+        if (Content is Panel root) _glow = SelectionGlow.Attach(root);
         _dockAdd = PendingDockAdd;
         PendingDockAdd = false;
         _formControls = [MusicWidgetCard, PhotoWidgetCard, WeatherWidgetCard, MappingWidgetCard, TrainerWidgetCard, BackupWidgetCard, GamepadMapWidgetCard, OptiScalerWidgetCard, RecycleBinWidgetCard, ForegroundWidgetCard, SystemWidgetCard, PerformanceWidgetCard, DownloadModeWidgetCard, MonitorWidgetCard, FileTransferWidgetCard, LosslessScalWidgetCard, KeyboardWidgetCard, ClashWidgetCard, WallpaperWidgetCard, ScreenTranslateWidgetCard];
@@ -686,17 +688,19 @@ public sealed partial class WidgetPage : Page
         EnsureVisible(c);
     }
 
-    /// <summary>高亮光标所在控件（描边），让选中卡片轻微上浮，并在顶部标题栏居中显示该组件的说明</summary>
+    /// <summary>高亮光标所在控件（白色描边 + 外侧柔光），让选中卡片轻微上浮，并在顶部标题栏居中显示该组件的说明</summary>
     private void UpdateCursor(Control? cursor)
     {
         foreach (var ctl in _formControls)
         {
             var on = ReferenceEquals(ctl, cursor);
             ctl.BorderBrush = on
-                ? new Microsoft.UI.Xaml.Media.SolidColorBrush(Windows.UI.Color.FromArgb(0xCC, 0xFF, 0xFF, 0xFF))
+                ? SelectionGlow.CursorBrush
                 : new Microsoft.UI.Xaml.Media.SolidColorBrush(Microsoft.UI.Colors.Transparent);
             AnimateLift(ctl, on ? -3 : 0);
         }
+        if (cursor is not null) _glow?.Show(cursor, 10);
+        else _glow?.Hide();
         SelDescText.Text = cursor is Button b && _descByCard.TryGetValue(b, out var desc) ? desc : "";
     }
 

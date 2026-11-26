@@ -348,6 +348,24 @@ public sealed partial class DockWindow : Window
 	/// <summary>收起底栏（游戏内手势下滑隐藏用）。</summary>
 	public void Collapse() => SetCollapsed(collapsed: true);
 
+	/// <summary>底栏被彻底隐藏后触发（宿主据此复位"游戏内已呼出"等状态）。</summary>
+	public Action? HiddenCompletely { get; set; }
+
+	/// <summary>
+	/// 彻底隐藏底栏（游戏内收起用）：直接隐藏窗口，不在屏幕下方保留那条触发边条，
+	/// 下次只能通过映射的呼出组合键重新叫出来。
+	/// </summary>
+	public void HideCompletely()
+	{
+		_hoverIndex = -1;
+		_pressIndex = -1;
+		HidePreview();
+		ClearGamepadSelection();
+		IsCollapsed = true;   // 记下收起状态，下次 Reveal 时重新展开
+		SetVisible(false);
+		HiddenCompletely?.Invoke();
+	}
+
 	public nint Hwnd => WindowNative.GetWindowHandle(this);
 
 	/// <summary>当前格子数（含最左侧「开始」格）；底栏宽度就按它推出来。</summary>
@@ -1671,7 +1689,14 @@ public sealed partial class DockWindow : Window
 		{
 			try
 			{
-				if (IsCollapsed || !GetWindowRect(Hwnd, out var rect)) return;
+				DebugLog.Write($"[底栏] 长按处理 {screenX},{screenY} collapsed={IsCollapsed} vis={IsWindowVisible(Hwnd)}");
+				if (IsCollapsed)
+				{
+					// 自动隐藏收起时先把它亮出来：收起状态只有一条窄边，长按的其实是边条
+					_dispatcher?.TryEnqueue(delegate { SetCollapsed(collapsed: false); });
+					return;
+				}
+				if (!GetWindowRect(Hwnd, out var rect)) return;
 				if (screenX < rect.Left || screenX > rect.Right || screenY < rect.Top || screenY > rect.Bottom) return;
 				var index = IndexFromClientX(screenX - rect.Left);
 				if (index < 0 || index >= _slots.Count) return;
@@ -1695,26 +1720,20 @@ public sealed partial class DockWindow : Window
 
 	/// <summary>
 	/// 手柄按键（轮询线程调用，内部切到 UI 线程执行）：←/→ 或 LB/RB 选择，A 打开，Y 弹出窗口卡片，B 取消选择/收起卡片。
-	/// 自动隐藏收起时，任意一个被接受的按键先把它唤出（等价鼠标悬停），本次不执行动作。
+	/// 收起（自动隐藏）时不接受任何按键：只能通过映射的呼出组合键叫出来，避免方向键/B 误把底栏弹出来。
 	/// </summary>
 	public bool HandleGamepad(GamepadButtons buttons)
 	{
 		if (buttons == GamepadButtons.None || !IsWindowVisible(Hwnd)) return false;
+
+		// 收起状态的底栏不消费任何按键，呼出只走映射组合键（DockHost.SummonAsync）
+		if (IsCollapsed) return false;
 
 		bool left = buttons.HasFlag(GamepadButtons.DPadLeft) || buttons.HasFlag(GamepadButtons.LeftShoulder);
 		bool right = buttons.HasFlag(GamepadButtons.DPadRight) || buttons.HasFlag(GamepadButtons.RightShoulder);
 		bool accept = buttons.HasFlag(GamepadButtons.A) || buttons.HasFlag(GamepadButtons.B)
 			|| buttons.HasFlag(GamepadButtons.X) || buttons.HasFlag(GamepadButtons.Y) || left || right;
 		if (!accept) return false;
-
-		if (IsCollapsed)
-		{
-			_dispatcher?.TryEnqueue(delegate
-			{
-				if (CanApplyGamepadInput()) SetCollapsed(collapsed: false);
-			});
-			return true;
-		}
 
 		// Y / 长按弹出的卡片：手柄此时改为选卡模式，左右选卡、A 弹开/打开、B 或 Y 收起
 		if (DockPreviewHost.IsVisible && _previewPinned)
@@ -1752,7 +1771,9 @@ public sealed partial class DockWindow : Window
 			{
 				HidePreview();
 				ClearGamepadSelection();
-				SetCollapsed(collapsed: true);
+				// 游戏里收起 = 整个藏起来，不在游戏画面底部留那条触发边条
+				if (DockHost.GameMode) HideCompletely();
+				else SetCollapsed(collapsed: true);
 			}
 		});
 		return true;
@@ -2304,9 +2325,11 @@ public sealed partial class DockWindow : Window
 		try
 		{
 			// 自动隐藏开启时，点击底栏以外（桌面/其它窗口/页面）就收起；
-			// 关掉自动隐藏 = 一直显示，点别处不再收起（只有手柄 B / 下滑手势才收）
+			// 关掉自动隐藏 = 一直显示，点别处不再收起（只有手柄 B / 下滑手势才收）。
+			// 开始菜单模式下底栏跟启动器绑定，点启动器里的磁贴不算"点外面"，不能把底栏收掉。
+			var launcherOwnsDock = SettingsService.Current.StartMenuMode && App.Main?.IsShown == true;
 			var cardWindowOpen = DockPopupWindow.IsOpen || DockPreviewHost.IsVisible;
-			if (_autoHide && !cardWindowOpen && !IsCollapsed && GetWindowRect(Hwnd, out var rect)
+			if (_autoHide && !launcherOwnsDock && !cardWindowOpen && !IsCollapsed && GetWindowRect(Hwnd, out var rect)
 				&& (screenX < rect.Left || screenX > rect.Right || screenY < rect.Top || screenY > rect.Bottom))
 			{
 				_dispatcher?.TryEnqueue(delegate { SetCollapsed(collapsed: true); });

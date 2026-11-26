@@ -234,10 +234,14 @@
             <Border x:Name="HomeHintPlate" Grid.Row="1" Margin="0,0,0,22"
                     Padding="0" CornerRadius="12" SizeChanged="OnHomeHintSizeChanged"
                     Background="#26000000" BorderThickness="0">
+                <Border.RenderTransform>
+                    <ScaleTransform x:Name="HomeHintPlateScale"/>
+                </Border.RenderTransform>
                 <Grid>
                     <!-- 固定高度（而不是 MaxHeight）：窗口变窄时只有内容等比缩小，盘面高度保持不变，
-                         侧边栏 / 居中 / 开始菜单三种模式看起来一样高。 -->
-                    <Viewbox Height="32" Margin="12,4,12,4"
+                         侧边栏 / 居中 / 开始菜单三种模式看起来一样高。
+                         高度从 32 提到 44，配合下面各 GamepadHintBar 的 BadgeScale / TextScale 一起放大整条提示条。 -->
+                    <Viewbox Height="44" Margin="14,5,14,5"
                              Stretch="Uniform" StretchDirection="DownOnly">
                     <StackPanel Orientation="Horizontal" VerticalAlignment="Center" Spacing="10">
                         <!-- 动态区在左、固定区在右：整条右沿钉在窗口边缘，动态区变宽只向左长，
@@ -248,8 +252,8 @@
                             <Border.RenderTransform>
                                 <TranslateTransform x:Name="HomeHintDynamicSlide"/>
                             </Border.RenderTransform>
-                            <!-- 主键徽章比固定区大一档（1.0 vs 0.75）：一眼看出"这几条是当前磁贴的" -->
-                            <ctl:GamepadHintBar x:Name="HomeHintDynamic" BadgeScale="1" Highlight="True"/>
+                            <!-- 主键徽章比固定区大一档（1.2 vs 0.9）：一眼看出"这几条是当前磁贴的" -->
+                            <ctl:GamepadHintBar x:Name="HomeHintDynamic" BadgeScale="1.2" Highlight="True"/>
                         </Border>
                         <!-- 分隔线只做"两区"的弱提示：右侧已有键位盘承托，这条线再重就抢戏 -->
                         <Border x:Name="HomeHintDivider" Width="1" Margin="0,3"
@@ -260,6 +264,9 @@
                              像 4 个键嵌进一条浅槽里；不去和左侧橙色动态区抢注意力。 -->
                         <Border x:Name="HomeHintFixed" CornerRadius="7" VerticalAlignment="Center"
                                 Background="#1A000000" Padding="6,2" Opacity="0.9">
+                        <Border.RenderTransform>
+                            <ScaleTransform x:Name="HomeHintFixedScale"/>
+                        </Border.RenderTransform>
                         <Grid>
                         <Grid>
                             <Grid.RowDefinitions>
@@ -272,13 +279,13 @@
                                 <ColumnDefinition Width="1"/>
                                 <ColumnDefinition Width="Auto"/>
                             </Grid.ColumnDefinitions>
-                            <ctl:GamepadHintBar x:Name="HomeHintChipX" Grid.Row="0" Grid.Column="0" BadgeScale="0.75"
+                            <ctl:GamepadHintBar x:Name="HomeHintChipX" Grid.Row="0" Grid.Column="0" BadgeScale="0.9"
                                                 Margin="0,1,11,1" Hints="X:添加"/>
-                            <ctl:GamepadHintBar x:Name="HomeHintChipB" Grid.Row="0" Grid.Column="2" BadgeScale="0.75"
+                            <ctl:GamepadHintBar x:Name="HomeHintChipB" Grid.Row="0" Grid.Column="2" BadgeScale="0.9"
                                                 Margin="11,1,0,1" Hints="B:返回"/>
-                            <ctl:GamepadHintBar x:Name="HomeHintChipDpad" Grid.Row="2" Grid.Column="0" BadgeScale="0.75"
+                            <ctl:GamepadHintBar x:Name="HomeHintChipDpad" Grid.Row="2" Grid.Column="0" BadgeScale="0.9"
                                                 Margin="0,1,11,1" Hints="DPAD:选择"/>
-                            <ctl:GamepadHintBar x:Name="HomeHintChipL3" Grid.Row="2" Grid.Column="2" BadgeScale="0.75"
+                            <ctl:GamepadHintBar x:Name="HomeHintChipL3" Grid.Row="2" Grid.Column="2" BadgeScale="0.9"
                                                 Margin="11,1,0,1" Hints="L3:编辑"/>
                             <Border Grid.Row="0" Grid.RowSpan="3" Grid.Column="1"
                                     Width="1" Background="#1FFFFFFF"/>

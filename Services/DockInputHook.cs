@@ -286,6 +286,7 @@ internal static class DockInputHook
             if (!_touchDown || !_touchConsumed) return;
             _touchLongPressed = true;
             _suppressMouseUntil = Environment.TickCount64 + 500;
+            DebugLog.Write($"[底栏] 触摸长按触发 {screenX},{screenY}");
             try { LongPress?.Invoke(screenX, screenY); } catch { }
         }, null, LongPressMs, Timeout.Infinite);
     }

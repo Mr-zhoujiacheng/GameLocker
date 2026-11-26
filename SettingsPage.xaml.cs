@@ -19,12 +19,14 @@ public sealed partial class SettingsPage : Page, ISettingsGamepad
     private int _index;
     private bool _ready;
     private bool _twoColumn = true;
+    private SelectionGlow? _glow;
 
     public SettingsPage()
     {
         InitializeComponent();
         // 分类卡片用手绘白框当光标：子控件拿到焦点时不再画系统焦点框（避免两个框）
         FocusRing.Attach(this);
+        if (Content is Panel root) _glow = SelectionGlow.Attach(root);
         _cards = [GeneralCard, AppearanceCard, SystemCard, ControlCard, DrawerCard, AboutCard];
         // 选中上浮作用在 RenderTransform 上，不影响卡片排布
         foreach (var c in _cards) c.RenderTransform = new CompositeTransform();
@@ -116,11 +118,11 @@ public sealed partial class SettingsPage : Page, ISettingsGamepad
         for (var i = 0; i < _cards.Length; i++)
         {
             var on = i == _index;
-            _cards[i].BorderBrush = on
-                ? new SolidColorBrush(Windows.UI.Color.FromArgb(0xCC, 0xFF, 0xFF, 0xFF))
+            _cards[i].BorderBrush = on ? SelectionGlow.CursorBrush
                 : new SolidColorBrush(Microsoft.UI.Colors.Transparent);
             AnimateLift(_cards[i], on ? -3 : 0);
         }
+        _glow?.Show(_cards[_index], 10);
         FocusRing.HideCurrent(XamlRoot);
         if (_ready) _cards[_index].StartBringIntoView();
     }

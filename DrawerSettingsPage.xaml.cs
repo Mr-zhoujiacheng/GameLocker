@@ -23,8 +23,8 @@ public sealed partial class DrawerSettingsPage : Page, ISettingsGamepad
     /// <summary>预设色：色值（"none"=默认，用抽屉自身的强调色） → 大色卡 + 勾选标记</summary>
     private readonly (string Hex, Button Card, FontIcon Check)[] Palette;
 
-    private static readonly SolidColorBrush CursorBrush =
-        new(Windows.UI.Color.FromArgb(0xCC, 0xFF, 0xFF, 0xFF));
+    private static readonly SolidColorBrush CursorBrush = SelectionGlow.CursorBrush;
+    private SelectionGlow? _glow;
     private static readonly SolidColorBrush SelectedBrush =
         new(Windows.UI.Color.FromArgb(0xE6, 0xFF, 0xE9, 0xA0));
     private static readonly SolidColorBrush ClearBrush =
@@ -33,6 +33,7 @@ public sealed partial class DrawerSettingsPage : Page, ISettingsGamepad
     public DrawerSettingsPage()
     {
         InitializeComponent();
+        if (Content is Panel root) _glow = SelectionGlow.Attach(root);
 
         Palette =
         [
@@ -299,6 +300,8 @@ public sealed partial class DrawerSettingsPage : Page, ISettingsGamepad
                 ctl.BorderBrush = ClearBrush;
             }
         }
+        if (cursor is not null) _glow?.Show(cursor, 10);
+        else _glow?.Hide();
     }
 
     private void EnsureVisible(Button c)

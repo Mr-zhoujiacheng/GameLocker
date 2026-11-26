@@ -53,18 +53,19 @@ public sealed partial class AppearancePage : Page, ISettingsGamepad
 
     private string _selectedColorHex = "#202020";
 
-    private static readonly SolidColorBrush CursorBrush =
-        new(Windows.UI.Color.FromArgb(0xCC, 0xFF, 0xFF, 0xFF));
+    private static readonly SolidColorBrush CursorBrush = SelectionGlow.CursorBrush;
     private static readonly SolidColorBrush SelectedBrush =
         new(Windows.UI.Color.FromArgb(0xFF, 0xB9, 0xA0, 0xFF));
     private static readonly SolidColorBrush TransparentBrush =
         new(Microsoft.UI.Colors.Transparent);
+    private SelectionGlow? _glow;
 
     public AppearancePage()
     {
         InitializeComponent();
         // 页面用手绘白框当光标：非光标控件被焦点时不再画系统焦点框，避免两个框
         FocusRing.Attach(this);
+        if (Content is Panel root) _glow = SelectionGlow.Attach(root);
 
         Palette =
         [
@@ -503,6 +504,8 @@ public sealed partial class AppearancePage : Page, ISettingsGamepad
                     break;
             }
         }
+        if (cursor is not null) _glow?.Show(cursor, 10);
+        else _glow?.Hide();
     }
 
     private void EnsureVisible(FrameworkElement c)

@@ -93,22 +93,57 @@ try
     var repaired = await repairService.InstallAsync(await repairService.GetLatestReleaseAsync());
     Check(repaired != partial && repairService.IsFullRuntimeInstalled() && Directory.Exists(partial), "Same-version repair fills components side by side.");
 
+    // Upstream v2.12.x renamed the full pack and now serves it from the API asset endpoint.
+    var renamedPack = MakePack("2.12.68", wrapper: "OptiCaptureHost_v2.12.68_HotFIX_Full Pack/");
+    var renamed = new FakeGitHub(renamedPack, "2.12.68")
+    {
+        AssetName = "OptiCaptureHost_v2.12.68_HOTFIX_Full.Pack.zip",
+        ApiAssetId = 424242,
+        GithubUnreachable = true
+    };
+    using var renamedClient = new HttpClient(renamed);
+    var renamedService = new OptiCaptureHostUpdateService(Path.Combine(root, "renamed"), renamedClient);
+    var renamedRelease = await renamedService.GetLatestReleaseAsync();
+    Check(renamedRelease.ApiAssetUri is not null, "Asset id yields the API fallback endpoint.");
+    var renamedInstalled = await renamedService.InstallAsync(renamedRelease);
+    Check(OptiCaptureHostPackage.HasFullRuntime(renamedInstalled), "Renamed upstream pack installs through the API endpoint.");
+
+    var flatPack = MakePack("2.12.68", wrapper: "");
+    var flat = new FakeGitHub(flatPack, "2.12.68")
+    {
+        AssetName = "OptiCaptureHost_v2.12.68_Full.Pack.zip",
+        ApiAssetId = 424243
+    };
+    using var flatClient = new HttpClient(flat);
+    var flatService = new OptiCaptureHostUpdateService(Path.Combine(root, "flat"), flatClient);
+    var flatInstalled = await flatService.InstallAsync(await flatService.GetLatestReleaseAsync());
+    Check(OptiCaptureHostPackage.HasFullRuntime(flatInstalled), "A pack without a wrapper folder also installs.");
+
+    var bothPacks = new FakeGitHub(renamedPack, "2.12.68")
+    {
+        AssetName = "OptiCaptureHost_v2.12.68_Full.Pack.zip",
+        ExtraAssetName = "OptiCaptureHost_v2.12.68_HOTFIX_Full.Pack.zip",
+        ApiAssetId = 424244
+    };
+    using var bothClient = new HttpClient(bothPacks);
+    var bothRelease = await new OptiCaptureHostUpdateService(Path.Combine(root, "both"), bothClient).GetLatestReleaseAsync();
+    Check(bothRelease.DownloadUri.AbsoluteUri.EndsWith("_HOTFIX_Full.Pack.zip", StringComparison.Ordinal), "The HotFIX pack wins over the plain pack.");
+
     if (args.Length == 1)
     {
         var archive = Path.GetFullPath(args[0]);
-        var upstream = new Version(2, 10, 80);
-        using var asset = File.OpenRead(archive);
-        const string digest = "E61853C6E9B577F87DFD505AE669656D241562FFCE93F37CAA4235203E878120";
-        Check(asset.Length == 165207127 && Convert.ToHexString(SHA256.HashData(asset)) == digest, "Official RAR digest and size.");
-        var official = OptiCaptureHostPackage.Prepare(archive, Path.Combine(root, "official"), null, upstream, default);
-        Check(OptiCaptureHostPackage.HasFullRuntime(official), "Actual official RAR contains a valid full runtime.");
-        Console.WriteLine("Official v2.10.80 full RAR: SHA-256, extraction, and runtime validation passed.");
+        var versionMatch = System.Text.RegularExpressions.Regex.Match(Path.GetFileName(archive), @"(\d+\.\d+\.\d+)");
+        Check(versionMatch.Success, "The archive name carries the upstream version.");
+        var upstream = Version.Parse(versionMatch.Groups[1].Value);
+        var extracted = OptiCaptureHostPackage.Prepare(archive, Path.Combine(root, "official"), null, upstream, default);
+        Check(OptiCaptureHostPackage.HasFullRuntime(extracted), "Actual official archive contains a valid full runtime.");
+        Console.WriteLine($"Official {upstream} full archive: extraction and runtime validation passed.");
     }
     Console.WriteLine("OptiCaptureHost updater smoke tests passed.");
 }
 finally { Directory.Delete(root, true); }
 
-static byte[] MakePack(string? version, string? badEntry = null, string? omit = null)
+static byte[] MakePack(string? version, string? badEntry = null, string? omit = null, string? wrapper = null)
 {
     var files = new Dictionary<string, string>
     {
@@ -125,7 +160,7 @@ static byte[] MakePack(string? version, string? badEntry = null, string? omit = 
     using var stream = new MemoryStream();
     using (var zip = new ZipArchive(stream, ZipArchiveMode.Create, leaveOpen: true))
     {
-        var prefix = version is null ? "" : $"OptiCaptureHost-{version}_Full Pack/";
+        var prefix = version is null ? "" : wrapper ?? $"OptiCaptureHost-{version}_Full Pack/";
         void Add(string name, string content)
         {
             using var writer = new StreamWriter(zip.CreateEntry(name).Open());
@@ -154,12 +189,17 @@ sealed class FakeGitHub : HttpMessageHandler
 {
     public const string AssetHost = "https://release-assets.githubusercontent.com/package";
     private const string Api = "https://api.github.com/repos/tegraultra/OptiCaptureHost/releases/latest";
+    private const string AssetApi = "https://api.github.com/repos/tegraultra/OptiCaptureHost/releases/assets/";
     public byte[] Bytes;
     public Uri? Redirect = new(AssetHost);
     public string Tag;
     public string? Digest;
     public bool Draft;
     public bool IncludeFull = true;
+    public bool GithubUnreachable;
+    public string? AssetName;
+    public string? ExtraAssetName;
+    public long? ApiAssetId;
     public int AssetRequests;
 
     public FakeGitHub(byte[] bytes, string version)
@@ -169,9 +209,18 @@ sealed class FakeGitHub : HttpMessageHandler
         Digest = "sha256:" + Convert.ToHexString(SHA256.HashData(bytes));
     }
 
-    private string Name => $"OptiCaptureHost-{Tag[1..]}_Full.Pack.zip";
+    private string Name => AssetName ?? $"OptiCaptureHost-{Tag[1..]}_Full.Pack.zip";
     private string Url => $"https://github.com/tegraultra/OptiCaptureHost/releases/download/{Tag}/{Name}";
-    public OptiCaptureHostRelease Release() => new(Version.Parse(Tag[1..]), Tag, new Uri(Url), Bytes.Length, Convert.ToHexString(SHA256.HashData(Bytes)));
+    private string? ExtraUrl => ExtraAssetName is null
+        ? null
+        : $"https://github.com/tegraultra/OptiCaptureHost/releases/download/{Tag}/{ExtraAssetName}";
+    private string ApiAssetUrl => AssetApi + (ApiAssetId ?? 0);
+
+    public OptiCaptureHostRelease Release() => new(Version.Parse(Tag[1..]), Tag, new Uri(Url), Bytes.Length,
+        Convert.ToHexString(SHA256.HashData(Bytes)))
+    {
+        ApiAssetUri = ApiAssetId is null ? null : new Uri(ApiAssetUrl)
+    };
 
     protected override Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken token)
     {
@@ -182,18 +231,36 @@ sealed class FakeGitHub : HttpMessageHandler
         {
             var assets = new List<object> { new { name = "OptiCaptureHost_v.2.10.100.rar" } };
             if (IncludeFull)
-                assets.Insert(0, new { name = Name, state = "uploaded", size = Bytes.Length, digest = Digest, browser_download_url = Url });
+                assets.Add(Asset(Url, Name));
+            if (ExtraAssetName is not null && ExtraUrl is not null)
+                assets.Add(Asset(ExtraUrl, ExtraAssetName));
             var json = JsonSerializer.Serialize(new { tag_name = Tag, draft = Draft, prerelease = false, assets });
             return Task.FromResult(new HttpResponseMessage(HttpStatusCode.OK) { Content = new StringContent(json) });
         }
-        if (url == Url && Redirect is not null)
+        if (ApiAssetId is not null && url == ApiAssetUrl)
         {
             var response = new HttpResponseMessage(HttpStatusCode.Found);
-            response.Headers.Location = Redirect;
+            response.Headers.Location = new Uri(AssetHost);
             return Task.FromResult(response);
         }
-        if (url != Url && url != AssetHost) throw new Exception($"Unexpected HTTP request: {url}");
+        if (GithubUnreachable && (url == Url || url == ExtraUrl))
+            throw new HttpRequestException("github.com is unreachable.");
+        if (url == Url || url == ExtraUrl)
+        {
+            if (Redirect is not null)
+            {
+                var response = new HttpResponseMessage(HttpStatusCode.Found);
+                response.Headers.Location = Redirect;
+                return Task.FromResult(response);
+            }
+        }
+        if (url != Url && url != ExtraUrl && url != AssetHost) throw new Exception($"Unexpected HTTP request: {url}");
         AssetRequests++;
         return Task.FromResult(new HttpResponseMessage(HttpStatusCode.OK) { Content = new ByteArrayContent(Bytes) });
     }
+
+    private object Asset(string url, string name) => new
+    {
+        id = ApiAssetId ?? 0, name, state = "uploaded", size = Bytes.Length, digest = Digest, browser_download_url = url
+    };
 }

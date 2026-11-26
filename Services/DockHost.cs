@@ -19,6 +19,15 @@ internal static class DockHost
 
     public static bool IsVisible => SettingsService.Current.SystemEnabled && Bars.Count > 0;
 
+    /// <summary>
+    /// 开始菜单模式：底栏与启动器绑定——启动器呼出就展开，收起就自动隐藏，
+    /// 不再常驻在桌面底部。必须在 UI 线程调用。
+    /// </summary>
+    private static bool LauncherBound => SettingsService.Current.SystemEnabled && SettingsService.Current.StartMenuMode;
+
+    /// <summary>实际生效的"自动隐藏"：开始菜单模式下一律自动隐藏（显隐由启动器驱动）。</summary>
+    private static bool EffectiveAutoHide => SettingsService.Current.DockAutoHide || LauncherBound;
+
     public static async Task InitializeAsync()
     {
         StagingService.ClearOnStartup();
@@ -71,10 +80,61 @@ internal static class DockHost
             try
             {
                 if (_gameMode) bar.Window.AutoHide = false;
-                bar.Window.SetVisible(true);   // 游戏里被整体藏起来时，手势呼出要先放出来
+                // 先把展开位置摆好再显示：底栏被整体藏起来时窗口还停在上次的位置，
+                // 直接显示会在底部先闪一下边条。
                 bar.Window.Reveal();
+                bar.Window.SetVisible(true);
             }
             catch (Exception ex) { DebugLog.Write("[底栏] 呼出失败：" + ex.Message); }
+        }
+    }
+
+    /// <summary>
+    /// 开始菜单模式：启动器呼出 → 底栏跟着展开（不是鼠标悬停触发的，是绑定关系）。
+    /// 必须在 UI 线程调用。
+    /// </summary>
+    public static void RevealWithLauncher()
+    {
+        if (!LauncherBound || _gameMode || App.Main?.IsExiting == true) return;
+        if (Bars.Count == 0)
+        {
+            // 底栏还没建（刚启动/刚打开系统）：建好后再补一次展开
+            _ = RevealWithLauncherAfterApplyAsync();
+            return;
+        }
+        foreach (var bar in Bars)
+        {
+            try
+            {
+                // 关掉自动隐藏：展开用瞬时落位（不播滑入，下面的布局要按最终上沿留高度），
+                // 同时避免点启动器磁贴被当成"点到底栏外面"而把底栏收掉
+                bar.Window.AutoHide = false;
+                bar.Window.Reveal();
+                bar.Window.SetVisible(true);
+            }
+            catch (Exception ex) { DebugLog.Write("[底栏] 跟随启动器展开失败：" + ex.Message); }
+        }
+        Relayout();
+    }
+
+    private static async Task RevealWithLauncherAfterApplyAsync()
+    {
+        await ApplyAsync();
+        RevealWithLauncher();
+    }
+
+    /// <summary>开始菜单模式：启动器收起 → 底栏自动隐藏（留边缘触发带，靠呼出组合键/悬停再展开）。</summary>
+    public static void CollapseWithLauncher()
+    {
+        if (!LauncherBound || _gameMode) return;
+        foreach (var bar in Bars)
+        {
+            try
+            {
+                bar.Window.AutoHide = true;   // 回到自动隐藏：收起动画 + 边缘悬停可再呼出
+                bar.Window.Collapse();
+            }
+            catch (Exception ex) { DebugLog.Write("[底栏] 跟随启动器收起失败：" + ex.Message); }
         }
     }
 
@@ -97,9 +157,15 @@ internal static class DockHost
         _revealedInGame = false;
         foreach (var bar in Bars)
         {
-            try { bar.Window.SetVisible(false); }
+            try { bar.Window.HideCompletely(); }
             catch (Exception ex) { DebugLog.Write("[底栏] 隐藏失败：" + ex.Message); }
         }
+    }
+
+    /// <summary>底栏彻底隐藏后复位"游戏内已呼出"状态（否则手柄会继续被底栏接管）。</summary>
+    private static void OnBarHiddenCompletely()
+    {
+        if (_gameMode) _revealedInGame = false;
     }
 
     private static volatile bool _gameMode;
@@ -131,7 +197,7 @@ internal static class DockHost
                 else
                 {
                     bar.Window.SetVisible(true);
-                    bar.Window.AutoHide = SettingsService.Current.DockAutoHide;
+                    bar.Window.AutoHide = EffectiveAutoHide;
                 }
             }
             catch (Exception ex) { DebugLog.Write("[底栏] 游戏态切换失败：" + ex.Message); }
@@ -170,7 +236,7 @@ internal static class DockHost
             var existing = Bars.FirstOrDefault(b => b.Monitor == monitor.Handle);
             if (existing is not null)
             {
-                existing.Window.AutoHide = settings.DockAutoHide && !_revealedInGame;
+                existing.Window.AutoHide = EffectiveAutoHide && !_revealedInGame;
                 await existing.Window.ApplySettingsAsync();
                 continue;
             }
@@ -178,7 +244,8 @@ internal static class DockHost
             var window = new DockWindow();
             window.LayoutInvalidated = Relayout;
             window.CollapsedChanged = Relayout;
-            window.AutoHide = settings.DockAutoHide && !_revealedInGame;
+            window.HiddenCompletely = OnBarHiddenCompletely;
+            window.AutoHide = EffectiveAutoHide && !_revealedInGame;
 
             Bars.Add(new Bar { Window = window, Monitor = monitor.Handle });
             await window.ApplySettingsAsync();

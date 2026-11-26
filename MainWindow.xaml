@@ -155,9 +155,9 @@
                         <StackPanel Spacing="8" HorizontalAlignment="Center">
                             <FontIcon Glyph="&#xE8B7;" FontSize="26" Foreground="#4CC2FF"
                                       HorizontalAlignment="Center"/>
-                            <TextBlock x:Name="OptiManualDropTitle" Text="把游戏 exe 拖到这里"
+                            <TextBlock x:Name="OptiManualDropTitle" Text="把游戏 exe 或快捷方式拖到这里"
                                        FontSize="15" FontWeight="SemiBold" HorizontalAlignment="Center"/>
-                            <TextBlock x:Name="OptiManualDropSub" Text="注入目录 = exe 所在目录（游戏无需正在运行）"
+                            <TextBlock x:Name="OptiManualDropSub" Text="支持 .exe 和 .lnk 快捷方式；注入目录 = 程序所在目录（游戏无需正在运行）"
                                        FontSize="12" Opacity="0.65" TextWrapping="Wrap" TextAlignment="Center"/>
                         </StackPanel>
                     </Border>

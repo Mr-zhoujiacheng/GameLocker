@@ -21,18 +21,21 @@ public sealed partial class StatusBarSettingsPage : Page, ISettingsGamepad
 
     private int _index;
     private bool _ready;
-    private bool _capturingCombo;
     private GamepadButtons _capturedCombo;
     private TextBlock? _comboText;
     private Button? _comboButton;
+    /// <summary>录制阶段：0=空闲，1=倒计时（不响应输入，给手留出松开 A 的时间），2=正式录制</summary>
+    private int _comboPhase;
+    private int _comboSecondsLeft;
+    private DispatcherTimer? _comboTimer;
     private StackPanel? _topControlsPanel;
     private readonly List<ToggleSwitch> _topControlRows = [];
     private bool _topControlsExpanded;
     private TextBlock? _topControlsLabel;
     private FontIcon? _topControlsChevron;
 
-    private static readonly SolidColorBrush FocusBrush =
-        new(Windows.UI.Color.FromArgb(0xE6, 0xFF, 0xFF, 0xFF));
+    private static readonly SolidColorBrush FocusBrush = SelectionGlow.CursorBrush;
+    private SelectionGlow? _glow;
     private static readonly SolidColorBrush IdleBrush =
         new(Microsoft.UI.Colors.Transparent);
 
@@ -43,6 +46,7 @@ public sealed partial class StatusBarSettingsPage : Page, ISettingsGamepad
         InitializeComponent();
         // 设置项行用手绘白框当光标：子控件拿到焦点时不再画系统焦点框
         FocusRing.Attach(this);
+        if (Content is Panel root) _glow = SelectionGlow.Attach(root);
         Build();
 
         _applyDebounce.Tick += (_, _) =>
@@ -94,11 +98,13 @@ public sealed partial class StatusBarSettingsPage : Page, ISettingsGamepad
             });
 
         var currentTop = !TaskbarEdgeService.TryGet(out var edge, out _) || edge == TaskbarEdge.Top;
-        AddCycle("任务栏方向", "上 / 下；切换会同步 Windows 任务栏位置", "\uE8A9",
+
+        AddSection("顶栏设置", "TOP BAR");
+
+        AddCycle("顶栏位置", "上 / 下；切换会同步 Windows 任务栏位置", "\uE8A9",
             new[] { "上", "下" }, currentTop ? 0 : 1,
             v => _ = SetTaskbarDirectionAsync(v == 0));
 
-        AddSection("顶栏设置", "TOP BAR");
         AddCycle("顶栏大小", "大尺寸会同步使用 Windows 大任务栏高度", "\uE740",
             new[] { "小", "大" }, s.StatusBarLarge ? 1 : 0,
             v => SettingsService.Update(x => x.StatusBarLarge = v == 1));
@@ -106,7 +112,7 @@ public sealed partial class StatusBarSettingsPage : Page, ISettingsGamepad
             DockThemes.Names, Math.Clamp(s.StatusBarTheme, 0, DockThemes.All.Length - 1),
             v => SettingsService.Update(x => x.StatusBarTheme = v));
 
-        AddToggle("控制中心类型", "打开用本程序控制中心；关闭改用 Windows 自带控制中心（Win+A）", "\uE713",
+        AddToggle("控制中心", "打开用本程序控制中心；关闭改用 Windows 自带控制中心（Win+A）", "\uE713",
             s.StatusBarCustomControlCenter, v => SettingsService.Update(x => x.StatusBarCustomControlCenter = v));
 
         BuildTopControlsGroup(s);
@@ -288,17 +294,63 @@ public sealed partial class StatusBarSettingsPage : Page, ISettingsGamepad
             panel, StartComboCapture);
     }
 
+    /// <summary>点「录制」或在该行按 A：先走 5 秒倒计时，倒计时结束后才开始吃手柄输入。</summary>
     private void StartComboCapture()
     {
-        _capturingCombo = true;
+        if (_comboPhase != 0)
+        {
+            CancelComboCapture();
+            return;
+        }
+
+        _comboPhase = 1;
+        _comboSecondsLeft = 5;
         _capturedCombo = GamepadButtons.None;
-        if (_comboText is not null) _comboText.Text = "请按手柄组合键…";
+        if (_comboText is not null) _comboText.Text = $"{_comboSecondsLeft} 秒后开始录制…";
         if (_comboButton is not null) _comboButton.Content = "取消";
+
+        _comboTimer ??= new DispatcherTimer { Interval = TimeSpan.FromSeconds(1) };
+        _comboTimer.Tick -= OnComboTick;
+        _comboTimer.Tick += OnComboTick;
+        _comboTimer.Start();
+    }
+
+    private void OnComboTick(object? sender, object e)
+    {
+        _comboSecondsLeft--;
+        if (_comboPhase == 1)
+        {
+            if (_comboSecondsLeft > 0)
+            {
+                if (_comboText is not null) _comboText.Text = $"{_comboSecondsLeft} 秒后开始录制…";
+                return;
+            }
+            // 倒计时结束：正式录制，再给 10 秒窗口，避免一直卡在录制态
+            _comboPhase = 2;
+            _comboSecondsLeft = 10;
+            if (_comboText is not null) _comboText.Text = "请按手柄组合键…";
+            return;
+        }
+
+        if (_comboPhase == 2 && _comboSecondsLeft <= 0)
+        {
+            FinishComboCapture();   // 超时：没按任何键，保持原组合键
+        }
+    }
+
+    private void CancelComboCapture()
+    {
+        _comboTimer?.Stop();
+        _comboPhase = 0;
+        _comboSecondsLeft = 0;
+        FinishComboCapture();
     }
 
     private void FinishComboCapture()
     {
-        _capturingCombo = false;
+        _comboTimer?.Stop();
+        _comboPhase = 0;
+        _comboSecondsLeft = 0;
         if (_comboButton is not null) _comboButton.Content = "录制";
         if (_comboText is not null) _comboText.Text = FormatCombo(SettingsService.Current.DockSummonCombo);
     }
@@ -689,6 +741,8 @@ public sealed partial class StatusBarSettingsPage : Page, ISettingsGamepad
         FocusRing.HideCurrent(XamlRoot);
         for (var i = 0; i < _rows.Count; i++)
             _rows[i].BorderBrush = i == _index ? FocusBrush : IdleBrush;
+        if (_index >= 0 && _index < _rows.Count) _glow?.Show(_rows[_index], 10);
+        else _glow?.Hide();
         if (_index < 0 || _index >= _rows.Count) return;
 
         var row = _rows[_index];
@@ -708,7 +762,7 @@ public sealed partial class StatusBarSettingsPage : Page, ISettingsGamepad
 
     public void HandleGamepad(GamepadButtons buttons)
     {
-        if (!_ready || _rows.Count == 0 || _capturingCombo) return;
+        if (!_ready || _rows.Count == 0 || _comboPhase != 0) return;
 
         if (buttons.HasFlag(GamepadButtons.DPadUp)) Move(-1);
         else if (buttons.HasFlag(GamepadButtons.DPadDown)) Move(1);
@@ -742,18 +796,24 @@ public sealed partial class StatusBarSettingsPage : Page, ISettingsGamepad
         return true;
     }
 
-    public bool IsCapturing => _capturingCombo;
+    public bool IsCapturing => _comboPhase != 0;
 
     public void CaptureButtons(GamepadButtons pressed)
     {
-        if (!_capturingCombo) return;
+        if (_comboPhase == 1)
+        {
+            // 倒计时阶段不记录任何按键（这时手还按在 A 上），只允许 B 取消
+            if (pressed.HasFlag(GamepadButtons.B)) CancelComboCapture();
+            return;
+        }
+        if (_comboPhase != 2 || pressed == GamepadButtons.None) return;
         _capturedCombo |= pressed;
         if (_comboText is not null) _comboText.Text = FormatCombo(_capturedCombo);
     }
 
     public void NotifyAllReleased()
     {
-        if (!_capturingCombo) return;
+        if (_comboPhase != 2) return;
         if (_capturedCombo != GamepadButtons.None)
         {
             if (_capturedCombo == SettingsService.Current.SummonCombo)

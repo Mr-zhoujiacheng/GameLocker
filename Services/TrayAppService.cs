@@ -383,18 +383,47 @@ internal static class TrayAppService
             var sentB = KeySendService.Send((int)'B', KeySendService.ModWin);
             await Task.Delay(260);
             var sentEnter = KeySendService.Send(0x0D, 0);
-            await Task.Delay(100);
-            HideSystemTrayFocusCue();
-            DebugLog.Write($"[顶栏] 已请求打开系统托盘（Win+B={sentB} Enter={sentEnter}）");
+            // 面板是键盘方式唤出的，第一枚图标会带一圈键盘焦点框。
+            // 面板一出现就立刻在空白处轻点（指针输入会让 WinUI 撤掉焦点框），再补一次兜底，
+            // 尽量做到"肉眼看不到白框"，而不是等它画出来再清。
+            var shown = false;
+            for (var i = 0; i < 40 && !shown; i++)
+            {
+                await Task.Delay(30);
+                shown = IsSystemTrayOpen();
+            }
+            if (shown)
+            {
+                TapPanelBlank();
+                await Task.Delay(160);
+                HideSystemTrayFocusCue();
+                TapPanelBlank();
+            }
+            DebugLog.Write($"[顶栏] 已请求打开系统托盘（Win+B={sentB} Enter={sentEnter} 面板={shown}）");
         }
         catch (Exception ex) { DebugLog.Write("[顶栏] 打开系统托盘失败：" + ex.Message); }
         finally { Interlocked.Exchange(ref _opening, 0); }
     }
 
-    private static void HideSystemTrayFocusCue()
+    /// <summary>在面板左上角空白处轻点一下：WinUI 收到指针输入后会撤掉键盘焦点框（点完把鼠标移回原处）。</summary>
+    private static void TapPanelBlank()
     {
         var hwnd = FindWindow("TopLevelWindowForOverflowXamlIsland", null);
         if (hwnd == IntPtr.Zero || !IsWindowVisible(hwnd)) return;
+        if (!GetWindowRect(hwnd, out var rect)) return;
+        if (!GetCursorPos(out var old)) return;
+
+        SetCursorPos(rect.Left + 4, rect.Top + 4);
+        mouse_event(MOUSEEVENTF_LEFTDOWN, 0, 0, 0, UIntPtr.Zero);
+        mouse_event(MOUSEEVENTF_LEFTUP, 0, 0, 0, UIntPtr.Zero);
+        SetCursorPos(old.X, old.Y);
+    }
+
+    /// <summary>把面板的"键盘焦点提示"关掉（UISF_HIDEFOCUS），窗口没出现就返回 false 让调用方稍后再试。</summary>
+    private static bool HideSystemTrayFocusCue()
+    {
+        var hwnd = FindWindow("TopLevelWindowForOverflowXamlIsland", null);
+        if (hwnd == IntPtr.Zero || !IsWindowVisible(hwnd)) return false;
 
         const uint WM_CHANGEUISTATE = 0x0127;
         const int UIS_SET = 1;
@@ -402,6 +431,14 @@ internal static class TrayAppService
         var action = (uint)(UIS_SET | (UISF_HIDEFOCUS << 16));
         SendMessageTimeout(hwnd, WM_CHANGEUISTATE, new UIntPtr(action), IntPtr.Zero,
             0x0002, 100, out _);
+        // 托盘面板是 XAML 岛，真正的渲染窗口可能是子窗口，一并发一遍
+        EnumChildWindows(hwnd, (child, _) =>
+        {
+            SendMessageTimeout(child, WM_CHANGEUISTATE, new UIntPtr(action), IntPtr.Zero,
+                0x0002, 100, out _);
+            return true;
+        }, IntPtr.Zero);
+        return true;
     }
 
     /// <summary>系统托盘溢出面板当前是否打开。</summary>
@@ -562,6 +599,30 @@ internal static class TrayAppService
 
     [DllImport("user32.dll")]
     private static extern bool EnumWindows(EnumWindowsProc callback, IntPtr lParam);
+
+    [DllImport("user32.dll")]
+    private static extern bool EnumChildWindows(IntPtr parent, EnumWindowsProc callback, IntPtr lParam);
+
+    private const uint MOUSEEVENTF_LEFTDOWN = 0x0002;
+    private const uint MOUSEEVENTF_LEFTUP = 0x0004;
+
+    [StructLayout(LayoutKind.Sequential)]
+    private struct POINT { public int X; public int Y; }
+
+    [DllImport("user32.dll")]
+    private static extern bool GetCursorPos(out POINT point);
+
+    [DllImport("user32.dll")]
+    private static extern bool SetCursorPos(int x, int y);
+
+    [DllImport("user32.dll")]
+    private static extern void mouse_event(uint flags, int dx, int dy, uint data, UIntPtr extra);
+
+    [DllImport("user32.dll")]
+    private static extern bool GetWindowRect(IntPtr hwnd, out RECT rect);
+
+    [StructLayout(LayoutKind.Sequential)]
+    private struct RECT { public int Left; public int Top; public int Right; public int Bottom; }
 
     [DllImport("user32.dll")]
     private static extern bool IsWindowVisible(IntPtr hwnd);

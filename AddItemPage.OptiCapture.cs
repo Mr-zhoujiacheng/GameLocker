@@ -120,6 +120,7 @@ public sealed partial class AddItemPage
                 OperationCanceledException => "连接超时，请重试。",
                 HttpRequestException => "无法访问 GitHub，请检查网络后重试。",
                 InvalidDataException => "上游发布包不兼容或校验未通过。",
+                FileNotFoundException => "上游发布包不完整（缺少运行文件）。",
                 UnauthorizedAccessException => "组件目录不可写。",
                 IOException => "无法读写组件目录，请检查可用空间或文件占用。",
                 OptiCaptureBusyException => "请先关闭 OptiScaler，并等待正在进行的操作结束。",

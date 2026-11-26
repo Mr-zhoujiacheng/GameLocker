@@ -621,9 +621,24 @@ public sealed partial class StatusBarControlCenterWindow : Window
         if (_expanded) _ = RefreshExtrasAsync();
     }
 
-    private void OnScreenshotClick(object sender, RoutedEventArgs e)
+    /// <summary>截图前立即收起：不播收起动画，避免半透明的控制中心被截进画面。</summary>
+    private void HideForScreenshot()
+    {
+        _storyboard?.Stop();
+        _storyboard = null;
+        _visible = false;
+        RootTransform.TranslateY = 0;
+        Root.Opacity = 1;
+        ShowWindow(Hwnd, 0);
+    }
+
+    private async void OnScreenshotClick(object sender, RoutedEventArgs e)
     {
         if (SuppressTileClick()) return;
+        // 先把控制中心收起来再截图：等一小会儿让 DWM 把这一层从画面撤掉，
+        // 否则截出来的图里会带着控制中心自己
+        HideForScreenshot();
+        await Task.Delay(180);
         var ok = ScreenshotService.CaptureToClipboard();
         FloatingToastService.Show(ok ? "已截取当前屏幕并复制到剪贴板" : "截图失败");
     }

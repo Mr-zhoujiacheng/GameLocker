@@ -510,10 +510,17 @@ public sealed partial class MainWindow : Window
             KeyboardHook.BeginStartUiBlockWatch();
             DispatcherQueue.TryEnqueue(() =>
             {
-                if (!_shown || GetForegroundWindow() != _hwnd)
+                try
                 {
-                    DebugLog.Write("任务栏联动: 边缘手势呼出");
-                    ShowFromTray();
+                    if (!_shown || GetForegroundWindow() != _hwnd)
+                    {
+                        DebugLog.Write("任务栏联动: 边缘手势呼出");
+                        ShowFromTray();
+                    }
+                }
+                catch (Exception ex)
+                {
+                    DebugLog.Write("[唤出] 边缘手势异常：" + ex);
                 }
             });
         };
@@ -1189,7 +1196,7 @@ public sealed partial class MainWindow : Window
         e.AcceptedOperation = hasFiles
             ? Windows.ApplicationModel.DataTransfer.DataPackageOperation.Copy
             : Windows.ApplicationModel.DataTransfer.DataPackageOperation.None;
-        if (e.DragUIOverride is { } ui) ui.Caption = hasFiles ? "释放以检查并注入" : "只接受 .exe 文件";
+        if (e.DragUIOverride is { } ui) ui.Caption = hasFiles ? "释放以检查并注入（可拖快捷方式）" : "只接受 .exe / .lnk 快捷方式";
         SetOptiManualDropHighlight(hasFiles);
     }
 
@@ -1213,15 +1220,34 @@ public sealed partial class MainWindow : Window
         try
         {
             var items = await e.DataView.GetStorageItemsAsync();
-            var file = items.OfType<Windows.Storage.StorageFile>()
-                .FirstOrDefault(f => f.Name.EndsWith(".exe", StringComparison.OrdinalIgnoreCase));
-            if (file is null)
+            string? exePath = null;
+            string? exeName = null;
+            // 支持直接拖 exe，也支持拖 .lnk 快捷方式（解析成快捷方式指向的真实程序）
+            foreach (var item in items.OfType<Windows.Storage.StorageFile>())
             {
-                OptiManualDropTitle.Text = "只支持 .exe 文件";
-                OptiManualDropSub.Text = "请拖入游戏的可执行文件（exe）";
+                if (item.Name.EndsWith(".exe", StringComparison.OrdinalIgnoreCase))
+                {
+                    exePath = item.Path;
+                    exeName = item.Name;
+                    break;
+                }
+                if (item.Name.EndsWith(".lnk", StringComparison.OrdinalIgnoreCase) &&
+                    DropImportService.ResolveShortcutTarget(item.Path) is { } target &&
+                    target.EndsWith(".exe", StringComparison.OrdinalIgnoreCase))
+                {
+                    exePath = target;
+                    exeName = System.IO.Path.GetFileName(target);
+                    DebugLog.Write($"[OptiScaler] 快捷方式解析：{item.Name} → {target}");
+                    break;
+                }
+            }
+            if (exePath is null || exeName is null)
+            {
+                OptiManualDropTitle.Text = "只支持 .exe 或 .lnk 快捷方式";
+                OptiManualDropSub.Text = "请拖入游戏的可执行文件，或它的桌面快捷方式";
                 return;
             }
-            await InspectManualFileAsync(file.Path, file.Name);
+            await InspectManualFileAsync(exePath, exeName);
         }
         catch (Exception ex)
         {
@@ -1312,7 +1338,13 @@ public sealed partial class MainWindow : Window
     private Windows.Graphics.PointInt32 _summonStart;
     private Windows.Graphics.PointInt32 _homePos;   // 可见时的停靠位置（滑出后窗口停在屏外，不能用当前位置当目标）
     private bool _summonPending;
+    /// <summary>呼出准备期间：窗口必须保持隐藏并停在屏外起点。
+    /// 布局里的 presenter.Restore() 会把隐藏窗口直接显示出来，落位又会把它摆回停靠位，
+    /// 两者叠加就会在滑入动画开始前先在停靠位闪一个黑框，故准备期间跳过这两步。</summary>
+    private bool _preparingSummon;
     private bool _animating;
+    /// <summary>动画是否已拿到第一帧（首帧只对齐起点并开始计时，不直接推进位置）</summary>
+    private bool _animFrameAligned;
     private IntPtr _hwnd;
 
     // 当前窗口移动动画状态（CompositionTarget.Rendering 每帧推进 + 定时器兜底）
@@ -1400,6 +1432,7 @@ public sealed partial class MainWindow : Window
         _animMs = Math.Max(1, ms); _animEaseOut = easeOut; _animDone = done;
         _animRenderMs = 0;
         _animTimerSeenMs = 0;
+        _animFrameAligned = false;
         _animSw = System.Diagnostics.Stopwatch.StartNew();
         _renderHandler = OnRenderFrame;
         Microsoft.UI.Xaml.Media.CompositionTarget.Rendering += _renderHandler;
@@ -1434,6 +1467,16 @@ public sealed partial class MainWindow : Window
     private void AdvanceMoveFrame()
     {
         if (_animSw == null) return;
+        // 以"第一帧真正到来"为计时起点。AnimateMove 到第一帧之间 UI 线程可能被卡住（布局、
+        // 抢前台、加载磁贴图片…），旧写法会让 elapsed 直接越过动画时长，窗口在第一帧就瞬移到位，
+        // 而此时窗口还没渲染出内容，肉眼就是"呼出先闪一个黑框"。首帧先对齐到屏外起点再计时。
+        if (!_animFrameAligned)
+        {
+            _animFrameAligned = true;
+            _animSw.Restart();
+            MoveWindowTo(new Windows.Graphics.PointInt32((int)_animFromX, (int)_animFromY));
+            return;
+        }
         double t = Math.Clamp(_animSw.ElapsedMilliseconds / (double)_animMs, 0, 1);
         double k = _animEaseOut ? 1 - Math.Pow(1 - t, 3) : t * t * t;
         var pos = new Windows.Graphics.PointInt32(
@@ -1480,6 +1523,20 @@ public sealed partial class MainWindow : Window
     /// <summary>托盘/热键唤起</summary>
     public void ShowFromTray()
     {
+        try
+        {
+            ShowFromTrayCore();
+        }
+        catch (Exception ex)
+        {
+            // DispatcherQueue/钩子线程里的异常会变成 stowed exception 直接崩进程（0xc000027b），
+            // 这里兜住并记录完整堆栈，避免"一呼出就闪退"且无线索。
+            DebugLog.Write("[唤出] 异常：" + ex);
+        }
+    }
+
+    private void ShowFromTrayCore()
+    {
         if (_exiting) return;
         if (_shown && LosslessScalingService.ActiveOptiSession is not null
             && IsWindowVisibleForLaunch(_hwnd) && !IsIconic(_hwnd))
@@ -1489,7 +1546,14 @@ public sealed partial class MainWindow : Window
         }
         // 开始菜单模式：底栏此时已创建，重新按底栏上沿收一次高度（启动时底栏还没建）
         GamePresence.Refresh();
-        if (SettingsService.Current.StartMenuMode) ApplySidebarLayout();
+        // 开始菜单模式：底栏跟启动器绑定，先把底栏展开，下面的布局再按它的上沿留出高度
+        DockHost.RevealWithLauncher();
+        if (SettingsService.Current.StartMenuMode)
+        {
+            _preparingSummon = true;
+            try { ApplySidebarLayout(); }
+            finally { _preparingSummon = false; }
+        }
         // 回前台：先退出效率模式，避免滑入动画与手柄响应被系统降频
         Interlocked.Exchange(ref _pageSummonedAt, Environment.TickCount64);
         DockPopupWindow.HideCurrent();
@@ -1501,6 +1565,9 @@ public sealed partial class MainWindow : Window
         _edgeGesture?.SetStripVisible(false);
         PrepareSummon();
         Activate();
+        // ShowWindow/抢前台可能让系统用旧位置（停靠位）先合成一帧，造成"先闪一下再滑入"。
+        // 这里在同一轮 UI 线程里把窗口复位到屏外起点，保证第一帧就在屏幕外。
+        if (_summonPending) MoveWindowTo(_summonStart);
         // 所有呼出入口共用，避免系统开始菜单回调先显示启动器后，边缘事件被显隐门控跳过。
         RevealTaskbar();
         // 所有显示模式均从呼出开始保持在任务栏上方。
@@ -1599,6 +1666,8 @@ public sealed partial class MainWindow : Window
     /// </summary>
     public void ApplyStartMenuMode()
     {
+        // 开始菜单模式切换后底栏的"自动隐藏 + 跟随启动器"规则要重新生效
+        _ = ApplyDockForStartMenuModeAsync();
         if (SettingsService.Current.StartMenuMode)
         {
             _taskbarSeen = TaskbarState();
@@ -1615,6 +1684,17 @@ public sealed partial class MainWindow : Window
         _menuSide = StartButtonSide();
         ApplySidebarLayout();
         SyncKeyboardHook();
+    }
+
+    /// <summary>开始菜单模式切换后重建底栏并按其显隐规则落位（底部跟随启动器）。</summary>
+    private async Task ApplyDockForStartMenuModeAsync()
+    {
+        try
+        {
+            await DockHost.ApplyAsync();
+            if (SettingsService.Current.StartMenuMode && _shown) DockHost.RevealWithLauncher();
+        }
+        catch (Exception ex) { DebugLog.Write("[底栏] 模式切换后重建失败：" + ex.Message); }
     }
 
     /// <summary>键盘呼出键命中（开关）：窗口未显示或被其他窗口遮盖时置顶呼出；已显示且在前台时收起。
@@ -1819,6 +1899,8 @@ public sealed partial class MainWindow : Window
     internal void HideToTray(bool animate)
     {
         if (_exiting) return;
+        // 开始菜单模式：底栏跟启动器绑定，启动器收起时底栏一起自动隐藏
+        DockHost.CollapseWithLauncher();
         // 立刻停手柄路由：一旦决定隐藏，滑出动画期间就不该再响应手柄
         // （否则刚启动游戏后晃动/误触按键会把启动器上的操作（如 Y 关闭程序）打到已经看不见的界面上）
         _shown = false;
@@ -1875,7 +1957,9 @@ public sealed partial class MainWindow : Window
         if (presenter != null)
         {
             presenter.IsMaximizable = false;
-            presenter.Restore();
+            // 隐藏窗口调用 Restore() 会直接把窗口显示出来（在停靠位露一帧黑框）。
+            // 呼出准备期间的显隐统一交给 PrepareSummon/Activate 控制，这里跳过。
+            if (!_preparingSummon) presenter.Restore();
         }
 
         // OuterBounds 是整屏（含任务栏占用的下沿）；WorkArea 会少掉任务栏那条，
@@ -1967,7 +2051,10 @@ public sealed partial class MainWindow : Window
                 : bounds.X;
             y = bounds.Y;
         }
-        AppWindow.Move(new Windows.Graphics.PointInt32(x, y));
+        // 呼出准备期间不落位：窗口随后会被放到屏外起点由动画滑入；此时若摆回停靠位，
+        // 窗口会在 Activate 之前就露出来（正是"呼出先闪一下"的来源）。
+        if (!_preparingSummon)
+            AppWindow.Move(new Windows.Graphics.PointInt32(x, y));
         _homePos = new Windows.Graphics.PointInt32(x, y);
 
         // 任务栏自身是 TOPMOST，窗口不置顶的话任务栏会压在窗口下沿之上（盖不住）。

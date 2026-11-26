@@ -119,4 +119,11 @@ powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\tools\Invoke-OptiCaptu
     -RuntimeDirectory (Join-Path $probe 'off')
 ```
 
+## 上游更新（2026-11）
+
+- 上游全量包资产名改过两次：`OptiCaptureHost-2.10.80_Full.Pack.rar` → `OptiCaptureHost_v2.12.00_Full.Pack.rar` → `OptiCaptureHost_v2.12.68_HOTFIX_Full.Pack.rar`。更新器按「版本号 + `Full.Pack` + 压缩后缀」匹配，同一版本同时挂普通包和 HotFIX 包时取 HotFIX。
+- 包内的包裹目录名同样不稳定（`..._Full Pack` / `..._HOTFIX_Full Pack` / 直接解在根目录），安装改为按「含 `OptiCaptureHost.exe` 且通过完整运行时校验」定位，不再拼包裹名；顺带支持 `.7z`。
+- 下载优先走 `api.github.com` 的资产端点（302 到 `release-assets.githubusercontent.com`），`github.com` 直链兜底：能访问 API 却连不上 github.com 的网络也能更新。
+- 回归：`tools/Invoke-OptiCaptureHostUpdateSmoke.ps1` 覆盖改名、HotFIX 优先、无包裹目录、API 兜底、真实 2.12.68 全量包的解压与运行时校验。
+
 参考：[上游 README](https://github.com/tegraultra/OptiCaptureHost/blob/main/README.md) · [第三方许可说明](https://github.com/tegraultra/OptiCaptureHost/blob/main/NOTICE.md) · [项目原详细草案](optiscaler-host-design.md)

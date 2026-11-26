@@ -30,7 +30,12 @@ internal static class OptiCaptureHostPackage
         Directory.CreateDirectory(unpack);
         using (var package = ArchiveFactory.Open(archive))
         {
-            var expected = Path.GetExtension(archive) == ".rar" ? ArchiveType.Rar : ArchiveType.Zip;
+            var expected = Path.GetExtension(archive).ToLowerInvariant() switch
+            {
+                ".rar" => ArchiveType.Rar,
+                ".7z" => ArchiveType.SevenZip,
+                _ => ArchiveType.Zip
+            };
             if (package.Type != expected || !package.IsComplete || package.Volumes.Count() != 1)
                 throw new InvalidDataException("The OptiCaptureHost full pack is not a complete single archive.");
             using var entries = package.ExtractAllEntries();
@@ -70,9 +75,7 @@ internal static class OptiCaptureHostPackage
             }
         }
 
-        var expectedWrapper = Path.Combine(unpack, $"OptiCaptureHost-{version.ToString(3)}_Full Pack");
-        var runtime = File.Exists(Path.Combine(unpack, "OptiCaptureHost.exe")) ? unpack : expectedWrapper;
-        ValidateFullRuntime(runtime);
+        var runtime = LocateRuntime(unpack, version);
         foreach (var stale in new[] { OptiCaptureHostStatus.FileName, "OptiCaptureHost.status.tmp", "OptiCaptureHost.log" })
             File.Delete(Path.Combine(runtime, stale));
 
@@ -83,6 +86,36 @@ internal static class OptiCaptureHostPackage
             ("FrameGen", "External", "false"), ("Plugins", "LoadAsiPlugins", "false"),
             ("MFGUnlock", "XeFG", "false"), ("MFGUnlock", "RTX40", "false"), ("MFGUnlock", "RTX2030", "false")]);
         return runtime;
+    }
+
+    /// <summary>
+    /// 找出解压目录里真正的运行时目录。上游全量包的包裹名不稳定
+    /// （<c>OptiCaptureHost-2.10.80_Full Pack</c>、<c>OptiCaptureHost_v2.12.68_HotFIX_Full Pack</c>，
+    /// 有的包还直接解在根目录），所以按「含 OptiCaptureHost.exe 且通过完整运行时校验」定位，不再猜包裹名。
+    /// </summary>
+    private static string LocateRuntime(string unpack, Version version)
+    {
+        var pending = new Queue<(string Directory, int Depth)>();
+        pending.Enqueue((unpack, 0));
+        FileNotFoundException? firstError = null;
+        for (var visited = 0; pending.Count > 0 && visited < 256; visited++)
+        {
+            var (directory, depth) = pending.Dequeue();
+            if (File.Exists(Path.Combine(directory, "OptiCaptureHost.exe")))
+            {
+                try
+                {
+                    ValidateFullRuntime(directory);
+                    return directory;
+                }
+                catch (FileNotFoundException error) { firstError ??= error; }
+            }
+            if (depth >= 2) continue;
+            foreach (var child in Directory.EnumerateDirectories(directory))
+                pending.Enqueue((child, depth + 1));
+        }
+        throw firstError ?? new FileNotFoundException(
+            $"The OptiCaptureHost {version.ToString(3)} package does not contain a runtime folder.", unpack);
     }
 
     private static string SafeEntryName(string? name, bool directory)

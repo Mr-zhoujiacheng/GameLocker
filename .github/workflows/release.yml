@@ -4,6 +4,13 @@ on:
   push:
     tags:
       - 'v*'
+  workflow_dispatch:
+    inputs:
+      release_tag:
+        description: Release tag to publish
+        required: true
+        default: v3.4.4
+        type: string
 
 permissions:
   contents: write
@@ -11,6 +18,8 @@ permissions:
 jobs:
   release:
     runs-on: windows-2022
+    env:
+      RELEASE_TAG: ${{ inputs.release_tag || github.ref_name }}
     steps:
       - name: Check out source
         uses: actions/checkout@v4
@@ -40,7 +49,7 @@ jobs:
       - name: Verify tag and project versions
         shell: pwsh
         run: |
-          $tagVersion = $env:GITHUB_REF_NAME -replace '^v', ''
+          $tagVersion = $env:RELEASE_TAG -replace '^v', ''
           [xml]$project = Get-Content GameLocker.csproj
           $projectVersion = $project.Project.PropertyGroup.Version
           $installerVersion = (Select-String -Path GameLocker.iss -Pattern '^#define AppVersion "([^"]+)"').Matches.Groups[1].Value
@@ -73,8 +82,72 @@ jobs:
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
       - name: Publish GitHub Release
-        uses: softprops/action-gh-release@v2
-        with:
-          name: Game Locker ${{ github.ref_name }}
-          generate_release_notes: true
-          files: dist/GameLocker-Setup-${{ github.ref_name }}.exe
+        shell: pwsh
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $tag = $env:RELEASE_TAG
+          $assetPath = Join-Path $env:GITHUB_WORKSPACE "dist\GameLocker-Setup-$tag.exe"
+          if (-not (Test-Path -LiteralPath $assetPath)) {
+            throw "Installer not found: $assetPath"
+          }
+
+          $headers = @{
+            Authorization = "Bearer $env:GITHUB_TOKEN"
+            Accept = 'application/vnd.github+json'
+            'X-GitHub-Api-Version' = '2022-11-28'
+          }
+          $api = "https://api.github.com/repos/$env:GITHUB_REPOSITORY"
+
+          function Invoke-GitHubJson {
+            param([ValidateSet('GET', 'POST', 'DELETE')][string] $Method, [string] $Uri, [object] $Body)
+            for ($attempt = 1; $attempt -le 5; $attempt++) {
+              try {
+                if ($null -eq $Body) {
+                  return Invoke-RestMethod -Method $Method -Uri $Uri -Headers $headers
+                }
+                $json = $Body | ConvertTo-Json -Depth 5
+                return Invoke-RestMethod -Method $Method -Uri $Uri -Headers $headers -ContentType 'application/json' -Body $json
+              } catch {
+                if ($attempt -eq 5) { throw }
+                Start-Sleep -Seconds ([Math]::Min(30, 2 * $attempt))
+              }
+            }
+          }
+
+          try {
+            $release = Invoke-GitHubJson GET "$api/releases/tags/$tag" $null
+          } catch {
+            $release = Invoke-GitHubJson POST "$api/releases" @{
+              tag_name = $tag
+              name = "Game Locker $tag"
+              generate_release_notes = $true
+              draft = $false
+              prerelease = $false
+            }
+          }
+
+          $assetName = [IO.Path]::GetFileName($assetPath)
+          $existing = @($release.assets | Where-Object { $_.name -eq $assetName })
+          foreach ($asset in $existing) {
+            Invoke-GitHubJson DELETE "$api/releases/assets/$($asset.id)" $null | Out-Null
+          }
+
+          $uploadUri = "https://uploads.github.com/repos/$env:GITHUB_REPOSITORY/releases/$($release.id)/assets?name=$([Uri]::EscapeDataString($assetName))"
+          for ($attempt = 1; $attempt -le 5; $attempt++) {
+            try {
+              Invoke-WebRequest -Method Post -Uri $uploadUri -Headers $headers -ContentType 'application/octet-stream' -InFile $assetPath | Out-Null
+              break
+            } catch {
+              $assets = Invoke-GitHubJson GET "$api/releases/$($release.id)/assets" $null
+              if (@($assets | Where-Object { $_.name -eq $assetName }).Count -gt 0) { break }
+              if ($attempt -eq 5) { throw }
+              Start-Sleep -Seconds ([Math]::Min(30, 2 * $attempt))
+            }
+          }
+          $publishedAssets = Invoke-GitHubJson GET "$api/releases/$($release.id)/assets" $null
+          if (@($publishedAssets | Where-Object { $_.name -eq $assetName }).Count -eq 0) {
+            throw "GitHub Release asset upload did not complete: $assetName"
+          }
+          Write-Host "Published $assetName to $($release.html_url)"

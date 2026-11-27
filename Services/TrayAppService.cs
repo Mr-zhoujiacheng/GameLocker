@@ -528,7 +528,9 @@ internal static class TrayAppService
     private static void StartParkWatcher()
     {
         _parkTimer?.Dispose();
-        _parkTimer = new Timer(_ => RestoreParkedCursor(), null, 250, 250);
+        // 80ms 一次：面板关掉的一瞬间键盘焦点会回到折叠箭头，系统提示可能立刻弹出，
+        // 探测得越早，关掉它的时间窗越短。
+        _parkTimer = new Timer(_ => RestoreParkedCursor(), null, 80, 80);
     }
 
     /// <summary>
@@ -552,12 +554,13 @@ internal static class TrayAppService
     /// 把系统任务栏的气泡提示（tooltips_class32，比如"显示隐藏的图标"）先藏起来。
     /// 只隐藏"当前正在显示"的那个，下次悬停系统会重新弹，不影响用户正常使用。
     /// </summary>
-    private static void HideTrayTooltips()
+    private static int HideTrayTooltips()
     {
+        var hidden = 0;
         try
         {
             var taskbar = FindWindow("Shell_TrayWnd", null);
-            if (taskbar == IntPtr.Zero) return;
+            if (taskbar == IntPtr.Zero) return 0;
             GetWindowThreadProcessId(taskbar, out var taskbarPid);
 
             var buffer = new StringBuilder(64);
@@ -566,10 +569,25 @@ internal static class TrayAppService
                 if (!IsWindowVisible(hwnd)) return true;
                 buffer.Clear();
                 if (GetClassName(hwnd, buffer, buffer.Capacity) <= 0) return true;
-                if (!buffer.ToString().Equals("tooltips_class32", StringComparison.OrdinalIgnoreCase)) return true;
+                var cls = buffer.ToString();
                 GetWindowThreadProcessId(hwnd, out var pid);
                 if (pid != taskbarPid) return true;
-                ShowWindow(hwnd, SW_HIDE);
+
+                if (!GetWindowRect(hwnd, out var r)) return true;
+                var w = r.Right - r.Left;
+                var h = r.Bottom - r.Top;
+                // 只处理"气泡提示"尺寸的小窗（宽 40~700、高 16~140），避免误伤开始菜单等大面板
+                if (w < 40 || w > 700 || h < 16 || h > 140) return true;
+
+                var isTooltip = cls.Contains("tooltip", StringComparison.OrdinalIgnoreCase);
+                var isSmallIsland = cls.Contains("XamlExplorerHostIslandWindow", StringComparison.OrdinalIgnoreCase);
+                if (!isTooltip && !isSmallIsland) return true;
+
+                if (ShowWindow(hwnd, SW_HIDE))
+                {
+                    hidden++;
+                    if (hidden <= 2) DebugLog.Write($"[顶栏] 隐藏气泡 {cls} {w}x{h} @{r.Left},{r.Top}");
+                }
                 return true;
             }, IntPtr.Zero);
         }
@@ -577,9 +595,39 @@ internal static class TrayAppService
         {
             // 提示藏不掉也不影响打开托盘
         }
+        return hidden;
     }
 
     private const int SW_HIDE = 0;
+
+    /// <summary>诊断用：把任务栏进程当前可见的顶层小窗（类名+位置+尺寸）记一行，便于定位"显示隐藏的图标"到底是哪个窗。</summary>
+    private static void LogTrayWindows(string tag)
+    {
+        try
+        {
+            var taskbar = FindWindow("Shell_TrayWnd", null);
+            if (taskbar == IntPtr.Zero) return;
+            GetWindowThreadProcessId(taskbar, out var taskbarPid);
+
+            var sb = new StringBuilder();
+            var buffer = new StringBuilder(128);
+            EnumWindows((hwnd, _) =>
+            {
+                if (!IsWindowVisible(hwnd)) return true;
+                GetWindowThreadProcessId(hwnd, out var pid);
+                if (pid != taskbarPid) return true;
+                if (!GetWindowRect(hwnd, out var r)) return true;
+                buffer.Clear();
+                GetClassName(hwnd, buffer, buffer.Capacity);
+                sb.Append($"[{buffer} {r.Left},{r.Top} {r.Right - r.Left}x{r.Bottom - r.Top}] ");
+                return true;
+            }, IntPtr.Zero);
+            DebugLog.Write($"[托盘诊断] {tag} {sb}");
+        }
+        catch
+        {
+        }
+    }
 
     [DllImport("user32.dll")]
     private static extern bool ShowWindow(IntPtr hwnd, int cmd);
@@ -611,7 +659,12 @@ internal static class TrayAppService
     {
         try
         {
-            if (IsSystemTrayOpen()) return;
+            if (IsSystemTrayOpen())
+            {
+                HideTrayTooltips();   // 面板开着期间也顺手盯着那个提示
+                return;
+            }
+
             if (GetCursorPos(out var current) &&
                 Math.Abs(current.X - _parkPoint.X) <= 6 && Math.Abs(current.Y - _parkPoint.Y) <= 6)
             {
@@ -619,11 +672,39 @@ internal static class TrayAppService
             }
             _parkTimer?.Dispose();
             _parkTimer = null;
+            // 关闭瞬间键盘焦点会回到任务栏折叠箭头，系统会再弹一次"显示隐藏的图标"
+            LogTrayWindows("面板关闭时");
+            StartTooltipBurst();
         }
         catch
         {
             // 轮询线程上的异常不能外抛，否则会带走进程
         }
+    }
+
+    private static Timer? _tooltipBurst;
+
+    /// <summary>在指定时长内反复把系统气泡提示藏掉（提示出现的时间不固定，单次藏不可靠）。</summary>
+    private static void StartTooltipBurst(int milliseconds = 1800)
+    {
+        _tooltipBurst?.Dispose();
+        var deadline = Environment.TickCount64 + milliseconds;
+        var hidden = 0;
+        _tooltipBurst = new Timer(_ =>
+        {
+            try
+            {
+                hidden += HideTrayTooltips();
+                if (Environment.TickCount64 < deadline) return;
+                _tooltipBurst?.Dispose();
+                _tooltipBurst = null;
+                if (hidden > 0) DebugLog.Write($"[顶栏] 关闭托盘后隐藏系统气泡提示 {hidden} 次");
+            }
+            catch
+            {
+                // 计时器线程上的异常不能外抛
+            }
+        }, null, 0, 80);
     }
 
     /// <summary>
@@ -761,7 +842,12 @@ internal static class TrayAppService
     }
 
     /// <summary>关闭系统托盘溢出面板（焦点在面板上时 Esc 即可）。</summary>
-    public static void CloseSystemTray() => KeySendService.Send(0x1B, 0);
+    public static void CloseSystemTray()
+    {
+        KeySendService.Send(0x1B, 0);
+        // 关闭后键盘焦点回到任务栏折叠箭头，系统会再弹"显示隐藏的图标"，这里提前开始清理
+        StartTooltipBurst();
+    }
 
     // ---- 运行时追踪 ----
 

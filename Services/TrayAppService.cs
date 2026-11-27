@@ -394,10 +394,17 @@ internal static class TrayAppService
             }
             if (shown)
             {
-                TapPanelBlank();
-                await Task.Delay(160);
-                HideSystemTrayFocusCue();
-                TapPanelBlank();
+                // 把鼠标停到面板左上角空白处：既能让 WinUI 撤掉键盘焦点框，
+                // 也能让指针离开任务栏的折叠箭头，避免它再弹"显示隐藏的图标"悬浮提示。
+                // 面板关闭后（且用户自己没动过鼠标）再放回原来的位置。
+                var parked = TryParkCursorOnPanel();
+                for (var i = 0; i < 5; i++)
+                {
+                    ClickAtCursor();
+                    HideSystemTrayFocusCue();
+                    await Task.Delay(110);
+                }
+                DebugLog.Write($"[顶栏] 托盘面板已定位（停指针={parked}）");
             }
             DebugLog.Write($"[顶栏] 已请求打开系统托盘（Win+B={sentB} Enter={sentEnter} 面板={shown}）");
         }
@@ -405,18 +412,58 @@ internal static class TrayAppService
         finally { Interlocked.Exchange(ref _opening, 0); }
     }
 
-    /// <summary>在面板左上角空白处轻点一下：WinUI 收到指针输入后会撤掉键盘焦点框（点完把鼠标移回原处）。</summary>
-    private static void TapPanelBlank()
+    /// <summary>
+    /// 把鼠标移到托盘面板左上角的空白处（并记下原位置）。返回是否已停好。
+    /// 停在面板里有两个作用：指针离开任务栏折叠箭头，系统不再弹"显示隐藏的图标"提示；
+    /// 面板收到指针输入后，WinUI 也会撤掉第一枚图标的键盘焦点框。
+    /// </summary>
+    private static bool TryParkCursorOnPanel()
     {
         var hwnd = FindWindow("TopLevelWindowForOverflowXamlIsland", null);
-        if (hwnd == IntPtr.Zero || !IsWindowVisible(hwnd)) return;
-        if (!GetWindowRect(hwnd, out var rect)) return;
-        if (!GetCursorPos(out var old)) return;
+        if (hwnd == IntPtr.Zero || !IsWindowVisible(hwnd)) return false;
+        if (!GetWindowRect(hwnd, out var rect)) return false;
+        if (!GetCursorPos(out var origin)) return false;
 
-        SetCursorPos(rect.Left + 4, rect.Top + 4);
+        var x = rect.Left + (rect.Right - rect.Left) / 2;   // 顶部居中：内边距里，离图标远
+        var y = rect.Top + 14;
+        if (!SetCursorPos(x, y)) return false;
+
+        _parkOrigin = origin;
+        _parkPoint = new POINT { X = x, Y = y };
+        _parkTimer?.Dispose();
+        _parkTimer = new Timer(_ => RestoreParkedCursor(), null, 250, 250);
+        return true;
+    }
+
+    private static POINT _parkOrigin;
+    private static POINT _parkPoint;
+    private static Timer? _parkTimer;
+
+    /// <summary>面板关掉后把指针放回原处；用户自己动过鼠标就不再插手。</summary>
+    private static void RestoreParkedCursor()
+    {
+        try
+        {
+            if (IsSystemTrayOpen()) return;
+            if (GetCursorPos(out var current) &&
+                Math.Abs(current.X - _parkPoint.X) <= 6 && Math.Abs(current.Y - _parkPoint.Y) <= 6)
+            {
+                SetCursorPos(_parkOrigin.X, _parkOrigin.Y);
+            }
+            _parkTimer?.Dispose();
+            _parkTimer = null;
+        }
+        catch
+        {
+            // 轮询线程上的异常不能外抛，否则会带走进程
+        }
+    }
+
+    /// <summary>在当前指针位置轻点一下（用于让 WinUI 从"键盘模式"切到"指针模式"）。</summary>
+    private static void ClickAtCursor()
+    {
         mouse_event(MOUSEEVENTF_LEFTDOWN, 0, 0, 0, UIntPtr.Zero);
         mouse_event(MOUSEEVENTF_LEFTUP, 0, 0, 0, UIntPtr.Zero);
-        SetCursorPos(old.X, old.Y);
     }
 
     /// <summary>把面板的"键盘焦点提示"关掉（UISF_HIDEFOCUS），窗口没出现就返回 false 让调用方稍后再试。</summary>

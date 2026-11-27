@@ -374,7 +374,6 @@ internal static class TrayAppService
     private static int _opening;
 
     public static void OpenSystemTray() => _ = OpenSystemTrayAsync();
-
     public static async Task OpenSystemTrayAsync()
     {
         if (Interlocked.Exchange(ref _opening, 1) != 0) return;
@@ -383,8 +382,7 @@ internal static class TrayAppService
             // 顶部任务栏模式下任务栏保持隐藏，用 Windows 原生快捷键打开托盘。
             var sentB = KeySendService.Send((int)'B', KeySendService.ModWin);
             await Task.Delay(120);
-            // 指针尽早离开任务栏折叠箭头：Win+B 会把键盘焦点送到通知区域，
-            // 指针还压在那上面时系统会弹"显示隐藏的图标"提示。
+            // 指针尽早离开任务栏折叠箭头（会弹"显示隐藏的图标"提示）
             TryPreParkCursor();
             await Task.Delay(130);
             var sentEnter = KeySendService.Send(0x0D, 0);
@@ -408,16 +406,25 @@ internal static class TrayAppService
                 parked = TryParkFast() || await Task.Run(TryParkCursorOnPanel);
                 if (parked) StartParkWatcher();
                 if (parked && ClickAtCursor()) cleared++;
-                LogTrayWindows("面板打开后");
                 var firstClickMs = sw.ElapsedMilliseconds;
                 HideSystemTrayFocusCue();
-                // 之后 1.6 秒内两件事一起盯：
-                // 1) 系统"显示隐藏的图标"提示是 Win+B 让折叠箭头拿到焦点后弹的，出现时间不定，反复藏；
-                // 2) 焦点框若晚到，再补点（最多补到 3 次）。
-                for (var i = 0; i < 20; i++)
+
+                // 兜底：点空白偶尔会把面板点关（落点落在圆角透明区时），这里发现没了就重新打开
+                await Task.Delay(160);
+                var stillOpen = IsSystemTrayOpen();
+                if (!stillOpen)
                 {
-                    await Task.Delay(80);
-                    HideTrayTooltips();
+                    DebugLog.Write("[顶栏] 托盘面板被误关，重新打开一次");
+                    KeySendService.Send((int)'B', KeySendService.ModWin);
+                    await Task.Delay(180);
+                    KeySendService.Send(0x0D, 0);
+                    stillOpen = await WaitPanelAsync(1200);
+                }
+
+                // 焦点框晚到就再补点（最多 3 次）
+                for (var i = 0; i < 8 && stillOpen; i++)
+                {
+                    await Task.Delay(90);
                     if (cleared < 3 && IsPanelIconFocused() && ClickAtCursor()) cleared++;
                 }
                 DebugLog.Write($"[顶栏] 托盘首点 {firstClickMs}ms");
@@ -671,11 +678,7 @@ internal static class TrayAppService
     {
         try
         {
-            if (IsSystemTrayOpen())
-            {
-                HideTrayTooltips();   // 面板开着期间也顺手盯着那个提示
-                return;
-            }
+            if (IsSystemTrayOpen()) return;
 
             if (GetCursorPos(out var current) &&
                 Math.Abs(current.X - _parkPoint.X) <= 6 && Math.Abs(current.Y - _parkPoint.Y) <= 6)
@@ -684,9 +687,6 @@ internal static class TrayAppService
             }
             _parkTimer?.Dispose();
             _parkTimer = null;
-            // 关闭瞬间键盘焦点会回到任务栏折叠箭头，系统会再弹一次"显示隐藏的图标"
-            LogTrayWindows("面板关闭时");
-            StartTooltipBurst();
         }
         catch
         {

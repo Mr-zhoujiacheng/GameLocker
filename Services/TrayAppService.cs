@@ -398,17 +398,26 @@ internal static class TrayAppService
             var cleared = 0;
             if (shown)
             {
-                // 只把指针停进面板空白处（离开任务栏折叠箭头，避免系统悬浮提示），不在这里连点。
-                parked = await Task.Run(TryParkCursorOnPanel);
+                var sw = Stopwatch.StartNew();
+                // 关键：面板一出现就立刻停指针 + 点一下空白，尽量抢在焦点框画出来之前。
+                // 优先用上次缓存的空白点（几毫秒完成）；没有缓存才用 UI 自动化现算（慢一点）。
+                parked = TryParkFast() || await Task.Run(TryParkCursorOnPanel);
+                if (parked) StartParkWatcher();
+                if (parked && ClickAtCursor()) cleared++;
+                var firstClickMs = sw.ElapsedMilliseconds;
                 HideSystemTrayFocusCue();
-                // 只有"确实有托盘图标拿到了键盘焦点"才清一次，且点之前用 UI 自动化确认落点是面板空白，
-                // 避免点空/点到图标（之前连点会误触图标，落点不在面板上还会把面板关掉）。
-                for (var i = 0; i < 10; i++)
+                // 之后若又冒出焦点框（焦点晚到），再补点，最多补到 3 次
+                for (var i = 0; i < 8 && cleared < 3; i++)
                 {
-                    if (!IsPanelIconFocused()) break;
-                    if (parked && ClickAtCursor()) cleared++;
-                    await Task.Delay(90);
+                    await Task.Delay(80);
+                    if (!IsPanelIconFocused()) continue;
+                    if (ClickAtCursor()) cleared++;
                 }
+                DebugLog.Write($"[顶栏] 托盘首点 {firstClickMs}ms");
+            }
+            else
+            {
+                RestoreParkedCursorNow();   // 面板没打开：把预停的指针放回去
             }
             DebugLog.Write($"[顶栏] 已请求打开系统托盘（Win+B={sentB} Enter={sentEnter} 面板={shown} 停指针={parked} 清焦点={cleared}）");
         }
@@ -418,10 +427,10 @@ internal static class TrayAppService
 
     private static async Task<bool> WaitPanelAsync(int timeoutMs)
     {
-        for (var waited = 0; waited < timeoutMs; waited += 40)
+        for (var waited = 0; waited < timeoutMs; waited += 15)
         {
             if (IsSystemTrayOpen()) return true;
-            await Task.Delay(40);
+            await Task.Delay(15);
         }
         return IsSystemTrayOpen();
     }
@@ -463,13 +472,69 @@ internal static class TrayAppService
         {
             if (!IsBlankPanelPoint(rect, icons, x, y)) continue;
             if (!SetCursorPos(x, y)) continue;
+            RememberBlankPoint(rect, icons, x, y);
             _parkOrigin = origin;
             _parkPoint = new POINT { X = x, Y = y };
-            _parkTimer?.Dispose();
-            _parkTimer = new Timer(_ => RestoreParkedCursor(), null, 250, 250);
             return true;
         }
         return false;
+    }
+
+    // ---- 空白落点缓存：托盘面板的布局基本固定，缓存后第二次起可以几毫秒内停好指针并点下去 ----
+
+    private static bool _hasBlankCache;
+    private static RECT _cachedPanel;
+    private static List<tagRECT> _cachedIcons = [];
+    private static POINT _cachedBlank;
+
+    private static void RememberBlankPoint(RECT panel, List<tagRECT> icons, int x, int y)
+    {
+        _cachedPanel = panel;
+        _cachedIcons = icons;
+        _cachedBlank = new POINT { X = x, Y = y };
+        _hasBlankCache = true;
+    }
+
+    /// <summary>用缓存的空白点快速停指针（面板位置或尺寸变了就放弃，走慢路径重算）。</summary>
+    private static bool TryParkFast()
+    {
+        if (!_hasBlankCache) return false;
+        if (!TryGetPanelRect(out var rect)) return false;
+        if (Math.Abs(rect.Left - _cachedPanel.Left) > 8 || Math.Abs(rect.Top - _cachedPanel.Top) > 8 ||
+            Math.Abs(rect.Right - _cachedPanel.Right) > 8 || Math.Abs(rect.Bottom - _cachedPanel.Bottom) > 8)
+            return false;
+        if (!IsBlankPanelPoint(rect, _cachedIcons, _cachedBlank.X, _cachedBlank.Y)) return false;
+        if (!GetCursorPos(out var origin)) return false;
+        if (!SetCursorPos(_cachedBlank.X, _cachedBlank.Y)) return false;
+
+        _parkOrigin = origin;
+        _parkPoint = _cachedBlank;
+        return true;
+    }
+
+    /// <summary>面板确认已打开后开始盯着它：一旦关闭就把指针放回原处。</summary>
+    private static void StartParkWatcher()
+    {
+        _parkTimer?.Dispose();
+        _parkTimer = new Timer(_ => RestoreParkedCursor(), null, 250, 250);
+    }
+
+    /// <summary>面板没打开时立刻把指针放回去（不走轮询）。</summary>
+    private static void RestoreParkedCursorNow()
+    {
+        try
+        {
+            if (GetCursorPos(out var current) &&
+                Math.Abs(current.X - _parkPoint.X) <= 6 && Math.Abs(current.Y - _parkPoint.Y) <= 6)
+            {
+                SetCursorPos(_parkOrigin.X, _parkOrigin.Y);
+            }
+            _parkTimer?.Dispose();
+            _parkTimer = null;
+        }
+        catch
+        {
+        }
     }
 
     private static POINT _parkOrigin;

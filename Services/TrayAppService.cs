@@ -2,6 +2,7 @@ using System.Diagnostics;
 using System.Runtime.InteropServices;
 using System.Text;
 using System.Text.Json;
+using Interop.UIAutomationClient;
 
 namespace GameLocker.Services;
 
@@ -379,60 +380,96 @@ internal static class TrayAppService
         if (Interlocked.Exchange(ref _opening, 1) != 0) return;
         try
         {
-            // 顶部任务栏模式下任务栏保持隐藏，使用 Windows 原生快捷键打开托盘。
+            // 顶部任务栏模式下任务栏保持隐藏，用 Windows 原生快捷键打开托盘。
             var sentB = KeySendService.Send((int)'B', KeySendService.ModWin);
-            await Task.Delay(260);
+            await Task.Delay(240);
             var sentEnter = KeySendService.Send(0x0D, 0);
-            // 面板是键盘方式唤出的，第一枚图标会带一圈键盘焦点框。
-            // 面板一出现就立刻在空白处轻点（指针输入会让 WinUI 撤掉焦点框），再补一次兜底，
-            // 尽量做到"肉眼看不到白框"，而不是等它画出来再清。
-            var shown = false;
-            for (var i = 0; i < 40 && !shown; i++)
+            var shown = await WaitPanelAsync(1400);
+            if (!shown)
             {
-                await Task.Delay(30);
-                shown = IsSystemTrayOpen();
+                // 偶发：任务栏没把键盘焦点给到通知区域，Enter 打了空——补一次
+                KeySendService.Send((int)'B', KeySendService.ModWin);
+                await Task.Delay(200);
+                KeySendService.Send(0x0D, 0);
+                shown = await WaitPanelAsync(1400);
             }
+
+            var parked = false;
+            var cleared = 0;
             if (shown)
             {
-                // 把鼠标停到面板左上角空白处：既能让 WinUI 撤掉键盘焦点框，
-                // 也能让指针离开任务栏的折叠箭头，避免它再弹"显示隐藏的图标"悬浮提示。
-                // 面板关闭后（且用户自己没动过鼠标）再放回原来的位置。
-                var parked = TryParkCursorOnPanel();
-                for (var i = 0; i < 5; i++)
+                // 只把指针停进面板空白处（离开任务栏折叠箭头，避免系统悬浮提示），不在这里连点。
+                parked = await Task.Run(TryParkCursorOnPanel);
+                HideSystemTrayFocusCue();
+                // 只有"确实有托盘图标拿到了键盘焦点"才清一次，且点之前用 UI 自动化确认落点是面板空白，
+                // 避免点空/点到图标（之前连点会误触图标，落点不在面板上还会把面板关掉）。
+                for (var i = 0; i < 10; i++)
                 {
-                    ClickAtCursor();
-                    HideSystemTrayFocusCue();
-                    await Task.Delay(110);
+                    if (!IsPanelIconFocused()) break;
+                    if (parked && ClickAtCursor()) cleared++;
+                    await Task.Delay(90);
                 }
-                DebugLog.Write($"[顶栏] 托盘面板已定位（停指针={parked}）");
             }
-            DebugLog.Write($"[顶栏] 已请求打开系统托盘（Win+B={sentB} Enter={sentEnter} 面板={shown}）");
+            DebugLog.Write($"[顶栏] 已请求打开系统托盘（Win+B={sentB} Enter={sentEnter} 面板={shown} 停指针={parked} 清焦点={cleared}）");
         }
         catch (Exception ex) { DebugLog.Write("[顶栏] 打开系统托盘失败：" + ex.Message); }
         finally { Interlocked.Exchange(ref _opening, 0); }
     }
 
-    /// <summary>
-    /// 把鼠标移到托盘面板左上角的空白处（并记下原位置）。返回是否已停好。
-    /// 停在面板里有两个作用：指针离开任务栏折叠箭头，系统不再弹"显示隐藏的图标"提示；
-    /// 面板收到指针输入后，WinUI 也会撤掉第一枚图标的键盘焦点框。
-    /// </summary>
-    private static bool TryParkCursorOnPanel()
+    private static async Task<bool> WaitPanelAsync(int timeoutMs)
     {
+        for (var waited = 0; waited < timeoutMs; waited += 40)
+        {
+            if (IsSystemTrayOpen()) return true;
+            await Task.Delay(40);
+        }
+        return IsSystemTrayOpen();
+    }
+
+    /// <summary>
+    /// 把鼠标停到托盘面板的空白处（左侧内边距中线），让指针离开任务栏折叠箭头，
+    /// 系统就不会再弹"显示隐藏的图标"。返回是否停好；落点必须先经 UI 自动化确认不是图标。
+    /// </summary>
+    /// <summary>托盘面板窗口矩形（没打开返回 false）。</summary>
+    private static bool TryGetPanelRect(out RECT rect)
+    {
+        rect = default;
         var hwnd = FindWindow("TopLevelWindowForOverflowXamlIsland", null);
         if (hwnd == IntPtr.Zero || !IsWindowVisible(hwnd)) return false;
-        if (!GetWindowRect(hwnd, out var rect)) return false;
+        return GetWindowRect(hwnd, out rect);
+    }
+
+    private static bool IsInsidePanel(RECT panel, tagRECT element) =>
+        element.left >= panel.Left - 2 && element.top >= panel.Top - 2 &&
+        element.right <= panel.Right + 2 && element.bottom <= panel.Bottom + 2;
+
+    private static bool TryParkCursorOnPanel()
+    {
+        if (!TryGetPanelRect(out var rect)) return false;
         if (!GetCursorPos(out var origin)) return false;
 
-        var x = rect.Left + (rect.Right - rect.Left) / 2;   // 顶部居中：内边距里，离图标远
-        var y = rect.Top + 14;
-        if (!SetCursorPos(x, y)) return false;
+        var icons = IconRects(rect);
+        var midY = rect.Top + (rect.Bottom - rect.Top) / 2;
+        var midX = rect.Left + (rect.Right - rect.Left) / 2;
+        var candidates = new (int X, int Y)[]
+        {
+            (rect.Left + 8, midY),                                  // 左侧内边距中线
+            (midX, rect.Top + 8),                                   // 顶部内边距中线
+            (midX, rect.Bottom - 8),                                // 底部内边距中线
+            (rect.Left + 8, rect.Bottom - 8),                       // 左下角内边距
+        };
 
-        _parkOrigin = origin;
-        _parkPoint = new POINT { X = x, Y = y };
-        _parkTimer?.Dispose();
-        _parkTimer = new Timer(_ => RestoreParkedCursor(), null, 250, 250);
-        return true;
+        foreach (var (x, y) in candidates)
+        {
+            if (!IsBlankPanelPoint(rect, icons, x, y)) continue;
+            if (!SetCursorPos(x, y)) continue;
+            _parkOrigin = origin;
+            _parkPoint = new POINT { X = x, Y = y };
+            _parkTimer?.Dispose();
+            _parkTimer = new Timer(_ => RestoreParkedCursor(), null, 250, 250);
+            return true;
+        }
+        return false;
     }
 
     private static POINT _parkOrigin;
@@ -459,12 +496,110 @@ internal static class TrayAppService
         }
     }
 
-    /// <summary>在当前指针位置轻点一下（用于让 WinUI 从"键盘模式"切到"指针模式"）。</summary>
-    private static void ClickAtCursor()
+    /// <summary>
+    /// 在当前指针位置轻点一下，让 WinUI 从"键盘模式"切到"指针模式"（撤掉焦点框）。
+    /// 点之前先用 UI 自动化确认落点确实是面板空白：不是空白就不点，避免误触图标或点到面板外把它关掉。
+    /// </summary>
+    private static bool ClickAtCursor()
     {
-        mouse_event(MOUSEEVENTF_LEFTDOWN, 0, 0, 0, UIntPtr.Zero);
-        mouse_event(MOUSEEVENTF_LEFTUP, 0, 0, 0, UIntPtr.Zero);
+        try
+        {
+            if (!TryGetPanelRect(out var rect)) return false;
+            if (!GetCursorPos(out var point)) return false;
+            if (!IsBlankPanelPoint(rect, IconRects(rect), point.X, point.Y)) return false;
+
+            mouse_event(MOUSEEVENTF_LEFTDOWN, 0, 0, 0, UIntPtr.Zero);
+            mouse_event(MOUSEEVENTF_LEFTUP, 0, 0, 0, UIntPtr.Zero);
+            return true;
+        }
+        catch
+        {
+            return false;
+        }
     }
+
+    /// <summary>托盘面板里当前是否有"图标"拿到了键盘焦点（有的话就会画那圈选中框）。</summary>
+    private static bool IsPanelIconFocused()
+    {
+        try
+        {
+            if (!TryGetPanelRect(out var rect)) return false;
+
+            var focused = new CUIAutomation().GetFocusedElement();
+            if (focused is null) return false;
+            if (!IsIconControlType(focused.CurrentControlType)) return false;
+            return IsInsidePanel(rect, focused.CurrentBoundingRectangle);
+        }
+        catch
+        {
+            return false;
+        }
+    }
+
+    /// <summary>
+    /// 面板里所有托盘图标的屏幕矩形。用于挑一个"绝不会点到图标"的空白落点：
+    /// 面板是 XAML 岛，ElementFromPoint 拿到的常是"主机弹出窗口"，靠它判断不了空白，
+    /// 所以改成"面板矩形内、且不在任何图标矩形里"。
+    /// </summary>
+    private static List<tagRECT> IconRects(RECT panel)
+    {
+        var result = new List<tagRECT>();
+        try
+        {
+            var hwnd = FindWindow("TopLevelWindowForOverflowXamlIsland", null);
+            if (hwnd == IntPtr.Zero) return result;
+
+            var automation = new CUIAutomation();
+            var root = automation.ElementFromHandle(hwnd);
+            if (root is null) return result;
+
+            var all = root.FindAll(TreeScope.TreeScope_Descendants, automation.CreateTrueCondition());
+            if (all is null) return result;
+
+            var count = Math.Min(all.Length, 200);
+            for (var i = 0; i < count; i++)
+            {
+                var element = all.GetElement(i);
+                if (element is null) continue;
+                if (!IsIconControlType(element.CurrentControlType)) continue;
+
+                var rect = element.CurrentBoundingRectangle;
+                if (rect.right <= rect.left || rect.bottom <= rect.top) continue;
+                if (!IsInsidePanel(panel, rect)) continue;
+                result.Add(rect);
+            }
+        }
+        catch
+        {
+            // 读不到就当没有图标，交给调用方的几何判断
+        }
+        return result;
+    }
+
+    /// <summary>点是否在面板内、但不在任何图标上（图标矩形外扩 4px 当安全边界）。</summary>
+    private static bool IsBlankPanelPoint(RECT panel, List<tagRECT> icons, int x, int y)
+    {
+        const int inset = 6;   // 离面板圆角边缘留一点，避免点在透明区
+        if (x < panel.Left + inset || x > panel.Right - inset) return false;
+        if (y < panel.Top + inset || y > panel.Bottom - inset) return false;
+
+        foreach (var icon in icons)
+        {
+            if (x >= icon.left - 4 && x <= icon.right + 4 &&
+                y >= icon.top - 4 && y <= icon.bottom + 4) return false;
+        }
+        return true;
+    }
+
+    private static bool IsIconControlType(int controlType) => controlType
+        is UIA_ButtonControlTypeId or UIA_ListItemControlTypeId or UIA_MenuItemControlTypeId
+        or UIA_ImageControlTypeId or UIA_HyperlinkControlTypeId;
+
+    private const int UIA_ButtonControlTypeId = 50000;
+    private const int UIA_HyperlinkControlTypeId = 50005;
+    private const int UIA_ImageControlTypeId = 50006;
+    private const int UIA_ListItemControlTypeId = 50007;
+    private const int UIA_MenuItemControlTypeId = 50011;
 
     /// <summary>把面板的"键盘焦点提示"关掉（UISF_HIDEFOCUS），窗口没出现就返回 false 让调用方稍后再试。</summary>
     private static bool HideSystemTrayFocusCue()

@@ -382,7 +382,11 @@ internal static class TrayAppService
         {
             // 顶部任务栏模式下任务栏保持隐藏，用 Windows 原生快捷键打开托盘。
             var sentB = KeySendService.Send((int)'B', KeySendService.ModWin);
-            await Task.Delay(240);
+            await Task.Delay(120);
+            // 指针尽早离开任务栏折叠箭头：Win+B 会把键盘焦点送到通知区域，
+            // 指针还压在那上面时系统会弹"显示隐藏的图标"提示。
+            TryPreParkCursor();
+            await Task.Delay(130);
             var sentEnter = KeySendService.Send(0x0D, 0);
             var shown = await WaitPanelAsync(1400);
             if (!shown)
@@ -406,12 +410,14 @@ internal static class TrayAppService
                 if (parked && ClickAtCursor()) cleared++;
                 var firstClickMs = sw.ElapsedMilliseconds;
                 HideSystemTrayFocusCue();
-                // 之后若又冒出焦点框（焦点晚到），再补点，最多补到 3 次
-                for (var i = 0; i < 8 && cleared < 3; i++)
+                // 之后 1.6 秒内两件事一起盯：
+                // 1) 系统"显示隐藏的图标"提示是 Win+B 让折叠箭头拿到焦点后弹的，出现时间不定，反复藏；
+                // 2) 焦点框若晚到，再补点（最多补到 3 次）。
+                for (var i = 0; i < 20; i++)
                 {
                     await Task.Delay(80);
-                    if (!IsPanelIconFocused()) continue;
-                    if (ClickAtCursor()) cleared++;
+                    HideTrayTooltips();
+                    if (cleared < 3 && IsPanelIconFocused() && ClickAtCursor()) cleared++;
                 }
                 DebugLog.Write($"[顶栏] 托盘首点 {firstClickMs}ms");
             }
@@ -504,6 +510,12 @@ internal static class TrayAppService
             Math.Abs(rect.Right - _cachedPanel.Right) > 8 || Math.Abs(rect.Bottom - _cachedPanel.Bottom) > 8)
             return false;
         if (!IsBlankPanelPoint(rect, _cachedIcons, _cachedBlank.X, _cachedBlank.Y)) return false;
+        if (_preParked)
+        {
+            // 打开前已经把指针停好了，这里不要再抢一次（否则会把恢复位置记成面板里的坐标）
+            _preParked = false;
+            return true;
+        }
         if (!GetCursorPos(out var origin)) return false;
         if (!SetCursorPos(_cachedBlank.X, _cachedBlank.Y)) return false;
 
@@ -518,6 +530,59 @@ internal static class TrayAppService
         _parkTimer?.Dispose();
         _parkTimer = new Timer(_ => RestoreParkedCursor(), null, 250, 250);
     }
+
+    /// <summary>
+    /// 打开面板之前先把指针挪到缓存的空白点：Win+B 会把键盘焦点送到通知区域，
+    /// 指针压在折叠箭头上时系统就会弹"显示隐藏的图标"提示，早点挪走可以避免触发。
+    /// </summary>
+    private static bool TryPreParkCursor()
+    {
+        if (!_hasBlankCache || _preParked) return false;
+        if (!GetCursorPos(out var origin)) return false;
+        if (!SetCursorPos(_cachedBlank.X, _cachedBlank.Y)) return false;
+        _parkOrigin = origin;
+        _parkPoint = _cachedBlank;
+        _preParked = true;
+        return true;
+    }
+
+    private static bool _preParked;
+
+    /// <summary>
+    /// 把系统任务栏的气泡提示（tooltips_class32，比如"显示隐藏的图标"）先藏起来。
+    /// 只隐藏"当前正在显示"的那个，下次悬停系统会重新弹，不影响用户正常使用。
+    /// </summary>
+    private static void HideTrayTooltips()
+    {
+        try
+        {
+            var taskbar = FindWindow("Shell_TrayWnd", null);
+            if (taskbar == IntPtr.Zero) return;
+            GetWindowThreadProcessId(taskbar, out var taskbarPid);
+
+            var buffer = new StringBuilder(64);
+            EnumWindows((hwnd, _) =>
+            {
+                if (!IsWindowVisible(hwnd)) return true;
+                buffer.Clear();
+                if (GetClassName(hwnd, buffer, buffer.Capacity) <= 0) return true;
+                if (!buffer.ToString().Equals("tooltips_class32", StringComparison.OrdinalIgnoreCase)) return true;
+                GetWindowThreadProcessId(hwnd, out var pid);
+                if (pid != taskbarPid) return true;
+                ShowWindow(hwnd, SW_HIDE);
+                return true;
+            }, IntPtr.Zero);
+        }
+        catch
+        {
+            // 提示藏不掉也不影响打开托盘
+        }
+    }
+
+    private const int SW_HIDE = 0;
+
+    [DllImport("user32.dll")]
+    private static extern bool ShowWindow(IntPtr hwnd, int cmd);
 
     /// <summary>面板没打开时立刻把指针放回去（不走轮询）。</summary>
     private static void RestoreParkedCursorNow()

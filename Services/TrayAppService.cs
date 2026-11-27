@@ -408,6 +408,7 @@ internal static class TrayAppService
                 parked = TryParkFast() || await Task.Run(TryParkCursorOnPanel);
                 if (parked) StartParkWatcher();
                 if (parked && ClickAtCursor()) cleared++;
+                LogTrayWindows("面板打开后");
                 var firstClickMs = sw.ElapsedMilliseconds;
                 HideSystemTrayFocusCue();
                 // 之后 1.6 秒内两件事一起盯：
@@ -576,12 +577,18 @@ internal static class TrayAppService
                 if (!GetWindowRect(hwnd, out var r)) return true;
                 var w = r.Right - r.Left;
                 var h = r.Bottom - r.Top;
-                // 只处理"气泡提示"尺寸的小窗（宽 40~700、高 16~140），避免误伤开始菜单等大面板
-                if (w < 40 || w > 700 || h < 16 || h > 140) return true;
+                // 只处理"气泡提示"尺寸的小窗（宽 40~700、高 16~300），避免误伤开始菜单等大面板
+                if (w < 40 || w > 700 || h < 16 || h > 300) return true;
+                // 必须在屏幕右上角托盘区域内（防止误伤别处的弹出菜单）
+                var screenW = GetSystemMetrics(0);
+                if (r.Right <= screenW - 900 || r.Top > 320) return true;
 
-                var isTooltip = cls.Contains("tooltip", StringComparison.OrdinalIgnoreCase);
-                var isSmallIsland = cls.Contains("XamlExplorerHostIslandWindow", StringComparison.OrdinalIgnoreCase);
-                if (!isTooltip && !isSmallIsland) return true;
+                // 系统"显示隐藏的图标"提示在 Win11 上是 explorer 的 XAML 弹出窗（Xaml_WindowedPopupClass），
+                // 老式的是 tooltips_class32，两种都处理。
+                var isTooltip = cls.Contains("tooltip", StringComparison.OrdinalIgnoreCase)
+                    || cls.Equals("Xaml_WindowedPopupClass", StringComparison.OrdinalIgnoreCase)
+                    || cls.Equals("XamlExplorerHostIslandWindow", StringComparison.OrdinalIgnoreCase);
+                if (!isTooltip) return true;
 
                 if (ShowWindow(hwnd, SW_HIDE))
                 {
@@ -600,28 +607,33 @@ internal static class TrayAppService
 
     private const int SW_HIDE = 0;
 
-    /// <summary>诊断用：把任务栏进程当前可见的顶层小窗（类名+位置+尺寸）记一行，便于定位"显示隐藏的图标"到底是哪个窗。</summary>
+    [DllImport("user32.dll")]
+    private static extern int GetSystemMetrics(int index);
+
+    /// <summary>诊断用：关闭/打开瞬间把"右上角托盘区域"里所有可见顶层窗口（不限进程）记一行。</summary>
     private static void LogTrayWindows(string tag)
     {
         try
         {
-            var taskbar = FindWindow("Shell_TrayWnd", null);
-            if (taskbar == IntPtr.Zero) return;
-            GetWindowThreadProcessId(taskbar, out var taskbarPid);
-
+            var screenW = GetSystemMetrics(0);
+            var areaLeft = Math.Max(0, screenW - 900);
             var sb = new StringBuilder();
             var buffer = new StringBuilder(128);
+
             EnumWindows((hwnd, _) =>
             {
                 if (!IsWindowVisible(hwnd)) return true;
-                GetWindowThreadProcessId(hwnd, out var pid);
-                if (pid != taskbarPid) return true;
                 if (!GetWindowRect(hwnd, out var r)) return true;
+                if (r.Right <= areaLeft || r.Bottom <= 0 || r.Top > 300) return true;
                 buffer.Clear();
                 GetClassName(hwnd, buffer, buffer.Capacity);
-                sb.Append($"[{buffer} {r.Left},{r.Top} {r.Right - r.Left}x{r.Bottom - r.Top}] ");
+                GetWindowThreadProcessId(hwnd, out var pid);
+                var name = "";
+                try { name = Process.GetProcessById((int)pid).ProcessName; } catch { }
+                sb.Append($"[{buffer}/{name}#{pid} {r.Left},{r.Top} {r.Right - r.Left}x{r.Bottom - r.Top}] ");
                 return true;
             }, IntPtr.Zero);
+
             DebugLog.Write($"[托盘诊断] {tag} {sb}");
         }
         catch
